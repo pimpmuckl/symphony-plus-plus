@@ -110,7 +110,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
 
     with {:ok, %ClaimLease{} = claim_lease} <- get(repo, id),
          :ok <- require_status(claim_lease, ClaimLease.active_statuses()),
-         :ok <- require_not_stale(claim_lease, now) do
+         :ok <- require_releasable(claim_lease, now) do
       update_claim_lease(
         repo,
         claim_lease,
@@ -210,6 +210,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
   defp require_not_stale(%ClaimLease{} = claim_lease, now) do
     if ClaimLease.stale?(claim_lease, now), do: {:error, :claim_stale}, else: :ok
   end
+
+  defp require_releasable(%ClaimLease{status: "paused"}, _now), do: :ok
+  defp require_releasable(%ClaimLease{} = claim_lease, now), do: require_not_stale(claim_lease, now)
 
   defp update_claim_lease(repo, %ClaimLease{} = claim_lease, attrs, allowed_statuses) do
     changeset = ClaimLease.update_changeset(claim_lease, attrs)

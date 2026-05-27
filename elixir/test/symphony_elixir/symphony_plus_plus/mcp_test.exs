@@ -3499,7 +3499,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
             "arguments" =>
               arguments
               |> Map.put("work_request_id", work_request.id)
-              |> Map.put("caller_id", "codex-local-test-restarted")
           }
         },
         local_mcp_server(config, "local-reconnect-state")
@@ -3515,6 +3514,88 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+  end
+
+  test "claim_local_assignment rejects heartbeat from a different caller_id", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-CALLER-ISOLATION")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    arguments = local_assignment_claim_args(package)
+
+    {claim_response, _claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-caller-isolation-initial",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-caller-isolation-initial-state")
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "created"
+    assert {:ok, %ClaimLease{id: lease_id, last_seen_at: last_seen_at}} = ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    {other_caller_response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-caller-isolation-other",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" => Map.put(arguments, "caller_id", "codex-local-test-other")
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-caller-isolation-other-state")
+      )
+
+    assert get_in(other_caller_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
+
+    assert {:ok, %ClaimLease{id: ^lease_id, status: "active", last_seen_at: ^last_seen_at}} =
+             ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    assert repo.aggregate(
+             from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id and claim_lease.status != "active"),
+             :count
+           ) == 0
+  end
+
+  test "claim_local_assignment rejects duplicate caller before grant binding", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-CALLER-IN-FLIGHT")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    arguments = local_assignment_claim_args(package)
+
+    assert {:ok, %ClaimLease{id: lease_id}} =
+             ClaimLeaseService.claim(
+               repo,
+               package.id,
+               local_assignment_claim_actor(arguments),
+               stale_after_ms: :timer.minutes(5)
+             )
+
+    {other_caller_response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-caller-in-flight-other",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" => Map.put(arguments, "caller_id", "codex-local-test-overlap")
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-caller-in-flight-other-state")
+      )
+
+    assert get_in(other_caller_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
+
+    assert {:ok, %ClaimLease{id: ^lease_id, status: "active", actor_display_name: "local-worker-1"}} =
+             ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    assert repo.aggregate(
+             from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id and claim_lease.status != "active"),
+             :count
+           ) == 0
   end
 
   test "claim_local_assignment claims the newest live worker grant", %{repo: repo} do
@@ -16884,6 +16965,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "claimed_by" => "local-worker-1"
     }
     |> Map.merge(overrides)
+  end
+
+  defp local_assignment_claim_actor(arguments) do
+    worktree_path = local_assignment_actor_worktree_path(arguments["worktree_path"])
+
+    owner_material =
+      [
+        arguments["repo"],
+        arguments["base_branch"],
+        arguments["work_package_id"],
+        arguments["branch"],
+        worktree_path,
+        arguments["claimed_by"]
+      ]
+      |> Enum.join("\0")
+
+    material =
+      [
+        arguments["repo"],
+        arguments["base_branch"],
+        arguments["work_package_id"],
+        arguments["branch"],
+        worktree_path,
+        arguments["caller_id"],
+        arguments["claimed_by"]
+      ]
+      |> Enum.join("\0")
+
+    %{
+      "actor_kind" => "agent",
+      "actor_id" => "local:" <> local_assignment_actor_hash(owner_material) <> ":" <> local_assignment_actor_hash(material),
+      "actor_display_name" => arguments["claimed_by"]
+    }
+  end
+
+  defp local_assignment_actor_worktree_path(path) do
+    path = path |> String.trim() |> Path.expand()
+
+    case :os.type() do
+      {:win32, _name} -> String.downcase(path)
+      _type -> path
+    end
+  end
+
+  defp local_assignment_actor_hash(material) do
+    Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
   defp local_claim_worktree_path(work_package_id) do

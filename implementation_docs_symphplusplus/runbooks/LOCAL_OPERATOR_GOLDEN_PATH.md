@@ -252,8 +252,9 @@ Before launching a worker, prepare and record the package worktree through
 the exact `branch` and `worktree_path` values from that step, and pair them
 with the stable local MCP `caller_id` for the worker session/launcher. The
 prepare tool does not return `caller_id`; reuse the same caller id for
-reconnects. If no worktree is recorded, do not launch the worker; the
-ledger-backed claim must fail closed with `worktree_scope_required`.
+reconnects because changing it for the same local owner is rejected before the
+live-grant authority check. If no worktree is recorded, do not launch the
+worker; the ledger-backed claim must fail closed with `worktree_scope_required`.
 
 Give each worker:
 
@@ -276,8 +277,8 @@ planning instead of local markdown planning files. They read the current
 assignment, update task plan/findings/progress through MCP, attach branch and
 PR evidence, run validation and review, and mark ready only after package gates
 pass. Replaying the same claim heartbeats the lease; stale leases can be
-reclaimed with audit evidence, while paused leases or active other owners are
-operator/architect blockers.
+reclaimed with audit evidence, while paused leases, same local owner claims that
+change `caller_id`, or active other owners are operator/architect blockers.
 
 ## Track And Merge
 

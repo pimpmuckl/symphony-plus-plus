@@ -98,7 +98,7 @@
       "required_arguments": ["repo", "base_branch", "work_package_id", "branch", "worktree_path", "caller_id", "claimed_by"],
       "optional_arguments": ["work_request_id"],
       "scope_policy": "Requires a trusted local HTTP MCP session with explicit state-key continuity. Validates repo, base branch, branch, recorded worktree path, optional linked WorkRequest, and non-terminal package status before binding the newest live worker grant for the package.",
-      "reclaim_policy": "Creates or heartbeats a claim lease for the local actor. Stale leases may be reclaimed with claim_lease_reclaimed audit evidence; paused leases, scope mismatches, terminal packages, missing recorded worktrees, and active other owners with live authority fail closed."
+      "reclaim_policy": "Creates or heartbeats a claim lease for the local actor. Stale leases may be reclaimed with claim_lease_reclaimed audit evidence; paused leases, scope mismatches, terminal packages, missing recorded worktrees, same local owner claims that change caller_id before the live-grant authority check, and active other owners with live authority fail closed."
     },
     {
       "name": "claim_work_key",
