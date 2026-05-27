@@ -24,8 +24,12 @@ readiness surfaces without replacing the base Linear-oriented runtime docs.
 - Operator flow: `implementation_docs_symphplusplus/docs/12_OPERATOR_TRAINING.md`
 - Short operational runbook:
   `implementation_docs_symphplusplus/docs/09_OPERATIONAL_RUNBOOK.md`
-- Codex plugin and private worker-secret handoff:
+- Default Codex skill-only plugin reference:
   `plugins/symphony-plus-plus/README.md`
+- Opt-in MCP plugin for WorkPackage/architect sessions:
+  `plugins/symphony-plus-plus-mcp/README.md`
+- V2.1 ledger-claim and local cache cutover notes:
+  `implementation_docs_symphplusplus/README.md`
 - Release validation:
   `implementation_docs_symphplusplus/docs/11_RELEASE_VALIDATION.md`
 - Security and guardrails:
@@ -71,12 +75,14 @@ rules.
 - `elixir/` contains the runnable Symphony Elixir service and upstream runtime
   documentation.
 - `.codex/skills/symphony-work-package/` contains the repo-local worker skill.
-- `plugins/symphony-plus-plus/` contains the Codex-local plugin package for the
-  same skill.
-- `scripts/sympp-worker-secret.ps1` contains the Windows MCP bootstrap wrapper
-  for worker secrets from Credential Manager or a local private file.
-- `scripts/sympp-worker-secret.sh` contains the non-Windows local private-file
-  MCP bootstrap wrapper for worker secrets.
+- `plugins/symphony-plus-plus/` contains the Codex-local skill-only plugin
+  package; `plugins/symphony-plus-plus-mcp/` contains the opt-in MCP skill
+  package for dedicated S++ sessions.
+- V2.1 worker dispatch uses ledger-backed `claim_local_assignment`. The
+  worker-secret helper scripts remain explicit legacy/recovery bootstrap
+  support after the ledger-claim cutover; they are not the normal worker path.
+- Do not sync or refresh user-local plugin/cache installs during feature-branch
+  work; local cache adoption happens at final feature-branch cutover.
 - `implementation_docs_symphplusplus/docs/` contains the product, permission,
   MCP, dashboard, GitHub, operator, release, and V3 Execution Atlas contracts.
 - `implementation_docs_symphplusplus/runbooks/` contains operator runbooks.

@@ -37,42 +37,39 @@ Never log:
 ## Claim flow
 
 ```text
-1. Create WorkPackage.
-2. Mint AccessGrant.
-3. Store the one-time secret in a local private handoff store and return only
-   non-secret handoff metadata in normal command output.
-4. Worker MCP starts through the private-store bootstrap, which injects the
-   secret only into the MCP child process environment and passes the stable
-   `claimed_by` owner identity.
-5. Server validates hash, explicit expiry when present, revocation, claimed owner, and not already bound to a different owner.
-6. Server binds grant to the worker session with the claimed_by owner identity.
-7. Reconnects are accepted only for the same owner identity and secret proof.
-8. Subsequent calls use bound session/grant identity.
+1. Create or dispatch a WorkPackage and mint the worker AccessGrant.
+2. Return non-secret ledger claim metadata for `claim_local_assignment`.
+3. Prepare the scoped worker worktree before launch; this records
+   `worktree_path` and returns branch/worktree launch guidance.
+4. Worker MCP starts in a dedicated local HTTP session on the same ledger.
+5. Worker calls `claim_local_assignment` with repo, base branch, WorkPackage id,
+   optional WorkRequest id, branch, worktree path, caller id, and `claimed_by`.
+6. Server validates ledger scope, terminal status, explicit local daemon
+   session, and claim lease state.
+7. Server creates or heartbeats the claim lease; stale leases may be reclaimed
+   with audit evidence, while paused leases, same local owner claims that change
+   caller id, or active other owners fail closed.
+8. Server binds the worker grant to the session with the claimed owner identity.
+9. Subsequent calls use bound session/grant identity.
 ```
 
-This is the Symphony++ worker MCP API decision for the pre-production worker
-surface: workers must claim with an explicit owner identity rather than relying
-on ambiguous anonymous ownership.
+This is the Symphony++ V2.1 worker MCP API decision: workers claim a
+ledger-backed local assignment with explicit owner identity rather than relying
+on ambiguous anonymous ownership or prompting for raw secrets.
 
-`claim_work_key(secret, claimed_by)` remains the server-side recovery primitive,
-but first-use Codex workers should not paste raw secrets into prompts or normal
-tool calls. For local/private operator use, `auto` uses the local private-file
-store on every host, including Windows, so normal dogfood does not depend on
-Windows Credential Manager writes. Windows bootstrap commands use the
-PowerShell helper to read the private file and inject the secret only into the
-MCP child process. Explicit `windows-credential-manager` mode remains available
-when the operator intentionally wants that store and the host Credential Manager
-can write credentials.
+`claim_work_key(secret, claimed_by)` and `claim_private_handoff` remain
+server-side legacy/recovery primitives after the ledger-claim cutover.
+First-use Codex workers should not paste raw secrets into prompts or normal
+tool calls.
 
-Private handoff metadata has its own naming contract. Local private-file paths
-and Windows Credential Manager targets use the stable, non-secret
+Private handoff metadata has its own legacy/recovery naming contract. Local
+private-file paths and Windows Credential Manager targets use the stable,
+non-secret
 `worker_grant.id` as the uniqueness boundary. The four-character `display_key`
 may appear as a readable operator label, but it is not the unique storage
-identity. Normal command output must keep showing only non-secret handoff
+identity. Legacy recovery output must keep showing only non-secret handoff
 metadata and bootstrap shape; raw worker secrets stay in the private store and
-must remain redacted from stdout, prompts, PR text, review text, and logs. Local
-private-file ACL strength depends on the local OS/user profile and is intended
-for this pre-production personal/local workflow.
+must remain redacted from stdout, prompts, PR text, review text, and logs.
 
 Managed handoff metadata records are non-secret deletion-coordinate metadata.
 They identify the work package, worker grant, mode, and managed private-store

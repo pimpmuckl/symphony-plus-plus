@@ -125,6 +125,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
 
     for tool <- [
           "claim_work_key",
+          "claim_local_assignment",
           "solo_append",
           "solo_attach",
           "solo_list",
@@ -141,6 +142,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
 
     refute "get_current_assignment" in names
     refute "append_progress" in names
+  end
+
+  test "POST /mcp exposes and runs local operator WorkRequest note tools on loopback" do
+    assert {:ok, work_request} =
+             WorkRequestRepository.create(Repo, work_request_attrs(%{id: "WR-HTTP-ENDPOINT-LOCAL-OPERATOR"}))
+
+    init = post_json(initialize_request("local-operator-init"))
+    [session_id] = get_resp_header(init, "mcp-session-id")
+
+    assert %Server{
+             config: %Config{mode: :http, local_daemon_trusted: true},
+             local_daemon_trusted: true
+           } = stored_http_server()
+
+    tools = post_json(tools_list_request("local-operator-tools"), [{"mcp-session-id", session_id}])
+    names = tool_names(json_response(tools, 200))
+
+    assert "add_work_request_comment" in names
+    assert "record_work_request_operator_decision" in names
+
+    comment =
+      post_json(
+        tool_call_request("local-operator-comment", "add_work_request_comment", %{
+          "work_request_id" => work_request.id,
+          "body" => "Endpoint operator noted ghp_endpointsecret",
+          "created_by" => "endpoint operator"
+        }),
+        [{"mcp-session-id", session_id}]
+      )
+
+    assert [^session_id] = get_resp_header(comment, "mcp-session-id")
+    payload = json_response(comment, 200)
+    assert get_in(payload, ["result", "structuredContent", "comment", "source_type"]) == "operator"
+    assert get_in(payload, ["result", "structuredContent", "comment", "body"]) == "Endpoint operator noted [REDACTED]"
   end
 
   test "POST /mcp tools/list follows a session initialized from the live dashboard repo" do
@@ -675,6 +710,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     |> get_in(["result", "tools"])
     |> Enum.map(& &1["name"])
     |> Enum.sort()
+  end
+
+  defp stored_http_server do
+    %{entries: entries} = :sys.get_state(HTTPStateStore)
+
+    entries
+    |> Map.values()
+    |> Enum.map(fn {server, _touched_at} -> server end)
+    |> List.first()
   end
 
   defp resource_uris(payload) do

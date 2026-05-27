@@ -176,6 +176,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     worker_grant
     |> Map.delete(:secret)
     |> Map.delete("secret")
+    |> Map.delete(:secret_hash)
+    |> Map.delete("secret_hash")
     |> Map.put(:secret_handoff, handoff)
   end
 

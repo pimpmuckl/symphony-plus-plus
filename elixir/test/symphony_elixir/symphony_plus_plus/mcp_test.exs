@@ -15,6 +15,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service, as: ClaimLeaseService
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
@@ -139,6 +141,75 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     def one(_query), do: raise(%Exqlite.Error{message: "database is locked"})
     def all(_query), do: raise(%Exqlite.Error{message: "database is locked"})
+  end
+
+  defmodule LocalClaimAuditFailureRepo do
+    alias Ecto.Changeset
+    alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    def transaction(fun), do: Repo.transaction(fun)
+    def rollback(value), do: Repo.rollback(value)
+    def get(schema, id), do: Repo.get(schema, id)
+    def one(query), do: Repo.one(query)
+    def all(query), do: Repo.all(query)
+    def update(changeset), do: Repo.update(changeset)
+    def update_all(query, updates), do: Repo.update_all(query, truncate_claim_timestamps(updates))
+
+    def insert(%Ecto.Changeset{data: %ProgressEvent{}, changes: %{status: "claim_lease_reclaimed"}}) do
+      {:error, Changeset.add_error(Changeset.change(%ProgressEvent{}), :id, "forced_reclaim_audit_failure")}
+    end
+
+    def insert(changeset), do: Repo.insert(changeset)
+
+    defp truncate_claim_timestamps(set: fields) do
+      [
+        set:
+          Enum.map(fields, fn
+            {field, %DateTime{} = timestamp} when field in [:claimed_at, :updated_at] ->
+              {field, DateTime.truncate(timestamp, :second)}
+
+            field ->
+              field
+          end)
+      ]
+    end
+
+    defp truncate_claim_timestamps(updates), do: updates
+  end
+
+  defmodule LocalClaimInsertRaceRepo do
+    alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    @race_key :sympp_local_claim_insert_race
+
+    def arm(actor_overrides \\ %{}), do: Process.put(@race_key, actor_overrides)
+    def disarm, do: Process.delete(@race_key)
+
+    def transaction(fun), do: Repo.transaction(fun)
+    def rollback(value), do: Repo.rollback(value)
+    def get(schema, id), do: Repo.get(schema, id)
+    def one(query), do: Repo.one(query)
+    def all(query), do: Repo.all(query)
+    def update(changeset), do: Repo.update(changeset)
+    def update_all(query, updates), do: Repo.update_all(query, updates)
+
+    def insert(%Ecto.Changeset{data: %ClaimLease{}} = changeset) do
+      if actor_overrides = Process.get(@race_key) do
+        Process.delete(@race_key)
+
+        changeset.changes
+        |> Map.take([:work_package_id, :actor_kind, :actor_id, :actor_display_name, :stale_after_ms])
+        |> Map.merge(actor_overrides)
+        |> ClaimLease.create_changeset(now: DateTime.utc_now(:microsecond))
+        |> Repo.insert()
+      end
+
+      Repo.insert(changeset)
+    end
+
+    def insert(changeset), do: Repo.insert(changeset)
   end
 
   defmodule MintReadyRaceRepo do
@@ -312,6 +383,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     repo.delete_all(SoloSessionEntry)
     repo.delete_all(SoloSession)
     repo.delete_all(Comment)
+    repo.delete_all(ClaimLease)
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkRequest)
     repo.delete_all(WorkPackage)
@@ -1483,6 +1555,365 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(missing_resolve_response, ["error", "data", "reason"]) == "comment_target_out_of_scope"
   end
 
+  test "local operator WorkRequest note tools append comments and decisions with redacted provenance", %{repo: repo} do
+    work_request =
+      create_work_request!(
+        repo,
+        id: "WR-MCP-LOCAL-OPERATOR-NOTES",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "feature/sympp-v21-ledger-claims"
+      )
+
+    local_server = local_mcp_server(local_mcp_config(repo), "local-operator-notes-state")
+    tools_by_name = tools_for_server(local_server) |> Map.new(&{&1["name"], &1})
+
+    assert get_in(tools_by_name, ["add_work_request_comment", "inputSchema", "required"]) == ["work_request_id", "body", "created_by"]
+
+    assert get_in(tools_by_name, ["record_work_request_operator_decision", "inputSchema", "required"]) == [
+             "work_request_id",
+             "decision",
+             "rationale",
+             "scope_impact",
+             "created_by"
+           ]
+
+    {comment_response, note_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-comment",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "add_work_request_comment",
+            "arguments" => %{
+              "work_request_id" => work_request.id,
+              "body" => "Coordinate with ghp_localoperatorcomment before slicing",
+              "created_by" => "operator sk-localoperatorauthor"
+            }
+          }
+        },
+        local_server
+      )
+
+    assert note_server.session == nil
+    assert comment_id = get_in(comment_response, ["result", "structuredContent", "comment", "id"])
+    assert get_in(comment_response, ["result", "structuredContent", "comment", "body"]) == "Coordinate with [REDACTED] before slicing"
+    assert get_in(comment_response, ["result", "structuredContent", "comment", "source_type"]) == "operator"
+    assert get_in(comment_response, ["result", "structuredContent", "comment", "author_name"]) == "operator [REDACTED]"
+    assert get_in(comment_response, ["result", "structuredContent", "provenance", "created_by"]) == "operator [REDACTED]"
+
+    assert {:ok, %Comment{body: "Coordinate with [REDACTED] before slicing", source_type: "operator", author_name: "operator [REDACTED]"}} =
+             CommentService.get(repo, comment_id)
+
+    decision_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-decision",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "record_work_request_operator_decision",
+            "arguments" => %{
+              "work_request_id" => work_request.id,
+              "decision" => "Mirror result from ghp_localoperatordecision",
+              "rationale" => "Related WR needs context from sk-localoperatorrationale",
+              "scope_impact" => "Comment-only, no dispatch using bearer localoperatorbearer",
+              "created_by" => "operator sk-localoperatordecisionauthor",
+              "source_id" => "ghp_localoperatorsource"
+            }
+          }
+        },
+        note_server
+      )
+
+    assert get_in(decision_response, ["result", "structuredContent", "decision_log_entry", "source_type"]) == "operator"
+    assert get_in(decision_response, ["result", "structuredContent", "decision_log_entry", "source_id"]) == "[REDACTED]"
+    assert get_in(decision_response, ["result", "structuredContent", "decision_log_entry", "decision"]) == "Mirror result from [REDACTED]"
+    assert get_in(decision_response, ["result", "structuredContent", "decision_log_entry", "rationale"]) == "Related WR needs context from [REDACTED]"
+    assert get_in(decision_response, ["result", "structuredContent", "decision_log_entry", "scope_impact"]) == "Comment-only, no dispatch using [REDACTED]"
+    assert get_in(decision_response, ["result", "structuredContent", "decision_log_entry", "created_by"]) == "operator [REDACTED]"
+
+    assert {:ok, [decision]} = WorkRequestRepository.list_decisions(repo, work_request.id)
+    assert decision.source_type == "operator"
+    assert decision.source_id == "[REDACTED]"
+    assert decision.decision == "Mirror result from [REDACTED]"
+    assert decision.created_by == "operator [REDACTED]"
+
+    dispatch_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-dispatch-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "dispatch_work_request_planned_slice", "arguments" => %{}}
+        },
+        note_server
+      )
+
+    assert get_in(dispatch_response, ["error", "data", "reason"]) == "claim_required"
+
+    status_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-status-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "set_status", "arguments" => %{}}
+        },
+        note_server
+      )
+
+    assert get_in(status_response, ["error", "data", "reason"]) == "missing_session"
+  end
+
+  test "local operator WorkRequest note tools reject nonlocal and remote database modes", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-MCP-LOCAL-OPERATOR-NOTES-DENIED")
+    arguments = %{"work_request_id" => work_request.id, "body" => "safe note", "created_by" => "operator"}
+
+    stdio_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "stdio-local-operator-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "add_work_request_comment", "arguments" => arguments}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(stdio_response, ["error", "code"]) == -32_001
+    assert get_in(stdio_response, ["error", "data", "reason"]) == "local_mcp_required"
+
+    remote_config = %{local_mcp_config(repo) | database: "https://ledger.example.test/mcp?token=ghp_remoteoperatorsecret"}
+
+    implicit_state_tools =
+      local_mcp_config(repo)
+      |> Server.new(initialized: true, local_daemon_trusted: true)
+      |> tools_for_server()
+      |> Map.new(&{&1["name"], &1})
+
+    remote_tools =
+      remote_config
+      |> local_mcp_server("remote-local-operator-list-state")
+      |> tools_for_server()
+      |> Map.new(&{&1["name"], &1})
+
+    refute Map.has_key?(implicit_state_tools, "add_work_request_comment")
+    refute Map.has_key?(implicit_state_tools, "record_work_request_operator_decision")
+    refute Map.has_key?(remote_tools, "add_work_request_comment")
+    refute Map.has_key?(remote_tools, "record_work_request_operator_decision")
+
+    remote_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "remote-local-operator-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "add_work_request_comment", "arguments" => arguments}
+        },
+        local_mcp_server(remote_config, "remote-local-operator-denied-state")
+      )
+
+    assert get_in(remote_response, ["error", "code"]) == -32_001
+    assert get_in(remote_response, ["error", "data", "reason"]) == "local_database_required"
+    refute inspect(remote_response) =~ "ghp_remoteoperatorsecret"
+
+    memory_configs = [
+      %{local_mcp_config(repo) | database: ":memory:"},
+      %{local_mcp_config(repo) | database: "file:sympp_local_operator_notes?mode=memory&cache=shared"}
+    ]
+
+    Enum.with_index(memory_configs, fn memory_config, index ->
+      memory_tools =
+        memory_config
+        |> local_mcp_server("memory-local-operator-list-state-#{index}")
+        |> tools_for_server()
+        |> Map.new(&{&1["name"], &1})
+
+      refute Map.has_key?(memory_tools, "add_work_request_comment")
+      refute Map.has_key?(memory_tools, "record_work_request_operator_decision")
+
+      memory_response =
+        Server.handle(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "memory-local-operator-denied-#{index}",
+            "method" => "tools/call",
+            "params" => %{"name" => "add_work_request_comment", "arguments" => arguments}
+          },
+          local_mcp_server(memory_config, "memory-local-operator-denied-state-#{index}")
+        )
+
+      assert get_in(memory_response, ["error", "code"]) == -32_001
+      assert get_in(memory_response, ["error", "data", "reason"]) == "file_backed_database_required"
+    end)
+  end
+
+  test "local operator WorkRequest note tools reject bound worker sessions", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-MCP-LOCAL-OPERATOR-BOUND-DENIED")
+
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-LOCAL-OPERATOR-BOUND", kind: "mcp"))
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+
+    worker_server = %{
+      local_mcp_server(local_mcp_config(repo), "local-operator-worker-bound-state")
+      | session: MCPHarness.session(worker_assignment, proof_hash: minted.grant.secret_hash)
+    }
+
+    worker_tools =
+      worker_server
+      |> tools_for_server()
+      |> Map.new(&{&1["name"], &1})
+
+    refute Map.has_key?(worker_tools, "add_work_request_comment")
+    refute Map.has_key?(worker_tools, "record_work_request_operator_decision")
+
+    response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-bound-denied",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "add_work_request_comment",
+            "arguments" => %{"work_request_id" => work_request.id, "body" => "safe note", "created_by" => "operator"}
+          }
+        },
+        worker_server
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_001
+    assert get_in(response, ["error", "data", "reason"]) == "local_operator_unbound_session_required"
+  end
+
+  test "local operator WorkRequest note tools require initialized current sessions", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-MCP-LOCAL-OPERATOR-SESSION-DENIED")
+
+    arguments = %{
+      "work_request_id" => work_request.id,
+      "body" => "safe note",
+      "created_by" => "operator"
+    }
+
+    pre_initialize_server =
+      Server.new(local_mcp_config(repo), local_daemon_trusted: true, state_key: "local-operator-pre-init-state")
+
+    pre_initialize_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-pre-init-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "add_work_request_comment", "arguments" => arguments}
+        },
+        pre_initialize_server
+      )
+
+    assert get_in(pre_initialize_response, ["error", "code"]) == -32_000
+    assert get_in(pre_initialize_response, ["error", "data", "reason"]) == "server_not_initialized"
+
+    refresh_required_server = %{local_mcp_server(local_mcp_config(repo), "local-operator-refresh-state") | session_refresh_required: true}
+
+    refresh_required_tools =
+      refresh_required_server
+      |> tools_for_server()
+      |> Map.new(&{&1["name"], &1})
+
+    refute Map.has_key?(refresh_required_tools, "add_work_request_comment")
+    refute Map.has_key?(refresh_required_tools, "record_work_request_operator_decision")
+
+    refresh_required_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-refresh-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "add_work_request_comment", "arguments" => arguments}
+        },
+        refresh_required_server
+      )
+
+    assert get_in(refresh_required_response, ["error", "code"]) == -32_001
+    assert get_in(refresh_required_response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(refresh_required_response, ["error", "data", "action"]) == "claim_private_handoff"
+  end
+
+  test "local operator WorkRequest note tools reject invalid local payload fields", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-MCP-LOCAL-OPERATOR-PAYLOAD-DENIED")
+    local_server = local_mcp_server(local_mcp_config(repo), "local-operator-invalid-payload-state")
+
+    invalid_creator_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-invalid-creator",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "add_work_request_comment",
+            "arguments" => %{
+              "work_request_id" => work_request.id,
+              "body" => "safe note",
+              "created_by" => %{"name" => "operator"}
+            }
+          }
+        },
+        local_server
+      )
+
+    assert get_in(invalid_creator_response, ["error", "code"]) == -32_602
+    assert get_in(invalid_creator_response, ["error", "data", "reason"]) == "invalid_created_by"
+
+    long_decision_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-long-decision",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "record_work_request_operator_decision",
+            "arguments" => %{
+              "work_request_id" => work_request.id,
+              "decision" => String.duplicate("x", Comment.max_body_length() + 1),
+              "rationale" => "safe rationale",
+              "scope_impact" => "safe scope",
+              "created_by" => "operator"
+            }
+          }
+        },
+        local_server
+      )
+
+    assert get_in(long_decision_response, ["error", "code"]) == -32_602
+    assert get_in(long_decision_response, ["error", "data", "reason"]) == "decision_too_long"
+
+    null_source_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-null-source",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "record_work_request_operator_decision",
+            "arguments" => %{
+              "work_request_id" => work_request.id,
+              "decision" => "safe decision",
+              "rationale" => "safe rationale",
+              "scope_impact" => "safe scope",
+              "created_by" => "operator",
+              "source_id" => nil
+            }
+          }
+        },
+        local_server
+      )
+
+    assert get_in(null_source_response, ["error", "code"]) == -32_602
+    assert get_in(null_source_response, ["error", "data", "reason"]) == "invalid_source_id"
+  end
+
   test "tools list advertises Solo tools only for unbound sessions", %{repo: repo} do
     unbound_server = Server.new(Config.default(repo: repo), initialized: true)
 
@@ -1886,10 +2317,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   test "tools list advertises static architect schemas for architect sessions", %{repo: repo} do
     {_anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-TOOLS-LIST", [
+        "create:child_work_package",
         "read:child_progress",
         "read:child_findings",
         "read:work_request",
         "write:work_request",
+        "read:guidance_request",
         "write:guidance_request",
         "mint:child_worker_key",
         "revoke:child_worker_key",
@@ -1897,8 +2330,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "dispatch:work_request",
         "approve:child_ready_state",
         "approve:scope_expansion",
+        "request:child_replan",
         "merge:child_into_phase",
-        "split:child_work_package"
+        "split:child_work_package",
+        "publish:phase_update"
       ])
 
     server = Server.new(test_mcp_config(repo), initialized: true, session: session)
@@ -2003,6 +2438,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_handoff", "type"]) == "string"
     assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_store_dir", "type"]) == "string"
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_handoff", "description"]) =~
+             "Legacy recovery-only"
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_store_dir", "description"]) =~
+             "Legacy recovery-only"
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "legacy_private_handoff", "type"]) == "boolean"
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "legacy_private_handoff", "description"]) =~
+             "recovery-only"
+
     assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "symphony_repo_root", "type"]) == "string"
 
     assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "symphony_repo_root", "description"]) =~
@@ -2135,11 +2582,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "add_work_request_planned_slice",
           "approve_work_request_planned_slice",
           "skip_work_request_planned_slice",
-          "mark_work_request_sliced",
-          "dispatch_work_request_planned_slice"
+          "mark_work_request_sliced"
         ] do
       assert Map.has_key?(tools_by_name, tool)
     end
+
+    refute Map.has_key?(tools_by_name, "dispatch_work_request_planned_slice")
   end
 
   test "tools list advertises WorkRequest schemas when phase anchor no longer matches frozen scope", %{repo: repo} do
@@ -2170,11 +2618,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "add_work_request_planned_slice",
           "approve_work_request_planned_slice",
           "skip_work_request_planned_slice",
-          "mark_work_request_sliced",
-          "dispatch_work_request_planned_slice"
+          "mark_work_request_sliced"
         ] do
       assert Map.has_key?(tools_by_name, tool)
     end
+
+    refute Map.has_key?(tools_by_name, "dispatch_work_request_planned_slice")
   end
 
   test "tools list exposes only claim refresh for stale architect sessions after grant revocation", %{repo: repo} do
@@ -2218,25 +2667,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(response, ["error", "data", "reason"]) == "ledger_unavailable"
   end
 
-  test "tools list advertises architect schemas even when lifecycle capability is not an MCP tool grant", %{repo: repo} do
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-LIFECYCLE-ONLY", kind: "mcp"))
-    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["architect:lifecycle.transition"])
+  test "tools list filters architect tools from live capabilities when stored capabilities are stale", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-LIVE-CAPABILITY-LIST", kind: "mcp"))
+
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
 
     assert {:ok, architect_assignment} =
              AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
 
-    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+    session = MCPHarness.session(%{architect_assignment | capabilities: []}, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
     server = Server.new(Config.default(repo: repo), initialized: true, session: session)
 
-    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "lifecycle-only-architect-tools", "method" => "tools/list", "params" => %{}}, server)
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "live-capability-architect-tools", "method" => "tools/list", "params" => %{}}, server)
     tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
 
     assert Map.has_key?(tools_by_name, "get_current_assignment")
     assert Map.has_key?(tools_by_name, "sympp.health")
-
-    for tool <- @architect_tool_names do
-      assert Map.has_key?(tools_by_name, tool)
-    end
+    assert Map.has_key?(tools_by_name, "read_phase_board")
+    refute Map.has_key?(tools_by_name, "read_child_status")
+    refute Map.has_key?(tools_by_name, "create_child_work_package")
 
     denied_response =
       Server.handle(
@@ -2985,6 +3435,926 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(stale_status_response, ["error", "data", "reason"]) == "stale_status"
+  end
+
+  test "claim_local_assignment claims and reconnects a worker session from scoped local identity", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-RECONNECT")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    arguments = local_assignment_claim_args(package)
+    config = local_mcp_config(repo)
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-RECONNECT",
+        repo: package.repo,
+        base_branch: package.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-LOCAL-RECONNECT",
+                 target_base_branch: package.base_branch,
+                 branch_pattern: package.branch_pattern
+               )
+             )
+
+    repo.update!(Ecto.Changeset.change(planned_slice, work_package_id: package.id))
+
+    {claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(config, "local-claim-state")
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "claimed_by"]) == "local-worker-1"
+    assert get_in(claim_response, ["result", "structuredContent", "local_claim", "mode"]) == "local-http"
+    refute inspect(claim_response) =~ minted.work_key.secret
+    assert claimed_server.session.assignment.work_package_id == package.id
+    assert claimed_server.session.proof_hash == minted.grant.secret_hash
+
+    assert {:ok, claimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert claimed_grant.claimed_by == "local-worker-1"
+
+    assert %ClaimLease{actor_display_name: "local-worker-1"} =
+             repo.one(from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id))
+
+    {reconnect_response, reconnected_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-reconnect",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" =>
+              arguments
+              |> Map.put("work_request_id", work_request.id)
+          }
+        },
+        local_mcp_server(config, "local-reconnect-state")
+      )
+
+    assert get_in(reconnect_response, ["result", "structuredContent", "assignment", "grant_id"]) == minted.grant.id
+    assert get_in(reconnect_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "heartbeat"
+
+    assignment_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        reconnected_server
+      )
+
+    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+  end
+
+  test "claim_local_assignment rejects heartbeat from a different caller_id", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-CALLER-ISOLATION")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    arguments = local_assignment_claim_args(package)
+
+    {claim_response, _claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-caller-isolation-initial",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-caller-isolation-initial-state")
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "created"
+    assert {:ok, %ClaimLease{id: lease_id, last_seen_at: last_seen_at}} = ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    {other_caller_response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-caller-isolation-other",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" => Map.put(arguments, "caller_id", "codex-local-test-other")
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-caller-isolation-other-state")
+      )
+
+    assert get_in(other_caller_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
+
+    assert {:ok, %ClaimLease{id: ^lease_id, status: "active", last_seen_at: ^last_seen_at}} =
+             ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    assert repo.aggregate(
+             from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id and claim_lease.status != "active"),
+             :count
+           ) == 0
+  end
+
+  test "claim_local_assignment rejects duplicate caller before grant binding", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-CALLER-IN-FLIGHT")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    arguments = local_assignment_claim_args(package)
+
+    assert {:ok, %ClaimLease{id: lease_id}} =
+             ClaimLeaseService.claim(
+               repo,
+               package.id,
+               local_assignment_claim_actor(arguments),
+               stale_after_ms: :timer.minutes(5)
+             )
+
+    {other_caller_response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-caller-in-flight-other",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" => Map.put(arguments, "caller_id", "codex-local-test-overlap")
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-caller-in-flight-other-state")
+      )
+
+    assert get_in(other_caller_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
+
+    assert {:ok, %ClaimLease{id: ^lease_id, status: "active", actor_display_name: "local-worker-1"}} =
+             ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    assert repo.aggregate(
+             from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id and claim_lease.status != "active"),
+             :count
+           ) == 0
+  end
+
+  test "claim_local_assignment claims the newest live worker grant", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-NEWEST-GRANT")
+    assert {:ok, older} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, newer} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    repo.update!(
+      Ecto.Changeset.change(older.grant,
+        inserted_at: ~U[2026-01-01 00:00:00.000000Z],
+        updated_at: ~U[2026-01-01 00:00:00.000000Z]
+      )
+    )
+
+    repo.update!(
+      Ecto.Changeset.change(newer.grant,
+        inserted_at: ~U[2026-01-02 00:00:00.000000Z],
+        updated_at: ~U[2026-01-02 00:00:00.000000Z]
+      )
+    )
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-newest-grant",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-newest-grant-state")
+      )
+
+    assert get_in(response, ["result", "structuredContent", "assignment", "grant_id"]) == newer.grant.id
+    assert {:ok, unclaimed_older} = AccessGrantRepository.get(repo, older.grant.id)
+    assert unclaimed_older.claimed_at == nil
+  end
+
+  test "claim_local_assignment accepts prepared concrete branch for templated package branch", %{repo: repo} do
+    package =
+      create_local_claim_package!(repo, "SYMPP-LOCAL-PREPARED-BRANCH", branch_pattern: "agent/{{work_package_id}}/{{slug}}")
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    prepared_branch = "agent/SYMPP-LOCAL-PREPARED-BRANCH/final-review-corrections"
+    File.mkdir_p!(Path.join(package.worktree_path, ".git"))
+    File.write!(Path.join([package.worktree_path, ".git", "HEAD"]), "ref: refs/heads/#{prepared_branch}\n")
+
+    try do
+      {response, claimed_server} =
+        Server.handle_state(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "local-prepared-branch",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "claim_local_assignment",
+              "arguments" => local_assignment_claim_args(package, %{"branch" => prepared_branch})
+            }
+          },
+          local_mcp_server(local_mcp_config(repo), "local-prepared-branch-state")
+        )
+
+      assert get_in(response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+      assert claimed_server.session.assignment.work_package_id == package.id
+      refute inspect(response) =~ minted.work_key.secret
+    after
+      File.rm_rf!(package.worktree_path)
+    end
+  end
+
+  test "claim_local_assignment rejects unrelated prepared branch for templated package branch", %{repo: repo} do
+    package =
+      create_local_claim_package!(repo, "SYMPP-LOCAL-TEMPLATE-BRANCH-SCOPE", branch_pattern: "agent/{{work_package_id}}/{{slug}}")
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    unrelated_branch = "feature/main-retarget"
+    File.mkdir_p!(Path.join(package.worktree_path, ".git"))
+    File.write!(Path.join([package.worktree_path, ".git", "HEAD"]), "ref: refs/heads/#{unrelated_branch}\n")
+
+    try do
+      {response, _server} =
+        Server.handle_state(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "local-template-branch-scope",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "claim_local_assignment",
+              "arguments" => local_assignment_claim_args(package, %{"branch" => unrelated_branch})
+            }
+          },
+          local_mcp_server(local_mcp_config(repo), "local-template-branch-scope-state")
+        )
+
+      assert get_in(response, ["error", "data", "reason"]) == "branch_scope_mismatch"
+      assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+      assert unclaimed_grant.claimed_at == nil
+    after
+      File.rm_rf!(package.worktree_path)
+    end
+  end
+
+  test "claim_local_assignment rejects literal templated branch without prepared git metadata", %{repo: repo} do
+    package =
+      create_local_claim_package!(repo, "SYMPP-LOCAL-TEMPLATE-UNPREPARED", branch_pattern: "agent/{{work_package_id}}/{{slug}}")
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-template-unprepared",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" => local_assignment_claim_args(package, %{"branch" => package.branch_pattern})
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-template-unprepared-state")
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "branch_scope_mismatch"
+    assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert unclaimed_grant.claimed_at == nil
+    refute repo.one(from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id))
+  end
+
+  test "claim_local_assignment rejects retargeted branch for concrete package branch", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-RETARGETED-BRANCH")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    retargeted_branch = "agent/SYMPP-LOCAL-RETARGETED-BRANCH/retargeted"
+    File.mkdir_p!(Path.join(package.worktree_path, ".git"))
+    File.write!(Path.join([package.worktree_path, ".git", "HEAD"]), "ref: refs/heads/#{retargeted_branch}\n")
+
+    try do
+      {response, _server} =
+        Server.handle_state(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "local-retargeted-branch",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "claim_local_assignment",
+              "arguments" => local_assignment_claim_args(package, %{"branch" => retargeted_branch})
+            }
+          },
+          local_mcp_server(local_mcp_config(repo), "local-retargeted-branch-state")
+        )
+
+      assert get_in(response, ["error", "data", "reason"]) == "branch_scope_mismatch"
+      assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+      assert unclaimed_grant.claimed_at == nil
+      refute repo.one(from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id))
+    after
+      File.rm_rf!(package.worktree_path)
+    end
+  end
+
+  test "claim_local_assignment rereads same-worker lease after concurrent local insert race", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-CLAIM-RACE")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    LocalClaimInsertRaceRepo.arm()
+
+    try do
+      {response, _server} =
+        Server.handle_state(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "local-claim-race",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+          },
+          local_mcp_server(local_mcp_config(LocalClaimInsertRaceRepo), "local-claim-race-state")
+        )
+
+      assert get_in(response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+      assert get_in(response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "heartbeat"
+      refute inspect(response) =~ minted.work_key.secret
+    after
+      LocalClaimInsertRaceRepo.disarm()
+    end
+
+    assert %ClaimLease{actor_display_name: "local-worker-1"} =
+             repo.one(from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id))
+
+    assert {:ok, claimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert claimed_grant.claimed_by == "local-worker-1"
+  end
+
+  test "claim_local_assignment preserves other-worker lease after concurrent local insert race", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-CLAIM-RACE-OTHER")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    LocalClaimInsertRaceRepo.arm(%{
+      actor_id: "local:other-worker",
+      actor_display_name: "other-worker"
+    })
+
+    try do
+      {response, _server} =
+        Server.handle_state(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "local-claim-race-other",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+          },
+          local_mcp_server(local_mcp_config(LocalClaimInsertRaceRepo), "local-claim-race-other-state")
+        )
+
+      assert get_in(response, ["error", "data", "reason"]) == "active_claim_exists"
+      refute inspect(response) =~ minted.work_key.secret
+    after
+      LocalClaimInsertRaceRepo.disarm()
+    end
+
+    assert %ClaimLease{actor_display_name: "other-worker"} =
+             repo.one(from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id))
+
+    assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert unclaimed_grant.claimed_at == nil
+  end
+
+  test "claim_local_assignment rejects wrong local scope without claiming the grant", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-WRONG-SCOPE")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-wrong-scope",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" => local_assignment_claim_args(package, %{"base_branch" => "main"})
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-wrong-scope-state")
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "base_branch_scope_mismatch"
+    assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert unclaimed_grant.claimed_at == nil
+    assert unclaimed_grant.claimed_by == nil
+  end
+
+  test "claim_local_assignment rejects packages without recorded local worktree scope", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-MISSING-WORKTREE", worktree_path: nil)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-missing-worktree",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" => local_assignment_claim_args(package, %{"worktree_path" => local_claim_worktree_path(package.id)})
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-missing-worktree-state")
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "worktree_scope_required"
+    assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert unclaimed_grant.claimed_at == nil
+  end
+
+  test "claim_local_assignment rejects terminal work packages before claiming", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-TERMINAL", status: "closed")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-terminal",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-terminal-state")
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "work_package_terminal"
+    assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert unclaimed_grant.claimed_at == nil
+    assert unclaimed_grant.claimed_by == nil
+    assert repo.one(from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id)) == nil
+  end
+
+  test "claim_local_assignment requires local daemon generated state", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-TRUST-REQUIRED")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-trust-required",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        Server.new(local_mcp_config(repo), initialized: true, state_key: "caller-supplied-state")
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "local_daemon_trust_required"
+    assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert unclaimed_grant.claimed_at == nil
+  end
+
+  test "claim_local_assignment requires explicit local HTTP MCP state", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-STATE-REQUIRED")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-state-required",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        Server.new(local_mcp_config(repo), initialized: true)
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "local_mcp_session_required"
+    assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert unclaimed_grant.claimed_at == nil
+    assert repo.one(from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id)) == nil
+  end
+
+  test "claim_local_assignment returns invalid params for malformed arguments", %{repo: repo} do
+    response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-malformed-arguments",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => []}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-malformed-arguments-state")
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "invalid_tool_arguments"
+  end
+
+  test "claim_local_assignment treats paused leases as pause exempt instead of stale", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-PAUSED-LEASE")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    arguments = local_assignment_claim_args(package)
+
+    {_claim_response, _claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-paused-initial",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-paused-initial-state")
+      )
+
+    assert {:ok, %ClaimLease{id: lease_id} = lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    assert {:ok, paused_lease} = ClaimLeaseService.pause(repo, lease.id, %{"actor_id" => "operator"}, reason: "operator pause")
+
+    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -10, :second)
+
+    paused_lease
+    |> ClaimLease.update_changeset(%{last_seen_at: stale_seen_at, stale_after_ms: 1})
+    |> repo.update!()
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-paused-reclaim-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-paused-reclaim-denied-state")
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "claim_lease_paused"
+    assert {:ok, %ClaimLease{id: ^lease_id, status: "paused"}} = ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    assert repo.aggregate(
+             from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id and claim_lease.status == "reclaimed"),
+             :count
+           ) == 0
+  end
+
+  test "claim_local_assignment records audit evidence when reclaiming a stale lease", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-STALE-RECLAIM")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    assert {:ok, stale_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               package.id,
+               %{"actor_kind" => "agent", "actor_id" => "local:stale-worker", "actor_display_name" => "stale-worker"},
+               now: DateTime.add(DateTime.utc_now(:microsecond), -10, :second),
+               stale_after_ms: 1
+             )
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-stale-reclaim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-stale-reclaim-state")
+      )
+
+    assert get_in(response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "reclaimed"
+    assert get_in(response, ["result", "structuredContent", "local_claim", "reason_codes"]) == ["claim_lease_reclaimed", "worker_recycled"]
+    assert get_in(response, ["result", "structuredContent", "local_claim", "claim_event", "status"]) == "claim_lease_reclaimed"
+
+    assert {:ok, reclaimed_lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    assert reclaimed_lease.previous_claim_id == stale_lease.id
+
+    assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, package.id)
+    assert Enum.any?(progress_events, &(&1.status == "claim_lease_reclaimed" and &1.payload["previous_claim_id"] == stale_lease.id))
+  end
+
+  test "claim_local_assignment rolls back reclaimed leases when audit append fails", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-RECLAIM-AUDIT-FAILS")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    assert {:ok, stale_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               package.id,
+               %{"actor_kind" => "agent", "actor_id" => "local:stale-worker", "actor_display_name" => "stale-worker"},
+               now: DateTime.add(DateTime.utc_now(:microsecond), -2, :second),
+               stale_after_ms: 1
+             )
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-reclaim-audit-fails",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(LocalClaimAuditFailureRepo), "local-reclaim-audit-fails-state")
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) =~ "forced_reclaim_audit_failure"
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    assert {:ok, revoked_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert revoked_grant.revoked_at != nil
+
+    statuses =
+      repo.all(
+        from(claim_lease in ClaimLease,
+          where: claim_lease.work_package_id == ^package.id,
+          select: {claim_lease.id, claim_lease.status, claim_lease.release_reason}
+        )
+      )
+
+    assert {stale_lease.id, "reclaimed", nil} in statuses
+    assert Enum.any?(statuses, fn {_id, status, reason} -> status == "released" and reason == "local_assignment_claim_failed" end)
+  end
+
+  test "claim_local_assignment releases reclaimed leases when grant binding fails", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-RECLAIM-FAILS")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    assert {:ok, _stale_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               package.id,
+               %{"actor_kind" => "agent", "actor_id" => "local:stale-worker", "actor_display_name" => "stale-worker"},
+               now: DateTime.add(DateTime.utc_now(:microsecond), -2, :second),
+               stale_after_ms: 1
+             )
+
+    assert {:ok, _revoked} = AccessGrantService.revoke(repo, minted.grant.id)
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-reclaim-fails",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-reclaim-fails-state")
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "revoked"
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    statuses =
+      repo.all(
+        from(claim_lease in ClaimLease,
+          where: claim_lease.work_package_id == ^package.id,
+          select: {claim_lease.status, claim_lease.release_reason}
+        )
+      )
+
+    assert {"reclaimed", nil} in statuses
+    assert {"released", "local_assignment_claim_failed"} in statuses
+  end
+
+  test "claim_local_assignment releases existing heartbeat leases when permanent grant binding fails", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-HEARTBEAT-FAILS")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    arguments = local_assignment_claim_args(package)
+
+    {_claim_response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-heartbeat-initial",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-heartbeat-initial-state")
+      )
+
+    assert {:ok, %ClaimLease{id: lease_id, status: "active"}} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    assert {:ok, _revoked} = AccessGrantService.revoke(repo, minted.grant.id)
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-heartbeat-fails",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-heartbeat-fails-state")
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "revoked"
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    statuses =
+      repo.all(
+        from(claim_lease in ClaimLease,
+          where: claim_lease.work_package_id == ^package.id,
+          select: {claim_lease.id, claim_lease.status, claim_lease.release_reason}
+        )
+      )
+
+    assert {lease_id, "released", "local_assignment_claim_failed"} in statuses
+
+    assert {:ok, replacement} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {replacement_response, _replacement_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-heartbeat-replacement",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" =>
+              local_assignment_claim_args(package, %{
+                "caller_id" => "codex-local-replacement",
+                "claimed_by" => "replacement-worker"
+              })
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-heartbeat-replacement-state")
+      )
+
+    assert get_in(replacement_response, ["result", "structuredContent", "assignment", "grant_id"]) == replacement.grant.id
+  end
+
+  test "claim_local_assignment releases authority-lost leases before replacement worker claim", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-AUTHORITY-LOST")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    arguments = local_assignment_claim_args(package)
+
+    {_claim_response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-authority-lost-initial",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-authority-lost-initial-state")
+      )
+
+    assert {:ok, %ClaimLease{id: original_lease_id, actor_display_name: "local-worker-1"}} =
+             ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    assert {:ok, _revoked} = AccessGrantService.revoke(repo, minted.grant.id)
+    assert {:ok, replacement} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {replacement_response, _replacement_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-authority-lost-replacement",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" =>
+              local_assignment_claim_args(package, %{
+                "caller_id" => "codex-local-authority-lost-replacement",
+                "claimed_by" => "replacement-worker"
+              })
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-authority-lost-replacement-state")
+      )
+
+    assert get_in(replacement_response, ["result", "structuredContent", "assignment", "grant_id"]) == replacement.grant.id
+    assert get_in(replacement_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "reclaimed"
+
+    assert {:ok, %ClaimLease{actor_display_name: "replacement-worker", status: "active"}} =
+             ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    statuses =
+      repo.all(
+        from(claim_lease in ClaimLease,
+          where: claim_lease.work_package_id == ^package.id,
+          select: {claim_lease.id, claim_lease.status, claim_lease.release_reason}
+        )
+      )
+
+    assert {original_lease_id, "released", "local_assignment_claim_authority_lost"} in statuses
+  end
+
+  test "claim_local_assignment rejects cross-branch WorkRequest scope", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-WR-BASE-MISMATCH")
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-BASE-MISMATCH",
+        repo: package.repo,
+        base_branch: "main",
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-LOCAL-BASE-MISMATCH",
+                 target_base_branch: package.base_branch,
+                 branch_pattern: package.branch_pattern
+               )
+             )
+
+    repo.update!(Ecto.Changeset.change(planned_slice, work_package_id: package.id))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-wr-base-mismatch",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" => local_assignment_claim_args(package, %{"work_request_id" => work_request.id})
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-wr-base-mismatch-state")
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "work_request_scope_mismatch"
+    assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert unclaimed_grant.claimed_at == nil
+  end
+
+  test "final sync tools remain idempotent after claim_local_assignment reconnect", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-FINAL-SYNC", status: "ci_waiting")
+    append_done_plan(repo, package.id)
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    arguments = local_assignment_claim_args(package)
+    config = local_mcp_config(repo)
+
+    {_claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-final-sync-claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(config, "local-final-sync-claim-state")
+      )
+
+    head_sha = "abcdef1234567890abcdef1234567890abcdef12"
+    attach_tool(repo, claimed_server.session, "attach_branch", %{"branch" => package.branch_pattern, "head_sha" => head_sha})
+    attach_tool(repo, claimed_server.session, "attach_pr", %{"number" => 258, "head_sha" => head_sha})
+
+    sync_args = %{
+      "number" => 258,
+      "metadata" => %{"head_sha" => head_sha, "check_summary" => %{"conclusion" => "success"}}
+    }
+
+    sync_response = attach_tool(repo, claimed_server.session, "sync_pr", sync_args)
+
+    review_args = %{
+      "summary" => "Ready after local reconnect",
+      "tests" => ["mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs"],
+      "artifacts" => ["review-log.txt"],
+      "head_sha" => head_sha,
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
+    }
+
+    review_response = attach_tool(repo, claimed_server.session, "submit_review_package", review_args)
+
+    {_reconnect_response, reconnected_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-final-sync-reconnect",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(config, "local-final-sync-reconnect-state")
+      )
+
+    sync_replay_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "sync-replay", "method" => "tools/call", "params" => %{"name" => "sync_pr", "arguments" => sync_args}},
+        repo: repo,
+        session: reconnected_server.session
+      )
+
+    review_replay_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "review-replay",
+          "method" => "tools/call",
+          "params" => %{"name" => "submit_review_package", "arguments" => review_args}
+        },
+        repo: repo,
+        session: reconnected_server.session
+      )
+
+    assert get_in(sync_replay_response, ["result", "structuredContent", "progress_event", "id"]) ==
+             get_in(sync_response, ["result", "structuredContent", "progress_event", "id"])
+
+    assert get_in(review_replay_response, ["result", "structuredContent", "progress_event", "id"]) ==
+             get_in(review_response, ["result", "structuredContent", "progress_event", "id"])
+
+    assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, package.id)
+    assert Enum.count(progress_events, &(&1.status == "pr_synced")) == 1
+    assert Enum.count(progress_events, &(&1.status == "review_package_submitted")) == 1
   end
 
   test "claim_private_handoff binds an architect session from redacted local-private-file metadata", %{repo: repo} do
@@ -4944,7 +6314,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     }
 
     denied_calls = [
-      {"create_child_work_package", %{"package" => %{"id" => "SYMPP-ARCHITECT-DENIED-CHILD", "title" => "Denied", "acceptance_criteria" => ["Denied"]}}},
+      {"create_child_work_package",
+       %{
+         "package" => %{
+           "id" => "SYMPP-ARCHITECT-DENIED-CHILD",
+           "title" => "Denied",
+           "acceptance_criteria" => ["Denied"]
+         }
+       }},
       {"mint_child_worker_key", %{"work_package_id" => package.id, "template" => child_worker_template()}},
       {"revoke_child_worker_key", %{"grant_id" => "grant-denied", "reason" => "Denied"}},
       {"revoke_planned_slice_worker_key", %{"work_request_id" => "wr-denied", "planned_slice_id" => "slice-denied", "grant_id" => "grant-denied", "reason" => "Denied"}},
@@ -5865,12 +7242,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         human_description: "Do not return raw_secret_value."
       )
 
+    secret_title_token = "raw_secret_bootstrap_title"
+
     assert {:ok, planned_slice} =
              WorkRequestRepository.add_planned_slice(
                repo,
                work_request.id,
                work_request_planned_slice_attrs(
                  id: "WRS-MCP-WR-SLICE-DISPATCH",
+                 title: "Dispatch #{secret_title_token}",
                  target_base_branch: anchor.base_branch,
                  goal: "Dispatch without leaking raw_secret_value.",
                  owned_file_globs: ["elixir/lib/symphony_elixir/symphony_plus_plus/mcp/server.ex"]
@@ -5893,14 +7273,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "work_request_id" => work_request.id,
           "planned_slice_id" => approved_slice.id,
           "claimed_by" => "worker-dispatch-1",
-          "secret_handoff" => "local-private-file",
-          "secret_store_dir" => test_dispatch_handoff_store_dir()
+          "symphony_repo_root" => test_repo_root()
         },
         config: Config.default(repo: repo, repo_root: configured_product_repo_root, database: configured_database)
       )
 
     payload = get_in(response, ["result", "structuredContent"])
-    handoff_command = payload["worker_handoff"]["secret_handoff"]["run_mcp_command"]
+    serialized_response = inspect(response)
     assert payload["scope"] == %{"repo" => anchor.repo, "base_branch" => anchor.base_branch}
     assert payload["work_request"] == %{"id" => work_request.id}
     assert payload["planned_slice"]["id"] == approved_slice.id
@@ -5910,24 +7289,162 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert payload["work_package"]["kind"] == "mcp"
     assert payload["work_package"]["repo"] == anchor.repo
     assert payload["work_package"]["base_branch"] == anchor.base_branch
+    assert payload["work_package"]["title"] == "Dispatch [REDACTED]"
+    assert is_binary(payload["work_package"]["inserted_at"])
+    assert is_binary(payload["work_package"]["updated_at"])
     assert payload["worker_handoff"]["worker_grant"]["secret_in_response"] == false
     refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "display_key")
     refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "secret_handoff")
     refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "secret")
-    assert payload["worker_handoff"]["secret_handoff"]["claimed_by"] == "worker-dispatch-1"
-    assert payload["worker_handoff"]["secret_handoff"]["mode"] == "local-private-file"
-    assert payload["worker_handoff"]["secret_handoff"]["secret_in_stdout"] == false
-    refute Map.has_key?(payload["worker_handoff"]["secret_handoff"], "display_key")
-    assert String.downcase(handoff_command) =~ String.downcase(configured_database)
-    assert local_file_run_mcp_command_pins_elixir_dir?(handoff_command)
-    refute inspect(response) =~ "raw_secret_value"
+    refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "secret_hash")
+    assert payload["worker_handoff"]["secret_handoff"] == nil
+    refute Map.has_key?(payload["worker_handoff"], "claim_bootstrap")
+    assert payload["worker_bootstrap"]["type"] == "ledger_claim"
+    assert_same_ledger_database(payload["worker_bootstrap"]["ledger"], live_database_path, "mode=rwc&cache=shared")
+    assert payload["worker_bootstrap"]["claim"]["tool"] == "claim_local_assignment"
+    assert payload["worker_bootstrap"]["claim"]["arguments"]["repo"] == anchor.repo
+    assert payload["worker_bootstrap"]["claim"]["arguments"]["base_branch"] == anchor.base_branch
+    assert payload["worker_bootstrap"]["claim"]["arguments"]["work_request_id"] == work_request.id
+    assert payload["worker_bootstrap"]["claim"]["arguments"]["work_package_id"] == payload["work_package"]["id"]
+    assert payload["worker_bootstrap"]["claim"]["arguments"]["claimed_by"] == "worker-dispatch-1"
+    refute Map.has_key?(payload["worker_bootstrap"]["claim"]["arguments"], "branch")
+    assert payload["worker_bootstrap"]["claim"]["required_runtime_arguments"] == ["branch", "worktree_path", "caller_id"]
+
+    assert payload["worker_bootstrap"]["required_skills"] == [
+             "symphony-plus-plus:symphony-worker",
+             "symphony-plus-plus-mcp:symphony-work-package"
+           ]
+
+    assert payload["worker_bootstrap"]["supported_skill_sets"] == [
+             ["symphony-plus-plus:symphony-worker", "symphony-plus-plus-mcp:symphony-work-package"],
+             ["symphony-plus-plus:symphony-worker", "symphony-work-package"]
+           ]
+
+    assert payload["worker_bootstrap"]["launch_prompt"] =~ "symphony-plus-plus:symphony-worker"
+    assert payload["worker_bootstrap"]["launch_prompt"] =~ "symphony-plus-plus-mcp:symphony-work-package"
+    assert payload["worker_bootstrap"]["launch_prompt"] =~ "symphony-work-package"
+    assert payload["worker_bootstrap"]["launch_prompt"] =~ "claim_local_assignment"
+    assert payload["worker_bootstrap"]["launch_prompt"] =~ "[REDACTED]"
+    assert payload["worker_bootstrap"]["legacy_private_handoff"] == %{"normal_path" => false, "recovery_only" => true}
+    refute payload["worker_bootstrap"]["launch_prompt"] =~ secret_title_token
+    refute serialized_response =~ "raw_secret_value"
+    refute serialized_response =~ "secret_hash"
+    refute serialized_response =~ secret_title_token
+    refute serialized_response =~ "run_mcp_command"
+    refute serialized_response =~ "local-private-file"
+    refute serialized_response =~ test_dispatch_handoff_store_dir()
+    refute serialized_response =~ ".secret"
 
     assert {:ok, persisted_slice} = WorkRequestRepository.get_planned_slice(repo, work_request.id, approved_slice.id)
     assert persisted_slice.status == "dispatched"
     assert persisted_slice.work_package_id == payload["work_package"]["id"]
 
     assert {:ok, worker_grants} = AccessGrantRepository.list_for_work_package(repo, payload["work_package"]["id"])
-    assert [%AccessGrant{grant_role: "worker"}] = worker_grants
+    assert [%AccessGrant{grant_role: "worker", secret_hash: secret_hash}] = worker_grants
+    refute serialized_response =~ secret_hash
+  end
+
+  test "architect WorkRequest planned-slice dispatch rejects ignored legacy handoff args", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-DISPATCH-IGNORED-LEGACY", [
+        "dispatch:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-SLICE-DISPATCH-IGNORED-LEGACY",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-WR-SLICE-DISPATCH-IGNORED-LEGACY",
+                 target_base_branch: anchor.base_branch
+               )
+             )
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+    counts_before = {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)}
+
+    response =
+      mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => approved_slice.id,
+        "claimed_by" => "worker-dispatch-ignored-legacy",
+        "secret_handoff" => test_secret_handoff_mode(),
+        "secret_store_dir" => test_dispatch_handoff_store_dir()
+      })
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "legacy_private_handoff_required"
+    assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before
+  end
+
+  test "architect WorkRequest planned-slice dispatch keeps legacy recovery handoff actionable", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-DISPATCH-LEGACY", [
+        "dispatch:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-SLICE-DISPATCH-LEGACY",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-WR-SLICE-DISPATCH-LEGACY",
+                 target_base_branch: anchor.base_branch
+               )
+             )
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    live_database_path = current_main_database_path(repo)
+    configured_database = sqlite_file_uri(live_database_path, "mode=rwc&cache=shared")
+
+    response =
+      mcp_tool(
+        repo,
+        session,
+        "dispatch_work_request_planned_slice",
+        %{
+          "work_request_id" => work_request.id,
+          "planned_slice_id" => approved_slice.id,
+          "claimed_by" => "worker-dispatch-legacy",
+          "legacy_private_handoff" => true,
+          "secret_handoff" => "local-private-file",
+          "secret_store_dir" => test_dispatch_handoff_store_dir()
+        },
+        config: Config.default(repo: repo, repo_root: test_repo_root(), database: configured_database)
+      )
+
+    payload = get_in(response, ["result", "structuredContent"])
+    handoff = payload["worker_handoff"]["secret_handoff"]
+
+    assert payload["planned_slice"]["status"] == "dispatched"
+    assert payload["worker_bootstrap"]["claim"]["required_runtime_arguments"] == ["branch", "worktree_path", "caller_id"]
+    assert handoff["claimed_by"] == "worker-dispatch-legacy"
+    assert handoff["mode"] == "local-private-file"
+    assert handoff["secret_in_stdout"] == false
+    assert is_binary(handoff["path"])
+    assert is_binary(handoff["run_mcp_command"])
+    assert handoff["run_mcp_command"] =~ handoff["path"]
+    refute Map.has_key?(handoff, "display_key")
+    refute Map.has_key?(handoff, "payload")
+    refute Map.has_key?(handoff, "secret")
+    assert handoff_secret_absent?(handoff, inspect(response))
   end
 
   test "architect WorkRequest planned-slice dispatch rejects sqlite memory database handoff", %{repo: repo} do
@@ -5967,6 +7484,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "work_request_id" => work_request.id,
           "planned_slice_id" => approved_slice.id,
           "claimed_by" => "worker-dispatch-memory",
+          "legacy_private_handoff" => true,
           "secret_handoff" => test_secret_handoff_mode(),
           "secret_store_dir" => test_dispatch_handoff_store_dir()
         },
@@ -6016,6 +7534,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "work_request_id" => work_request.id,
           "planned_slice_id" => approved_slice.id,
           "claimed_by" => "worker-dispatch-db-scope",
+          "legacy_private_handoff" => true,
           "secret_handoff" => test_secret_handoff_mode(),
           "secret_store_dir" => test_dispatch_handoff_store_dir()
         },
@@ -6037,6 +7556,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "work_request_id" => work_request.id,
           "planned_slice_id" => approved_slice.id,
           "claimed_by" => "worker-dispatch-db-read-only",
+          "legacy_private_handoff" => true,
           "secret_handoff" => test_secret_handoff_mode(),
           "secret_store_dir" => test_dispatch_handoff_store_dir()
         },
@@ -6057,6 +7577,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "work_request_id" => work_request.id,
           "planned_slice_id" => approved_slice.id,
           "claimed_by" => "worker-dispatch-db-default-read-only",
+          "legacy_private_handoff" => true,
           "secret_handoff" => test_secret_handoff_mode(),
           "secret_store_dir" => test_dispatch_handoff_store_dir()
         })
@@ -6109,9 +7630,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
         "work_request_id" => sibling.id,
         "planned_slice_id" => sibling_slice.id,
-        "claimed_by" => "worker-dispatch-1",
-        "secret_handoff" => test_secret_handoff_mode(),
-        "secret_store_dir" => test_dispatch_handoff_store_dir()
+        "claimed_by" => "worker-dispatch-1"
       })
 
     assert get_in(out_of_scope_response, ["error", "code"]) == -32_004
@@ -6122,9 +7641,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
         "work_request_id" => in_scope.id,
         "planned_slice_id" => "WRS-MCP-WR-DISPATCH-MISSING",
-        "claimed_by" => "worker-dispatch-1",
-        "secret_handoff" => test_secret_handoff_mode(),
-        "secret_store_dir" => test_dispatch_handoff_store_dir()
+        "claimed_by" => "worker-dispatch-1"
       })
 
     assert get_in(missing_slice_response, ["error", "code"]) == -32_004
@@ -6134,9 +7651,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
         "work_request_id" => in_scope.id,
         "planned_slice_id" => planned_slice.id,
-        "claimed_by" => "worker-dispatch-1",
-        "secret_handoff" => test_secret_handoff_mode(),
-        "secret_store_dir" => test_dispatch_handoff_store_dir()
+        "claimed_by" => "worker-dispatch-1"
       })
 
     assert get_in(planned_response, ["error", "code"]) == -32_602
@@ -6163,6 +7678,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "work_request_id" => in_scope.id,
         "planned_slice_id" => approved_root_check_slice.id,
         "claimed_by" => "worker-dispatch-bad-root",
+        "legacy_private_handoff" => true,
         "secret_handoff" => test_secret_handoff_mode(),
         "secret_store_dir" => test_dispatch_handoff_store_dir(),
         "symphony_repo_root" => bad_repo_root
@@ -6179,6 +7695,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "work_request_id" => in_scope.id,
         "planned_slice_id" => approved_root_check_slice.id,
         "claimed_by" => "worker-dispatch-legacy-bad-root",
+        "legacy_private_handoff" => true,
         "secret_handoff" => test_secret_handoff_mode(),
         "secret_store_dir" => test_dispatch_handoff_store_dir(),
         "repo_root" => bad_repo_root
@@ -6209,9 +7726,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
         "work_request_id" => in_scope.id,
         "planned_slice_id" => approved_invalid_glob_slice.id,
-        "claimed_by" => "worker-dispatch-invalid-glob",
-        "secret_handoff" => test_secret_handoff_mode(),
-        "secret_store_dir" => test_dispatch_handoff_store_dir()
+        "claimed_by" => "worker-dispatch-invalid-glob"
       })
 
     assert get_in(invalid_glob_response, ["error", "code"]) == -32_602
@@ -6244,9 +7759,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
           "work_request_id" => in_scope.id,
           "planned_slice_id" => approved_live_database_slice.id,
-          "claimed_by" => "worker-dispatch-1",
-          "secret_handoff" => test_secret_handoff_mode(),
-          "secret_store_dir" => test_dispatch_handoff_store_dir()
+          "claimed_by" => "worker-dispatch-1"
         })
       after
         restore_app_env(:sympp_repo_database, original_database)
@@ -6254,9 +7767,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     live_database_payload = get_in(live_database_response, ["result", "structuredContent"])
     assert live_database_payload["planned_slice"]["status"] == "dispatched"
-
-    assert String.downcase(live_database_payload["worker_handoff"]["secret_handoff"]["run_mcp_command"]) =~
-             String.downcase(configured_live_database)
+    assert live_database_payload["worker_handoff"]["secret_handoff"] == nil
+    assert live_database_payload["worker_bootstrap"]["claim"]["tool"] == "claim_local_assignment"
+    assert_same_ledger_database(live_database_payload["worker_bootstrap"]["ledger"], live_database, "mode=rwc&cache=shared")
+    refute inspect(live_database_response) =~ "run_mcp_command"
 
     assert {:ok, blank_database_slice} =
              WorkRequestRepository.add_planned_slice(
@@ -6276,18 +7790,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         %{
           "work_request_id" => in_scope.id,
           "planned_slice_id" => approved_blank_database_slice.id,
-          "claimed_by" => "worker-dispatch-1",
-          "secret_handoff" => test_secret_handoff_mode(),
-          "secret_store_dir" => test_dispatch_handoff_store_dir()
+          "claimed_by" => "worker-dispatch-1"
         },
         config: Config.default(repo: repo, repo_root: test_repo_root(), database: "   ")
       )
 
     blank_database_payload = get_in(blank_database_response, ["result", "structuredContent"])
     assert blank_database_payload["planned_slice"]["status"] == "dispatched"
-
-    assert String.downcase(blank_database_payload["worker_handoff"]["secret_handoff"]["run_mcp_command"]) =~
-             String.downcase(live_database)
+    assert blank_database_payload["worker_handoff"]["secret_handoff"] == nil
+    assert blank_database_payload["worker_bootstrap"]["claim"]["tool"] == "claim_local_assignment"
+    assert_same_ledger_database(blank_database_payload["worker_bootstrap"]["ledger"], live_database)
+    refute inspect(blank_database_response) =~ "run_mcp_command"
 
     assert {:ok, branch_mismatch_slice} =
              WorkRequestRepository.add_planned_slice(
@@ -6308,9 +7821,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
         "work_request_id" => in_scope.id,
         "planned_slice_id" => approved_branch_mismatch_slice.id,
-        "claimed_by" => "worker-dispatch-1",
-        "secret_handoff" => test_secret_handoff_mode(),
-        "secret_store_dir" => test_dispatch_handoff_store_dir()
+        "claimed_by" => "worker-dispatch-1"
       })
 
     assert get_in(branch_mismatch_response, ["error", "code"]) == -32_602
@@ -6861,14 +8372,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       |> get_in(["result", "tools"])
       |> Map.new(&{&1["name"], &1})
 
-    assert Map.has_key?(read_only_tools, "ask_work_request_question")
-    assert Map.has_key?(read_only_tools, "add_work_request_planned_slice")
-    assert Map.has_key?(read_only_tools, "approve_work_request_planned_slice")
-    assert Map.has_key?(read_only_tools, "skip_work_request_planned_slice")
-    assert Map.has_key?(read_only_tools, "mark_work_request_sliced")
-    assert Map.has_key?(read_only_tools, "dispatch_work_request_planned_slice")
-    assert Map.has_key?(read_only_tools, "prepare_work_package_worktree")
-    assert Map.has_key?(read_only_tools, "cleanup_work_package_worktree")
+    assert Map.has_key?(read_only_tools, "list_work_requests")
+    assert Map.has_key?(read_only_tools, "read_work_request")
+    refute Map.has_key?(read_only_tools, "ask_work_request_question")
+    refute Map.has_key?(read_only_tools, "add_work_request_planned_slice")
+    refute Map.has_key?(read_only_tools, "approve_work_request_planned_slice")
+    refute Map.has_key?(read_only_tools, "skip_work_request_planned_slice")
+    refute Map.has_key?(read_only_tools, "mark_work_request_sliced")
+    refute Map.has_key?(read_only_tools, "dispatch_work_request_planned_slice")
+    refute Map.has_key?(read_only_tools, "prepare_work_package_worktree")
+    refute Map.has_key?(read_only_tools, "cleanup_work_package_worktree")
 
     assert {:ok, legacy_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-WR-MUTATE-LEGACY", kind: "mcp"))
@@ -8108,6 +9621,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert recycle["status_reset"] == false
     assert recycle["remint_available"] == true
     assert recycle["private_handoff_cleanup"] == "not_attempted"
+    assert recycle["lifecycle_state"] == "recycled"
+    assert recycle["reason_codes"] == ["worker_recycled"]
 
     event = get_in(revoke_response, ["result", "structuredContent", "revocation_event"])
     assert event["status"] == "child_worker_key_revoked"
@@ -8120,6 +9635,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert event["payload"]["new_status"] == "ready_for_worker"
     assert event["payload"]["status_reset"] == false
     assert event["payload"]["private_handoff_cleanup"] == "not_attempted"
+    assert event["payload"]["lifecycle_state"] == "recycled"
+    assert event["payload"]["reason_codes"] == ["worker_recycled"]
 
     content_text = get_in(revoke_response, ["result", "content", Access.at(0), "text"])
     refute content_text =~ "display_key"
@@ -8184,12 +9701,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert recycle["new_child_status"] == "ready_for_worker"
     assert recycle["status_reset"] == true
     assert recycle["remint_available"] == true
+    assert recycle["reason_codes"] == ["worker_recycled", "work_package_reset_for_recycle"]
 
     event = get_in(revoke_response, ["result", "structuredContent", "revocation_event"])
     assert event["payload"]["grant_id"] == first_grant_id
     assert event["payload"]["previous_status"] == "ci_waiting"
     assert event["payload"]["new_status"] == "ready_for_worker"
     assert event["payload"]["status_reset"] == true
+    assert event["payload"]["reason_codes"] == ["worker_recycled", "work_package_reset_for_recycle"]
 
     assert {:ok, reset_child} = WorkPackageRepository.get(repo, child_id)
     assert reset_child.status == "ready_for_worker"
@@ -15411,6 +16930,93 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   defp test_mcp_config(repo), do: Config.default(repo: repo, repo_root: test_repo_root())
 
+  defp local_mcp_config(repo), do: Config.default(repo: repo, mode: :http, repo_root: test_repo_root(), local_daemon_trusted: true)
+
+  defp local_mcp_server(%Config{} = config, state_key) do
+    Server.new(config, initialized: true, local_daemon_trusted: true, state_key: state_key)
+  end
+
+  defp create_local_claim_package!(repo, id, overrides \\ []) do
+    attrs =
+      [
+        id: id,
+        kind: "mcp",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "feature/sympp-v21-ledger-claims",
+        branch_pattern: "agent/#{id}/worker",
+        worktree_path: local_claim_worktree_path(id),
+        status: "ready_for_worker"
+      ]
+      |> Keyword.merge(overrides)
+      |> WorkPackageFactory.attrs()
+
+    assert {:ok, package} = WorkPackageRepository.create(repo, attrs)
+    package
+  end
+
+  defp local_assignment_claim_args(%WorkPackage{} = package, overrides \\ %{}) do
+    %{
+      "repo" => package.repo,
+      "base_branch" => package.base_branch,
+      "work_package_id" => package.id,
+      "branch" => package.branch_pattern,
+      "worktree_path" => package.worktree_path,
+      "caller_id" => "codex-local-test",
+      "claimed_by" => "local-worker-1"
+    }
+    |> Map.merge(overrides)
+  end
+
+  defp local_assignment_claim_actor(arguments) do
+    worktree_path = local_assignment_actor_worktree_path(arguments["worktree_path"])
+
+    owner_material =
+      [
+        arguments["repo"],
+        arguments["base_branch"],
+        arguments["work_package_id"],
+        arguments["branch"],
+        worktree_path,
+        arguments["claimed_by"]
+      ]
+      |> Enum.join("\0")
+
+    material =
+      [
+        arguments["repo"],
+        arguments["base_branch"],
+        arguments["work_package_id"],
+        arguments["branch"],
+        worktree_path,
+        arguments["caller_id"],
+        arguments["claimed_by"]
+      ]
+      |> Enum.join("\0")
+
+    %{
+      "actor_kind" => "agent",
+      "actor_id" => "local:" <> local_assignment_actor_hash(owner_material) <> ":" <> local_assignment_actor_hash(material),
+      "actor_display_name" => arguments["claimed_by"]
+    }
+  end
+
+  defp local_assignment_actor_worktree_path(path) do
+    path = path |> String.trim() |> Path.expand()
+
+    case :os.type() do
+      {:win32, _name} -> String.downcase(path)
+      _type -> path
+    end
+  end
+
+  defp local_assignment_actor_hash(material) do
+    Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  end
+
+  defp local_claim_worktree_path(work_package_id) do
+    Path.expand(Path.join(System.tmp_dir!(), "sympp-local-claim-#{work_package_id}"))
+  end
+
   defp test_repo_root do
     Path.expand("../../../..", __DIR__)
   end
@@ -15469,10 +17075,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     if windows?(), do: "sympp-worker-secret.ps1", else: "sympp-worker-secret.sh"
   end
 
-  defp local_file_run_mcp_command_pins_elixir_dir?(command) do
-    if windows?(), do: command =~ "-ElixirDir", else: command =~ "--elixir-dir"
-  end
-
   defp comparable_path(path) do
     path
     |> Path.expand()
@@ -15508,6 +17110,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       |> URI.encode(&sqlite_file_uri_path_char?/1)
 
     "file:#{encoded_path}?#{query}"
+  end
+
+  defp assert_same_ledger_database(%{"database" => actual_database}, expected_path, expected_query \\ nil) do
+    actual_path =
+      case Repo.sqlite_file_uri_path(actual_database) do
+        path when is_binary(path) and path != "" -> path
+        _path -> actual_database
+      end
+
+    assert Repo.same_database_path?(actual_path, expected_path)
+
+    if expected_query do
+      assert actual_database =~ "?#{expected_query}"
+    end
   end
 
   defp sqlite_file_uri_path_char?(char), do: URI.char_unreserved?(char) or char in [?/, ?:]

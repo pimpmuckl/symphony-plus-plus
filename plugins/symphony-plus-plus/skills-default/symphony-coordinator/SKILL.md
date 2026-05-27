@@ -6,7 +6,7 @@ description: Use when acting as a parent Codex agent coordinating ordinary non-M
 # Symphony++ Coordinator
 
 Use for ordinary non-MCP coordination. For WorkRequests, WorkPackages,
-WorkKeys, scoped grants, delivery boards, or MCP merge gates, use
+ledger-backed claims, scoped grants, delivery boards, or MCP merge gates, use
 `symphony-plus-plus-mcp:symphony-architect`.
 
 ## Start
@@ -24,6 +24,8 @@ WorkKeys, scoped grants, delivery boards, or MCP merge gates, use
 - Use fresh worktrees/branches when isolation or parallelism matters.
 - Give workers goal, scope, base/branch/worktree, acceptance, validation,
   review profile, budget, stop conditions, and expected PR/evidence.
+- For S++ WorkPackages, pass ledger claim metadata and local worktree scope.
+  Do not prompt normal workers for work keys or private handoff secrets.
 - Use explorers for reconnaissance only.
 
 ## Dispatch

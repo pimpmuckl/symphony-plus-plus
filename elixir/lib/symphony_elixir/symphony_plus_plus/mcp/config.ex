@@ -7,17 +7,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
   @source_revision_key {__MODULE__, :source_revision}
 
   @enforce_keys [:mode, :repo, :version]
-  defstruct [:mode, :repo, :version, :source_revision, :database, :repo_root, :work_key_secret_env, :claimed_by]
+  defstruct [
+    :mode,
+    :repo,
+    :version,
+    :source_revision,
+    :database,
+    :repo_root,
+    :work_key_secret_env,
+    :claimed_by,
+    local_daemon_trusted: false
+  ]
 
   @type t :: %__MODULE__{
-          mode: :stdio,
+          mode: :stdio | :http,
           repo: module(),
           version: String.t(),
           source_revision: String.t() | nil,
           database: String.t() | nil,
           repo_root: String.t() | nil,
           work_key_secret_env: String.t() | nil,
-          claimed_by: String.t() | nil
+          claimed_by: String.t() | nil,
+          local_daemon_trusted: boolean()
         }
 
   @switches [
@@ -39,7 +50,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
       database: Keyword.get(opts, :database),
       repo_root: Keyword.get(opts, :repo_root),
       work_key_secret_env: Keyword.get(opts, :work_key_secret_env),
-      claimed_by: Keyword.get(opts, :claimed_by)
+      claimed_by: Keyword.get(opts, :claimed_by),
+      local_daemon_trusted: Keyword.get(opts, :local_daemon_trusted, false)
     }
   end
 

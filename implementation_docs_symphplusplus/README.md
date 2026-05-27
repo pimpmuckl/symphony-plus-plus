@@ -1,9 +1,10 @@
 # Symphony++ Operator Documentation
 
 This directory is the durable operator/product guide for Symphony++. It explains
-how the current system works: how operators create packages, how workers and
-architects claim scoped grants, how MCP-backed planning resources are updated,
-and how readiness evidence flows into human merge decisions.
+how the current system works: how operators create packages, how workers use
+ledger-backed local assignment claims, how architects claim scoped orchestration
+authority, how MCP-backed planning resources are updated, and how readiness
+evidence flows into human merge decisions.
 
 Historical phase and package notes are not the active source of truth. Current
 work starts from live WorkPackages, operator-approved package requests, MCP
@@ -33,9 +34,14 @@ resources, and the docs below.
 - Role-oriented walkthrough: `docs/12_OPERATOR_TRAINING.md`
 - Short command-flow runbook: `docs/09_OPERATIONAL_RUNBOOK.md`
 - Release gate: `docs/11_RELEASE_VALIDATION.md`
+- V2.1 final local cutover: `runbooks/V21_FINAL_CUTOVER.md`
 - Security and guardrails: `docs/06_SECURITY_AND_GUARDRAILS.md`
 - MCP and skill contract: `docs/04_MCP_AND_SKILL_CONTRACT.md`
-- Local plugin install/refresh: `../plugins/symphony-plus-plus/README.md`
+- Local plugin package notes: `../plugins/symphony-plus-plus/README.md`
+
+Local plugin/cache sync is a final feature-branch cutover task. During V2.1
+feature-branch work, update repo docs and skill sources only; do not edit or
+refresh user-local plugin cache paths.
 
 ## Merge Policy
 

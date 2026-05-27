@@ -10,6 +10,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Policies.Templates
@@ -143,18 +144,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   @spec response_payload(creation(), keyword()) :: map()
   def response_payload(%{work_package: work_package, worker_grant: worker_grant, virtual_files: virtual_files, policy: policy}, opts \\ []) do
     worker_secret_handoff = Keyword.get(opts, :worker_secret_handoff)
+    worker_bootstrap = Keyword.get(opts, :worker_bootstrap)
+    secret_in_response? = is_nil(worker_secret_handoff) and is_nil(worker_bootstrap)
 
     %{
       work_package: work_package_payload(work_package),
-      worker_grant: worker_grant_payload_for_response(worker_grant, worker_secret_handoff),
+      worker_grant: worker_grant_payload_for_response(worker_grant, worker_secret_handoff, worker_bootstrap),
       policy: policy_payload(policy),
       virtual_files: virtual_files,
-      secret_returned_once: is_nil(worker_secret_handoff),
-      secret_not_persisted: is_nil(worker_secret_handoff),
-      secret_in_stdout: is_nil(worker_secret_handoff),
+      secret_returned_once: secret_in_response?,
+      secret_not_persisted: is_nil(worker_secret_handoff) and (secret_in_response? or is_map(worker_bootstrap)),
+      secret_in_stdout: secret_in_response?,
       ledger_secret_not_persisted: true
     }
     |> maybe_put_worker_secret_handoff(worker_secret_handoff)
+    |> maybe_put_worker_bootstrap(worker_bootstrap)
   end
 
   @spec error_message(term()) :: String.t()
@@ -502,14 +506,53 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   defp timestamp(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
   defp timestamp(nil), do: nil
 
-  defp worker_grant_payload_for_response(worker_grant, nil), do: worker_grant
+  defp worker_grant_payload_for_response(nil, _worker_secret_handoff, _worker_bootstrap), do: nil
 
-  defp worker_grant_payload_for_response(worker_grant, worker_secret_handoff) do
+  defp worker_grant_payload_for_response(worker_grant, nil, nil), do: redact_worker_grant_verifier_material(worker_grant)
+
+  defp worker_grant_payload_for_response(worker_grant, worker_secret_handoff, _worker_bootstrap)
+       when is_map(worker_secret_handoff) do
     SecretHandoff.redacted_worker_grant(worker_grant, worker_secret_handoff)
+    |> redact_worker_grant_verifier_material()
+    |> Map.put(:secret_in_response, false)
   end
+
+  defp worker_grant_payload_for_response(worker_grant, _worker_secret_handoff, worker_bootstrap) when is_map(worker_bootstrap) do
+    worker_grant
+    |> Map.delete(:display_key)
+    |> Map.delete("display_key")
+    |> Map.delete(:secret)
+    |> Map.delete("secret")
+    |> redact_worker_grant_verifier_material()
+    |> Map.put(:secret_in_response, false)
+  end
+
+  defp redact_worker_grant_verifier_material(worker_grant) when is_map(worker_grant) do
+    worker_grant
+    |> Map.delete(:secret_hash)
+    |> Map.delete("secret_hash")
+  end
+
+  defp redact_worker_grant_verifier_material(worker_grant), do: worker_grant
 
   defp maybe_put_worker_secret_handoff(payload, nil), do: payload
   defp maybe_put_worker_secret_handoff(payload, handoff), do: Map.put(payload, :worker_secret_handoff, handoff)
+
+  defp maybe_put_worker_bootstrap(payload, nil), do: payload
+  defp maybe_put_worker_bootstrap(payload, bootstrap), do: Map.put(payload, :worker_bootstrap, redacted_worker_bootstrap(bootstrap))
+
+  defp redacted_worker_bootstrap(bootstrap) when is_map(bootstrap) do
+    bootstrap
+    |> redact_bootstrap_launch_prompt(:launch_prompt)
+    |> redact_bootstrap_launch_prompt("launch_prompt")
+  end
+
+  defp redact_bootstrap_launch_prompt(bootstrap, key) do
+    case Map.fetch(bootstrap, key) do
+      {:ok, prompt} when is_binary(prompt) -> Map.put(bootstrap, key, Redactor.redact_text(prompt))
+      _result -> bootstrap
+    end
+  end
 
   defp work_package_payload(%WorkPackage{} = work_package) do
     %{

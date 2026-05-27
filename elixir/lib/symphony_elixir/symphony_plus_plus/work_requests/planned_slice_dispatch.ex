@@ -22,11 +22,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     :windows_credential_manager_unavailable
   ]
 
+  @worker_skill "symphony-plus-plus:symphony-worker"
+  @mcp_work_package_skill "symphony-plus-plus-mcp:symphony-work-package"
+  @repo_work_package_skill "symphony-work-package"
+
   @type dispatch_result :: %{
           work_request: WorkRequest.t(),
           planned_slice: PlannedSlice.t(),
           creation: CreateWork.creation(),
-          worker_secret_handoff: map()
+          worker_bootstrap: map(),
+          worker_secret_handoff: map() | nil,
+          legacy_private_handoff?: boolean()
         }
 
   @type error ::
@@ -54,9 +60,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
   end
 
   @spec response_payload(dispatch_result()) :: map()
-  def response_payload(%{planned_slice: %PlannedSlice{} = planned_slice, creation: creation, worker_secret_handoff: handoff}) do
+  def response_payload(%{planned_slice: %PlannedSlice{} = planned_slice, creation: creation} = dispatch) do
+    handoff = Map.get(dispatch, :worker_secret_handoff)
+    bootstrap = Map.get(dispatch, :worker_bootstrap)
+
     %{
-      create_work: CreateWork.response_payload(creation, worker_secret_handoff: handoff),
+      create_work: CreateWork.response_payload(creation, worker_secret_handoff: handoff, worker_bootstrap: bootstrap),
       planned_slice_linkage: planned_slice_linkage_payload(planned_slice)
     }
   end
@@ -154,8 +163,67 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
   end
 
   defp create_work(repo, request, handoff_opts, opts) do
-    create_fun = Keyword.get(opts, :create_work, &CreateWork.create_with_worker_secret_handoff/3)
-    create_fun.(repo, request, handoff_opts)
+    if Keyword.get(opts, :legacy_private_handoff?, false) do
+      create_fun = Keyword.get(opts, :create_work, &CreateWork.create_with_worker_secret_handoff/3)
+      create_fun.(repo, request, handoff_opts)
+    else
+      create_fun = Keyword.get(opts, :create_work, &CreateWork.create/2)
+
+      with {:ok, creation} <- create_fun.(repo, request) do
+        {:ok, {creation, nil}}
+      end
+    end
+  end
+
+  defp worker_bootstrap(%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, creation, handoff_opts) do
+    work_package = creation.work_package
+    claimed_by = Keyword.get(handoff_opts, :claimed_by)
+
+    claim_arguments =
+      %{
+        "repo" => work_package.repo,
+        "base_branch" => work_package.base_branch,
+        "work_package_id" => work_package.id,
+        "work_request_id" => work_request.id,
+        "claimed_by" => claimed_by
+      }
+      |> drop_nil_values()
+
+    runtime_arguments =
+      if is_nil(claimed_by) do
+        ["claimed_by", "branch", "worktree_path", "caller_id"]
+      else
+        ["branch", "worktree_path", "caller_id"]
+      end
+
+    ledger_database = Keyword.get(handoff_opts, :database)
+
+    %{
+      type: "ledger_claim",
+      mode: "local_assignment",
+      ledger: ledger_bootstrap(ledger_database),
+      claim: %{
+        tool: "claim_local_assignment",
+        arguments: claim_arguments,
+        required_runtime_arguments: runtime_arguments
+      },
+      required_skills: [@worker_skill, @mcp_work_package_skill],
+      supported_skill_sets: supported_worker_skill_sets(),
+      launch_prompt:
+        worker_launch_prompt(
+          work_request,
+          planned_slice,
+          work_package,
+          claim_arguments,
+          runtime_arguments,
+          ledger_database
+        ),
+      legacy_private_handoff: %{
+        normal_path: false,
+        recovery_only: true
+      }
+    }
+    |> drop_nil_values()
   end
 
   defp link_or_cleanup(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, creation, worker_secret_handoff, handoff_opts, opts) do
@@ -163,12 +231,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
 
     case link_planned_slice(repo, work_request.id, planned_slice.id, work_package_id, opts) do
       {:ok, linked_slice} ->
+        worker_bootstrap = worker_bootstrap(work_request, linked_slice, creation, handoff_opts)
+
         {:ok,
          %{
            work_request: work_request,
            planned_slice: linked_slice,
            creation: creation,
-           worker_secret_handoff: worker_secret_handoff
+           worker_bootstrap: worker_bootstrap,
+           worker_secret_handoff: worker_secret_handoff,
+           legacy_private_handoff?: Keyword.get(opts, :legacy_private_handoff?, false)
          }}
 
       {:error, reason} ->
@@ -201,6 +273,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
   end
 
   defp delete_worker_secret_after_link_failure(creation, worker_secret_handoff, handoff_opts, reason, recovery, opts) do
+    if is_nil(worker_secret_handoff) do
+      cleanup = %{ledger: :deleted, secret_handoff: :not_created}
+      {:error, {:dispatch_link_failed, reason, Map.put(recovery, :cleanup, cleanup)}}
+    else
+      delete_stored_worker_secret_after_link_failure(
+        creation,
+        worker_secret_handoff,
+        handoff_opts,
+        reason,
+        recovery,
+        opts
+      )
+    end
+  end
+
+  defp delete_stored_worker_secret_after_link_failure(creation, worker_secret_handoff, handoff_opts, reason, recovery, opts) do
     delete_fun = Keyword.get(opts, :delete_worker_secret_by_grant, &SecretHandoff.delete_worker_secret_by_grant/3)
 
     case delete_fun.(creation.work_package, worker_secret_metadata_grant(creation.worker_grant), handoff_opts) do
@@ -256,10 +344,66 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     %{
       work_package_id: work_package.id,
       worker_grant_id: Map.get(worker_grant, :id) || Map.get(worker_grant, "id"),
-      worker_grant_display_key: Map.get(worker_grant, :display_key) || Map.get(worker_grant, "display_key"),
-      worker_secret_handoff: worker_secret_handoff
+      worker_grant_display_key: Map.get(worker_grant, :display_key) || Map.get(worker_grant, "display_key")
     }
+    |> maybe_put_recovery_handoff(worker_secret_handoff)
   end
+
+  defp maybe_put_recovery_handoff(recovery, nil), do: recovery
+  defp maybe_put_recovery_handoff(recovery, worker_secret_handoff), do: Map.put(recovery, :worker_secret_handoff, worker_secret_handoff)
+
+  defp ledger_bootstrap(nil), do: nil
+  defp ledger_bootstrap(database), do: %{database: database}
+
+  defp supported_worker_skill_sets do
+    [
+      [@worker_skill, @mcp_work_package_skill],
+      [@worker_skill, @repo_work_package_skill]
+    ]
+  end
+
+  defp worker_launch_prompt(
+         %WorkRequest{} = work_request,
+         %PlannedSlice{} = planned_slice,
+         work_package,
+         claim_arguments,
+         runtime_arguments,
+         ledger_database
+       ) do
+    title = prompt_data(work_package.title)
+    work_package_id = prompt_data(work_package.id)
+    work_request_id = prompt_data(work_request.id)
+    planned_slice_id = prompt_data(planned_slice.id)
+    ledger_line = ledger_prompt_line(ledger_database)
+
+    claim_arguments =
+      claim_arguments
+      |> Map.put_new("branch", "<prepared-worker-branch>")
+      |> Map.put_new("claimed_by", "<stable-worker-id>")
+      |> Enum.sort_by(fn {key, _value} -> key end)
+      |> Enum.map_join(", ", fn {key, value} -> "#{key}=#{prompt_data(value)}" end)
+
+    """
+    You are assigned Symphony++ WorkPackage JSON id #{work_package_id} from WorkRequest JSON id #{work_request_id}. WorkPackage title JSON data: #{title}.
+
+    Use `#{@worker_skill}` plus either `#{@mcp_work_package_skill}` or the repo-local `#{@repo_work_package_skill}` and the configured Symphony++ MCP server.
+    #{ledger_line}
+
+    Start from the ledger-backed local claim path. After the package worktree is prepared, call `claim_local_assignment` with #{claim_arguments}. Also provide #{Enum.join(runtime_arguments, ", ")} from the prepared local session. Then call `get_current_assignment()` and read the WorkPackage context before coding.
+
+    Implement only this WorkPackage and planned slice JSON id #{planned_slice_id}. Normal dispatch does not include a private worker handoff; do not ask for, print, paste, or commit raw secrets.
+    """
+    |> String.trim()
+  end
+
+  defp ledger_prompt_line(nil), do: "Use the active MCP session ledger for the claim."
+
+  defp ledger_prompt_line(database) do
+    "Configure the Symphony++ MCP session with ledger database JSON data #{prompt_data(database)} before claiming."
+  end
+
+  defp prompt_data(nil), do: ~s("")
+  defp prompt_data(value), do: value |> to_string() |> Jason.encode!()
 
   defp engineering_scope(%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice) do
     [

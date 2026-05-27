@@ -6,8 +6,7 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 
 | Tool | Purpose |
 |---|---|
-| claim_work_key | Claim a one-time work key/secret with required `claimed_by` owner identity and bind the current MCP session to the grant role for temporary bootstrap/recovery. |
-| claim_private_handoff | Claim a local private-file handoff from redacted handoff metadata and bind the current MCP session without exposing the raw secret. |
+| claim_work_key | Claim a one-time work key/secret with required `claimed_by` owner identity and bind the current MCP session to the grant role for legacy/recovery bootstrap. |
 | get_current_assignment | Return the scoped assignment for the bound grant. |
 | read_context | Read context.md for the current work package. |
 | read_task_plan | Read task_plan.md for the current work package. |
@@ -27,6 +26,10 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | submit_review_package | Attach summary/tests/artifacts for the current head review package. |
 | mark_ready | Move to ready state only if gates pass. |
 
+`claim_private_handoff` is intentionally not a bound worker mutation tool in
+this table. It is listed under Bootstrap tools for explicit legacy/recovery
+claim paths.
+
 Worker comment tools stay inside the bound WorkPackage assignment. They do not
 broaden worker authority, mutate sibling targets, or expose raw note text after
 the normal planning redactor has matched a secret-like value. Worker comment
@@ -39,8 +42,28 @@ target.
 
 | Tool | Purpose |
 |---|---|
-| claim_private_handoff | Claim an existing worker or architect grant from `local-private-file` handoff metadata. |
+| claim_local_assignment | Claim the normal V2.1 ledger-backed local WorkPackage assignment and bind the current MCP session without raw secrets. |
+| claim_work_key | Claim a one-time work key/secret with required `claimed_by` owner identity and bind the current MCP session to the grant role for legacy/recovery bootstrap. |
+| claim_private_handoff | Claim an existing worker or architect grant from `local-private-file` handoff metadata for legacy/recovery bootstrap. |
 | create_work_request | Create a local WorkRequest with creator provenance and return a redacted architect handoff/bootstrap payload. |
+
+`claim_work_key` appears in both surfaces because the runtime advertises the
+legacy/recovery claim tool before and after binding. It is not the normal V2.1
+worker claim path.
+
+## Local operator tools
+
+| Tool | Purpose |
+|---|---|
+| add_work_request_comment | Append a redacted local-operator comment to a WorkRequest by id. |
+| record_work_request_operator_decision | Record a redacted local-operator decision on a WorkRequest by id. |
+
+Local operator note tools require an unbound trusted local HTTP MCP session
+with explicit state-key continuity and a file-backed local ledger. They do not
+grant WorkRequest ownership, dispatch authority, lifecycle authority, or sibling
+package visibility. Text and provenance are redacted before storage/response;
+responses never include raw secrets, private handoff payloads, work keys,
+bearer tokens, or MCP auth tokens.
 
 ## Health tool
 
@@ -77,7 +100,7 @@ ledger identity for operator diagnosis:
 | approve_work_request_planned_slice | Approve a planned slice that belongs to a scoped WorkRequest. |
 | skip_work_request_planned_slice | Skip a planned slice that belongs to a scoped WorkRequest. |
 | mark_work_request_sliced | Mark a scoped WorkRequest sliced using the existing approved-slice requirement. |
-| dispatch_work_request_planned_slice | Dispatch one approved planned slice into a WorkPackage and private worker handoff. |
+| dispatch_work_request_planned_slice | Dispatch one approved planned slice into a WorkPackage with ledger-backed local worker claim metadata. |
 | prepare_work_package_worktree | Prepare a scoped WorkPackage git worktree under `CODEX_HOME/worktrees/spp_worktrees` and record only `worktree_path`. |
 | cleanup_work_package_worktree | Clean up a scoped WorkPackage git worktree after validating the recorded path and dirty state. |
 | read_child_status | Read the architect grant's scoped anchor package status, or a same-phase child work-package status when the architect grant has child read capabilities. |
@@ -96,13 +119,18 @@ minted with architect-only MCP capabilities such as `read:phase`,
 architect schema discovery: healthy unbound generic sessions advertise health,
 Solo Session tools, `claim_work_key`, `claim_private_handoff`,
 `create_work_request`, and architect tool schemas so fresh Codex sessions can
-discover WorkRequest and architect flows before claim. Schema
-visibility is not authorization; calls still require a live claimed architect
-grant with the required capability and scope, and unclaimed architect calls
-return a claim-required denial. Unbound sessions still do not see the worker
-mutation surface. Stale bound sessions expose only health, `claim_work_key`,
-and `claim_private_handoff` for refresh; duplicate `initialize` on that same
-stale explicit MCP session
+discover WorkRequest and architect flows before claim. Unbound HTTP sessions
+also advertise `claim_local_assignment` for first-claim/reclaim schema
+discovery, but schema visibility is not authorization; claim calls still require
+trusted local HTTP state-key continuity and scope validation. Trusted unbound
+local HTTP sessions with explicit state-key continuity may additionally
+advertise the local operator note tools described above. Architect calls still
+require a live claimed architect grant with the required capability and scope,
+and unclaimed architect calls return a claim-required denial. Unbound sessions
+still do not see the worker mutation surface. Stale bound sessions expose only
+health, `claim_work_key`, `claim_private_handoff`, and, on HTTP sessions,
+`claim_local_assignment` for refresh; duplicate
+`initialize` on that same stale explicit MCP session
 does not downgrade it into generic unbound discovery. Worker sessions see the
 bound worker-facing discovery surface without Solo tools or architect-only tool
 schemas. Bound architect sessions
@@ -233,32 +261,38 @@ standalone dispatchable WorkPackage kinds advertised by the live MCP input
 schema.
 `dispatch_work_request_planned_slice` is separate from those mutation tools and
 requires `dispatch:work_request` because it creates a WorkPackage, worker grant,
-and private SecretHandoff side effects. It requires `work_request_id`,
-`planned_slice_id`, and `claimed_by`, with optional `secret_handoff`,
-`secret_store_dir`, and `symphony_repo_root`, uses the same frozen repo/base-branch
-WorkRequest scope, and
+and worker bootstrap side effects. It does not prepare or record worktree scope;
+that belongs to `prepare_work_package_worktree` or the equivalent operator
+worktree flow before worker launch. It requires
+`work_request_id`, `planned_slice_id`, and `claimed_by`, with optional
+`symphony_repo_root`, `legacy_private_handoff`, `secret_handoff`, and
+`secret_store_dir`, uses the same frozen repo/base-branch WorkRequest scope, and
 calls the existing `PlannedSliceDispatch.dispatch` orchestration. MCP dispatch
 has a statically discoverable schema, and direct calls fail closed if
 the supplied `symphony_repo_root`, legacy hidden `repo_root` alias, configured
 `repo_root`, or local Symphony++ repo root is missing, invalid, or does not
 point at a repository containing the worker secret helper script under
-`scripts/`. This root is the Symphony++ helper/namespace repo root, not the
-target product repository root. It requires a file-backed live ledger so worker
-handoff commands reconnect to the same ledger; in-memory database configuration
+`scripts/` when explicit legacy private handoff recovery is requested. This
+root is the Symphony++ helper/namespace repo root, not the target product
+repository root. `secret_handoff` and `secret_store_dir` are rejected unless
+`legacy_private_handoff` is true. Dispatch requires a file-backed live ledger
+so worker bootstrap metadata reconnects to the same ledger; in-memory database configuration
 fails closed before dispatch side effects. Blank database configuration is
 treated as absent and uses the live ledger. Matching configured SQLite file URI
-options are preserved in the worker
-handoff command when they resolve to the same live ledger, including default
+options are preserved in the worker bootstrap metadata when they resolve to the
+same live ledger, including default
 repo database configuration; divergent explicit MCP database configuration fails
 closed, and matching read-only SQLite URI options such as `mode=ro` or
 `immutable=1` are rejected before dispatch. Missing, out-of-scope,
 non-approved, invalid-status, unsupported-kind, and
 slice-scope violations fail closed before returning sibling content or raw
 secret material. The response is intentionally narrower than CLI output:
-WorkRequest id, planned slice id/status/linkage, WorkPackage id metadata, and
-redacted worker handoff metadata only. Dispatch-link failure responses may include
-sanitized recovery identifiers such as WorkPackage id, worker grant id, cleanup
-status, and redacted handoff metadata. It must not include raw worker secrets,
+WorkRequest id, planned slice id/status/linkage, WorkPackage id metadata,
+non-secret worker bootstrap metadata for `claim_local_assignment`, and any
+redacted worker handoff or grant metadata the current runtime still emits.
+Dispatch-link failure responses may include sanitized recovery identifiers such
+as WorkPackage id, worker grant id, cleanup status, and redacted bootstrap
+metadata. It must not include raw worker secrets,
 work keys, bearer tokens, API tokens, MCP auth tokens, private-store secret
 payloads, or secret-bearing claim URLs.
 `prepare_work_package_worktree` and `cleanup_work_package_worktree` are
@@ -333,20 +367,29 @@ sympp://work-packages/{id}/review_suite.md
 sympp://work-packages/{id}/handoff.md
 ```
 
-`claim_work_key` requires `secret` and `claimed_by`. It can bind an existing
-worker or architect grant during explicit bootstrap/recovery; it does not mint
-new grants and is not the normal generic planning surface. Reconnects are
-accepted only when the same owner identity presents the same secret proof.
+`claim_local_assignment` requires `repo`, `base_branch`, `work_package_id`,
+`branch`, `worktree_path`, `caller_id`, and `claimed_by`; `work_request_id` is
+accepted for planned-slice dispatch. It is the normal V2.1 local worker claim.
+The tool validates package repo/base/branch/worktree scope, requires a trusted
+local HTTP MCP session, creates or heartbeats a claim lease, reclaims stale
+leases with audit evidence, rejects paused leases, same local owner claims that
+change `caller_id` before the live-grant authority check, or active other
+owners, and binds the current MCP session to the package worker grant.
 
-`claim_private_handoff` is the safe normal local-private-file bootstrap path
-for agents. It accepts `claimed_by` plus either a `private_handoff` object or
-explicit redacted fields: `mode`, `path`, `target`, `grant_id`,
-`display_key`, `work_package_id`, and optional `database`. The only supported
-mode is `local-private-file`. The MCP server reads the secret server-side from
-the configured Symphony++ private handoff store, validates the path is the
-managed handoff path rather than an arbitrary local file, rejects missing,
-directory, oversized, traversal, and metadata-mismatched files, verifies the
-stored hash, claims the grant for `claimed_by`, and returns the same redacted
+`claim_work_key` requires `secret` and `claimed_by`. It can bind an existing
+worker or architect grant during explicit legacy bootstrap/recovery; it does
+not mint new grants and is not the normal worker planning surface. Reconnects
+are accepted only when the same owner identity presents the same secret proof.
+
+`claim_private_handoff` is the legacy/recovery local-private-file bootstrap
+path. It accepts `claimed_by` plus either a `private_handoff` object or explicit
+redacted fields: `mode`, `path`, `target`, `grant_id`, `display_key`,
+`work_package_id`, and optional `database`. The only supported mode is
+`local-private-file`. The MCP server reads the secret server-side from the
+configured Symphony++ private handoff store, validates the path is the managed
+handoff path rather than an arbitrary local file, rejects missing, directory,
+oversized, traversal, and metadata-mismatched files, verifies the stored hash,
+claims the grant for `claimed_by`, and returns the same redacted
 assignment/session metadata as `claim_work_key`. Raw secrets, secret hashes,
 secret-bearing commands, and private-store payloads are not accepted in
 arguments and are not returned in responses or errors.
@@ -368,11 +411,11 @@ still withholding raw secret material.
 
 Explicit `state_key` values retain initialized handshake continuity for
 stateless transports, but they do not restore claimed worker sessions. A
-reconnecting worker must present the same secret proof and `claimed_by` identity
-again, preferably through the private-store MCP bootstrap rather than a raw
-secret tool call. The continuity namespace is the active ledger, so a reconnect
-to the same SQLite ledger can restore handshake state even when the dynamic repo
-process changes.
+reconnecting worker normally replays `claim_local_assignment` with the same
+ledger and local scope. Legacy/recovery workers must present the same secret
+proof and `claimed_by` identity again. The continuity namespace is the active
+ledger, so a reconnect to the same SQLite ledger can restore handshake state
+even when the dynamic repo process changes.
 Explicit state-key handshakes use a bounded retention window for transport
 continuity. They remain continuity metadata until overwritten,
 cleared by a failed explicit reconnect initialize, or expired by the explicit
@@ -393,21 +436,21 @@ id returns `idempotency_conflict`.
 
 JSON-RPC batch items are not an ordered session transaction. Each item is
 evaluated against the batch's initial server/session state, so workers must not
-rely on `claim_work_key`, `claim_private_handoff`, or any other stateful call in
-one batch item to authorize later items in the same batch. A successful claim
-inside a batch still binds the returned server/session for later standalone
-requests. After one claim succeeds in a batch, later claim entries in that same
-batch are rejected as rebinding attempts so a connection cannot claim multiple
-assignments.
+rely on `claim_local_assignment`, `claim_work_key`, `claim_private_handoff`, or
+any other stateful call in one batch item to authorize later items in the same
+batch. A successful claim inside a batch still binds the returned server/session
+for later standalone requests. After one claim succeeds in a batch, later claim
+entries in that same batch are rejected as rebinding attempts so a connection
+cannot claim multiple assignments.
 The stdio transport is newline-delimited JSON. Long one-shot stdio invocations
 that include `tools/list` or `read_work_request` can produce large response
 lines, so callers must drain stdout concurrently or redirect stdout to a file.
 Waiting for process exit while stdout is not being read can deadlock the caller
 before later requests are processed. The private-file wrapper provides
-`run-mcp-local-file-once` for diagnostics that need to send a JSONL request
-file and spool stdout/stderr to files while keeping the work key out of
-prompts and logs. Caller-supplied output/error files must not already exist;
-generated spool files are created when output/error files are omitted.
+`run-mcp-local-file-once` for legacy/recovery diagnostics that need to send a
+JSONL request file and spool stdout/stderr to files while keeping the work key
+out of prompts and logs. Caller-supplied output/error files must not already
+exist; generated spool files are created when output/error files are omitted.
 
 `attach_branch` requires `branch` and `head_sha`. When no PR head is attached,
 review packages are matched to the latest attached branch head so stale

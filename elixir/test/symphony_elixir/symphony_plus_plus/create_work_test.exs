@@ -440,7 +440,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
 
       grant_id = creation.worker_grant.id
       secret = creation.worker_grant.secret
-      payload = CreateWork.response_payload(creation, worker_secret_handoff: handoff)
+      response_creation = %{creation | worker_grant: Map.put(creation.worker_grant, :secret_hash, "hash-should-not-leak")}
+      payload = CreateWork.response_payload(response_creation, worker_secret_handoff: handoff)
       json = Jason.encode!(payload)
 
       assert {:ok, metadata_handoff} =
@@ -455,12 +456,59 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
       assert metadata_handoff.secret_in_stdout == false
       assert File.read!(handoff.path) == secret
       refute Map.has_key?(payload.worker_grant, :secret)
+      refute Map.has_key?(payload.worker_grant, :secret_hash)
       assert payload.worker_grant.secret_handoff.target == handoff.target
       refute json =~ secret
+      refute json =~ "hash-should-not-leak"
       refute inspect(metadata_handoff) =~ secret
     after
       File.rm_rf!(store_dir)
     end
+  end
+
+  test "create-work bootstrap response redacts prompt and grant display key", %{repo: repo} do
+    assert {:ok, creation} =
+             CreateWork.create(repo, %{
+               repo: "kraken",
+               base_branch: "main",
+               title: "Create bootstrap response",
+               acceptance_criteria: ["Return bootstrap metadata without raw worker secrets."]
+             })
+
+    bootstrap = %{
+      type: "ledger_claim",
+      launch_prompt: "Use raw_secret_bootstrap_response only inside the ledger.",
+      claim: %{tool: "claim_local_assignment", arguments: %{}}
+    }
+
+    response_creation = %{creation | worker_grant: Map.put(creation.worker_grant, :secret_hash, "hash-should-not-leak")}
+    payload = CreateWork.response_payload(response_creation, worker_bootstrap: bootstrap)
+    json = Jason.encode!(payload)
+
+    assert payload.worker_bootstrap.launch_prompt =~ "[REDACTED]"
+    refute payload.worker_bootstrap.launch_prompt =~ "raw_secret_bootstrap_response"
+    refute Map.has_key?(payload.worker_grant, :display_key)
+    refute Map.has_key?(payload.worker_grant, :secret)
+    refute Map.has_key?(payload.worker_grant, :secret_hash)
+    refute json =~ "raw_secret_bootstrap_response"
+    refute json =~ creation.worker_grant.display_key
+    refute json =~ creation.worker_grant.secret
+    refute json =~ "hash-should-not-leak"
+  end
+
+  test "response payload preserves nil worker grant", %{repo: repo} do
+    assert {:ok, creation} =
+             CreateWork.create(repo, %{
+               repo: "kraken",
+               base_branch: "main",
+               title: "Create no-grant response",
+               acceptance_criteria: ["Serialize response without worker grant."]
+             })
+
+    payload = CreateWork.response_payload(%{creation | worker_grant: nil})
+
+    assert payload.worker_grant == nil
+    assert Jason.encode!(payload) =~ ~s("worker_grant":null)
   end
 
   test "removes stored worker secret when managed metadata persistence fails", %{repo: repo} do

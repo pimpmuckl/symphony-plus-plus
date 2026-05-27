@@ -26,6 +26,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     "read:work_request",
     "write:work_request",
     "dispatch:work_request",
+    "read:child_progress",
+    "read:child_findings",
     "read:guidance_request",
     "write:guidance_request"
   ]
@@ -58,6 +60,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
 
   @spec capabilities() :: [String.t()]
   def capabilities, do: @architect_capabilities
+
+  @spec effective_capabilities([String.t()] | nil) :: [String.t()]
+  def effective_capabilities(capabilities) do
+    normalized_strings(capabilities)
+  end
 
   @spec phase_id_for_work_request(WorkRequest.t()) :: String.t()
   def phase_id_for_work_request(%WorkRequest{} = work_request), do: phase_id(work_request)

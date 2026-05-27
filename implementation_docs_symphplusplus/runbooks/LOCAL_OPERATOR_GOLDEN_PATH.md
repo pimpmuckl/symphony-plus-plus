@@ -22,20 +22,11 @@ For a first local checkout, do the setup once:
   for the `symphony-plus-plus-mcp:*` skills, and do not enable the MCP plugin
   for generic review or unrelated Codex sessions.
 
-If you are developing the local plugin or skills, refresh the installed plugin
-cache from the repository root:
-
-```powershell
-.\scripts\refresh-local-plugin.ps1 -ValidateInstalledCache
-```
-
-Then reload Codex and start a new session. Existing sessions may keep the old
-skill and MCP registration list.
-The refresh writes versioned marketplace cache entries and prunes generated
-stale `local` entries after the versioned cache is accepted, when the `local`
-entry carries the Symphony++ source-root marker. If it stops on an unmarked
-`local` cache entry, inspect that path and remove it manually only if it is
-known obsolete.
+During V2.1 feature-branch work, do not refresh or sync the installed
+user-local plugin cache. Keep repo skill/docs changes in source control and
+adopt them locally only at final feature-branch cutover. After that cutover,
+reload Codex and start a new session; existing sessions may keep the old skill
+and MCP registration list.
 
 If the default Symphony++ skill is visible but the `symphony_plus_plus` MCP
 tools are missing, run the activation doctor from the repository root:
@@ -137,11 +128,14 @@ before troubleshooting Codex app plugin visibility:
 ```
 
 The smoke sends `initialize`, normalizes the returned `Mcp-Session-Id` to a
-single header value, follows with `tools/list`, and verifies the generic
-unbound tool surface including `sympp.health`, the `solo_*` tools,
+single header value, follows with `tools/list`, and verifies the script's
+current generic unbound expectations: `sympp.health`, the `solo_*` tools,
 `claim_work_key`, and statically discoverable architect schemas such as
-`read_work_request` and `list_guidance_requests`. Worker-only mutation tools
-remain absent until claim. The health smoke also verifies that
+`read_work_request` and `list_guidance_requests`. `claim_private_handoff` is
+part of the generic unbound refresh surface, and `claim_local_assignment` is
+part of the trusted local HTTP refresh surface, but the current smoke script
+does not yet assert them directly. Worker-only mutation tools remain absent
+until claim. The health smoke also verifies that
 `ledger.identity` is present and complete enough to identify default or
 explicit SQLite ledgers without exposing credential-bearing configuration. For a
 non-default or dynamic cockpit port, pass the printed MCP URL:
@@ -154,11 +148,16 @@ non-default or dynamic cockpit port, pass the printed MCP URL:
 A passing smoke proves the cockpit/MCP daemon is serving the HTTP MCP contract.
 It does not prove that an already-open Codex app session loaded or enabled the
 opt-in `symphony-plus-plus-mcp` plugin; reload/start that dedicated session
-after fixing plugin config or cache state.
+after fixing plugin config or cache state. Focused `claim_local_assignment`
+contract coverage currently lives in
+`elixir/test/symphony_elixir/symphony_plus_plus/codex_skill_package_test.exs`;
+the generic daemon smoke is not first-claim validation until a dedicated
+trusted local HTTP claim smoke lands.
 
-For a worker package whose private handoff has already placed the work key in a
-local secret store, read that secret into a short-lived environment variable
-inside your shell and run the bound smoke by variable name:
+For legacy/recovery validation of a package whose private handoff has already
+placed a work key in a local secret store, read that secret into a short-lived
+environment variable inside your shell and run the bound smoke by variable
+name:
 
 ```powershell
 $env:SYMPP_WORK_KEY_SECRET = Get-Content -LiteralPath "<private-secret-file>" -Raw
@@ -169,15 +168,12 @@ $env:SYMPP_WORK_KEY_SECRET = Get-Content -LiteralPath "<private-secret-file>" -R
 Remove-Item Env:\SYMPP_WORK_KEY_SECRET -ErrorAction SilentlyContinue
 ```
 
-The bound smoke claims the session, confirms the bound worker tool surface no
-longer exposes Solo tools, verifies assignment/resource continuity, and redacts
-the claimed `Mcp-Session-Id` and raw work key from text and JSON output. Use
-`-SkipUnboundTools` only when you intentionally want to skip the pre-claim
-unbound surface check.
+The bound smoke covers the legacy secret-proof path. Normal V2.1 workers claim
+with `claim_local_assignment` instead of `claim_work_key`.
 
-After a WorkPackage worker or WorkRequest architect claims its work key, the
-same local HTTP `Mcp-Session-Id` remains bound for scoped follow-up tools and
-resources. Treat claimed-session ids as sensitive local continuity material:
+After a WorkPackage worker claims with `claim_local_assignment`, the same local
+HTTP `Mcp-Session-Id` remains bound for scoped follow-up tools and resources.
+Treat claimed-session ids as sensitive local continuity material:
 do not paste, log, or commit them. If the grant is revoked, expired, or no
 longer matches the live ledger scope, protected MCP calls fail closed instead
 of continuing from cached state.
@@ -245,17 +241,29 @@ dispatches them. Dispatch is available through the local-operator dashboard,
 the planned-slice dispatch CLI, or a phase-scoped architect MCP session with
 dispatch capability.
 
-Dashboard dispatch creates a WorkPackage, worker grant, and private worker
-secret handoff. It records the stable worker identity `local-operator-worker`
-and shows only non-secret WorkPackage, linkage, and handoff metadata. It does
-not spawn Codex agents and does not call Linear.
+Dashboard dispatch creates a WorkPackage, worker grant, and non-secret
+`worker_bootstrap` payload for the ledger-backed local claim path. It records
+the stable worker identity `local-operator-worker` and shows only
+WorkPackage/linkage and claim metadata. It does not spawn Codex agents, prepare
+worktrees, record worktree scope, or call Linear.
+
+Before launching a worker, prepare and record the package worktree through
+`prepare_work_package_worktree` or the equivalent operator worktree flow. Keep
+the exact `branch` and `worktree_path` values from that step, and pair them
+with the stable local MCP `caller_id` for the worker session/launcher. The
+prepare tool does not return `caller_id`; reuse the same caller id for
+reconnects because changing it for the same local owner is rejected before the
+live-grant authority check. If no worktree is recorded, do not launch the
+worker; the ledger-backed claim must fail closed with `worktree_scope_required`.
 
 Give each worker:
 
 - The WorkPackage id, target branch, base branch, owned paths, acceptance
   criteria, required validation, review profiles, and stop conditions.
-- The non-secret private-store handoff metadata or generated MCP bootstrap
-  shape.
+- The non-secret ledger claim metadata for `claim_local_assignment`, including
+  repo/base/work_package_id/work_request_id when present.
+- The prepared worker `branch` and `worktree_path`, plus the stable local MCP
+  `caller_id` used for claim/reclaim.
 - The stable `claimed_by` identity for that package.
 - The instruction to use `symphony-plus-plus:symphony-worker` plus
   `symphony-plus-plus-mcp:symphony-work-package`.
@@ -264,10 +272,13 @@ Give each worker:
 - The instruction to ask the architect first for product, architecture,
   dependency, or slice-boundary ambiguity.
 
-Workers update MCP-backed planning, not local markdown planning files. They
-read the current assignment, update task plan/findings/progress through MCP,
-attach branch and PR evidence, run validation and review, and mark ready only
-after package gates pass.
+Workers claim through `claim_local_assignment` first, then update MCP-backed
+planning instead of local markdown planning files. They read the current
+assignment, update task plan/findings/progress through MCP, attach branch and
+PR evidence, run validation and review, and mark ready only after package gates
+pass. Replaying the same claim heartbeats the lease; stale leases can be
+reclaimed with audit evidence, while paused leases, same local owner claims that
+change `caller_id`, or active other owners are operator/architect blockers.
 
 ## Track And Merge
 
@@ -333,15 +344,14 @@ PRs, create WorkRequests, create WorkPackages, or write Linear state.
 | Situation | Skill |
 | --- | --- |
 | WorkRequest-led planning, clarification, decisions, slicing, dispatch, or package guidance routing | `symphony-plus-plus-mcp:symphony-architect` |
-| One assigned WorkPackage or WorkKey with MCP-backed planning and readiness evidence | `symphony-plus-plus:symphony-worker` plus `symphony-plus-plus-mcp:symphony-work-package` |
+| One assigned WorkPackage with MCP-backed planning and readiness evidence | `symphony-plus-plus:symphony-worker` plus `symphony-plus-plus-mcp:symphony-work-package` |
 | One normal local agent session that only needs durable planning memory | `symphony-plus-plus:symphony-solo-session` |
 
-## Handoff Defaults
+## Legacy Handoff Defaults
 
-The current local/private handoff default is local private-file storage,
-including on Windows. In `auto` mode, generated Windows commands use the
-PowerShell helper to read the private file and inject the secret only into the
-MCP child process.
+Private-file or Credential Manager handoff remains available for
+explicit legacy/recovery. It is not the normal V2.1 worker dispatch path after
+ledger-backed `claim_local_assignment`.
 
 Explicit `windows-credential-manager` mode remains available when the operator
 selects it and the host Credential Manager can write credentials. It is not the
@@ -353,7 +363,9 @@ default local dogfood path and may fail on hosts where WCM is unavailable.
   Linear tokens, MCP auth tokens, secret hashes, or private handoff payloads
   into prompts, files, PR bodies, review text, logs, or command output.
 - Do not enable the Symphony++ MCP server globally for all generic workers.
-  Use the private-store MCP bootstrap emitted for the specific WorkPackage.
+  Use a dedicated S++ MCP session and the package's ledger claim metadata.
+- Do not edit or refresh user-local plugin/cache paths during feature-branch
+  work; do that only at final feature-branch cutover.
 - Do not treat the cockpit as a permission bypass. Worker and architect writes
   still require scoped grants and MCP permissions.
 - Do not dispatch unapproved planned slices.

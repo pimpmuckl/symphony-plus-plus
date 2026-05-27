@@ -31,10 +31,10 @@ the preferred front door for this flow.
 7. Architect marks the request ready for slicing, adds planned slices, and
    approves or skips slices.
 8. Human dispatches approved slices that should become WorkPackages.
-9. Browser dispatch creates the WorkPackage, worker grant, and private worker
-   secret handoff through the existing `PlannedSliceDispatch` flow. Use the
-   visible WorkPackage id/status and non-secret handoff metadata to continue the
-   normal worker setup.
+9. Browser dispatch creates the WorkPackage, worker grant, and ledger-backed
+   worker bootstrap through the existing `PlannedSliceDispatch` flow. Use the
+   visible WorkPackage id/status and non-secret `claim_local_assignment`
+   metadata to continue the normal worker setup.
 10. Mark the request sliced when at least one slice is approved or dispatched.
 11. Dispatched slices become normal WorkPackages with existing readiness,
     review-suite, PR, and human merge machinery.
@@ -58,12 +58,19 @@ durable reference, optionally attach the artifact, and include a bounded summary
 of the current status, decisions, assumptions, open questions, and intended
 slices. Do not paste a long clarification history into package prompts.
 
-Local operator planned-slice dispatch creates worker grants through the existing
-private handoff flow. It does not spawn Codex agents, call Linear, or replace
+Local operator planned-slice dispatch creates worker grants and ledger-backed
+local claim metadata. It does not spawn Codex agents, call Linear, or replace
 package-scoped permissions. Board-grant WorkRequest detail remains scoped to
-planning controls and does not expose planned-slice dispatch.
+planning controls and does not expose planned-slice dispatch. Use
+`templates/worker_agent_prompt.md` for planned-slice ledger workers.
 
 ## Standalone Package
+
+Standalone `mix sympp.create_work` still emits private-store
+`worker_secret_handoff` bootstrap metadata for explicitly requested recovery
+lanes. Use planned-slice dispatch for the normal ledger-backed
+`claim_local_assignment` path; treat standalone create-work as legacy/recovery
+unless a later WorkRequest explicitly changes that product contract.
 
 To inspect local Symphony++ package state and manage pre-package WorkRequests,
 start the local operator cockpit from `elixir/`:
@@ -89,24 +96,30 @@ intentionally need a dynamic local URL; public bind hosts are rejected.
    `mise exec -- mix sympp.create_work --file ../scratch/<request>.yaml --claimed-by <worker-id>`
    with the edited request path and stable worker identity. Add `--database`
    only for an intentionally isolated ledger.
-4. Confirm normal command output contains only non-secret handoff metadata. The
-   worker grant secret must be stored in the private local handoff store, not
-   printed into stdout, prompts, PR text, or logs.
+4. Confirm command output contains only non-secret package and private-store
+   handoff metadata. Raw worker grant secrets must not be printed into stdout,
+   prompts, PR text, or logs.
 5. Make sure the worker has the opt-in `symphony-plus-plus-mcp` Codex plugin from
    `plugins/symphony-plus-plus-mcp/` or the repo-local
-   `.codex/skills/symphony-work-package/` copy, plus the MCP stdio dependency
-   configured through the private-store bootstrap documented in
-   `../../.codex/skills/symphony-work-package/references/mcp_wiring.md`.
-6. Dispatch the worker with the package id, base branch, target branch
+   `.codex/skills/symphony-work-package/` copy. For this standalone
+   legacy/recovery bootstrap, use the private-store wrapper flow documented in
+   the `Legacy/Recovery Bootstrap` section of
+   `../../.codex/skills/symphony-work-package/references/mcp_wiring.md`, not the
+   planned-slice `claim_local_assignment` worker-claim flow.
+6. Prepare the worker git worktree through the normal repo worktree flow when
+   needed. Standalone create-work does not record ledger worktree scope or emit
+   `claim_local_assignment` metadata.
+7. Dispatch the worker with the package id, base branch, target branch
    convention, owned paths, acceptance criteria, required validation/review
-   lanes, handoff target, stable `claimed_by` identity, and the prompt in
-   `../templates/worker_agent_prompt.md`.
-7. Watch the dashboard/API or MCP-visible package state for claim, plan,
+   lanes, the emitted private-store bootstrap metadata, prepared worktree path,
+   stable `claimed_by` identity, and a legacy/recovery private-store prompt such
+   as the one in `../runbooks/HOTFIX_RUNBOOK.md`.
+8. Watch the dashboard/API or MCP-visible package state for claim, plan,
    findings, progress, blockers, branch, PR, validation, and review evidence.
-8. For PR-required packages, review the PR with
+9. For PR-required packages, review the PR with
    `../review/REVIEWER_CHECKLIST.md` and confirm evidence is current for the
    attached branch head.
-9. Close non-PR packages only after their policy gates pass. Merge PR-required
+10. Close non-PR packages only after their policy gates pass. Merge PR-required
    packages only after readiness gates, branch protection, required review-suite
    lanes, and any package-specific release-validation requirements pass.
 
@@ -155,8 +168,9 @@ when it cannot be completed safely.
 2. Stop or pause the active run if the runner supports it.
 3. Preserve workspace and logs for audit.
 4. Record the revocation and reason in package progress.
-5. Reassign only with a new grant and a new private handoff if the package
-   should continue.
+5. Reassign by preparing a new scoped worker worktree and ledger claim when the
+   package should continue. Use private handoff only for explicit
+   legacy/recovery cases.
 
 ## Hotfixes And Incidents
 

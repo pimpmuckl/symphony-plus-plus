@@ -24,6 +24,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
           | :missing_claim_identity
           | :not_found
           | :revoked
+          | :worker_grant_required
           | :work_package_terminal
           | {:constraint_failed, String.t()}
           | {:migration_failed, term()}
@@ -132,6 +133,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
+  @spec claim_local_worker_grant(repo(), String.t(), map(), DateTime.t(), keyword()) ::
+          {:ok, AccessGrant.t()} | {:error, error()}
+  def claim_local_worker_grant(repo, work_package_id, attrs, now, opts)
+      when is_atom(repo) and is_binary(work_package_id) and is_map(attrs) and is_struct(now, DateTime) and
+             is_list(opts) do
+    normalized_now = DateTime.truncate(now, :microsecond)
+    terminal_statuses = Keyword.get(opts, :terminal_work_package_statuses, [])
+
+    with {:ok, claimed_by} <- claimed_by(attrs),
+         :ok <- reject_other_local_claim_owner(repo, work_package_id, claimed_by, normalized_now, terminal_statuses) do
+      reconnect_or_claim_local_worker_grant(repo, work_package_id, claimed_by, normalized_now, terminal_statuses)
+    end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
   @spec revoke(repo(), String.t(), DateTime.t()) :: {:ok, AccessGrant.t()} | {:error, error()}
   def revoke(repo, id, now) when is_atom(repo) and is_binary(id) and is_struct(now, DateTime) do
     with {:ok, access_grant} <- get(repo, id) do
@@ -235,6 +252,117 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     from(grant in query,
       where: is_nil(grant.work_package_id) or grant.work_package_id not in subquery(terminal_package_ids)
     )
+  end
+
+  defp local_worker_grant_missing_reason(repo, work_package_id, terminal_statuses) do
+    if terminal_work_package?(repo, work_package_id, terminal_statuses) do
+      {:error, :work_package_terminal}
+    else
+      {:error, inactive_worker_grant_reason(repo, work_package_id)}
+    end
+  end
+
+  defp terminal_work_package?(_repo, _work_package_id, []), do: false
+
+  defp terminal_work_package?(repo, work_package_id, terminal_statuses) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, %{status: status}} -> status in terminal_statuses
+      {:error, _reason} -> false
+    end
+  end
+
+  defp inactive_worker_grant_reason(repo, work_package_id) do
+    query =
+      from(grant in AccessGrant,
+        where: grant.work_package_id == ^work_package_id,
+        where: grant.grant_role == "worker",
+        select: {count(grant.id), count(grant.revoked_at)}
+      )
+
+    case repo.one(query) do
+      {0, _revoked_count} -> :worker_grant_required
+      {grant_count, grant_count} -> :revoked
+      {_grant_count, _revoked_count} -> :expired
+    end
+  end
+
+  defp reject_other_local_claim_owner(repo, work_package_id, claimed_by, now, terminal_statuses) do
+    query =
+      from(grant in AccessGrant,
+        where: grant.work_package_id == ^work_package_id,
+        where: grant.grant_role == "worker",
+        where: not is_nil(grant.claimed_at),
+        where: grant.claimed_by != ^claimed_by,
+        where: is_nil(grant.revoked_at),
+        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
+        select: 1,
+        limit: 1
+      )
+      |> scope_live_package_authority(terminal_statuses)
+
+    case repo.one(query) do
+      nil -> :ok
+      1 -> {:error, :already_claimed}
+    end
+  end
+
+  defp local_reconnect_grant(repo, work_package_id, claimed_by, now, terminal_statuses) do
+    query =
+      from(grant in AccessGrant,
+        where: grant.work_package_id == ^work_package_id,
+        where: grant.grant_role == "worker",
+        where: grant.claimed_by == ^claimed_by,
+        where: not is_nil(grant.claimed_at),
+        where: is_nil(grant.revoked_at),
+        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
+        order_by: [desc: grant.claimed_at, desc: grant.updated_at, asc: grant.id],
+        limit: 1
+      )
+      |> scope_live_package_authority(terminal_statuses)
+
+    case repo.one(query) do
+      %AccessGrant{} = grant -> {:ok, grant}
+      nil -> {:error, :not_found}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp reconnect_or_claim_local_worker_grant(repo, work_package_id, claimed_by, now, terminal_statuses) do
+    case local_reconnect_grant(repo, work_package_id, claimed_by, now, terminal_statuses) do
+      {:ok, grant} ->
+        {:ok, grant}
+
+      {:error, :not_found} ->
+        claim_unclaimed_local_worker_grant(repo, work_package_id, claimed_by, now, terminal_statuses)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp claim_unclaimed_local_worker_grant(repo, work_package_id, claimed_by, now, terminal_statuses) do
+    with {:ok, grant} <- local_unclaimed_worker_grant(repo, work_package_id, now, terminal_statuses) do
+      persist_claim(repo, grant, claimed_by, now, terminal_statuses)
+    end
+  end
+
+  defp local_unclaimed_worker_grant(repo, work_package_id, now, terminal_statuses) do
+    query =
+      from(grant in AccessGrant,
+        where: grant.work_package_id == ^work_package_id,
+        where: grant.grant_role == "worker",
+        where: is_nil(grant.claimed_at),
+        where: is_nil(grant.revoked_at),
+        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
+        order_by: [desc: grant.inserted_at, desc: grant.id],
+        limit: 1
+      )
+      |> scope_live_package_authority(terminal_statuses)
+
+    case repo.one(query) do
+      %AccessGrant{} = grant -> {:ok, grant}
+      nil -> local_worker_grant_missing_reason(repo, work_package_id, terminal_statuses)
+    end
   end
 
   defp reload_claim_error(repo, grant_id, now, terminal_statuses) do

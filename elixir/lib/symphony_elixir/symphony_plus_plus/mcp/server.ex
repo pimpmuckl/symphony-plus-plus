@@ -9,6 +9,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service, as: ClaimLeaseService
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
@@ -47,6 +49,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
@@ -55,7 +58,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @health_tool "sympp.health"
   @solo_tools ["solo_attach", "solo_append", "solo_show", "solo_list", "solo_update_status"]
   @bootstrap_tools ["claim_private_handoff", "create_work_request"]
-  @session_claim_tools ["claim_work_key", "claim_private_handoff"]
+  @local_operator_tools ["add_work_request_comment", "record_work_request_operator_decision"]
+  @local_operator_text_max_length Comment.max_body_length()
+  @local_operator_provenance_max_length 512
+  @local_assignment_claim_tool "claim_local_assignment"
+  @session_claim_tools ["claim_work_key", "claim_private_handoff", @local_assignment_claim_tool]
   @private_handoff_claim_keys [
     "mode",
     "path",
@@ -176,6 +183,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @finding_replay_retry_attempts 50
   @handle_state_ttl_ms 86_400_000
   @explicit_handle_state_ttl_ms 604_800_000
+  @local_assignment_claim_stale_after_ms 86_400_000
   @handle_state_agent Module.concat(__MODULE__, HandleState)
   @scope_guard_gate "scope_guard"
   @plan_append_argument_keys ["body", "expected_version", "id", "status", "title", "work_package_id"]
@@ -188,6 +196,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     :session,
     :state_key,
     :state_key_version,
+    local_daemon_trusted: false,
     state_key_explicit: false,
     session_refresh_required: false,
     initialized: false
@@ -198,6 +207,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
           session: Session.t() | nil,
           state_key: term(),
           state_key_version: integer() | nil,
+          local_daemon_trusted: boolean(),
           state_key_explicit: boolean(),
           session_refresh_required: boolean(),
           initialized: boolean()
@@ -215,6 +225,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       session: Keyword.get(opts, :session),
       state_key: state_key,
       state_key_version: nil,
+      local_daemon_trusted: Keyword.get(opts, :local_daemon_trusted, false),
       state_key_explicit: state_key_explicit?,
       session_refresh_required: false,
       initialized: Keyword.get(opts, :initialized, false)
@@ -870,10 +881,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp dispatch("tools/call", %{"name" => @local_assignment_claim_tool} = params, %__MODULE__{} = server) do
+    case claim_local_assignment(params, server) do
+      {:ok, result, session} ->
+        {:ok, tool_result(result), %{server | session: session, session_refresh_required: false}}
+
+      {:error, code, message, data} ->
+        {:error, code, message, data}
+    end
+  end
+
   defp dispatch("tools/call", %{"name" => "create_work_request"} = params, %__MODULE__{} = server) do
     case prepare_bootstrap_tool_call(server, params, "create_work_request") do
       {:ok, arguments} -> bootstrap_tool("create_work_request", arguments, server)
       {:error, code, message, data} -> {:error, code, message, data}
+    end
+  end
+
+  defp dispatch("tools/call", %{"name" => name} = params, %__MODULE__{} = server) when name in @local_operator_tools do
+    case prepare_local_operator_tool_call(server, params, name) do
+      {:ok, arguments} -> local_operator_tool(name, arguments, server)
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:error, reason} -> local_operator_error(reason, name)
     end
   end
 
@@ -1460,6 +1489,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
+  defp local_operator_tool_spec(name) do
+    %{
+      "name" => name,
+      "title" => name,
+      "description" => local_operator_tool_description(name),
+      "inputSchema" => local_operator_tool_input_schema(name)
+    }
+  end
+
   defp solo_tool_description("solo_attach") do
     "Create or attach a local Solo Session for a repo, base branch, absolute workspace path, and caller id."
   end
@@ -1486,6 +1524,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp bootstrap_tool_description("create_work_request") do
     "Create a local Symphony++ WorkRequest with creator provenance and return a redacted architect handoff."
+  end
+
+  defp local_operator_tool_description("add_work_request_comment") do
+    "Append a redacted local-operator comment to a WorkRequest by id. Requires an unbound trusted local HTTP MCP session with an explicit state key and a file-backed local ledger; grants no dispatch or lifecycle authority."
+  end
+
+  defp local_operator_tool_description("record_work_request_operator_decision") do
+    "Record a redacted local-operator decision on a WorkRequest by id. Requires an unbound trusted local HTTP MCP session with an explicit state key and a file-backed local ledger; does not require ownership of that WorkRequest."
   end
 
   defp architect_tool_spec(name) do
@@ -1590,7 +1636,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_description("dispatch_work_request_planned_slice") do
-    "Dispatch one approved planned slice into a WorkPackage and private worker handoff."
+    "Dispatch one approved planned slice into a WorkPackage and redacted ledger-backed worker claim bootstrap."
   end
 
   defp architect_tool_description("prepare_work_package_worktree") do
@@ -1738,8 +1784,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> always_validate(%{"anyOf" => [%{"required" => ["description"]}, %{"required" => ["human_description"]}]})
   end
 
+  defp local_operator_tool_input_schema("add_work_request_comment") do
+    schema(
+      %{
+        "work_request_id" => described_string_schema("Target WorkRequest id."),
+        "body" =>
+          described_string_schema("Non-secret comment body. Redacted before storage and response.")
+          |> Map.put("maxLength", @local_operator_text_max_length),
+        "created_by" =>
+          described_string_schema("Local operator or agent provenance for audit display.")
+          |> Map.put("maxLength", @local_operator_provenance_max_length)
+      },
+      ["work_request_id", "body", "created_by"]
+    )
+  end
+
+  defp local_operator_tool_input_schema("record_work_request_operator_decision") do
+    schema(
+      %{
+        "work_request_id" => described_string_schema("Target WorkRequest id."),
+        "decision" =>
+          described_string_schema("Non-secret decision text. Redacted before storage and response.")
+          |> Map.put("maxLength", @local_operator_text_max_length),
+        "rationale" =>
+          described_string_schema("Non-secret rationale for the decision.")
+          |> Map.put("maxLength", @local_operator_text_max_length),
+        "scope_impact" =>
+          described_string_schema("Non-secret note on scope or delivery impact.")
+          |> Map.put("maxLength", @local_operator_text_max_length),
+        "created_by" =>
+          described_string_schema("Local operator or agent provenance for audit display.")
+          |> Map.put("maxLength", @local_operator_provenance_max_length),
+        "source_id" =>
+          described_string_schema("Optional local source id, such as a PR review or operator note id.")
+          |> Map.put("maxLength", @local_operator_provenance_max_length)
+      },
+      ["work_request_id", "decision", "rationale", "scope_impact", "created_by"]
+    )
+  end
+
   defp worker_tool_input_schema("claim_work_key") do
     schema(%{"secret" => string_schema(), "claimed_by" => string_schema()}, ["secret", "claimed_by"])
+  end
+
+  defp worker_tool_input_schema(@local_assignment_claim_tool) do
+    schema(
+      %{
+        "repo" => string_schema(),
+        "base_branch" => string_schema(),
+        "work_package_id" => string_schema(),
+        "work_request_id" => string_schema(),
+        "branch" => string_schema(),
+        "worktree_path" => string_schema(),
+        "caller_id" => string_schema(),
+        "claimed_by" => string_schema()
+      },
+      ["repo", "base_branch", "work_package_id", "branch", "worktree_path", "caller_id", "claimed_by"]
+    )
   end
 
   defp worker_tool_input_schema(name) when name in ["get_current_assignment", "read_context", "read_task_plan", "mark_ready"] do
@@ -2163,11 +2264,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "work_request_id" => string_schema(),
         "planned_slice_id" => string_schema(),
         "claimed_by" => string_schema(),
-        "secret_handoff" => string_schema(),
-        "secret_store_dir" => string_schema(),
+        "legacy_private_handoff" => Map.put(boolean_schema(), "description", "recovery-only path for private-store handoff replay; normal dispatch returns ledger-backed worker bootstrap."),
+        "secret_handoff" => described_string_schema("Legacy recovery-only handoff mode. Rejected unless legacy_private_handoff is true."),
+        "secret_store_dir" => described_string_schema("Legacy recovery-only private handoff store directory. Rejected unless legacy_private_handoff is true."),
         "symphony_repo_root" =>
           described_string_schema(
-            "Optional Symphony++ helper/namespace repo root containing scripts/sympp-worker-secret.*. This is not the target product repo root and defaults to the configured or local Symphony++ root when discoverable."
+            "Optional Symphony++ helper/namespace repo root containing scripts/sympp-worker-secret.* for legacy private handoff. Default ledger-claim dispatch accepts but ignores it."
           ),
         "repo_root" =>
           described_string_schema("Legacy compatibility alias for stale clients; use symphony_repo_root for new calls.")
@@ -2238,45 +2340,95 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(%{"phase_id" => string_schema(), "update" => object_schema()}, ["phase_id", "update"])
   end
 
-  defp tool_specs_for_session(_config, nil) do
-    {:ok, unbound_tool_specs()}
+  defp tool_specs_for_session(config, nil) do
+    {:ok, unbound_tool_specs(config)}
   end
 
-  defp tool_specs_for_session(%Config{repo: repo}, session) do
+  defp tool_specs_for_session(%Config{repo: repo} = config, session) do
     with :ok <- prepare_mcp_repository(repo) do
-      case Auth.require_session(session, repo) do
-        {:ok, %Session{assignment: %{grant_role: "architect"}}} ->
-          {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs()]}
-
-        {:ok, %Session{assignment: %{grant_role: "worker"}}} ->
-          {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
-
-        {:ok, %Session{}} ->
-          {:error, {:unauthorized, :unsupported_grant_role}}
-
-        {:error, {:service_unavailable, _reason} = reason} ->
-          {:error, reason}
-
-        {:error, _reason} ->
-          {:ok, claimable_tool_specs()}
-      end
+      session
+      |> Auth.require_session(repo)
+      |> tool_specs_for_session_result(config)
     end
   end
 
-  defp claimable_tool_specs, do: [health_tool_spec(), worker_tool_spec("claim_work_key"), bootstrap_tool_spec("claim_private_handoff")]
+  defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "architect"}} = session}, %Config{repo: repo}) do
+    with {:ok, architect_specs} <- architect_tool_specs(repo, session) do
+      {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_specs]}
+    end
+  end
 
-  defp unbound_tool_specs do
+  defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "worker"}}}, %Config{}),
+    do: {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
+
+  defp tool_specs_for_session_result({:ok, %Session{}}, %Config{}), do: {:error, {:unauthorized, :unsupported_grant_role}}
+
+  defp tool_specs_for_session_result({:error, {:service_unavailable, _reason} = reason}, %Config{}), do: {:error, reason}
+
+  defp tool_specs_for_session_result({:error, _reason}, %Config{} = config) do
+    {:ok, claimable_tool_specs(config)}
+  end
+
+  defp claimable_tool_specs(%Config{} = config) do
+    [health_tool_spec(), worker_tool_spec("claim_work_key")] ++
+      local_assignment_claim_tool_specs(config) ++
+      [bootstrap_tool_spec("claim_private_handoff")]
+  end
+
+  defp unbound_tool_specs(%Config{} = config) do
     [health_tool_spec()] ++
       Enum.map(@solo_tools, &solo_tool_spec/1) ++
       [worker_tool_spec("claim_work_key")] ++
+      local_assignment_claim_tool_specs(config) ++
       Enum.map(@bootstrap_tools, &bootstrap_tool_spec/1) ++ architect_tool_specs()
   end
 
+  defp local_assignment_claim_tool_specs(%Config{mode: :http}), do: [worker_tool_spec(@local_assignment_claim_tool)]
+  defp local_assignment_claim_tool_specs(%Config{}), do: []
+
   defp architect_tool_specs, do: Enum.map(@architect_tools, &architect_tool_spec/1)
 
-  defp tool_specs_for_server(%__MODULE__{session_refresh_required: true}), do: {:ok, claimable_tool_specs()}
+  defp architect_tool_specs(repo, %Session{} = session) do
+    with {:ok, effective_assignment} <- effective_architect_assignment(repo, session.assignment) do
+      architect_tool_specs_for_assignment(effective_assignment)
+    end
+  end
 
-  defp tool_specs_for_server(%__MODULE__{config: config, session: session}), do: tool_specs_for_session(config, session)
+  defp architect_tool_specs_for_assignment(assignment) do
+    specs =
+      @architect_tools
+      |> Enum.filter(&(require_architect_capabilities(assignment, architect_tool_required_capabilities(&1)) == :ok))
+      |> Enum.map(&architect_tool_spec/1)
+
+    {:ok, specs}
+  end
+
+  defp tool_specs_for_server(%__MODULE__{session_refresh_required: true, config: config} = server) do
+    {:ok, claimable_tool_specs(config) ++ local_operator_tool_specs(server)}
+  end
+
+  defp tool_specs_for_server(%__MODULE__{config: config, session: session} = server) do
+    with {:ok, specs} <- tool_specs_for_session(config, session) do
+      {:ok, specs ++ local_operator_tool_specs(server)}
+    end
+  end
+
+  defp local_operator_tool_specs(%__MODULE__{} = server) do
+    if local_operator_tools_enabled?(server), do: Enum.map(@local_operator_tools, &local_operator_tool_spec/1), else: []
+  end
+
+  defp local_operator_tools_enabled?(%__MODULE__{
+         config: %Config{mode: :http, local_daemon_trusted: true} = config,
+         local_daemon_trusted: true,
+         initialized: true,
+         session_refresh_required: false,
+         state_key_explicit: true,
+         session: nil
+       }) do
+    require_local_operator_database(config) == :ok
+  end
+
+  defp local_operator_tools_enabled?(%__MODULE__{}), do: false
 
   defp schema(properties, required) do
     %{"type" => "object", "additionalProperties" => false, "properties" => properties, "required" => required}
@@ -2559,12 +2711,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp handle_session_claim_tool(@local_assignment_claim_tool, params, id, %__MODULE__{} = server) do
+    case claim_local_assignment(params, server) do
+      {:ok, result, session} ->
+        {response(id, tool_result(result)), %{server | session: session, session_refresh_required: false}}
+
+      {:error, code, message, data} ->
+        {error_response(id, code, message, data), server}
+    end
+  end
+
   defp handle_session_claim_tool_notification("claim_work_key", params, %__MODULE__{} = server) do
     handle_claim_work_key_notification(params, server)
   end
 
   defp handle_session_claim_tool_notification("claim_private_handoff", params, %__MODULE__{} = server) do
     case claim_private_handoff(params, server) do
+      {:ok, _result, session} -> {nil, %{server | session: session, session_refresh_required: false}}
+      {:error, _code, _message, _data} -> {nil, server}
+    end
+  end
+
+  defp handle_session_claim_tool_notification(@local_assignment_claim_tool, params, %__MODULE__{} = server) do
+    case claim_local_assignment(params, server) do
       {:ok, _result, session} -> {nil, %{server | session: session, session_refresh_required: false}}
       {:error, _code, _message, _data} -> {nil, server}
     end
@@ -2627,6 +2796,626 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   rescue
     _error -> {:error, -32_000, "Server error", %{"tool" => "claim_work_key", "reason" => "ledger_unavailable"}}
+  end
+
+  defp claim_local_assignment(params, %__MODULE__{config: config, session: session} = server) do
+    with {:ok, arguments} <- worker_tool_arguments(params, @local_assignment_claim_tool),
+         {:ok, claim} <- local_assignment_claim_arguments(arguments),
+         :ok <- require_local_assignment_claim_mode(server),
+         :ok <- require_local_assignment_rebind_allowed(config.repo, session, claim),
+         :ok <- prepare_mcp_repository(config.repo),
+         {:ok, work_package} <- WorkPackageRepository.get(config.repo, claim.work_package_id),
+         :ok <- validate_local_assignment_scope(config.repo, work_package, claim),
+         {:ok, lease, lease_action} <- ensure_local_assignment_claim_lease(config.repo, work_package, claim) do
+      case claim_local_assignment_session(config.repo, work_package, claim) do
+        {:ok, result, session, grant_action} ->
+          finalize_local_assignment_claim(config.repo, result, session, claim, lease, lease_action, grant_action)
+
+        {:error, reason} ->
+          release_failed_local_assignment_lease(config.repo, lease, lease_action, reason)
+          local_assignment_claim_error(reason)
+      end
+    else
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => @local_assignment_claim_tool, "reason" => reason}}
+      {:error, reason} -> local_assignment_claim_error(reason)
+    end
+  rescue
+    _error -> {:error, -32_000, "Server error", %{"tool" => @local_assignment_claim_tool, "reason" => "ledger_unavailable"}}
+  end
+
+  defp local_assignment_claim_arguments(arguments) do
+    with {:ok, repo} <- required_argument(arguments, "repo"),
+         {:ok, base_branch} <- required_argument(arguments, "base_branch"),
+         {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
+         {:ok, work_request_id} <- optional_string_argument(arguments, "work_request_id"),
+         {:ok, branch} <- required_argument(arguments, "branch"),
+         {:ok, worktree_path} <- required_argument(arguments, "worktree_path"),
+         {:ok, caller_id} <- required_argument(arguments, "caller_id"),
+         {:ok, claimed_by} <- required_argument(arguments, "claimed_by") do
+      {:ok,
+       %{
+         repo: repo,
+         base_branch: base_branch,
+         work_package_id: work_package_id,
+         work_request_id: work_request_id,
+         branch: branch,
+         worktree_path: normalize_local_assignment_path(worktree_path),
+         caller_id: caller_id,
+         claimed_by: claimed_by
+       }}
+    end
+  end
+
+  defp require_local_assignment_claim_mode(%__MODULE__{
+         config: %Config{mode: :http},
+         initialized: true,
+         local_daemon_trusted: true,
+         state_key_explicit: true
+       }),
+       do: :ok
+
+  defp require_local_assignment_claim_mode(%__MODULE__{config: %Config{mode: :http}, state_key_explicit: true}),
+    do: {:error, :local_daemon_trust_required}
+
+  defp require_local_assignment_claim_mode(%__MODULE__{config: %Config{mode: :http}}), do: {:error, :local_mcp_session_required}
+  defp require_local_assignment_claim_mode(%__MODULE__{}), do: {:error, :local_mcp_required}
+
+  defp require_local_assignment_rebind_allowed(_repo, nil, _claim), do: :ok
+
+  defp require_local_assignment_rebind_allowed(repo, %Session{} = session, claim) do
+    if session.assignment.work_package_id == claim.work_package_id and
+         session.assignment.claimed_by == claim.claimed_by do
+      :ok
+    else
+      case Auth.require_session(session, repo) do
+        {:ok, %Session{}} -> {:error, :session_already_bound}
+        {:error, {:service_unavailable, _reason} = reason} -> {:error, reason}
+        {:error, _reason} -> :ok
+      end
+    end
+  end
+
+  defp validate_local_assignment_scope(repo, %WorkPackage{} = work_package, claim) do
+    with :ok <- require_local_value_match(work_package.repo, claim.repo, :repo_scope_mismatch),
+         :ok <- require_local_value_match(work_package.base_branch, claim.base_branch, :base_branch_scope_mismatch),
+         :ok <- require_local_worktree_scope(work_package, claim.worktree_path),
+         :ok <- require_local_branch_scope(work_package, claim.branch, claim.worktree_path),
+         :ok <- require_live_local_work_package(work_package) do
+      validate_local_work_request_scope(repo, work_package, claim.work_request_id)
+    end
+  end
+
+  defp require_local_value_match(value, value, _reason) when is_binary(value), do: :ok
+  defp require_local_value_match(_expected, _actual, reason), do: {:error, reason}
+
+  defp require_local_branch_scope(%WorkPackage{} = work_package, branch, worktree_path) do
+    case local_assignment_worktree_branch(worktree_path) do
+      {:ok, ^branch} -> require_local_branch_pattern_scope(work_package, branch, prepared_worktree?: true)
+      {:ok, _branch} -> {:error, :branch_scope_mismatch}
+      {:error, :git_metadata_missing} -> require_local_branch_pattern_scope(work_package, branch, prepared_worktree?: false)
+      {:error, _reason} -> {:error, :branch_scope_mismatch}
+    end
+  end
+
+  defp require_local_branch_pattern_scope(%WorkPackage{branch_pattern: branch_pattern} = work_package, branch, opts) do
+    case normalize_optional_value(branch_pattern) do
+      nil ->
+        :ok
+
+      pattern ->
+        cond do
+          pattern == branch and not local_branch_template_pattern?(pattern) ->
+            :ok
+
+          Keyword.get(opts, :prepared_worktree?, false) and local_branch_template_matches?(work_package, pattern, branch) ->
+            :ok
+
+          true ->
+            {:error, :branch_scope_mismatch}
+        end
+    end
+  end
+
+  defp local_branch_template_pattern?(pattern) when is_binary(pattern) do
+    Regex.match?(~r/\{\{\s*[a-zA-Z0-9_]+\s*\}\}/, pattern)
+  end
+
+  defp local_branch_template_pattern?(_pattern), do: false
+
+  defp local_branch_template_matches?(%WorkPackage{} = work_package, pattern, branch)
+       when is_binary(pattern) and is_binary(branch) do
+    case Regex.scan(~r/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/, pattern, return: :index) do
+      [] ->
+        false
+
+      matches ->
+        source = "^" <> local_branch_template_regex_source(pattern, matches, work_package) <> "$"
+        Regex.match?(Regex.compile!(source), branch)
+    end
+  end
+
+  defp local_branch_template_matches?(%WorkPackage{}, _pattern, _branch), do: false
+
+  defp local_branch_template_regex_source(pattern, matches, work_package) do
+    {parts, cursor} =
+      Enum.reduce(matches, {[], 0}, fn [{match_start, match_length}, {capture_start, capture_length}], {parts, cursor} ->
+        literal = pattern |> binary_part(cursor, match_start - cursor) |> Regex.escape()
+        placeholder = binary_part(pattern, capture_start, capture_length)
+        replacement = local_branch_template_placeholder_regex(work_package, placeholder)
+
+        {[replacement, literal | parts], match_start + match_length}
+      end)
+
+    suffix = pattern |> binary_part(cursor, byte_size(pattern) - cursor) |> Regex.escape()
+    IO.iodata_to_binary(Enum.reverse([suffix | parts]))
+  end
+
+  defp local_branch_template_placeholder_regex(%WorkPackage{} = work_package, placeholder) do
+    case placeholder do
+      "work_package_id" -> local_branch_template_literal_regex(work_package.id)
+      "id" -> local_branch_template_literal_regex(work_package.id)
+      "phase_id" -> local_branch_template_literal_regex(work_package.phase_id)
+      "parent_id" -> local_branch_template_literal_regex(work_package.parent_id)
+      "owner_id" -> local_branch_template_literal_regex(work_package.owner_id)
+      _placeholder -> "[^/]+"
+    end
+  end
+
+  defp local_branch_template_literal_regex(value) do
+    case normalize_optional_value(value) do
+      nil -> "[^/]+"
+      value -> Regex.escape(value)
+    end
+  end
+
+  defp local_assignment_worktree_branch(worktree_path) when is_binary(worktree_path) do
+    with true <- File.dir?(worktree_path),
+         {:ok, git_dir} <- local_assignment_git_dir(worktree_path),
+         {:ok, head} <- File.read(Path.join(git_dir, "HEAD")),
+         {:ok, branch} <- local_assignment_head_branch(head) do
+      {:ok, branch}
+    else
+      false -> {:error, :git_metadata_missing}
+      {:error, :enoent} -> {:error, :git_metadata_missing}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp local_assignment_worktree_branch(_worktree_path), do: {:error, :git_metadata_missing}
+
+  defp local_assignment_git_dir(worktree_path) do
+    dot_git = Path.join(worktree_path, ".git")
+
+    cond do
+      File.dir?(dot_git) ->
+        {:ok, dot_git}
+
+      File.regular?(dot_git) ->
+        dot_git
+        |> File.read()
+        |> local_assignment_git_dir_from_file(worktree_path)
+
+      true ->
+        {:error, :git_metadata_missing}
+    end
+  end
+
+  defp local_assignment_git_dir_from_file({:ok, contents}, worktree_path) do
+    case contents |> String.trim() |> String.split(":", parts: 2) do
+      ["gitdir", git_dir] -> {:ok, Path.expand(String.trim(git_dir), worktree_path)}
+      _contents -> {:error, :git_metadata_invalid}
+    end
+  end
+
+  defp local_assignment_git_dir_from_file({:error, reason}, _worktree_path), do: {:error, reason}
+
+  defp local_assignment_head_branch(head) when is_binary(head) do
+    case String.trim(head) do
+      "ref: refs/heads/" <> branch when branch != "" -> {:ok, branch}
+      _detached_or_invalid -> {:error, :git_head_invalid}
+    end
+  end
+
+  defp require_local_worktree_scope(%WorkPackage{worktree_path: worktree_path}, claim_worktree_path) do
+    case normalize_optional_value(worktree_path) do
+      nil ->
+        {:error, :worktree_scope_required}
+
+      expected_worktree_path ->
+        if normalize_local_assignment_path(expected_worktree_path) == claim_worktree_path do
+          :ok
+        else
+          {:error, :worktree_scope_mismatch}
+        end
+    end
+  end
+
+  defp require_live_local_work_package(%WorkPackage{status: status})
+       when status in ["merged", "merged_into_phase", "closed", "abandoned"] do
+    {:error, :work_package_terminal}
+  end
+
+  defp require_live_local_work_package(%WorkPackage{}), do: :ok
+
+  defp validate_local_work_request_scope(_repo, %WorkPackage{}, nil), do: :ok
+
+  defp validate_local_work_request_scope(repo, %WorkPackage{} = work_package, work_request_id) do
+    with {:ok, work_request} <- WorkRequestRepository.get(repo, work_request_id),
+         :ok <- require_local_value_match(work_request.repo, work_package.repo, :work_request_scope_mismatch),
+         :ok <-
+           require_local_value_match(
+             work_request.base_branch,
+             work_package.base_branch,
+             :work_request_scope_mismatch
+           ),
+         true <- local_work_request_package_linked?(repo, work_request_id, work_package.id) do
+      :ok
+    else
+      false -> {:error, :work_request_scope_mismatch}
+      {:error, :not_found} -> {:error, :work_request_scope_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp local_work_request_package_linked?(repo, work_request_id, work_package_id) do
+    query =
+      from(planned_slice in PlannedSlice,
+        where: planned_slice.work_request_id == ^work_request_id,
+        where: planned_slice.work_package_id == ^work_package_id,
+        select: 1,
+        limit: 1
+      )
+
+    repo.one(query) == 1
+  end
+
+  defp ensure_local_assignment_claim_lease(repo, %WorkPackage{} = work_package, claim) do
+    actor = local_assignment_actor(claim)
+
+    case ClaimLeaseService.current_for_work_package(repo, work_package.id) do
+      {:ok, %ClaimLease{} = lease} ->
+        renew_local_assignment_claim_lease(repo, work_package.id, lease, actor)
+
+      {:error, :not_found} ->
+        claim_new_local_assignment_lease(repo, work_package.id, actor)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp renew_local_assignment_claim_lease(repo, work_package_id, %ClaimLease{} = lease, actor) do
+    now = DateTime.utc_now(:microsecond)
+
+    cond do
+      lease.status == "paused" ->
+        {:error, :claim_lease_paused}
+
+      ClaimLease.stale?(lease, now) ->
+        reclaim_local_assignment_claim_lease(repo, work_package_id, actor, "local_assignment_claim_stale")
+
+      lease.actor_id == actor["actor_id"] and lease.status == "active" ->
+        heartbeat_local_assignment_claim_lease(repo, work_package_id, lease, actor)
+
+      lease.actor_id == actor["actor_id"] ->
+        {:error, :claim_lease_not_active}
+
+      true ->
+        replace_authority_lost_local_assignment_claim_lease(repo, work_package_id, lease, actor, now)
+    end
+  end
+
+  defp heartbeat_local_assignment_claim_lease(repo, work_package_id, %ClaimLease{} = lease, actor) do
+    case ClaimLeaseService.heartbeat(repo, lease.id, stale_after_ms: @local_assignment_claim_stale_after_ms) do
+      {:ok, %ClaimLease{} = renewed} ->
+        {:ok, renewed, :heartbeat}
+
+      {:error, :claim_stale} ->
+        reclaim_local_assignment_claim_lease(repo, work_package_id, actor, "local_assignment_claim_stale")
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp replace_authority_lost_local_assignment_claim_lease(repo, work_package_id, %ClaimLease{} = lease, actor, %DateTime{} = now) do
+    cond do
+      local_assignment_same_claim_owner?(lease, actor) ->
+        {:error, :claim_lease_active_for_other_actor}
+
+      local_assignment_lease_has_live_grant?(repo, work_package_id, lease, now) ->
+        {:error, :claim_lease_active_for_other_actor}
+
+      true ->
+        release_authority_lost_local_assignment_claim_lease(repo, work_package_id, lease, actor)
+    end
+  end
+
+  defp local_assignment_same_claim_owner?(%ClaimLease{} = lease, actor) when is_map(actor) do
+    case {local_assignment_claim_owner_id(lease.actor_id), local_assignment_claim_owner_id(actor["actor_id"])} do
+      {owner_id, owner_id} when is_binary(owner_id) -> true
+      _ -> false
+    end
+  end
+
+  defp local_assignment_claim_owner_id("local:" <> material) do
+    case String.split(material, ":", parts: 2) do
+      [owner_id, _actor_id] when owner_id != "" -> owner_id
+      _ -> nil
+    end
+  end
+
+  defp local_assignment_claim_owner_id(_actor_id), do: nil
+
+  defp release_authority_lost_local_assignment_claim_lease(repo, work_package_id, %ClaimLease{} = lease, actor) do
+    case ClaimLeaseService.release(repo, lease.id, reason: "local_assignment_claim_authority_lost") do
+      {:ok, %ClaimLease{}} ->
+        claim_replacement_local_assignment_lease(repo, work_package_id, actor)
+
+      {:error, :claim_stale} ->
+        reclaim_local_assignment_claim_lease(repo, work_package_id, actor, "local_assignment_claim_stale")
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp claim_replacement_local_assignment_lease(repo, work_package_id, actor) do
+    case claim_new_local_assignment_lease(repo, work_package_id, actor) do
+      {:ok, %ClaimLease{} = replacement, :created} -> {:ok, replacement, :reclaimed}
+      result -> result
+    end
+  end
+
+  defp claim_new_local_assignment_lease(repo, work_package_id, actor) do
+    case ClaimLeaseService.claim(repo, work_package_id, actor, stale_after_ms: @local_assignment_claim_stale_after_ms) do
+      {:ok, %ClaimLease{} = lease} -> {:ok, lease, :created}
+      {:error, :active_claim_exists} -> renew_current_local_assignment_claim_lease(repo, work_package_id, actor)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp renew_current_local_assignment_claim_lease(repo, work_package_id, actor) do
+    requested_actor_id = actor["actor_id"]
+
+    case ClaimLeaseService.current_for_work_package(repo, work_package_id) do
+      {:ok, %ClaimLease{actor_id: ^requested_actor_id} = lease} ->
+        renew_local_assignment_claim_lease(repo, work_package_id, lease, actor)
+
+      {:ok, %ClaimLease{}} ->
+        {:error, :active_claim_exists}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp local_assignment_lease_has_live_grant?(repo, work_package_id, %ClaimLease{actor_display_name: claimed_by}, %DateTime{} = now)
+       when is_binary(claimed_by) do
+    query =
+      from(grant in AccessGrant,
+        where: grant.work_package_id == ^work_package_id,
+        where: grant.grant_role == "worker",
+        where: grant.claimed_by == ^claimed_by,
+        where: not is_nil(grant.claimed_at),
+        where: is_nil(grant.revoked_at),
+        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
+        select: 1,
+        limit: 1
+      )
+
+    repo.one(query) == 1
+  end
+
+  defp local_assignment_lease_has_live_grant?(_repo, _work_package_id, %ClaimLease{}, %DateTime{}), do: true
+
+  defp reclaim_local_assignment_claim_lease(repo, work_package_id, actor, reason) do
+    case ClaimLeaseService.reclaim_stale(repo, work_package_id, actor,
+           reason: reason,
+           stale_after_ms: @local_assignment_claim_stale_after_ms
+         ) do
+      {:ok, %ClaimLease{} = lease} -> {:ok, lease, :reclaimed}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp claim_local_assignment_session(repo, %WorkPackage{} = work_package, claim) do
+    claim_now = DateTime.utc_now(:microsecond)
+    existing_grant_ids = local_assignment_active_worker_grant_ids(repo, work_package.id, claim.claimed_by, claim_now)
+
+    with {:ok, grant} <-
+           AccessGrantService.claim_local_worker_grant(repo, work_package.id,
+             claimed_by: claim.claimed_by,
+             now: claim_now
+           ),
+         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash),
+         :ok <- require_worker_assignment(session.assignment) do
+      assignment = %{"assignment" => Session.public_assignment(session)}
+      {:ok, assignment, session, local_assignment_grant_action(grant, existing_grant_ids)}
+    end
+  end
+
+  @spec local_assignment_active_worker_grant_ids(module(), String.t(), String.t(), DateTime.t()) :: [String.t()]
+  defp local_assignment_active_worker_grant_ids(repo, work_package_id, claimed_by, %DateTime{} = now)
+       when is_atom(repo) and is_binary(work_package_id) and is_binary(claimed_by) do
+    query =
+      from(grant in AccessGrant,
+        where: grant.work_package_id == ^work_package_id,
+        where: grant.grant_role == "worker",
+        where: grant.claimed_by == ^claimed_by,
+        where: not is_nil(grant.claimed_at),
+        where: is_nil(grant.revoked_at),
+        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
+        select: grant.id
+      )
+
+    repo.all(query)
+  end
+
+  defp local_assignment_active_worker_grant_ids(_repo, _work_package_id, _claimed_by, %DateTime{}), do: []
+
+  @spec local_assignment_grant_action(AccessGrant.t(), [String.t()]) :: :reconnected | :claimed
+  defp local_assignment_grant_action(%AccessGrant{id: id}, existing_grant_ids) when is_binary(id) do
+    if id in existing_grant_ids, do: :reconnected, else: :claimed
+  end
+
+  defp local_assignment_actor(claim) do
+    owner_material =
+      [
+        claim.repo,
+        claim.base_branch,
+        claim.work_package_id,
+        claim.branch,
+        claim.worktree_path,
+        claim.claimed_by
+      ]
+      |> Enum.join("\0")
+
+    material =
+      [
+        claim.repo,
+        claim.base_branch,
+        claim.work_package_id,
+        claim.branch,
+        claim.worktree_path,
+        claim.caller_id,
+        claim.claimed_by
+      ]
+      |> Enum.join("\0")
+
+    owner_id = local_assignment_actor_hash(owner_material)
+    actor_id = local_assignment_actor_hash(material)
+
+    %{
+      "actor_kind" => "agent",
+      "actor_id" => "local:" <> owner_id <> ":" <> actor_id,
+      "actor_display_name" => claim.claimed_by
+    }
+  end
+
+  defp local_assignment_actor_hash(material) when is_binary(material) do
+    Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  end
+
+  defp finalize_local_assignment_claim(repo, result, %Session{} = session, claim, %ClaimLease{} = lease, lease_action, grant_action) do
+    case append_local_assignment_claim_event(repo, session, claim, lease, lease_action) do
+      {:ok, claim_event} ->
+        {:ok, Map.put(result, "local_claim", local_assignment_claim_payload(claim, lease, lease_action, claim_event)), session}
+
+      {:error, reason} ->
+        rollback_failed_local_assignment_claim(repo, session, lease, lease_action, grant_action, reason)
+        local_assignment_claim_error(reason)
+    end
+  end
+
+  defp rollback_failed_local_assignment_claim(repo, %Session{} = session, %ClaimLease{} = lease, lease_action, grant_action, reason) do
+    release_failed_local_assignment_lease(repo, lease, lease_action, reason)
+    revoke_failed_local_assignment_grant(repo, session, lease_action, grant_action)
+  end
+
+  defp revoke_failed_local_assignment_grant(repo, %Session{assignment: %{grant_id: grant_id}}, :reclaimed, :claimed)
+       when is_binary(grant_id) do
+    _result = AccessGrantService.revoke(repo, grant_id)
+    :ok
+  end
+
+  defp revoke_failed_local_assignment_grant(_repo, %Session{}, _lease_action, _grant_action), do: :ok
+
+  defp local_assignment_claim_payload(claim, %ClaimLease{} = lease, lease_action, claim_event) do
+    %{
+      "tool" => @local_assignment_claim_tool,
+      "mode" => "local-http",
+      "repo" => claim.repo,
+      "base_branch" => claim.base_branch,
+      "work_package_id" => claim.work_package_id,
+      "work_request_id" => claim.work_request_id,
+      "branch" => claim.branch,
+      "worktree_path" => claim.worktree_path,
+      "caller_id" => claim.caller_id,
+      "claimed_by" => claim.claimed_by,
+      "claim_lease_id" => lease.id,
+      "claim_lease_status" => lease.status,
+      "claim_lease_action" => Atom.to_string(lease_action),
+      "lifecycle_state" => "active",
+      "reason_codes" => local_assignment_claim_reason_codes(lease_action, lease)
+    }
+    |> maybe_put_claim_event(claim_event)
+  end
+
+  defp append_local_assignment_claim_event(_repo, %Session{}, _claim, %ClaimLease{}, lease_action) when lease_action != :reclaimed, do: {:ok, nil}
+
+  defp append_local_assignment_claim_event(repo, %Session{} = session, claim, %ClaimLease{} = lease, :reclaimed) do
+    payload = local_assignment_claim_reclaim_payload(claim, lease)
+
+    PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, claim.work_package_id, %{
+      "summary" => "Local assignment claim lease reclaimed",
+      "body" => "Local assignment claim lease was reclaimed for #{claim.claimed_by}.",
+      "status" => "claim_lease_reclaimed",
+      "idempotency_key" => metadata_idempotency_key(payload),
+      "payload" => payload
+    })
+  end
+
+  defp local_assignment_claim_reclaim_payload(claim, %ClaimLease{} = lease) do
+    %{
+      "type" => "claim_lease_reclaim",
+      "source_tool" => @local_assignment_claim_tool,
+      "work_package_id" => claim.work_package_id,
+      "work_request_id" => claim.work_request_id,
+      "claim_lease_id" => lease.id,
+      "claim_group_id" => lease.claim_group_id,
+      "previous_claim_id" => lease.previous_claim_id,
+      "claim_lease_status" => lease.status,
+      "claim_lease_action" => "reclaimed",
+      "claimed_by" => claim.claimed_by,
+      "caller_id" => claim.caller_id,
+      "lifecycle_state" => "active",
+      "reason_codes" => local_assignment_claim_reason_codes(:reclaimed, lease)
+    }
+  end
+
+  defp maybe_put_claim_event(payload, nil), do: payload
+
+  defp maybe_put_claim_event(payload, %ProgressEvent{} = event) do
+    Map.put(payload, "claim_event", progress_event_payload(event))
+  end
+
+  defp local_assignment_claim_reason_codes(lease_action, %ClaimLease{} = lease) do
+    [
+      "claim_lease_#{lease_action}",
+      if(lease.previous_claim_id, do: "worker_recycled")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp release_failed_local_assignment_lease(repo, %ClaimLease{} = lease, lease_action, _reason)
+       when lease_action in [:created, :reclaimed] do
+    _result = ClaimLeaseService.release(repo, lease.id, reason: "local_assignment_claim_failed")
+    :ok
+  end
+
+  defp release_failed_local_assignment_lease(repo, %ClaimLease{} = lease, :heartbeat, reason)
+       when reason in [:expired, :revoked, :worker_grant_required] do
+    _result = ClaimLeaseService.release(repo, lease.id, reason: "local_assignment_claim_failed")
+    :ok
+  end
+
+  defp release_failed_local_assignment_lease(_repo, %ClaimLease{}, _lease_action, _reason), do: :ok
+
+  defp normalize_local_assignment_path(path) when is_binary(path) do
+    path
+    |> String.trim()
+    |> Path.expand()
+    |> normalize_local_assignment_path_case()
+  end
+
+  defp normalize_local_assignment_path_case(path) do
+    case :os.type() do
+      {:win32, _name} -> String.downcase(path)
+      _type -> path
+    end
   end
 
   defp claim_private_handoff(params, %__MODULE__{config: config, session: %Session{} = session}) do
@@ -3040,6 +3829,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp claim_error({:migration_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
   defp claim_error(reason), do: {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => reason_text(reason)}}
 
+  defp local_assignment_claim_error(:database_busy), do: service_error(:database_busy, @local_assignment_claim_tool)
+  defp local_assignment_claim_error({:storage_failed, _reason} = reason), do: service_error(reason, @local_assignment_claim_tool)
+  defp local_assignment_claim_error({:migration_failed, _reason} = reason), do: service_error(reason, @local_assignment_claim_tool)
+
+  defp local_assignment_claim_error(reason) do
+    {:error, -32_001, "Unauthorized", %{"tool" => @local_assignment_claim_tool, "reason" => reason_text(reason)}}
+  end
+
   defp private_handoff_claim_error(:database_busy), do: service_error(:database_busy, "claim_private_handoff")
   defp private_handoff_claim_error({:storage_failed, _reason} = reason), do: service_error(reason, "claim_private_handoff")
   defp private_handoff_claim_error({:migration_failed, _reason} = reason), do: service_error(reason, "claim_private_handoff")
@@ -3074,6 +3871,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp prepare_local_operator_tool_call(%__MODULE__{} = server, params, name) do
+    with :ok <- require_tool_arguments_object(params, name),
+         :ok <- authorize_local_operator_tool_call(server, name),
+         :ok <- prepare_mcp_repository_for_tool(server.config.repo, name) do
+      local_operator_tool_arguments(params, name)
+    end
+  end
+
   defp require_tool_arguments_object(params, name) do
     case Map.get(params, "arguments", %{}) do
       arguments when is_map(arguments) -> :ok
@@ -3097,10 +3902,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     authorize_architect_tool_call(server, name)
   end
 
-  defp preauthorize_architect_tool_call(%__MODULE__{session: session}, name) do
-    with {:ok, session} <- Auth.require_session(session),
-         :ok <- require_architect_assignment(session.assignment) do
-      require_architect_capabilities(session.assignment, architect_tool_required_capabilities(name))
+  defp preauthorize_architect_tool_call(%__MODULE__{session: session}, _name) do
+    with {:ok, session} <- Auth.require_session(session) do
+      require_architect_assignment(session.assignment)
     end
   end
 
@@ -3112,6 +3916,70 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp authorize_bootstrap_tool_call(%__MODULE__{}, tool) do
     {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "bootstrap_tools_require_unbound_session"}}
+  end
+
+  defp authorize_local_operator_tool_call(
+         %__MODULE__{
+           initialized: true,
+           session_refresh_required: false,
+           config: %Config{mode: :http, local_daemon_trusted: true} = config,
+           local_daemon_trusted: true,
+           state_key_explicit: true,
+           session: nil
+         },
+         tool
+       ) do
+    case require_local_operator_database(config) do
+      :ok -> :ok
+      {:error, reason} -> {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => reason_text(reason)}}
+    end
+  end
+
+  defp authorize_local_operator_tool_call(%__MODULE__{initialized: false}, tool) do
+    {:error, -32_000, "Server error", %{"tool" => tool, "reason" => "server_not_initialized"}}
+  end
+
+  defp authorize_local_operator_tool_call(%__MODULE__{session_refresh_required: true}, tool) do
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "claim_required", "action" => "claim_private_handoff"}}
+  end
+
+  defp authorize_local_operator_tool_call(%__MODULE__{config: %Config{mode: :http}, session: %Session{}}, tool) do
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "local_operator_unbound_session_required"}}
+  end
+
+  defp authorize_local_operator_tool_call(%__MODULE__{config: %Config{mode: :http}, state_key_explicit: false}, tool) do
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "local_mcp_session_required"}}
+  end
+
+  defp authorize_local_operator_tool_call(%__MODULE__{config: %Config{mode: :http}}, tool) do
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "local_daemon_trust_required"}}
+  end
+
+  defp authorize_local_operator_tool_call(%__MODULE__{}, tool) do
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "local_mcp_required"}}
+  end
+
+  defp require_local_operator_database(%Config{repo: repo, database: database}) do
+    case normalized_database(database) do
+      nil -> require_local_operator_live_database(repo)
+      database -> require_local_operator_configured_database(database)
+    end
+  end
+
+  defp require_local_operator_configured_database(database) do
+    cond do
+      Repo.memory_database?(database) -> {:error, :file_backed_database_required}
+      remote_database_identity?(database) -> {:error, :local_database_required}
+      true -> :ok
+    end
+  end
+
+  defp require_local_operator_live_database(repo) do
+    case live_main_database_path(repo) do
+      {:ok, _path} -> :ok
+      :memory -> {:error, :file_backed_database_required}
+      :error -> {:error, :database_required}
+    end
   end
 
   defp prepare_mcp_repository(repo), do: Repository.ensure_migrated(repo)
@@ -3269,6 +4137,81 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, database} -> database
       _result -> nil
     end
+  end
+
+  defp local_operator_tool("add_work_request_comment", arguments, %__MODULE__{config: config}) do
+    with {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, body} <- required_argument(arguments, "body"),
+         {:ok, created_by} <- required_argument(arguments, "created_by"),
+         {:ok, work_request} <- WorkRequestService.get(config.repo, work_request_id),
+         {:ok, comment} <-
+           CommentService.create(config.repo, %{
+             "target_kind" => "work_request",
+             "target_id" => work_request.id,
+             "body" => Redactor.redact_text(body),
+             "source_type" => "operator",
+             "author_name" => Redactor.redact_text(created_by)
+           }) do
+      {:ok,
+       tool_result(%{
+         "comment" => comment_payload(comment),
+         "work_request" => work_request_mutation_payload(work_request),
+         "provenance" => local_operator_note_provenance(created_by)
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "add_work_request_comment", "reason" => reason}}
+      {:error, :not_found} -> not_found_error("add_work_request_comment")
+      {:error, reason} -> local_operator_error(reason, "add_work_request_comment")
+    end
+  end
+
+  defp local_operator_tool("record_work_request_operator_decision", arguments, %__MODULE__{config: config}) do
+    with {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, decision} <- required_argument(arguments, "decision"),
+         {:ok, rationale} <- required_argument(arguments, "rationale"),
+         {:ok, scope_impact} <- required_argument(arguments, "scope_impact"),
+         {:ok, created_by} <- required_argument(arguments, "created_by"),
+         {:ok, source_id} <- optional_string_argument(arguments, "source_id"),
+         {:ok, work_request} <- WorkRequestService.get(config.repo, work_request_id),
+         {:ok, decision_record} <-
+           WorkRequestService.record_decision(
+             config.repo,
+             work_request.id,
+             local_operator_decision_attrs(decision, rationale, scope_impact, created_by, source_id)
+           ) do
+      {:ok,
+       tool_result(%{
+         "work_request" => work_request_mutation_payload(work_request),
+         "decision_log_entry" => decision_log_entry_payload(decision_record),
+         "provenance" => local_operator_note_provenance(created_by, source_id),
+         "status" => %{"work_request_status" => work_request.status}
+       })}
+    else
+      {:tool_error, reason} ->
+        {:error, -32_602, "Invalid params", %{"tool" => "record_work_request_operator_decision", "reason" => reason}}
+
+      {:error, :not_found} ->
+        not_found_error("record_work_request_operator_decision")
+
+      {:error, reason} ->
+        local_operator_error(reason, "record_work_request_operator_decision")
+    end
+  end
+
+  defp local_operator_decision_attrs(decision, rationale, scope_impact, created_by, source_id) do
+    %{
+      "source_type" => "operator",
+      "decision" => Redactor.redact_text(decision),
+      "rationale" => Redactor.redact_text(rationale),
+      "scope_impact" => Redactor.redact_text(scope_impact),
+      "created_by" => Redactor.redact_text(created_by)
+    }
+    |> optional_put("source_id", Redactor.redact_text(source_id))
+  end
+
+  defp local_operator_note_provenance(created_by, source_id \\ nil) do
+    %{"source_type" => "operator", "created_by" => Redactor.redact_text(created_by)}
+    |> optional_put("source_id", Redactor.redact_text(source_id))
   end
 
   defp architect_tool("list_work_requests", arguments, %__MODULE__{config: config, session: session}) do
@@ -3768,8 +4711,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, planned_slice} <- scoped_work_request_planned_slice(config.repo, work_request_id, planned_slice_id),
          :ok <- require_planned_slice_target_base_branch_scope(work_request, planned_slice.target_base_branch),
          :ok <- require_approved_dispatch_planned_slice(planned_slice),
-         {:ok, handoff_opts} <- dispatch_planned_slice_handoff_opts(config, arguments, claimed_by),
-         {:ok, dispatch} <- PlannedSliceDispatch.dispatch(config.repo, work_request_id, planned_slice_id, handoff_opts) do
+         {:ok, handoff_opts, dispatch_opts} <- dispatch_planned_slice_bootstrap_opts(config, arguments, claimed_by),
+         {:ok, dispatch} <- PlannedSliceDispatch.dispatch(config.repo, work_request_id, planned_slice_id, handoff_opts, dispatch_opts) do
       {:ok, tool_result(dispatch_work_request_planned_slice_payload(dispatch, scope))}
     else
       {:tool_error, reason} -> invalid_params_error("dispatch_work_request_planned_slice", reason)
@@ -4029,6 +4972,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        |> put_optional_handoff_opt(:database, database)
        |> put_optional_handoff_opt(:mode, normalize_child_secret_handoff_mode(secret_handoff))
        |> put_optional_handoff_opt(:store_dir, secret_store_dir)}
+    end
+  end
+
+  defp dispatch_planned_slice_bootstrap_opts(%Config{} = config, arguments, claimed_by) do
+    with {:ok, legacy_private_handoff?} <- optional_boolean(arguments, "legacy_private_handoff", false) do
+      dispatch_planned_slice_bootstrap_opts(config, arguments, claimed_by, legacy_private_handoff?)
+    end
+  end
+
+  defp dispatch_planned_slice_bootstrap_opts(%Config{} = config, arguments, claimed_by, false) do
+    with :ok <- reject_legacy_private_handoff_arguments(arguments),
+         {:ok, database} <- dispatch_handoff_database(config.database, config.repo) do
+      {:ok, [claimed_by: claimed_by, database: database], []}
+    end
+  end
+
+  defp dispatch_planned_slice_bootstrap_opts(%Config{} = config, arguments, claimed_by, true) do
+    with {:ok, handoff_opts} <- dispatch_planned_slice_handoff_opts(config, arguments, claimed_by) do
+      {:ok, handoff_opts, [legacy_private_handoff?: true]}
+    end
+  end
+
+  defp reject_legacy_private_handoff_arguments(arguments) do
+    case Enum.find(["secret_handoff", "secret_store_dir", "repo_root"], &Map.has_key?(arguments, &1)) do
+      nil -> :ok
+      _argument -> {:tool_error, "legacy_private_handoff_required"}
     end
   end
 
@@ -4906,10 +5875,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       require_architect_anchor_status_scope(repo, session)
     else
       case require_architect_child_work_package_scope(repo, session, work_package_id) do
-        {:ok, _child} -> :ok
-        {:error, reason} -> {:error, reason}
-        {:tool_error, _reason} -> {:error, :phase_scope_not_available}
+        {:ok, _child} ->
+          :ok
+
+        {:error, :phase_scope_not_available} ->
+          require_architect_dispatched_work_package_status_scope(repo, session, work_package_id)
+
+        {:error, reason} ->
+          {:error, reason}
+
+        {:tool_error, "child_scope_outside_phase"} ->
+          require_architect_dispatched_work_package_status_scope(repo, session, work_package_id)
+
+        {:tool_error, _reason} ->
+          {:error, :phase_scope_not_available}
       end
+    end
+  end
+
+  defp require_architect_dispatched_work_package_status_scope(repo, %Session{} = session, work_package_id) do
+    with {:ok, grant} <- require_live_architect_grant(repo, session),
+         {:ok, true} <- ArchitectHandoff.handoff_phase_grant?(repo, grant),
+         {:ok, _work_package, _scope} <- scoped_worktree_work_package(repo, session, work_package_id) do
+      :ok
+    else
+      {:ok, false} -> {:error, :phase_scope_not_available}
+      {:error, :not_found} -> {:error, :phase_scope_not_available}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -5377,6 +6369,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp child_worker_revoke_payload(work_package_id, %AccessGrant{} = grant, reason, previous_status, new_status) do
+    reason_codes = child_worker_recycle_reason_codes(previous_status, new_status)
+
     %{
       "type" => "child_worker_key_revoke",
       "source_tool" => "revoke_child_worker_key",
@@ -5387,6 +6381,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "previous_status" => previous_status,
       "new_status" => new_status,
       "status_reset" => previous_status != new_status,
+      "lifecycle_state" => "recycled",
+      "reason_codes" => reason_codes,
       "private_handoff_cleanup" => "not_attempted"
     }
   end
@@ -5403,6 +6399,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "status_reset" => previous_status != child.status,
         "remint_available" => true,
         "remint_precondition" => "child_status_ready_for_worker",
+        "lifecycle_state" => "recycled",
+        "reason_codes" => child_worker_recycle_reason_codes(previous_status, child.status),
         "private_handoff_cleanup" => "not_attempted"
       },
       "revocation_event" => progress_event_payload(event)
@@ -5436,6 +6434,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          %AccessGrant{} = grant,
          reason
        ) do
+    reason_codes = planned_slice_worker_revoke_reason_codes()
+
     %{
       "type" => "planned_slice_worker_key_revoke",
       "source_tool" => "revoke_planned_slice_worker_key",
@@ -5446,6 +6446,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "reason" => redacted_child_worker_revoke_reason(reason),
       "revoked_at" => timestamp(grant.revoked_at),
       "work_package_status" => work_package.status,
+      "lifecycle_state" => "recycled",
+      "reason_codes" => reason_codes,
       "private_handoff_cleanup" => "not_attempted"
     }
   end
@@ -5467,11 +6469,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "status" => "revoked",
         "reason" => redacted_child_worker_revoke_reason(reason),
         "active_runtime_guard_bypassed" => false,
+        "lifecycle_state" => "recycled",
+        "reason_codes" => planned_slice_worker_revoke_reason_codes(),
         "private_handoff_cleanup" => "not_attempted"
       },
       "revocation_event" => progress_event_payload(event)
     }
   end
+
+  defp child_worker_recycle_reason_codes(previous_status, new_status) do
+    [
+      "worker_recycled",
+      if(previous_status != new_status, do: "work_package_reset_for_recycle")
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp planned_slice_worker_revoke_reason_codes, do: ["worker_recycled", "planned_slice_worker_key_revoked"]
 
   defp revoked_child_worker_grant_payload(%AccessGrant{} = grant) do
     %{
@@ -7829,7 +8843,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_session(repo, session, capability) when is_binary(capability) do
     with {:ok, session} <- Auth.require_session(session, repo),
          :ok <- require_architect_assignment(session.assignment),
-         :ok <- require_architect_capability(session.assignment, capability) do
+         :ok <- require_architect_capabilities(repo, session.assignment, [capability]) do
       {:ok, session}
     end
   end
@@ -7837,7 +8851,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_session(repo, session, capabilities) when is_list(capabilities) do
     with {:ok, session} <- Auth.require_session(session, repo),
          :ok <- require_architect_assignment(session.assignment),
-         :ok <- require_architect_capabilities(session.assignment, capabilities) do
+         :ok <- require_architect_capabilities(repo, session.assignment, capabilities) do
       {:ok, session}
     end
   end
@@ -7845,9 +8859,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_live_architect_grant(repo, %Session{} = session) do
     case AccessGrantRepository.get(repo, session.assignment.grant_id) do
       {:ok, %AccessGrant{} = grant} ->
-        with :ok <- require_session_grant_match(session.assignment, grant),
+        assignment = assignment_with_live_grant_capabilities(session.assignment, grant)
+
+        with :ok <- require_session_grant_match(assignment, grant),
              :ok <- require_live_grant(grant, DateTime.utc_now(:microsecond)),
-             :ok <- require_architect_assignment(session.assignment) do
+             :ok <- require_architect_assignment(assignment) do
           {:ok, grant}
         end
 
@@ -7859,20 +8875,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp assignment_with_live_grant_capabilities(assignment, %AccessGrant{} = grant) do
+    %{assignment | capabilities: grant.capabilities || []}
+  end
+
   defp require_session_grant_match(assignment, %AccessGrant{} = grant) do
-    if assignment.grant_id == grant.id and
-         assignment.work_package_id == grant.work_package_id and
-         assignment.phase_id == grant.phase_id and
-         assignment.display_key == grant.display_key and
-         assignment.grant_role == grant.grant_role and
-         assignment.capabilities == grant.capabilities and
-         assignment.claimed_at == grant.claimed_at and
-         assignment.claimed_by == grant.claimed_by do
+    with {:ok, assignment_capabilities} <- comparable_capabilities(assignment.capabilities),
+         {:ok, grant_capabilities} <- comparable_capabilities(grant.capabilities),
+         true <- assignment.grant_id == grant.id,
+         true <- assignment.work_package_id == grant.work_package_id,
+         true <- assignment.phase_id == grant.phase_id,
+         true <- assignment.display_key == grant.display_key,
+         true <- assignment.grant_role == grant.grant_role,
+         true <- assignment_capabilities == grant_capabilities,
+         true <- assignment.claimed_at == grant.claimed_at,
+         true <- assignment.claimed_by == grant.claimed_by do
       :ok
     else
-      {:error, :phase_scope_not_available}
+      _mismatch -> {:error, :phase_scope_not_available}
     end
   end
+
+  defp comparable_capabilities(capabilities) when is_list(capabilities), do: {:ok, capabilities}
+  defp comparable_capabilities(nil), do: {:ok, []}
 
   defp require_live_grant(%AccessGrant{revoked_at: %DateTime{}}, _now), do: {:error, :assignment_revoked}
 
@@ -7886,6 +8911,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_live_grant(%AccessGrant{expires_at: nil}, %DateTime{}), do: :ok
 
+  defp require_architect_capabilities(repo, assignment, capabilities) do
+    with {:ok, effective_assignment} <- effective_architect_assignment(repo, assignment) do
+      require_architect_capabilities(effective_assignment, capabilities)
+    end
+  end
+
   defp require_architect_capabilities(assignment, capabilities) do
     Enum.reduce_while(capabilities, :ok, fn capability, :ok ->
       case require_architect_capability(assignment, capability) do
@@ -7893,6 +8924,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
+  end
+
+  defp effective_architect_assignment(repo, %{grant_role: "architect", grant_id: grant_id} = assignment) do
+    with {:ok, %AccessGrant{} = grant} <- AccessGrantRepository.get(repo, grant_id) do
+      case ArchitectHandoff.handoff_phase_grant?(repo, grant) do
+        {:ok, true} ->
+          {:ok, %{assignment | capabilities: ArchitectHandoff.effective_capabilities(grant.capabilities)}}
+
+        {:ok, false} ->
+          {:ok, %{assignment | capabilities: grant.capabilities || []}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
   end
 
   defp require_architect_work_package_scope(%Session{} = session, work_package_id) do
@@ -9970,6 +11016,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_error({:migration_failed, _reason} = reason, tool), do: service_error(reason, tool)
   defp worker_error(reason, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason_text(reason)}}
 
+  defp local_operator_error(:database_busy, tool), do: service_error(:database_busy, tool)
+  defp local_operator_error({:storage_failed, _reason} = reason, tool), do: service_error(reason, tool)
+  defp local_operator_error({:migration_failed, _reason} = reason, tool), do: service_error(reason, tool)
+  defp local_operator_error(reason, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason_text(reason)}}
+
   defp architect_error(:unauthorized, resource), do: auth_error(:unauthorized, resource)
   defp architect_error({:unauthorized, _reason} = reason, resource), do: auth_error(reason, resource)
   defp architect_error(:expired, resource), do: auth_error({:unauthorized, :expired}, resource)
@@ -10208,6 +11259,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp local_operator_tool_arguments(params, name) do
+    case Map.get(params, "arguments", %{}) do
+      arguments when is_map(arguments) ->
+        validate_local_operator_arguments(name, arguments)
+
+      _arguments ->
+        {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "invalid_tool_arguments"}}
+    end
+  end
+
   defp architect_tool_arguments(params, name) do
     case Map.get(params, "arguments", %{}) do
       arguments when is_map(arguments) ->
@@ -10250,6 +11311,55 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp validate_local_operator_arguments(name, arguments) do
+    allowed = MapSet.new(allowed_local_operator_argument_keys(name))
+    unexpected = arguments |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
+
+    if unexpected != [] do
+      {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "unexpected_argument", "arguments" => unexpected}}
+    else
+      schema = local_operator_tool_input_schema(name)
+
+      case validate_tool_required_arguments(schema, arguments) do
+        :ok -> validate_local_operator_argument_values(name, schema, arguments)
+        {:error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
+      end
+    end
+  end
+
+  defp validate_local_operator_argument_values(name, schema, arguments) do
+    properties = Map.get(schema, "properties", %{})
+
+    arguments
+    |> Enum.find_value(:ok, fn {key, value} ->
+      case validate_local_operator_argument_value(properties, key, value) do
+        :ok -> nil
+        {:error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
+      end
+    end)
+    |> case do
+      :ok -> {:ok, arguments}
+      error -> error
+    end
+  end
+
+  defp validate_local_operator_argument_value(properties, key, value) do
+    case Map.get(properties, key, %{}) do
+      %{"type" => "string"} = property -> validate_local_operator_string_argument(key, value, property)
+      _property -> :ok
+    end
+  end
+
+  defp validate_local_operator_string_argument(key, value, property) when is_binary(value) do
+    max_length = Map.get(property, "maxLength")
+
+    if is_integer(max_length) and String.length(value) > max_length,
+      do: {:error, "#{key}_too_long"},
+      else: :ok
+  end
+
+  defp validate_local_operator_string_argument(key, _value, _property), do: {:error, "invalid_#{key}"}
+
   defp validate_architect_arguments(name, arguments) do
     allowed = MapSet.new(allowed_architect_argument_keys(name))
     unexpected = arguments |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
@@ -10290,6 +11400,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp allowed_worker_argument_keys(name) do
     name
     |> worker_tool_input_schema()
+    |> Map.get("properties", %{})
+    |> Map.keys()
+  end
+
+  defp allowed_local_operator_argument_keys(name) do
+    name
+    |> local_operator_tool_input_schema()
     |> Map.get("properties", %{})
     |> Map.keys()
   end
@@ -10843,13 +11960,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp dispatch_work_request_planned_slice_payload(
-         %{work_request: %WorkRequest{} = work_request, planned_slice: %PlannedSlice{} = planned_slice} = dispatch,
+         %{
+           work_request: %WorkRequest{} = work_request,
+           planned_slice: %PlannedSlice{} = planned_slice,
+           creation: creation
+         } = dispatch,
          scope
        ) do
-    create_work =
-      dispatch
-      |> PlannedSliceDispatch.response_payload()
-      |> Map.fetch!(:create_work)
+    worker_secret_handoff = dispatch_or_creation_value(dispatch, creation, :worker_secret_handoff)
+    worker_bootstrap = dispatch_or_creation_value(dispatch, creation, :worker_bootstrap)
+    legacy_private_handoff? = Map.get(dispatch, :legacy_private_handoff?, false)
 
     %{
       "work_request" => %{"id" => work_request.id},
@@ -10859,44 +11979,77 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "work_package_id" => planned_slice.work_package_id,
         "dispatched_at" => timestamp(planned_slice.dispatched_at)
       },
-      "work_package" => dispatch_work_package_payload(Map.fetch!(create_work, :work_package)),
+      "work_package" => dispatch_work_package_payload(Map.fetch!(creation, :work_package)),
+      "worker_bootstrap" => dispatch_worker_bootstrap_payload(worker_bootstrap),
       "worker_handoff" => %{
-        "worker_grant" => dispatch_worker_grant_payload(Map.fetch!(create_work, :worker_grant)),
-        "secret_handoff" => dispatch_secret_handoff_payload(Map.get(create_work, :worker_secret_handoff))
+        "worker_grant" => dispatch_worker_grant_payload(Map.fetch!(creation, :worker_grant)),
+        "secret_handoff" => dispatch_secret_handoff_payload(worker_secret_handoff, legacy_private_handoff?: legacy_private_handoff?)
       },
       "scope" => scope,
       "status" => %{"planned_slice_status" => planned_slice.status}
     }
   end
 
+  defp dispatch_or_creation_value(dispatch, creation, key) when is_atom(key) do
+    Map.get(dispatch, key) || map_get(creation, key)
+  end
+
+  defp dispatch_work_package_payload(%WorkPackage{} = work_package) do
+    work_package
+    |> Map.from_struct()
+    |> Map.drop([:__meta__])
+    |> json_safe_payload()
+    |> Redactor.redact_output()
+  end
+
   defp dispatch_work_package_payload(work_package) when is_map(work_package) do
     work_package
     |> json_safe_payload()
-    |> Map.take(["id", "kind", "status", "repo", "base_branch"])
+    |> Redactor.redact_output()
   end
+
+  defp map_get(map, key) when is_map(map) and is_atom(key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp map_get(_value, _key), do: nil
 
   defp dispatch_worker_grant_payload(worker_grant) when is_map(worker_grant) do
     worker_grant
     |> json_safe_payload()
-    |> Map.drop(["display_key", "secret", "secret_handoff", "secret_returned_once"])
+    |> Map.drop(["display_key", "secret", "secret_hash", "secret_handoff", "secret_returned_once"])
     |> Map.put("secret_in_response", false)
   end
 
-  defp dispatch_secret_handoff_payload(nil), do: nil
+  defp dispatch_worker_bootstrap_payload(nil), do: nil
 
-  defp dispatch_secret_handoff_payload(handoff) when is_map(handoff) do
+  defp dispatch_worker_bootstrap_payload(bootstrap) when is_map(bootstrap) do
+    bootstrap
+    |> json_safe_payload()
+    |> Redactor.redact_output()
+  end
+
+  defp dispatch_secret_handoff_payload(nil, _opts), do: nil
+
+  defp dispatch_secret_handoff_payload(handoff, opts) when is_map(handoff) do
+    drop_fields =
+      if Keyword.get(opts, :legacy_private_handoff?, false) do
+        ["display_key", "payload", "secret"]
+      else
+        ["display_key", "path", "payload", "run_mcp_command", "secret"]
+      end
+
     handoff
     |> json_safe_payload()
-    |> Map.drop(["display_key", "secret", "payload"])
+    |> Map.drop(drop_fields)
   end
 
   defp dispatch_link_recovery_payload(recovery) when is_map(recovery) do
+    worker_secret_handoff = recovery_value(recovery, :worker_secret_handoff)
+
     %{}
     |> put_optional_recovery_value("work_package_id", recovery_value(recovery, :work_package_id))
     |> put_optional_recovery_value("worker_grant_id", recovery_value(recovery, :worker_grant_id))
     |> put_optional_recovery_value(
       "worker_secret_handoff",
-      dispatch_secret_handoff_payload(recovery_value(recovery, :worker_secret_handoff))
+      dispatch_secret_handoff_payload(worker_secret_handoff, legacy_private_handoff?: not is_nil(worker_secret_handoff))
     )
     |> put_optional_recovery_value("cleanup", safe_recovery_value(recovery_value(recovery, :cleanup)))
   end
@@ -11108,7 +12261,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp live_expires_at?(%DateTime{} = expires_at, %DateTime{} = now), do: DateTime.compare(expires_at, now) == :gt
 
   defp redacted_child_worker_grant(worker_grant) when is_map(worker_grant) do
-    Map.delete(worker_grant, "secret")
+    worker_grant
+    |> Map.delete(:secret)
+    |> Map.delete("secret")
+    |> Map.delete(:secret_hash)
+    |> Map.delete("secret_hash")
   end
 
   defp child_worker_secret_handoff_payload(handoff) when is_map(handoff) do
