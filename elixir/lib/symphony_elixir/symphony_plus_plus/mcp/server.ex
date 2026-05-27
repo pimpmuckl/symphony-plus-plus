@@ -2891,20 +2891,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_local_branch_scope(%WorkPackage{} = work_package, branch, worktree_path) do
     case local_assignment_worktree_branch(worktree_path) do
-      {:ok, ^branch} -> :ok
+      {:ok, ^branch} -> require_local_branch_pattern_scope(work_package, branch, prepared_worktree?: true)
       {:ok, _branch} -> {:error, :branch_scope_mismatch}
-      {:error, :git_metadata_missing} -> require_local_branch_pattern_scope(work_package, branch)
+      {:error, :git_metadata_missing} -> require_local_branch_pattern_scope(work_package, branch, prepared_worktree?: false)
       {:error, _reason} -> {:error, :branch_scope_mismatch}
     end
   end
 
-  defp require_local_branch_pattern_scope(%WorkPackage{branch_pattern: branch_pattern}, branch) do
+  defp require_local_branch_pattern_scope(%WorkPackage{branch_pattern: branch_pattern}, branch, opts) do
     case normalize_optional_value(branch_pattern) do
-      nil -> :ok
-      ^branch -> :ok
-      _branch_pattern -> {:error, :branch_scope_mismatch}
+      nil ->
+        :ok
+
+      ^branch ->
+        :ok
+
+      pattern ->
+        if Keyword.get(opts, :prepared_worktree?, false) and local_branch_template?(pattern) do
+          :ok
+        else
+          {:error, :branch_scope_mismatch}
+        end
     end
   end
+
+  defp local_branch_template?(pattern) when is_binary(pattern) do
+    String.contains?(pattern, "{{") and String.contains?(pattern, "}}")
+  end
+
+  defp local_branch_template?(_pattern), do: false
 
   defp local_assignment_worktree_branch(worktree_path) when is_binary(worktree_path) do
     with true <- File.dir?(worktree_path),
@@ -3092,9 +3107,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp renew_current_local_assignment_claim_lease(repo, work_package_id, actor) do
+    requested_actor_id = actor["actor_id"]
+
     case ClaimLeaseService.current_for_work_package(repo, work_package_id) do
-      {:ok, %ClaimLease{} = lease} -> renew_local_assignment_claim_lease(repo, work_package_id, lease, actor)
-      {:error, reason} -> {:error, reason}
+      {:ok, %ClaimLease{actor_id: ^requested_actor_id} = lease} ->
+        renew_local_assignment_claim_lease(repo, work_package_id, lease, actor)
+
+      {:ok, %ClaimLease{}} ->
+        {:error, :active_claim_exists}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

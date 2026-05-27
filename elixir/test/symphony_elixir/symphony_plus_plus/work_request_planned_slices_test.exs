@@ -490,8 +490,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
       refute Map.has_key?(create_work.worker_bootstrap.claim.arguments, "branch")
       assert create_work.worker_bootstrap.claim.arguments["claimed_by"] == "worker-dispatch-orchestrate"
       assert create_work.worker_bootstrap.claim.required_runtime_arguments == ["branch", "worktree_path", "caller_id"]
-      assert "symphony-plus-plus:symphony-worker" in create_work.worker_bootstrap.required_skills
-      assert "symphony-plus-plus-mcp:symphony-work-package" in create_work.worker_bootstrap.required_skills
+      assert create_work.worker_bootstrap.required_skills == ["symphony-plus-plus:symphony-worker"]
 
       assert [
                ["symphony-plus-plus:symphony-worker", "symphony-plus-plus-mcp:symphony-work-package"],

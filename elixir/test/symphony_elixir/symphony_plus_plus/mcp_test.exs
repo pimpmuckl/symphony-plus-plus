@@ -184,7 +184,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     @race_key :sympp_local_claim_insert_race
 
-    def arm, do: Process.put(@race_key, true)
+    def arm(actor_overrides \\ %{}), do: Process.put(@race_key, actor_overrides)
     def disarm, do: Process.delete(@race_key)
 
     def transaction(fun), do: Repo.transaction(fun)
@@ -196,11 +196,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     def update_all(query, updates), do: Repo.update_all(query, updates)
 
     def insert(%Ecto.Changeset{data: %ClaimLease{}} = changeset) do
-      if Process.get(@race_key) do
+      if actor_overrides = Process.get(@race_key) do
         Process.delete(@race_key)
 
         changeset.changes
         |> Map.take([:work_package_id, :actor_kind, :actor_id, :actor_display_name, :stale_after_ms])
+        |> Map.merge(actor_overrides)
         |> ClaimLease.create_changeset(now: DateTime.utc_now(:microsecond))
         |> Repo.insert()
       end
@@ -3583,6 +3584,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     end
   end
 
+  test "claim_local_assignment rejects retargeted branch for concrete package branch", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-RETARGETED-BRANCH")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    retargeted_branch = "agent/SYMPP-LOCAL-RETARGETED-BRANCH/retargeted"
+    File.mkdir_p!(Path.join(package.worktree_path, ".git"))
+    File.write!(Path.join([package.worktree_path, ".git", "HEAD"]), "ref: refs/heads/#{retargeted_branch}\n")
+
+    try do
+      {response, _server} =
+        Server.handle_state(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "local-retargeted-branch",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "claim_local_assignment",
+              "arguments" => local_assignment_claim_args(package, %{"branch" => retargeted_branch})
+            }
+          },
+          local_mcp_server(local_mcp_config(repo), "local-retargeted-branch-state")
+        )
+
+      assert get_in(response, ["error", "data", "reason"]) == "branch_scope_mismatch"
+      assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+      assert unclaimed_grant.claimed_at == nil
+      refute repo.one(from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id))
+    after
+      File.rm_rf!(package.worktree_path)
+    end
+  end
+
   test "claim_local_assignment rereads same-worker lease after concurrent local insert race", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-CLAIM-RACE")
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -3613,6 +3645,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert {:ok, claimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
     assert claimed_grant.claimed_by == "local-worker-1"
+  end
+
+  test "claim_local_assignment preserves other-worker lease after concurrent local insert race", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-CLAIM-RACE-OTHER")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    LocalClaimInsertRaceRepo.arm(%{
+      actor_id: "local:other-worker",
+      actor_display_name: "other-worker"
+    })
+
+    try do
+      {response, _server} =
+        Server.handle_state(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "local-claim-race-other",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+          },
+          local_mcp_server(local_mcp_config(LocalClaimInsertRaceRepo), "local-claim-race-other-state")
+        )
+
+      assert get_in(response, ["error", "data", "reason"]) == "active_claim_exists"
+      refute inspect(response) =~ minted.work_key.secret
+    after
+      LocalClaimInsertRaceRepo.disarm()
+    end
+
+    assert %ClaimLease{actor_display_name: "other-worker"} =
+             repo.one(from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id))
+
+    assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert unclaimed_grant.claimed_at == nil
   end
 
   test "claim_local_assignment rejects wrong local scope without claiming the grant", %{repo: repo} do
@@ -7105,10 +7171,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute Map.has_key?(payload["worker_bootstrap"]["claim"]["arguments"], "branch")
     assert payload["worker_bootstrap"]["claim"]["required_runtime_arguments"] == ["branch", "worktree_path", "caller_id"]
 
-    assert payload["worker_bootstrap"]["required_skills"] == [
-             "symphony-plus-plus:symphony-worker",
-             "symphony-plus-plus-mcp:symphony-work-package"
-           ]
+    assert payload["worker_bootstrap"]["required_skills"] == ["symphony-plus-plus:symphony-worker"]
 
     assert payload["worker_bootstrap"]["supported_skill_sets"] == [
              ["symphony-plus-plus:symphony-worker", "symphony-plus-plus-mcp:symphony-work-package"],
