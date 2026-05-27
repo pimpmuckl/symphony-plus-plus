@@ -3584,6 +3584,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     end
   end
 
+  test "claim_local_assignment rejects unrelated prepared branch for templated package branch", %{repo: repo} do
+    package =
+      create_local_claim_package!(repo, "SYMPP-LOCAL-TEMPLATE-BRANCH-SCOPE", branch_pattern: "agent/{{work_package_id}}/{{slug}}")
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    unrelated_branch = "feature/main-retarget"
+    File.mkdir_p!(Path.join(package.worktree_path, ".git"))
+    File.write!(Path.join([package.worktree_path, ".git", "HEAD"]), "ref: refs/heads/#{unrelated_branch}\n")
+
+    try do
+      {response, _server} =
+        Server.handle_state(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "local-template-branch-scope",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "claim_local_assignment",
+              "arguments" => local_assignment_claim_args(package, %{"branch" => unrelated_branch})
+            }
+          },
+          local_mcp_server(local_mcp_config(repo), "local-template-branch-scope-state")
+        )
+
+      assert get_in(response, ["error", "data", "reason"]) == "branch_scope_mismatch"
+      assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+      assert unclaimed_grant.claimed_at == nil
+    after
+      File.rm_rf!(package.worktree_path)
+    end
+  end
+
   test "claim_local_assignment rejects retargeted branch for concrete package branch", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-RETARGETED-BRANCH")
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)

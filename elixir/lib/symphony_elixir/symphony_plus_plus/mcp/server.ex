@@ -2898,7 +2898,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_local_branch_pattern_scope(%WorkPackage{branch_pattern: branch_pattern}, branch, opts) do
+  defp require_local_branch_pattern_scope(%WorkPackage{branch_pattern: branch_pattern} = work_package, branch, opts) do
     case normalize_optional_value(branch_pattern) do
       nil ->
         :ok
@@ -2907,7 +2907,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         :ok
 
       pattern ->
-        if Keyword.get(opts, :prepared_worktree?, false) and local_branch_template?(pattern) do
+        if Keyword.get(opts, :prepared_worktree?, false) and local_branch_template_matches?(work_package, pattern, branch) do
           :ok
         else
           {:error, :branch_scope_mismatch}
@@ -2915,11 +2915,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp local_branch_template?(pattern) when is_binary(pattern) do
-    String.contains?(pattern, "{{") and String.contains?(pattern, "}}")
+  defp local_branch_template_matches?(%WorkPackage{} = work_package, pattern, branch)
+       when is_binary(pattern) and is_binary(branch) do
+    case Regex.scan(~r/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/, pattern, return: :index) do
+      [] ->
+        false
+
+      matches ->
+        source = "^" <> local_branch_template_regex_source(pattern, matches, work_package) <> "$"
+        Regex.match?(Regex.compile!(source), branch)
+    end
   end
 
-  defp local_branch_template?(_pattern), do: false
+  defp local_branch_template_matches?(%WorkPackage{}, _pattern, _branch), do: false
+
+  defp local_branch_template_regex_source(pattern, matches, work_package) do
+    {parts, cursor} =
+      Enum.reduce(matches, {[], 0}, fn [{match_start, match_length}, {capture_start, capture_length}], {parts, cursor} ->
+        literal = pattern |> binary_part(cursor, match_start - cursor) |> Regex.escape()
+        placeholder = binary_part(pattern, capture_start, capture_length)
+        replacement = local_branch_template_placeholder_regex(work_package, placeholder)
+
+        {[replacement, literal | parts], match_start + match_length}
+      end)
+
+    suffix = pattern |> binary_part(cursor, byte_size(pattern) - cursor) |> Regex.escape()
+    IO.iodata_to_binary(Enum.reverse([suffix | parts]))
+  end
+
+  defp local_branch_template_placeholder_regex(%WorkPackage{} = work_package, placeholder) do
+    case placeholder do
+      "work_package_id" -> local_branch_template_literal_regex(work_package.id)
+      "id" -> local_branch_template_literal_regex(work_package.id)
+      "phase_id" -> local_branch_template_literal_regex(work_package.phase_id)
+      "parent_id" -> local_branch_template_literal_regex(work_package.parent_id)
+      "owner_id" -> local_branch_template_literal_regex(work_package.owner_id)
+      _placeholder -> "[^/]+"
+    end
+  end
+
+  defp local_branch_template_literal_regex(value) do
+    case normalize_optional_value(value) do
+      nil -> "[^/]+"
+      value -> Regex.escape(value)
+    end
+  end
 
   defp local_assignment_worktree_branch(worktree_path) when is_binary(worktree_path) do
     with true <- File.dir?(worktree_path),
