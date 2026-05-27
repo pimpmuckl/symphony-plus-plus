@@ -43,6 +43,7 @@ target.
 | Tool | Purpose |
 |---|---|
 | claim_local_assignment | Claim the normal V2.1 ledger-backed local WorkPackage assignment and bind the current MCP session without raw secrets. |
+| claim_local_architect_assignment | Claim or reconnect a normal ledger-backed local WorkRequest architect assignment and bind the current MCP session without private handoff files. |
 | claim_work_key | Claim a one-time work key/secret with required `claimed_by` owner identity and bind the current MCP session to the grant role for legacy/recovery bootstrap. |
 | claim_private_handoff | Claim an existing worker or architect grant from `local-private-file` handoff metadata for legacy/recovery bootstrap. |
 | create_work_request | Create a local WorkRequest with creator provenance and return a redacted architect handoff/bootstrap payload. |
@@ -120,7 +121,8 @@ architect schema discovery: healthy unbound generic sessions advertise health,
 Solo Session tools, `claim_work_key`, `claim_private_handoff`,
 `create_work_request`, and architect tool schemas so fresh Codex sessions can
 discover WorkRequest and architect flows before claim. Unbound HTTP sessions
-also advertise `claim_local_assignment` for first-claim/reclaim schema
+also advertise `claim_local_assignment` and
+`claim_local_architect_assignment` for first-claim/reclaim schema
 discovery, but schema visibility is not authorization; claim calls still require
 trusted local HTTP state-key continuity and scope validation. Trusted unbound
 local HTTP sessions with explicit state-key continuity may additionally
@@ -129,7 +131,7 @@ require a live claimed architect grant with the required capability and scope,
 and unclaimed architect calls return a claim-required denial. Unbound sessions
 still do not see the worker mutation surface. Stale bound sessions expose only
 health, `claim_work_key`, `claim_private_handoff`, and, on HTTP sessions,
-`claim_local_assignment` for refresh; duplicate
+`claim_local_assignment` and `claim_local_architect_assignment` for refresh; duplicate
 `initialize` on that same stale explicit MCP session
 does not downgrade it into generic unbound discovery. Worker sessions see the
 bound worker-facing discovery surface without Solo tools or architect-only tool
@@ -376,6 +378,18 @@ leases with audit evidence, rejects paused leases, same local owner claims that
 change `caller_id` before the live-grant authority check, or active other
 owners, and binds the current MCP session to the package worker grant.
 
+`claim_local_architect_assignment` requires `work_request_id`,
+`architect_anchor_work_package_id`, `repo`, `base_branch`, `caller_id`, and
+`claimed_by`; `phase_id` may be supplied for validation. It is the normal local
+WorkRequest architect claim. The tool is visible only on HTTP discovery
+surfaces, requires a trusted local HTTP MCP session with explicit state-key
+continuity and a file-backed local ledger, validates the WorkRequest repo/base,
+architect anchor package, phase, and live architect grant authority, then binds
+the current MCP session to the existing architect grant. Replays with the same
+local owner heartbeat the claim lease; stale leases may be reclaimed with audit
+evidence. Remote, untrusted, stateless, scope-mismatched, terminal, revoked, or
+private-file-dependent paths fail closed.
+
 `claim_work_key` requires `secret` and `claimed_by`. It can bind an existing
 worker or architect grant during explicit legacy bootstrap/recovery; it does
 not mint new grants and is not the normal worker planning surface. Reconnects
@@ -402,8 +416,11 @@ and provenance fields
 MCP-created requests default to `agent`/`mcp`, using caller-supplied
 `claimed_by` as the maker display name when available and `mcp-agent`
 otherwise. A successful response includes the WorkRequest summary with creator
-provenance, redacted architect handoff metadata, a non-secret claim owner for
-`claim_private_handoff`, and a copyable launch prompt. If architect handoff
+provenance, non-secret `local_architect_claim` metadata for
+`claim_local_architect_assignment` when the creator session is trusted local
+HTTP with a file-backed ledger, redacted recovery handoff metadata, a
+non-secret claim owner for `claim_private_handoff`, and a copyable launch
+prompt. If architect handoff
 creation fails after the
 WorkRequest is created, the tool returns a partial-success shape with the
 WorkRequest id and a non-duplicating manual architect-handoff replay hint while

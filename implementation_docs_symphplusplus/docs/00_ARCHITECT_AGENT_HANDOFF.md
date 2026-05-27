@@ -26,6 +26,10 @@ package.
   approved slices satisfy the request, dispatch approved slices, and route
   guidance. If MCP is unavailable, record the blocker and use the
   dashboard/operator-approved artifact as fallback.
+- For trusted local HTTP WorkRequest architect lanes, normal claim/reconnect is
+  `claim_local_architect_assignment` when `local_architect_claim` is present.
+  `claim_private_handoff` is recovery-only for that path and remains the
+  fallback when local claim metadata is absent.
 - Preserve upstream Symphony and Linear behavior unless the assigned package
   explicitly changes that surface.
 - Keep phase branches explainable. Stop if the phase can no longer be

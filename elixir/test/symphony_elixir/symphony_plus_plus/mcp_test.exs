@@ -1567,6 +1567,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     local_server = local_mcp_server(local_mcp_config(repo), "local-operator-notes-state")
     tools_by_name = tools_for_server(local_server) |> Map.new(&{&1["name"], &1})
 
+    assert get_in(tools_by_name, ["claim_local_architect_assignment", "inputSchema", "required"]) == [
+             "work_request_id",
+             "architect_anchor_work_package_id",
+             "repo",
+             "base_branch",
+             "caller_id",
+             "claimed_by"
+           ]
+
     assert get_in(tools_by_name, ["add_work_request_comment", "inputSchema", "required"]) == ["work_request_id", "body", "created_by"]
 
     assert get_in(tools_by_name, ["record_work_request_operator_decision", "inputSchema", "required"]) == [
@@ -4424,6 +4433,301 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert handoff_secret_absent?(private_handoff, inspect(read_response))
   end
 
+  test "claim_local_architect_assignment claims and reconnects a WorkRequest architect session", %{repo: repo} do
+    store_dir = Path.join(test_handoff_store_dir(), "local-architect-claim")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_app_env(:sympp_worker_secret_store_dir, previous_store_dir)
+      File.rm_rf(store_dir)
+    end)
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-CLAIM",
+        status: "ready_for_clarification"
+      )
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: [
+                 mode: "local-private-file",
+                 repo_root: test_repo_root(),
+                 store_dir: store_dir,
+                 claimed_by: ArchitectHandoff.claimed_by()
+               ]
+             )
+
+    assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, handoff.grant.id)
+    assert is_nil(unclaimed_grant.claimed_at)
+
+    arguments = %{
+      "work_request_id" => work_request.id,
+      "architect_anchor_work_package_id" => handoff.anchor_package.id,
+      "repo" => work_request.repo,
+      "base_branch" => work_request.base_branch,
+      "caller_id" => "codex-local-architect-test",
+      "claimed_by" => "local-architect-1"
+    }
+
+    {claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-architect-claim-state")
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == handoff.anchor_package.id
+    assert get_in(claim_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "created"
+    assert claimed_server.session.assignment.grant_role == "architect"
+    assert claimed_server.session.proof_hash == unclaimed_grant.secret_hash
+    refute inspect(claim_response) =~ unclaimed_grant.secret_hash
+
+    assert {:ok, claimed_grant} = AccessGrantRepository.get(repo, handoff.grant.id)
+    assert claimed_grant.claimed_by == "local-architect-1"
+
+    read_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-read-work-request",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_work_request", "arguments" => %{"work_request_id" => work_request.id}}
+        },
+        claimed_server
+      )
+
+    assert get_in(read_response, ["result", "structuredContent", "work_request", "id"]) == work_request.id
+
+    guidance_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-list-guidance",
+          "method" => "tools/call",
+          "params" => %{"name" => "list_guidance_requests", "arguments" => %{}}
+        },
+        claimed_server
+      )
+
+    assert get_in(guidance_response, ["result", "structuredContent", "guidance_requests"]) == []
+
+    decision_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-record-decision",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "record_work_request_decision",
+            "arguments" => %{
+              "work_request_id" => work_request.id,
+              "source_type" => "architect",
+              "decision" => "Use the local architect claim flow.",
+              "rationale" => "The local session has non-secret ledger metadata.",
+              "scope_impact" => "No private handoff is needed for normal reconnect.",
+              "created_by" => "local-architect-1"
+            }
+          }
+        },
+        claimed_server
+      )
+
+    assert get_in(decision_response, ["result", "structuredContent", "decision_log_entry", "created_by"]) == "local-architect-1"
+
+    {reconnect_response, reconnected_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-reconnect",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => Map.put(arguments, "phase_id", handoff.phase.id)}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-architect-reconnect-state")
+      )
+
+    assert get_in(reconnect_response, ["result", "structuredContent", "assignment", "grant_id"]) == handoff.grant.id
+    assert get_in(reconnect_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "heartbeat"
+    assert reconnected_server.session.assignment.grant_role == "architect"
+  end
+
+  test "claim_local_architect_assignment releases heartbeat leases when grant owner changes", %{repo: repo} do
+    store_dir = Path.join(test_handoff_store_dir(), "local-architect-claim-owner-changed")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_app_env(:sympp_worker_secret_store_dir, previous_store_dir)
+      File.rm_rf(store_dir)
+    end)
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-OWNER-CHANGED",
+        status: "ready_for_clarification"
+      )
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: [
+                 mode: "local-private-file",
+                 repo_root: test_repo_root(),
+                 store_dir: store_dir,
+                 claimed_by: ArchitectHandoff.claimed_by()
+               ]
+             )
+
+    arguments = %{
+      "work_request_id" => work_request.id,
+      "architect_anchor_work_package_id" => handoff.anchor_package.id,
+      "repo" => work_request.repo,
+      "base_branch" => work_request.base_branch,
+      "caller_id" => "codex-local-architect-owner-original",
+      "claimed_by" => "original-architect"
+    }
+
+    {_claim_response, _claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-owner-original",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-architect-owner-original-state")
+      )
+
+    assert {:ok, %ClaimLease{id: lease_id, status: "active"}} =
+             ClaimLeaseService.current_for_work_package(repo, handoff.anchor_package.id)
+
+    now = DateTime.utc_now(:microsecond)
+
+    assert {1, nil} =
+             repo.update_all(
+               from(grant in AccessGrant, where: grant.id == ^handoff.grant.id),
+               set: [claimed_at: now, claimed_by: "replacement-architect", updated_at: now]
+             )
+
+    {stale_owner_response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-owner-stale",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-architect-owner-stale-state")
+      )
+
+    assert get_in(stale_owner_response, ["error", "data", "reason"]) == "already_claimed"
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, handoff.anchor_package.id)
+
+    statuses =
+      repo.all(
+        from(claim_lease in ClaimLease,
+          where: claim_lease.work_package_id == ^handoff.anchor_package.id,
+          select: {claim_lease.id, claim_lease.status, claim_lease.release_reason}
+        )
+      )
+
+    assert {lease_id, "released", "local_architect_assignment_claim_failed"} in statuses
+
+    replacement_arguments =
+      arguments
+      |> Map.put("caller_id", "codex-local-architect-owner-replacement")
+      |> Map.put("claimed_by", "replacement-architect")
+
+    {replacement_response, _replacement_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-owner-replacement",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => replacement_arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-architect-owner-replacement-state")
+      )
+
+    assert get_in(replacement_response, ["result", "structuredContent", "assignment", "grant_id"]) == handoff.grant.id
+    assert get_in(replacement_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "created"
+  end
+
+  test "claim_local_architect_assignment requires trusted file-backed local HTTP state", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-MCP-LOCAL-ARCHITECT-DENIED", status: "ready_for_clarification")
+
+    arguments = %{
+      "work_request_id" => work_request.id,
+      "architect_anchor_work_package_id" => ArchitectHandoff.anchor_id_for_work_request(work_request),
+      "repo" => work_request.repo,
+      "base_branch" => work_request.base_branch,
+      "caller_id" => "codex-local-architect-denied",
+      "claimed_by" => "local-architect-denied"
+    }
+
+    stdio_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-stdio-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => arguments}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(stdio_response, ["error", "data", "reason"]) == "local_mcp_required"
+
+    stateless_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-stateless-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => arguments}
+        },
+        Server.new(local_mcp_config(repo), initialized: true, local_daemon_trusted: true)
+      )
+
+    assert get_in(stateless_response, ["error", "data", "reason"]) == "local_mcp_session_required"
+
+    untrusted_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-untrusted-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => arguments}
+        },
+        Server.new(local_mcp_config(repo), initialized: true, state_key: "local-architect-untrusted-state")
+      )
+
+    assert get_in(untrusted_response, ["error", "data", "reason"]) == "local_daemon_trust_required"
+
+    remote_config = %{local_mcp_config(repo) | database: "https://ledger.example.test/mcp?token=ghp_localarchitectsecret"}
+
+    remote_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-remote-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(remote_config, "local-architect-remote-denied-state")
+      )
+
+    assert get_in(remote_response, ["error", "data", "reason"]) == "local_database_required"
+    refute inspect(remote_response) =~ "ghp_localarchitectsecret"
+  end
+
   test "claim_private_handoff resolves metadata when dispatch and worker namespaces differ", %{repo: repo} do
     store_dir = Path.join(test_handoff_store_dir(), "private-architect-namespace-mismatch")
     dispatch_repo_root = temporary_worker_repo_root("claim-namespace-mismatch")
@@ -4654,6 +4958,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(default_claim_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
     assert handoff_secret_absent?(default_owner_handoff, inspect(default_owner_response))
     assert handoff_secret_absent?(default_owner_handoff, inspect(default_claim_response))
+
+    {local_create_response, _local_create_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-create-work-request",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "create_work_request",
+            "arguments" => %{
+              "repo" => "nextide/symphony-plus-plus",
+              "base_branch" => "main",
+              "title" => "Local architect claim WorkRequest",
+              "description" => "Create a WorkRequest from a trusted local MCP session.",
+              "request_kind" => "feature",
+              "claimed_by" => "local-create-arch"
+            }
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-create-work-request-state")
+      )
+
+    local_create_payload = get_in(local_create_response, ["result", "structuredContent"])
+    assert local_create_payload["claim"]["tool"] == "claim_local_architect_assignment"
+    assert local_create_payload["claim"]["claimed_by"] == "local-create-arch"
+    assert local_create_payload["claim"]["required_runtime_arguments"] == ["caller_id"]
+    assert local_create_payload["claim"]["arguments"]["claimed_by"] == "local-create-arch"
+    assert local_create_payload["architect_handoff"]["local_architect_claim"]["tool"] == "claim_local_architect_assignment"
+    assert local_create_payload["architect_handoff"]["local_architect_claim"]["arguments"]["claimed_by"] == "local-create-arch"
+    assert local_create_payload["launch_prompt"] =~ "claim_local_architect_assignment"
 
     operator_response =
       mcp_tool(

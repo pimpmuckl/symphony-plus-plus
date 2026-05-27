@@ -188,6 +188,7 @@ sympp://work-packages/{id}/handoff.md
 claim_work_key(secret, claimed_by)
 claim_private_handoff(claimed_by, private_handoff | mode, path, target, grant_id, display_key, work_package_id, database?)
 claim_local_assignment(repo, base_branch, work_package_id, branch, worktree_path, caller_id, claimed_by, work_request_id?)
+claim_local_architect_assignment(work_request_id, architect_anchor_work_package_id, repo, base_branch, caller_id, claimed_by, phase_id?)
 ```
 
 ## Bound Worker MCP Tools
@@ -273,7 +274,8 @@ Unbound/generic MCP sessions also advertise `sympp.health`, the recovery
 Session tools, and static architect schemas. They do not advertise other worker
 mutation tools until a valid grant is bound. Trusted local HTTP sessions with
 explicit state-key continuity may additionally advertise
-`claim_local_assignment` and the local operator note tools described above.
+`claim_local_assignment`, `claim_local_architect_assignment`, and the local
+operator note tools described above.
 
 `sympp.health` is safe to run before or after claim. It reports only server
 version/source, mode, ledger reachability, and a redacted ledger identity; it
@@ -295,6 +297,18 @@ terminal package, missing recorded worktree, same local owner with a different
 `caller_id`, or another active owner with live authority fails closed. The
 same-owner `caller_id` mismatch is rejected before the live-grant authority
 check; reuse the same stable `caller_id` for reconnects.
+
+`claim_local_architect_assignment` is the normal local WorkRequest architect
+claim. It requires `work_request_id`, `architect_anchor_work_package_id`,
+`repo`, `base_branch`, `caller_id`, and `claimed_by`; `phase_id` may be supplied
+for validation. It is available only on trusted local HTTP MCP sessions with
+explicit state-key continuity and a file-backed local ledger. The server
+validates WorkRequest repo/base, architect anchor package, phase, and live
+architect grant authority, then binds the current MCP session to the existing
+architect grant. Replays with the same local owner heartbeat the claim lease;
+stale leases may be reclaimed with audit evidence. Remote, untrusted,
+stateless, scope-mismatched, terminal, revoked, or private-file-dependent paths
+fail closed.
 
 `claim_work_key` intentionally requires both the one-time secret and a stable
 `claimed_by` owner identity. Symphony++ uses that identity as part of the MCP
@@ -324,8 +338,10 @@ fields. Provenance supports `creator_kind` values `human`, `agent`, `operator`,
 and `system`, optional `creator_name`, and optional `created_via`; omitted MCP
 provenance defaults to `agent`/`mcp`, using caller-supplied `claimed_by` as the
 maker display name when present and `mcp-agent` otherwise. The response returns
-the WorkRequest summary, redacted architect handoff metadata, a non-secret
-claim owner for `claim_private_handoff`, and a launch prompt. If handoff
+the WorkRequest summary, non-secret `local_architect_claim` metadata for
+`claim_local_architect_assignment` when the creator session is trusted local
+HTTP with a file-backed ledger, redacted recovery handoff metadata, a
+non-secret claim owner for `claim_private_handoff`, and a launch prompt. If handoff
 mint/replay fails after creation, the tool
 returns partial success with the WorkRequest id and a non-duplicating manual
 architect-handoff replay hint and still does not expose raw secret material.
@@ -475,13 +491,14 @@ healthy unbound generic sessions advertise health, Solo Session tools,
 `claim_work_key`, `claim_private_handoff`, `create_work_request`, and architect
 tool schemas so fresh Codex sessions can discover WorkRequest and architect
 flows before claim. Unbound HTTP sessions also advertise
-`claim_local_assignment` for first-claim/reclaim schema discovery, but schema
+`claim_local_assignment` and `claim_local_architect_assignment` for
+first-claim/reclaim schema discovery, but schema
 visibility is not authorization; claim calls still require trusted local HTTP
 state-key continuity and scope validation. Architect calls still require a live
 claimed architect grant with the required capability and scope, and unclaimed
 architect calls return a claim-required denial. Stale bound sessions expose only
 health, `claim_work_key`, `claim_private_handoff`, and, on HTTP sessions,
-`claim_local_assignment` for refresh; duplicate
+`claim_local_assignment` and `claim_local_architect_assignment` for refresh; duplicate
 `initialize` on that same stale explicit MCP session does not downgrade it into
 generic unbound discovery.
 Worker sessions keep the bound worker-facing discovery surface without Solo

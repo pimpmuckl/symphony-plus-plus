@@ -62,7 +62,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @local_operator_text_max_length Comment.max_body_length()
   @local_operator_provenance_max_length 512
   @local_assignment_claim_tool "claim_local_assignment"
-  @session_claim_tools ["claim_work_key", "claim_private_handoff", @local_assignment_claim_tool]
+  @local_architect_assignment_claim_tool "claim_local_architect_assignment"
+  @session_claim_tools ["claim_work_key", "claim_private_handoff", @local_assignment_claim_tool, @local_architect_assignment_claim_tool]
   @private_handoff_claim_keys [
     "mode",
     "path",
@@ -891,6 +892,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp dispatch("tools/call", %{"name" => @local_architect_assignment_claim_tool} = params, %__MODULE__{} = server) do
+    case claim_local_architect_assignment(params, server) do
+      {:ok, result, session} ->
+        {:ok, tool_result(result), %{server | session: session, session_refresh_required: false}}
+
+      {:error, code, message, data} ->
+        {:error, code, message, data}
+    end
+  end
+
   defp dispatch("tools/call", %{"name" => "create_work_request"} = params, %__MODULE__{} = server) do
     case prepare_bootstrap_tool_call(server, params, "create_work_request") do
       {:ok, arguments} -> bootstrap_tool("create_work_request", arguments, server)
@@ -1489,6 +1500,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
+  defp local_architect_assignment_claim_tool_spec do
+    %{
+      "name" => @local_architect_assignment_claim_tool,
+      "title" => @local_architect_assignment_claim_tool,
+      "description" => local_architect_assignment_claim_tool_description(),
+      "inputSchema" => local_architect_assignment_claim_tool_input_schema()
+    }
+  end
+
   defp local_operator_tool_spec(name) do
     %{
       "name" => name,
@@ -1524,6 +1544,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp bootstrap_tool_description("create_work_request") do
     "Create a local Symphony++ WorkRequest with creator provenance and return a redacted architect handoff."
+  end
+
+  defp local_architect_assignment_claim_tool_description do
+    "Claim or reconnect a ledger-backed local WorkRequest architect assignment without private handoff files."
   end
 
   defp local_operator_tool_description("add_work_request_comment") do
@@ -1820,6 +1844,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
           |> Map.put("maxLength", @local_operator_provenance_max_length)
       },
       ["work_request_id", "decision", "rationale", "scope_impact", "created_by"]
+    )
+  end
+
+  defp local_architect_assignment_claim_tool_input_schema do
+    schema(
+      %{
+        "work_request_id" => string_schema(),
+        "architect_anchor_work_package_id" => string_schema(),
+        "repo" => string_schema(),
+        "base_branch" => string_schema(),
+        "phase_id" => string_schema(),
+        "caller_id" => string_schema(),
+        "claimed_by" => string_schema()
+      },
+      ["work_request_id", "architect_anchor_work_package_id", "repo", "base_branch", "caller_id", "claimed_by"]
     )
   end
 
@@ -2372,6 +2411,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp claimable_tool_specs(%Config{} = config) do
     [health_tool_spec(), worker_tool_spec("claim_work_key")] ++
       local_assignment_claim_tool_specs(config) ++
+      local_architect_assignment_claim_tool_specs(config) ++
       [bootstrap_tool_spec("claim_private_handoff")]
   end
 
@@ -2380,11 +2420,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       Enum.map(@solo_tools, &solo_tool_spec/1) ++
       [worker_tool_spec("claim_work_key")] ++
       local_assignment_claim_tool_specs(config) ++
+      local_architect_assignment_claim_tool_specs(config) ++
       Enum.map(@bootstrap_tools, &bootstrap_tool_spec/1) ++ architect_tool_specs()
   end
 
   defp local_assignment_claim_tool_specs(%Config{mode: :http}), do: [worker_tool_spec(@local_assignment_claim_tool)]
   defp local_assignment_claim_tool_specs(%Config{}), do: []
+
+  defp local_architect_assignment_claim_tool_specs(%Config{mode: :http}), do: [local_architect_assignment_claim_tool_spec()]
+  defp local_architect_assignment_claim_tool_specs(%Config{}), do: []
 
   defp architect_tool_specs, do: Enum.map(@architect_tools, &architect_tool_spec/1)
 
@@ -2721,6 +2765,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp handle_session_claim_tool(@local_architect_assignment_claim_tool, params, id, %__MODULE__{} = server) do
+    case claim_local_architect_assignment(params, server) do
+      {:ok, result, session} ->
+        {response(id, tool_result(result)), %{server | session: session, session_refresh_required: false}}
+
+      {:error, code, message, data} ->
+        {error_response(id, code, message, data), server}
+    end
+  end
+
   defp handle_session_claim_tool_notification("claim_work_key", params, %__MODULE__{} = server) do
     handle_claim_work_key_notification(params, server)
   end
@@ -2734,6 +2788,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp handle_session_claim_tool_notification(@local_assignment_claim_tool, params, %__MODULE__{} = server) do
     case claim_local_assignment(params, server) do
+      {:ok, _result, session} -> {nil, %{server | session: session, session_refresh_required: false}}
+      {:error, _code, _message, _data} -> {nil, server}
+    end
+  end
+
+  defp handle_session_claim_tool_notification(@local_architect_assignment_claim_tool, params, %__MODULE__{} = server) do
+    case claim_local_architect_assignment(params, server) do
       {:ok, _result, session} -> {nil, %{server | session: session, session_refresh_required: false}}
       {:error, _code, _message, _data} -> {nil, server}
     end
@@ -3404,6 +3465,425 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp release_failed_local_assignment_lease(_repo, %ClaimLease{}, _lease_action, _reason), do: :ok
 
+  defp claim_local_architect_assignment(params, %__MODULE__{config: config, session: session} = server) do
+    with {:ok, arguments} <- local_architect_assignment_claim_tool_arguments(params),
+         {:ok, claim} <- local_architect_assignment_claim_arguments(arguments),
+         :ok <- require_local_architect_assignment_claim_mode(server),
+         :ok <- require_local_architect_assignment_rebind_allowed(config.repo, session, claim),
+         :ok <- prepare_mcp_repository(config.repo),
+         {:ok, work_request} <- WorkRequestRepository.get(config.repo, claim.work_request_id),
+         {:ok, anchor} <- WorkPackageRepository.get(config.repo, claim.architect_anchor_work_package_id),
+         :ok <- validate_local_architect_assignment_scope(work_request, anchor, claim),
+         {:ok, lease, lease_action} <- ensure_local_architect_assignment_claim_lease(config.repo, anchor, claim) do
+      case claim_local_architect_assignment_session(config.repo, anchor, claim) do
+        {:ok, result, session, grant_action} ->
+          finalize_local_architect_assignment_claim(config.repo, result, session, claim, lease, lease_action, grant_action)
+
+        {:error, reason} ->
+          release_failed_local_architect_assignment_lease(config.repo, lease, lease_action, reason)
+          local_architect_assignment_claim_error(reason)
+      end
+    else
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => @local_architect_assignment_claim_tool, "reason" => reason}}
+      {:error, reason} -> local_architect_assignment_claim_error(reason)
+    end
+  rescue
+    _error -> {:error, -32_000, "Server error", %{"tool" => @local_architect_assignment_claim_tool, "reason" => "ledger_unavailable"}}
+  end
+
+  defp local_architect_assignment_claim_arguments(arguments) do
+    with {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, anchor_id} <- required_argument(arguments, "architect_anchor_work_package_id"),
+         {:ok, repo} <- required_argument(arguments, "repo"),
+         {:ok, base_branch} <- required_argument(arguments, "base_branch"),
+         {:ok, phase_id} <- optional_string_argument(arguments, "phase_id"),
+         {:ok, caller_id} <- required_argument(arguments, "caller_id"),
+         {:ok, claimed_by} <- required_argument(arguments, "claimed_by") do
+      {:ok,
+       %{
+         work_request_id: work_request_id,
+         architect_anchor_work_package_id: anchor_id,
+         repo: repo,
+         base_branch: base_branch,
+         phase_id: phase_id,
+         caller_id: caller_id,
+         claimed_by: claimed_by
+       }}
+    end
+  end
+
+  defp require_local_architect_assignment_claim_mode(%__MODULE__{config: config} = server) do
+    with :ok <- require_local_assignment_claim_mode(server) do
+      require_local_operator_database(config)
+    end
+  end
+
+  defp require_local_architect_assignment_rebind_allowed(_repo, nil, _claim), do: :ok
+
+  defp require_local_architect_assignment_rebind_allowed(repo, %Session{} = session, claim) do
+    if session.assignment.grant_role == "architect" and
+         session.assignment.work_package_id == claim.architect_anchor_work_package_id and
+         session.assignment.claimed_by == claim.claimed_by do
+      :ok
+    else
+      case Auth.require_session(session, repo) do
+        {:ok, %Session{}} -> {:error, :session_already_bound}
+        {:error, {:service_unavailable, _reason} = reason} -> {:error, reason}
+        {:error, _reason} -> :ok
+      end
+    end
+  end
+
+  defp validate_local_architect_assignment_scope(%WorkRequest{} = work_request, %WorkPackage{} = anchor, claim) do
+    expected_phase_id = ArchitectHandoff.phase_id_for_work_request(work_request)
+
+    with :ok <- require_local_value_match(work_request.repo, claim.repo, :repo_scope_mismatch),
+         :ok <- require_local_value_match(work_request.base_branch, claim.base_branch, :base_branch_scope_mismatch),
+         :ok <- require_local_value_match(anchor.repo, work_request.repo, :architect_anchor_scope_mismatch),
+         :ok <- require_local_value_match(anchor.base_branch, work_request.base_branch, :architect_anchor_scope_mismatch),
+         :ok <- require_local_value_match(anchor.id, ArchitectHandoff.anchor_id_for_work_request(work_request), :architect_anchor_scope_mismatch),
+         :ok <- require_local_value_match(anchor.phase_id, expected_phase_id, :phase_scope_mismatch),
+         :ok <- require_optional_phase_scope(claim.phase_id, expected_phase_id),
+         :ok <- require_architect_handoff_anchor_kind(anchor),
+         :ok <- require_live_local_work_package(anchor) do
+      :ok
+    end
+  end
+
+  defp require_optional_phase_scope(nil, _expected_phase_id), do: :ok
+  defp require_optional_phase_scope(phase_id, phase_id) when is_binary(phase_id), do: :ok
+  defp require_optional_phase_scope(_phase_id, _expected_phase_id), do: {:error, :phase_scope_mismatch}
+
+  defp require_architect_handoff_anchor_kind(%WorkPackage{kind: "delegation"}), do: :ok
+  defp require_architect_handoff_anchor_kind(%WorkPackage{}), do: {:error, :architect_anchor_scope_mismatch}
+
+  defp ensure_local_architect_assignment_claim_lease(repo, %WorkPackage{} = anchor, claim) do
+    actor = local_architect_assignment_actor(claim)
+
+    case ClaimLeaseService.current_for_work_package(repo, anchor.id) do
+      {:ok, %ClaimLease{} = lease} ->
+        renew_local_architect_assignment_claim_lease(repo, anchor, claim, lease, actor)
+
+      {:error, :not_found} ->
+        claim_new_local_architect_assignment_lease(repo, anchor.id, actor)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp renew_local_architect_assignment_claim_lease(repo, %WorkPackage{} = anchor, claim, %ClaimLease{} = lease, actor) do
+    now = DateTime.utc_now(:microsecond)
+
+    cond do
+      lease.status == "paused" ->
+        {:error, :claim_lease_paused}
+
+      ClaimLease.stale?(lease, now) ->
+        reclaim_local_architect_assignment_claim_lease(repo, anchor.id, actor, "local_architect_assignment_claim_stale")
+
+      lease.actor_id == actor["actor_id"] and lease.status == "active" ->
+        heartbeat_local_architect_assignment_claim_lease(repo, anchor.id, lease, actor)
+
+      lease.actor_id == actor["actor_id"] ->
+        {:error, :claim_lease_not_active}
+
+      true ->
+        replace_authority_lost_local_architect_assignment_claim_lease(repo, anchor, claim, lease, actor, now)
+    end
+  end
+
+  defp heartbeat_local_architect_assignment_claim_lease(repo, anchor_id, %ClaimLease{} = lease, actor) do
+    case ClaimLeaseService.heartbeat(repo, lease.id, stale_after_ms: @local_assignment_claim_stale_after_ms) do
+      {:ok, %ClaimLease{} = renewed} ->
+        {:ok, renewed, :heartbeat}
+
+      {:error, :claim_stale} ->
+        reclaim_local_architect_assignment_claim_lease(repo, anchor_id, actor, "local_architect_assignment_claim_stale")
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp replace_authority_lost_local_architect_assignment_claim_lease(repo, %WorkPackage{} = anchor, claim, %ClaimLease{} = lease, actor, %DateTime{} = now) do
+    cond do
+      local_assignment_same_claim_owner?(lease, actor) ->
+        {:error, :claim_lease_active_for_other_actor}
+
+      local_architect_assignment_lease_has_live_grant?(repo, anchor, claim, lease, now) ->
+        {:error, :claim_lease_active_for_other_actor}
+
+      true ->
+        release_authority_lost_local_architect_assignment_claim_lease(repo, anchor.id, lease, actor)
+    end
+  end
+
+  defp local_architect_assignment_lease_has_live_grant?(repo, %WorkPackage{} = anchor, claim, %ClaimLease{actor_display_name: claimed_by}, %DateTime{} = now)
+       when is_binary(claimed_by) do
+    query =
+      from(grant in AccessGrant,
+        where: grant.work_package_id == ^anchor.id,
+        where: grant.phase_id == ^anchor.phase_id,
+        where: grant.grant_role == "architect",
+        where: grant.scope_repo == ^claim.repo,
+        where: grant.scope_base_branch == ^claim.base_branch,
+        where: grant.claimed_by == ^claimed_by,
+        where: not is_nil(grant.claimed_at),
+        where: is_nil(grant.revoked_at),
+        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
+        select: 1,
+        limit: 1
+      )
+
+    repo.one(query) == 1
+  end
+
+  defp local_architect_assignment_lease_has_live_grant?(_repo, %WorkPackage{}, _claim, %ClaimLease{}, %DateTime{}), do: true
+
+  defp release_authority_lost_local_architect_assignment_claim_lease(repo, anchor_id, %ClaimLease{} = lease, actor) do
+    case ClaimLeaseService.release(repo, lease.id, reason: "local_architect_assignment_claim_authority_lost") do
+      {:ok, %ClaimLease{}} ->
+        claim_replacement_local_architect_assignment_lease(repo, anchor_id, actor)
+
+      {:error, :claim_stale} ->
+        reclaim_local_architect_assignment_claim_lease(repo, anchor_id, actor, "local_architect_assignment_claim_stale")
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp claim_replacement_local_architect_assignment_lease(repo, anchor_id, actor) do
+    case claim_new_local_architect_assignment_lease(repo, anchor_id, actor) do
+      {:ok, %ClaimLease{} = replacement, :created} -> {:ok, replacement, :reclaimed}
+      result -> result
+    end
+  end
+
+  defp claim_new_local_architect_assignment_lease(repo, anchor_id, actor) do
+    case ClaimLeaseService.claim(repo, anchor_id, actor, stale_after_ms: @local_assignment_claim_stale_after_ms) do
+      {:ok, %ClaimLease{} = lease} -> {:ok, lease, :created}
+      {:error, :active_claim_exists} -> renew_current_local_architect_assignment_claim_lease(repo, anchor_id, actor)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp renew_current_local_architect_assignment_claim_lease(repo, anchor_id, actor) do
+    requested_actor_id = actor["actor_id"]
+
+    case ClaimLeaseService.current_for_work_package(repo, anchor_id) do
+      {:ok, %ClaimLease{actor_id: ^requested_actor_id} = lease} ->
+        renew_local_architect_assignment_claim_lease(repo, %WorkPackage{id: anchor_id}, %{}, lease, actor)
+
+      {:ok, %ClaimLease{}} ->
+        {:error, :active_claim_exists}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp reclaim_local_architect_assignment_claim_lease(repo, anchor_id, actor, reason) do
+    case ClaimLeaseService.reclaim_stale(repo, anchor_id, actor,
+           reason: reason,
+           stale_after_ms: @local_assignment_claim_stale_after_ms
+         ) do
+      {:ok, %ClaimLease{} = lease} -> {:ok, lease, :reclaimed}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp claim_local_architect_assignment_session(repo, %WorkPackage{} = anchor, claim) do
+    claim_now = DateTime.utc_now(:microsecond)
+    existing_grant_ids = local_architect_assignment_active_grant_ids(repo, anchor, claim, claim_now)
+
+    with {:ok, grant} <-
+           AccessGrantService.claim_local_architect_grant(repo, anchor.id, anchor.phase_id,
+             claimed_by: claim.claimed_by,
+             scope_repo: claim.repo,
+             scope_base_branch: claim.base_branch,
+             now: claim_now
+           ),
+         :ok <- validate_local_architect_assignment_grant(repo, grant, anchor, claim),
+         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash),
+         :ok <- require_architect_assignment(session.assignment) do
+      assignment = %{"assignment" => Session.public_assignment(session)}
+      {:ok, assignment, session, local_assignment_grant_action(grant, existing_grant_ids)}
+    end
+  end
+
+  defp local_architect_assignment_active_grant_ids(repo, %WorkPackage{} = anchor, claim, %DateTime{} = now) do
+    query =
+      from(grant in AccessGrant,
+        where: grant.work_package_id == ^anchor.id,
+        where: grant.phase_id == ^anchor.phase_id,
+        where: grant.grant_role == "architect",
+        where: grant.scope_repo == ^claim.repo,
+        where: grant.scope_base_branch == ^claim.base_branch,
+        where: grant.claimed_by == ^claim.claimed_by,
+        where: not is_nil(grant.claimed_at),
+        where: is_nil(grant.revoked_at),
+        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
+        select: grant.id
+      )
+
+    repo.all(query)
+  end
+
+  defp validate_local_architect_assignment_grant(repo, %AccessGrant{} = grant, %WorkPackage{} = anchor, claim) do
+    with :ok <- require_local_value_match(grant.work_package_id, anchor.id, :architect_grant_scope_mismatch),
+         :ok <- require_local_value_match(grant.phase_id, anchor.phase_id, :architect_grant_scope_mismatch),
+         :ok <- require_local_value_match(grant.scope_repo, claim.repo, :architect_grant_scope_mismatch),
+         :ok <- require_local_value_match(grant.scope_base_branch, claim.base_branch, :architect_grant_scope_mismatch),
+         :ok <- AccessGrantService.require_live_package_authority(repo, grant),
+         :ok <- require_local_architect_handoff_grant(repo, grant) do
+      :ok
+    end
+  end
+
+  defp require_local_architect_handoff_grant(repo, %AccessGrant{} = grant) do
+    case ArchitectHandoff.handoff_phase_grant?(repo, grant) do
+      {:ok, true} -> :ok
+      {:ok, false} -> {:error, :architect_grant_scope_mismatch}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp local_architect_assignment_actor(claim) do
+    owner_material =
+      [
+        claim.repo,
+        claim.base_branch,
+        claim.work_request_id,
+        claim.architect_anchor_work_package_id,
+        claim.claimed_by
+      ]
+      |> Enum.join("\0")
+
+    material =
+      [
+        claim.repo,
+        claim.base_branch,
+        claim.work_request_id,
+        claim.architect_anchor_work_package_id,
+        claim.caller_id,
+        claim.claimed_by
+      ]
+      |> Enum.join("\0")
+
+    owner_id = local_assignment_actor_hash(owner_material)
+    actor_id = local_assignment_actor_hash(material)
+
+    %{
+      "actor_kind" => "agent",
+      "actor_id" => "local:" <> owner_id <> ":" <> actor_id,
+      "actor_display_name" => claim.claimed_by
+    }
+  end
+
+  defp finalize_local_architect_assignment_claim(repo, result, %Session{} = session, claim, %ClaimLease{} = lease, lease_action, grant_action) do
+    case append_local_architect_assignment_claim_event(repo, session, claim, lease, lease_action) do
+      {:ok, claim_event} ->
+        {:ok, Map.put(result, "local_claim", local_architect_assignment_claim_payload(claim, lease, lease_action, claim_event)), session}
+
+      {:error, reason} ->
+        rollback_failed_local_architect_assignment_claim(repo, session, lease, lease_action, grant_action, reason)
+        local_architect_assignment_claim_error(reason)
+    end
+  end
+
+  defp rollback_failed_local_architect_assignment_claim(repo, %Session{} = session, %ClaimLease{} = lease, lease_action, grant_action, reason) do
+    release_failed_local_architect_assignment_lease(repo, lease, lease_action, reason)
+    revoke_failed_local_architect_assignment_grant(repo, session, lease_action, grant_action)
+  end
+
+  defp revoke_failed_local_architect_assignment_grant(repo, %Session{assignment: %{grant_id: grant_id}}, :reclaimed, :claimed)
+       when is_binary(grant_id) do
+    _result = AccessGrantService.revoke(repo, grant_id)
+    :ok
+  end
+
+  defp revoke_failed_local_architect_assignment_grant(_repo, %Session{}, _lease_action, _grant_action), do: :ok
+
+  defp local_architect_assignment_claim_payload(claim, %ClaimLease{} = lease, lease_action, claim_event) do
+    %{
+      "tool" => @local_architect_assignment_claim_tool,
+      "mode" => "local-http",
+      "repo" => claim.repo,
+      "base_branch" => claim.base_branch,
+      "work_request_id" => claim.work_request_id,
+      "architect_anchor_work_package_id" => claim.architect_anchor_work_package_id,
+      "phase_id" => claim.phase_id,
+      "caller_id" => claim.caller_id,
+      "claimed_by" => claim.claimed_by,
+      "claim_lease_id" => lease.id,
+      "claim_lease_status" => lease.status,
+      "claim_lease_action" => Atom.to_string(lease_action),
+      "lifecycle_state" => "active",
+      "reason_codes" => local_architect_assignment_claim_reason_codes(lease_action, lease)
+    }
+    |> maybe_put_claim_event(claim_event)
+  end
+
+  defp append_local_architect_assignment_claim_event(_repo, %Session{}, _claim, %ClaimLease{}, lease_action) when lease_action != :reclaimed,
+    do: {:ok, nil}
+
+  defp append_local_architect_assignment_claim_event(repo, %Session{} = session, claim, %ClaimLease{} = lease, :reclaimed) do
+    payload = local_architect_assignment_claim_reclaim_payload(claim, lease)
+
+    PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, claim.architect_anchor_work_package_id, %{
+      "summary" => "Local architect assignment claim lease reclaimed",
+      "body" => "Local architect assignment claim lease was reclaimed for #{claim.claimed_by}.",
+      "status" => "claim_lease_reclaimed",
+      "idempotency_key" => metadata_idempotency_key(payload),
+      "payload" => payload
+    })
+  end
+
+  defp local_architect_assignment_claim_reclaim_payload(claim, %ClaimLease{} = lease) do
+    %{
+      "type" => "claim_lease_reclaim",
+      "source_tool" => @local_architect_assignment_claim_tool,
+      "work_request_id" => claim.work_request_id,
+      "architect_anchor_work_package_id" => claim.architect_anchor_work_package_id,
+      "phase_id" => claim.phase_id,
+      "claim_lease_id" => lease.id,
+      "claim_group_id" => lease.claim_group_id,
+      "previous_claim_id" => lease.previous_claim_id,
+      "claim_lease_status" => lease.status,
+      "claim_lease_action" => "reclaimed",
+      "claimed_by" => claim.claimed_by,
+      "caller_id" => claim.caller_id,
+      "lifecycle_state" => "active",
+      "reason_codes" => local_architect_assignment_claim_reason_codes(:reclaimed, lease)
+    }
+  end
+
+  defp local_architect_assignment_claim_reason_codes(lease_action, %ClaimLease{} = lease) do
+    [
+      "claim_lease_#{lease_action}",
+      if(lease.previous_claim_id, do: "architect_recycled")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp release_failed_local_architect_assignment_lease(repo, %ClaimLease{} = lease, lease_action, _reason)
+       when lease_action in [:created, :reclaimed] do
+    _result = ClaimLeaseService.release(repo, lease.id, reason: "local_architect_assignment_claim_failed")
+    :ok
+  end
+
+  defp release_failed_local_architect_assignment_lease(repo, %ClaimLease{} = lease, :heartbeat, reason)
+       when reason in [:expired, :revoked, :architect_grant_required, :already_claimed] do
+    _result = ClaimLeaseService.release(repo, lease.id, reason: "local_architect_assignment_claim_failed")
+    :ok
+  end
+
+  defp release_failed_local_architect_assignment_lease(_repo, %ClaimLease{}, _lease_action, _reason), do: :ok
+
   defp normalize_local_assignment_path(path) when is_binary(path) do
     path
     |> String.trim()
@@ -3837,6 +4317,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_001, "Unauthorized", %{"tool" => @local_assignment_claim_tool, "reason" => reason_text(reason)}}
   end
 
+  defp local_architect_assignment_claim_error(:database_busy), do: service_error(:database_busy, @local_architect_assignment_claim_tool)
+
+  defp local_architect_assignment_claim_error({:storage_failed, _reason} = reason),
+    do: service_error(reason, @local_architect_assignment_claim_tool)
+
+  defp local_architect_assignment_claim_error({:migration_failed, _reason} = reason),
+    do: service_error(reason, @local_architect_assignment_claim_tool)
+
+  defp local_architect_assignment_claim_error(reason) do
+    {:error, -32_001, "Unauthorized", %{"tool" => @local_architect_assignment_claim_tool, "reason" => reason_text(reason)}}
+  end
+
   defp private_handoff_claim_error(:database_busy), do: service_error(:database_busy, "claim_private_handoff")
   defp private_handoff_claim_error({:storage_failed, _reason} = reason), do: service_error(reason, "claim_private_handoff")
   defp private_handoff_claim_error({:migration_failed, _reason} = reason), do: service_error(reason, "claim_private_handoff")
@@ -3991,13 +4483,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp bootstrap_tool("create_work_request", arguments, %__MODULE__{config: config}) do
+  defp bootstrap_tool("create_work_request", arguments, %__MODULE__{config: config} = server) do
     with {:ok, requested_claimed_by} <- create_work_request_requested_claimed_by(arguments),
          {:ok, attrs} <- create_work_request_attrs(arguments, requested_claimed_by),
          {:ok, work_request} <- WorkRequestService.create(config.repo, attrs) do
       effective_claimed_by = requested_claimed_by || ArchitectHandoff.claimed_by()
 
-      {:ok, tool_result(create_work_request_handoff_payload(config, work_request, effective_claimed_by))}
+      {:ok, tool_result(create_work_request_handoff_payload(server, work_request, effective_claimed_by))}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "create_work_request", "reason" => reason}}
       {:error, reason} -> create_work_request_error(reason)
@@ -4072,14 +4564,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp create_work_request_handoff_payload(%Config{} = config, %WorkRequest{} = work_request, claimed_by) do
-    case create_work_request_architect_handoff(config, work_request, claimed_by) do
+  defp create_work_request_handoff_payload(%__MODULE__{} = server, %WorkRequest{} = work_request, claimed_by) do
+    case create_work_request_architect_handoff(server, work_request, claimed_by) do
       {:ok, handoff} ->
         %{
           "status" => "created",
           "work_request" => work_request_payload(work_request),
           "architect_handoff" => json_safe_payload(handoff),
-          "claim" => %{"tool" => "claim_private_handoff", "claimed_by" => claimed_by},
+          "claim" => create_work_request_claim_payload(handoff, claimed_by),
           "launch_prompt" => Map.get(handoff, :prompt)
         }
 
@@ -4089,6 +4581,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, reason} ->
         create_work_request_partial_handoff_payload(work_request, reason)
     end
+  end
+
+  defp create_work_request_claim_payload(%{local_architect_claim: %{} = claim}, claimed_by) do
+    %{
+      "tool" => "claim_local_architect_assignment",
+      "claimed_by" => claimed_by,
+      "arguments" => Map.get(claim, "arguments", %{}),
+      "required_runtime_arguments" => Map.get(claim, "required_runtime_arguments", [])
+    }
+  end
+
+  defp create_work_request_claim_payload(_handoff, claimed_by) do
+    %{"tool" => "claim_private_handoff", "claimed_by" => claimed_by}
   end
 
   defp create_work_request_partial_handoff_payload(%WorkRequest{} = work_request, reason) do
@@ -4108,13 +4613,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
-  defp create_work_request_architect_handoff(%Config{} = config, %WorkRequest{} = work_request, claimed_by) do
+  defp create_work_request_architect_handoff(%__MODULE__{config: config} = server, %WorkRequest{} = work_request, claimed_by) do
     with {:ok, handoff_opts} <- create_work_request_handoff_opts(config, claimed_by) do
       ArchitectHandoff.create_or_replay(config.repo, work_request.id,
         local_operator?: true,
+        local_architect_claim?: local_architect_claim_handoff_enabled?(server),
         secret_handoff_opts: handoff_opts
       )
     end
+  end
+
+  defp local_architect_claim_handoff_enabled?(%__MODULE__{} = server) do
+    require_local_architect_assignment_claim_mode(server) == :ok
   end
 
   defp create_work_request_handoff_opts(%Config{} = config, claimed_by) do
@@ -11259,6 +11769,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp local_architect_assignment_claim_tool_arguments(params) do
+    case Map.get(params, "arguments", %{}) do
+      arguments when is_map(arguments) ->
+        validate_local_architect_assignment_claim_arguments(arguments)
+
+      _arguments ->
+        {:error, -32_602, "Invalid params", %{"tool" => @local_architect_assignment_claim_tool, "reason" => "invalid_tool_arguments"}}
+    end
+  end
+
   defp local_operator_tool_arguments(params, name) do
     case Map.get(params, "arguments", %{}) do
       arguments when is_map(arguments) ->
@@ -11297,6 +11817,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, arguments}
     else
       {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "unexpected_argument", "arguments" => unexpected}}
+    end
+  end
+
+  defp validate_local_architect_assignment_claim_arguments(arguments) do
+    schema = local_architect_assignment_claim_tool_input_schema()
+    allowed = schema |> Map.get("properties", %{}) |> Map.keys() |> MapSet.new()
+    unexpected = arguments |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
+
+    if unexpected != [] do
+      {:error, -32_602, "Invalid params", %{"tool" => @local_architect_assignment_claim_tool, "reason" => "unexpected_argument", "arguments" => unexpected}}
+    else
+      case validate_tool_required_arguments(schema, arguments) do
+        :ok -> {:ok, arguments}
+        {:error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => @local_architect_assignment_claim_tool, "reason" => reason}}
+      end
     end
   end
 
