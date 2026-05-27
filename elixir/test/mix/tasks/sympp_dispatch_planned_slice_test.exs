@@ -72,8 +72,16 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
       assert bootstrap["claim"]["arguments"]["work_package_id"] == create_work["work_package"]["id"]
       refute Map.has_key?(bootstrap["claim"]["arguments"], "branch")
       assert bootstrap["claim"]["required_runtime_arguments"] == ["branch", "worktree_path", "caller_id"]
-      assert "symphony-plus-plus:symphony-worker" in bootstrap["required_skills"]
-      assert "symphony-plus-plus-mcp:symphony-work-package" in bootstrap["required_skills"]
+
+      assert bootstrap["required_skills"] == [
+               "symphony-plus-plus:symphony-worker",
+               "symphony-plus-plus-mcp:symphony-work-package"
+             ]
+
+      assert [
+               ["symphony-plus-plus:symphony-worker", "symphony-plus-plus-mcp:symphony-work-package"],
+               ["symphony-plus-plus:symphony-worker", "symphony-work-package"]
+             ] = bootstrap["supported_skill_sets"]
 
       refute json =~ "local-private-file"
       refute json =~ "run_mcp_command"

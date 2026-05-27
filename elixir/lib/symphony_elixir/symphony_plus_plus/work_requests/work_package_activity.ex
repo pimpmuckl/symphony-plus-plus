@@ -174,15 +174,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
 
     active? =
       active_runtime?(
-        terminal?,
         paused?,
         stale_claim_leases,
         active_claim_leases,
         active_agent_runs,
+        stale_agent_runs,
         active_grants
       )
 
-    stale? = stale_runtime?(terminal?, paused?, stale_claim_leases, stale_agent_runs)
+    stale? = stale_runtime?(paused?, stale_claim_leases, stale_agent_runs)
 
     reason_codes =
       runtime_reason_codes(
@@ -214,16 +214,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
     {Enum.filter(agent_runs, &active_agent_run?(&1, now)), Enum.filter(agent_runs, &stale_agent_run?(&1, now))}
   end
 
-  defp active_runtime?(true = _terminal?, _paused?, _stale_claim_leases, _active_claim_leases, _active_agent_runs, _active_grants), do: false
-  defp active_runtime?(_terminal?, true = _paused?, _stale_claim_leases, _active_claim_leases, _active_agent_runs, _active_grants), do: false
+  defp active_runtime?(true = _paused?, _stale_claim_leases, _active_claim_leases, _active_agent_runs, _stale_agent_runs, _active_grants),
+    do: false
 
-  defp active_runtime?(_terminal?, _paused?, _stale_claim_leases, active_claim_leases, active_agent_runs, active_grants) do
-    active_claim_leases != [] or active_agent_runs != [] or active_grants != []
+  defp active_runtime?(_paused?, stale_claim_leases, active_claim_leases, active_agent_runs, stale_agent_runs, active_grants) do
+    stale_claim_leases != [] or active_claim_leases != [] or active_agent_runs != [] or stale_agent_runs != [] or active_grants != []
   end
 
-  defp stale_runtime?(true = _terminal?, _paused?, _stale_claim_leases, _stale_agent_runs), do: false
-  defp stale_runtime?(_terminal?, true = _paused?, _stale_claim_leases, _stale_agent_runs), do: false
-  defp stale_runtime?(_terminal?, _paused?, stale_claim_leases, stale_agent_runs), do: stale_claim_leases != [] or stale_agent_runs != []
+  defp stale_runtime?(true = _paused?, _stale_claim_leases, _stale_agent_runs), do: false
+  defp stale_runtime?(_paused?, stale_claim_leases, stale_agent_runs), do: stale_claim_leases != [] or stale_agent_runs != []
 
   defp active_grant?(%AccessGrant{grant_role: role, claimed_at: %DateTime{}, revoked_at: nil, expires_at: expires_at}, %DateTime{} = now)
        when role in @active_grant_roles do
@@ -296,11 +295,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
   defp terminal_package?(_work_package), do: false
 
   defp latest_runtime_gate_at(grants, agent_runs, claim_leases, progress_events, work_package, %DateTime{} = now) do
-    if terminal_package?(work_package) do
-      work_package.updated_at
-    else
-      active_runtime_gate_at(grants, agent_runs, claim_leases, progress_events, now)
-    end
+    active_runtime_gate = active_runtime_gate_at(grants, agent_runs, claim_leases, progress_events, now)
+
+    if terminal_package?(work_package),
+      do: latest_timestamp([active_runtime_gate, work_package.updated_at]),
+      else: active_runtime_gate
   end
 
   defp active_runtime_gate_at(grants, agent_runs, claim_leases, progress_events, %DateTime{} = now) do
@@ -347,10 +346,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
   defp blocker_reason_codes([], _blocker_events), do: ["blocker_resolved"]
   defp blocker_reason_codes(_active_ids, _blocker_events), do: ["active_blocker"]
 
-  defp runtime_reason_codes(_active_grants, _active_agent_runs, _active_claim_leases, _stale_agent_runs, _stale_claim_leases, _paused?, _recycled?, true),
-    do: ["package_terminal"]
-
-  defp runtime_reason_codes(active_grants, active_agent_runs, active_claim_leases, stale_agent_runs, stale_claim_leases, paused?, recycled?, false) do
+  defp runtime_reason_codes(active_grants, active_agent_runs, active_claim_leases, stale_agent_runs, stale_claim_leases, paused?, recycled?, terminal?) do
     [
       if(paused?, do: "claim_lease_paused"),
       if(stale_claim_leases != [], do: "claim_lease_stale"),
@@ -358,7 +354,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
       if(active_claim_leases != [], do: "claim_lease_active"),
       if(active_agent_runs != [], do: "agent_run_active"),
       active_grant_reason_code(active_grants),
-      if(recycled?, do: "worker_recycled")
+      if(recycled?, do: "worker_recycled"),
+      if(terminal?, do: "package_terminal")
     ]
     |> List.flatten()
     |> Enum.reject(&is_nil/1)
@@ -373,11 +370,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
     |> Enum.uniq()
   end
 
-  defp runtime_lifecycle_state(_active?, _paused?, _stale?, _recycled?, true = _terminal?), do: "terminal"
   defp runtime_lifecycle_state(_active?, true = _paused?, _stale?, _recycled?, _terminal?), do: "paused"
   defp runtime_lifecycle_state(_active?, _paused?, true = _stale?, _recycled?, _terminal?), do: "stale"
   defp runtime_lifecycle_state(true = _active?, _paused?, _stale?, _recycled?, _terminal?), do: "active"
   defp runtime_lifecycle_state(_active?, _paused?, _stale?, true = _recycled?, _terminal?), do: "recycled"
+  defp runtime_lifecycle_state(_active?, _paused?, _stale?, _recycled?, true = _terminal?), do: "terminal"
   defp runtime_lifecycle_state(_active?, _paused?, _stale?, _recycled?, _terminal?), do: "idle"
 
   defp claim_lease_gate_at(%ClaimLease{status: "paused"} = claim_lease) do

@@ -22,6 +22,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     :windows_credential_manager_unavailable
   ]
 
+  @worker_skill "symphony-plus-plus:symphony-worker"
+  @mcp_work_package_skill "symphony-plus-plus-mcp:symphony-work-package"
+  @repo_work_package_skill "symphony-work-package"
+
   @type dispatch_result :: %{
           work_request: WorkRequest.t(),
           planned_slice: PlannedSlice.t(),
@@ -203,10 +207,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
         arguments: claim_arguments,
         required_runtime_arguments: runtime_arguments
       },
-      required_skills: [
-        "symphony-plus-plus:symphony-worker",
-        "symphony-plus-plus-mcp:symphony-work-package"
-      ],
+      required_skills: [@worker_skill, @mcp_work_package_skill],
+      supported_skill_sets: supported_worker_skill_sets(),
       launch_prompt:
         worker_launch_prompt(
           work_request,
@@ -353,6 +355,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
   defp ledger_bootstrap(nil), do: nil
   defp ledger_bootstrap(database), do: %{database: database}
 
+  defp supported_worker_skill_sets do
+    [
+      [@worker_skill, @mcp_work_package_skill],
+      [@worker_skill, @repo_work_package_skill]
+    ]
+  end
+
   defp worker_launch_prompt(
          %WorkRequest{} = work_request,
          %PlannedSlice{} = planned_slice,
@@ -377,8 +386,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     """
     You are assigned Symphony++ WorkPackage JSON id #{work_package_id} from WorkRequest JSON id #{work_request_id}. WorkPackage title JSON data: #{title}.
 
-    Use `symphony-plus-plus:symphony-worker` plus
-    `symphony-plus-plus-mcp:symphony-work-package` and the configured Symphony++ MCP server.
+    Use `#{@worker_skill}` plus either `#{@mcp_work_package_skill}` or the repo-local `#{@repo_work_package_skill}` and the configured Symphony++ MCP server.
     #{ledger_line}
 
     Start from the ledger-backed local claim path. After the package worktree is prepared, call `claim_local_assignment` with #{claim_arguments}. Also provide #{Enum.join(runtime_arguments, ", ")} from the prepared local session. Then call `get_current_assignment()` and read the WorkPackage context before coding.

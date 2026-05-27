@@ -2879,8 +2879,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp validate_local_assignment_scope(repo, %WorkPackage{} = work_package, claim) do
     with :ok <- require_local_value_match(work_package.repo, claim.repo, :repo_scope_mismatch),
          :ok <- require_local_value_match(work_package.base_branch, claim.base_branch, :base_branch_scope_mismatch),
-         :ok <- require_local_branch_scope(work_package, claim.branch),
          :ok <- require_local_worktree_scope(work_package, claim.worktree_path),
+         :ok <- require_local_branch_scope(work_package, claim.branch, claim.worktree_path),
          :ok <- require_live_local_work_package(work_package) do
       validate_local_work_request_scope(repo, work_package, claim.work_request_id)
     end
@@ -2889,11 +2889,131 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_local_value_match(value, value, _reason) when is_binary(value), do: :ok
   defp require_local_value_match(_expected, _actual, reason), do: {:error, reason}
 
-  defp require_local_branch_scope(%WorkPackage{branch_pattern: branch_pattern}, branch) do
+  defp require_local_branch_scope(%WorkPackage{} = work_package, branch, worktree_path) do
+    case local_assignment_worktree_branch(worktree_path) do
+      {:ok, ^branch} -> require_local_branch_pattern_scope(work_package, branch, prepared_worktree?: true)
+      {:ok, _branch} -> {:error, :branch_scope_mismatch}
+      {:error, :git_metadata_missing} -> require_local_branch_pattern_scope(work_package, branch, prepared_worktree?: false)
+      {:error, _reason} -> {:error, :branch_scope_mismatch}
+    end
+  end
+
+  defp require_local_branch_pattern_scope(%WorkPackage{branch_pattern: branch_pattern} = work_package, branch, opts) do
     case normalize_optional_value(branch_pattern) do
-      nil -> :ok
-      ^branch -> :ok
-      _branch_pattern -> {:error, :branch_scope_mismatch}
+      nil ->
+        :ok
+
+      pattern ->
+        cond do
+          pattern == branch and not local_branch_template_pattern?(pattern) ->
+            :ok
+
+          Keyword.get(opts, :prepared_worktree?, false) and local_branch_template_matches?(work_package, pattern, branch) ->
+            :ok
+
+          true ->
+            {:error, :branch_scope_mismatch}
+        end
+    end
+  end
+
+  defp local_branch_template_pattern?(pattern) when is_binary(pattern) do
+    Regex.match?(~r/\{\{\s*[a-zA-Z0-9_]+\s*\}\}/, pattern)
+  end
+
+  defp local_branch_template_pattern?(_pattern), do: false
+
+  defp local_branch_template_matches?(%WorkPackage{} = work_package, pattern, branch)
+       when is_binary(pattern) and is_binary(branch) do
+    case Regex.scan(~r/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/, pattern, return: :index) do
+      [] ->
+        false
+
+      matches ->
+        source = "^" <> local_branch_template_regex_source(pattern, matches, work_package) <> "$"
+        Regex.match?(Regex.compile!(source), branch)
+    end
+  end
+
+  defp local_branch_template_matches?(%WorkPackage{}, _pattern, _branch), do: false
+
+  defp local_branch_template_regex_source(pattern, matches, work_package) do
+    {parts, cursor} =
+      Enum.reduce(matches, {[], 0}, fn [{match_start, match_length}, {capture_start, capture_length}], {parts, cursor} ->
+        literal = pattern |> binary_part(cursor, match_start - cursor) |> Regex.escape()
+        placeholder = binary_part(pattern, capture_start, capture_length)
+        replacement = local_branch_template_placeholder_regex(work_package, placeholder)
+
+        {[replacement, literal | parts], match_start + match_length}
+      end)
+
+    suffix = pattern |> binary_part(cursor, byte_size(pattern) - cursor) |> Regex.escape()
+    IO.iodata_to_binary(Enum.reverse([suffix | parts]))
+  end
+
+  defp local_branch_template_placeholder_regex(%WorkPackage{} = work_package, placeholder) do
+    case placeholder do
+      "work_package_id" -> local_branch_template_literal_regex(work_package.id)
+      "id" -> local_branch_template_literal_regex(work_package.id)
+      "phase_id" -> local_branch_template_literal_regex(work_package.phase_id)
+      "parent_id" -> local_branch_template_literal_regex(work_package.parent_id)
+      "owner_id" -> local_branch_template_literal_regex(work_package.owner_id)
+      _placeholder -> "[^/]+"
+    end
+  end
+
+  defp local_branch_template_literal_regex(value) do
+    case normalize_optional_value(value) do
+      nil -> "[^/]+"
+      value -> Regex.escape(value)
+    end
+  end
+
+  defp local_assignment_worktree_branch(worktree_path) when is_binary(worktree_path) do
+    with true <- File.dir?(worktree_path),
+         {:ok, git_dir} <- local_assignment_git_dir(worktree_path),
+         {:ok, head} <- File.read(Path.join(git_dir, "HEAD")),
+         {:ok, branch} <- local_assignment_head_branch(head) do
+      {:ok, branch}
+    else
+      false -> {:error, :git_metadata_missing}
+      {:error, :enoent} -> {:error, :git_metadata_missing}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp local_assignment_worktree_branch(_worktree_path), do: {:error, :git_metadata_missing}
+
+  defp local_assignment_git_dir(worktree_path) do
+    dot_git = Path.join(worktree_path, ".git")
+
+    cond do
+      File.dir?(dot_git) ->
+        {:ok, dot_git}
+
+      File.regular?(dot_git) ->
+        dot_git
+        |> File.read()
+        |> local_assignment_git_dir_from_file(worktree_path)
+
+      true ->
+        {:error, :git_metadata_missing}
+    end
+  end
+
+  defp local_assignment_git_dir_from_file({:ok, contents}, worktree_path) do
+    case contents |> String.trim() |> String.split(":", parts: 2) do
+      ["gitdir", git_dir] -> {:ok, Path.expand(String.trim(git_dir), worktree_path)}
+      _contents -> {:error, :git_metadata_invalid}
+    end
+  end
+
+  defp local_assignment_git_dir_from_file({:error, reason}, _worktree_path), do: {:error, reason}
+
+  defp local_assignment_head_branch(head) when is_binary(head) do
+    case String.trim(head) do
+      "ref: refs/heads/" <> branch when branch != "" -> {:ok, branch}
+      _detached_or_invalid -> {:error, :git_head_invalid}
     end
   end
 
@@ -2958,12 +3078,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         renew_local_assignment_claim_lease(repo, work_package.id, lease, actor)
 
       {:error, :not_found} ->
-        repo
-        |> ClaimLeaseService.claim(work_package.id, actor, stale_after_ms: @local_assignment_claim_stale_after_ms)
-        |> case do
-          {:ok, %ClaimLease{} = lease} -> {:ok, lease, :created}
-          {:error, reason} -> {:error, reason}
-        end
+        claim_new_local_assignment_lease(repo, work_package.id, actor)
 
       {:error, reason} ->
         {:error, reason}
@@ -3025,9 +3140,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp claim_replacement_local_assignment_lease(repo, work_package_id, actor) do
+    case claim_new_local_assignment_lease(repo, work_package_id, actor) do
+      {:ok, %ClaimLease{} = replacement, :created} -> {:ok, replacement, :reclaimed}
+      result -> result
+    end
+  end
+
+  defp claim_new_local_assignment_lease(repo, work_package_id, actor) do
     case ClaimLeaseService.claim(repo, work_package_id, actor, stale_after_ms: @local_assignment_claim_stale_after_ms) do
-      {:ok, %ClaimLease{} = replacement} -> {:ok, replacement, :reclaimed}
+      {:ok, %ClaimLease{} = lease} -> {:ok, lease, :created}
+      {:error, :active_claim_exists} -> renew_current_local_assignment_claim_lease(repo, work_package_id, actor)
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp renew_current_local_assignment_claim_lease(repo, work_package_id, actor) do
+    requested_actor_id = actor["actor_id"]
+
+    case ClaimLeaseService.current_for_work_package(repo, work_package_id) do
+      {:ok, %ClaimLease{actor_id: ^requested_actor_id} = lease} ->
+        renew_local_assignment_claim_lease(repo, work_package_id, lease, actor)
+
+      {:ok, %ClaimLease{}} ->
+        {:error, :active_claim_exists}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -11835,7 +11973,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp dispatch_worker_grant_payload(worker_grant) when is_map(worker_grant) do
     worker_grant
     |> json_safe_payload()
-    |> Map.drop(["display_key", "secret", "secret_handoff", "secret_returned_once"])
+    |> Map.drop(["display_key", "secret", "secret_hash", "secret_handoff", "secret_returned_once"])
     |> Map.put("secret_in_response", false)
   end
 
@@ -12082,7 +12220,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp live_expires_at?(%DateTime{} = expires_at, %DateTime{} = now), do: DateTime.compare(expires_at, now) == :gt
 
   defp redacted_child_worker_grant(worker_grant) when is_map(worker_grant) do
-    Map.delete(worker_grant, "secret")
+    worker_grant
+    |> Map.delete(:secret)
+    |> Map.delete("secret")
+    |> Map.delete(:secret_hash)
+    |> Map.delete("secret_hash")
   end
 
   defp child_worker_secret_handoff_payload(handoff) when is_map(handoff) do
