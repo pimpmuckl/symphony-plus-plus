@@ -10,7 +10,7 @@ these local adoption steps.
 - The feature branch is current with `origin/main`:
 
 ```powershell
-git fetch origin main feature/sympp-v21-ledger-claims
+git fetch origin
 git merge-base --is-ancestor origin/main origin/feature/sympp-v21-ledger-claims
 ```
 
