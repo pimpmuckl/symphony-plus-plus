@@ -1672,7 +1672,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         note_server
       )
 
-    assert get_in(status_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(status_response, ["error", "data", "reason"]) == "claim_required"
   end
 
   test "local operator WorkRequest note tools reject nonlocal and remote database modes", %{repo: repo} do
@@ -2773,7 +2773,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(unbound_response, ["error", "code"]) == -32_001
     assert get_in(unbound_response, ["error", "data", "resource"]) == "append_progress"
-    assert get_in(unbound_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(unbound_response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(unbound_response, ["error", "data", "action"]) == "claim_work_key"
 
     unbound_guidance_response =
       Server.handle(
@@ -2814,6 +2815,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(architect_response, ["error", "code"]) == -32_001
     assert get_in(architect_response, ["error", "data", "resource"]) == "append_progress"
     assert get_in(architect_response, ["error", "data", "reason"]) == "worker_grant_required"
+    assert {:ok, []} = PlanningRepository.list_progress_events(repo, package.id)
 
     hidden_shared_tool_response =
       MCPHarness.request(
@@ -5221,7 +5223,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-REINIT-HANDLE"
     assert get_in(reinit_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
-    assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(assignment_response, ["error", "data", "reason"]) == "claim_required"
   end
 
   test "response-only handle supports explicit state keys for recreated servers", %{repo: repo} do
@@ -5254,7 +5256,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-STATELESS-HANDLE"
-    assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(assignment_response, ["error", "data", "reason"]) == "claim_required"
 
     reconnect_claim_response =
       Server.handle(
@@ -5349,7 +5351,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(reinit_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
-    assert get_in(missing_assignment_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(missing_assignment_response, ["error", "data", "reason"]) == "claim_required"
 
     assert %{"result" => _result} =
              Server.handle(
@@ -5368,7 +5370,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         Server.new(Config.default(repo: repo), state_key: state_key)
       )
 
-    assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(assignment_response, ["error", "data", "reason"]) == "claim_required"
   end
 
   test "explicit state key stale live server remains claim-only until new session", %{repo: repo} do
@@ -5487,7 +5489,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Map.has_key?(fresh_tools_by_name, "read_work_request")
     assert Map.has_key?(fresh_tools_by_name, "solo_attach")
     refute Map.has_key?(fresh_tools_by_name, "get_current_assignment")
-    assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(assignment_response, ["error", "data", "reason"]) == "claim_required"
   end
 
   test "explicit state key duplicate initialize preserves active live session", %{repo: repo} do
@@ -5553,7 +5555,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(stale_duplicate_response, ["error", "data", "reason"]) == "already_initialized"
-    assert get_in(stale_assignment_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(stale_assignment_response, ["error", "data", "reason"]) == "claim_required"
   end
 
   test "failed explicit state key reinitialize clears prior handshake state", %{repo: repo} do
@@ -5616,7 +5618,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(invalid_reconnect_response, ["error", "data", "reason"]) == "invalid_initialize_params"
-    assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(assignment_response, ["error", "data", "reason"]) == "claim_required"
   end
 
   test "failed duplicate explicit initialize preserves live server session", %{repo: repo} do
@@ -5745,7 +5747,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-STATE-ISOLATED"
-    assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(assignment_response, ["error", "data", "reason"]) == "claim_required"
   end
 
   test "response-only handle treats nil and blank state keys as absent", %{repo: repo} do
@@ -5776,8 +5778,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
-    assert get_in(nil_key_assignment_response, ["error", "data", "reason"]) == "missing_session"
-    assert get_in(blank_key_assignment_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(nil_key_assignment_response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(blank_key_assignment_response, ["error", "data", "reason"]) == "claim_required"
   end
 
   test "response-only state keys are isolated by the active ledger" do
@@ -5826,7 +5828,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         )
 
       assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
-      assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
+      assert get_in(assignment_response, ["error", "data", "reason"]) == "claim_required"
     after
       Repo.put_dynamic_repo(original_repo)
       if Process.alive?(first_pid), do: GenServer.stop(first_pid)
@@ -6039,7 +6041,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert Enum.map(responses, & &1["id"]) == ["assignment"]
-    assert get_in(List.first(responses), ["error", "data", "reason"]) == "missing_session"
+    assert get_in(List.first(responses), ["error", "data", "reason"]) == "claim_required"
     assert server.session.assignment.work_package_id == "SYMPP-NOTIFY-CLAIM"
   end
 
@@ -11830,7 +11832,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Enum.map(responses, & &1["id"]) == ["claim", "assignment"]
     refute inspect(responses) =~ minted.work_key.secret
     assert get_in(Enum.at(responses, 0), ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-BATCH-CLAIM"
-    assert get_in(Enum.at(responses, 1), ["error", "data", "reason"]) == "missing_session"
+    assert get_in(Enum.at(responses, 1), ["error", "data", "reason"]) == "claim_required"
     assert server.session.assignment.work_package_id == "SYMPP-BATCH-CLAIM"
   end
 
@@ -13553,7 +13555,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         repo: repo
       )
 
-    assert get_in(missing_session_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(missing_session_response, ["error", "data", "reason"]) == "claim_required"
 
     stale_scope_response =
       MCPHarness.request(
@@ -15950,7 +15952,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         repo: repo
       )
 
-    assert get_in(response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(response, ["error", "data", "reason"]) == "claim_required"
   end
 
   test "investigation readiness rejects legacy recommendation event without artifact", %{repo: repo} do

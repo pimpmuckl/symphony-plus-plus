@@ -13,6 +13,8 @@ WorkKey/private-handoff bootstrap.
 
 1. Use a dedicated S++ MCP-enabled session connected to the same ledger as
    dispatch.
+   Trusted local HTTP sessions may show worker WorkPackage tool schemas before
+   claim; schema visibility is not authority, so claim first.
 2. For planned-slice/ledger-dispatched V2.1 assignments, claim with
    `claim_local_assignment` using the dispatch fields plus runtime `branch`,
    `worktree_path`, `caller_id`, and `claimed_by`.
@@ -69,6 +71,8 @@ process aids when the operator explicitly asks for them.
   current PR state is required; `sync_pr` must target the already attached PR.
 - Submit review evidence with
   `submit_review_package(summary, tests, artifacts, head_sha)`.
+- Attach structured Review Suite result evidence with
+  `attach_review_suite_result` when required.
 - If Review Suite is installed, run the current orchestrator with the required
   profile: `review.py --mode brief|normal|deep|emergency`.
 - If Review Suite is not installed, use the package-approved review provider

@@ -4,6 +4,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, HTTPStateStore, HTTPTransport, LedgerNamespace, Server, Session}
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository, as: SoloSessionRepository
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
@@ -87,6 +88,115 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
 
     refute "get_current_assignment" in names
     refute "append_progress" in names
+  end
+
+  test "trusted local HTTP advertises worker schemas before local claim and authorizes them after claim", %{config: config} do
+    trusted_config = %{config | local_daemon_trusted: true}
+    package_id = "SYMPP-HTTP-TRUSTED-LOCAL-CLAIM"
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               trusted_config.repo,
+               WorkPackageFactory.attrs(
+                 id: package_id,
+                 kind: "mcp",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main",
+                 branch_pattern: "agent/#{package_id}/worker",
+                 worktree_path: local_claim_worktree_path(package_id),
+                 status: "ready_for_worker"
+               )
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(trusted_config.repo, work_package.id)
+
+    {:ok, init} = HTTPTransport.handle(trusted_config, initialize_request("trusted-init"), client_key: "trusted-client")
+
+    assert {:ok, tools} =
+             HTTPTransport.handle(trusted_config, tools_list_request("trusted-tools"), client_key: "trusted-client", state_key: init.state_key)
+
+    names = tool_names(tools.response)
+    assert length(names) == length(Enum.uniq(names))
+
+    for tool <- [
+          "claim_local_assignment",
+          "get_current_assignment",
+          "read_context",
+          "read_task_plan",
+          "update_task_plan",
+          "append_finding",
+          "append_progress",
+          "set_status",
+          "report_blocker",
+          "resolve_blocker",
+          "add_comment",
+          "list_comments",
+          "resolve_comment",
+          "create_guidance_request",
+          "read_guidance_request",
+          "request_scope_expansion",
+          "attach_branch",
+          "attach_pr",
+          "sync_pr",
+          "submit_review_package",
+          "attach_review_suite_result",
+          "mark_ready"
+        ] do
+      assert tool in names
+    end
+
+    read_guidance_tool =
+      tools.response
+      |> get_in(["result", "tools"])
+      |> Enum.find(&(&1["name"] == "read_guidance_request"))
+
+    assert read_guidance_tool["description"] =~ "architect grant"
+
+    assert {:ok, preclaim_progress} =
+             HTTPTransport.handle(
+               trusted_config,
+               tool_call_request("preclaim-progress", "append_progress", %{
+                 "summary" => "Should not write",
+                 "idempotency_key" => "preclaim-progress"
+               }),
+               client_key: "trusted-client",
+               state_key: init.state_key
+             )
+
+    assert preclaim_progress.status == :error
+    assert get_in(preclaim_progress.response, ["error", "data", "resource"]) == "append_progress"
+    assert get_in(preclaim_progress.response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(preclaim_progress.response, ["error", "data", "action"]) == "claim_local_assignment"
+    assert {:ok, []} = PlanningRepository.list_progress_events(trusted_config.repo, work_package.id)
+
+    assert {:ok, claim} =
+             HTTPTransport.handle(
+               trusted_config,
+               tool_call_request("local-claim", "claim_local_assignment", local_assignment_claim_args(work_package)),
+               client_key: "trusted-client",
+               state_key: init.state_key
+             )
+
+    assert get_in(claim.response, ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
+    refute inspect(claim.response) =~ minted.work_key.secret
+
+    assert {:ok, assignment} =
+             HTTPTransport.handle(trusted_config, get_current_assignment_request(), client_key: "trusted-client", state_key: init.state_key)
+
+    assert get_in(assignment.response, ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
+
+    assert {:ok, progress} =
+             HTTPTransport.handle(
+               trusted_config,
+               tool_call_request("postclaim-progress", "append_progress", %{
+                 "summary" => "Post-claim progress",
+                 "idempotency_key" => "postclaim-progress"
+               }),
+               client_key: "trusted-client",
+               state_key: init.state_key
+             )
+
+    assert get_in(progress.response, ["result", "structuredContent", "progress_event", "summary"]) == "Post-claim progress"
   end
 
   test "sympp.health works after initialize", %{config: config} do
@@ -304,6 +414,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
       "method" => "tools/call",
       "params" => %{"name" => "get_current_assignment", "arguments" => %{}}
     }
+  end
+
+  defp tool_call_request(id, name, arguments) do
+    %{"jsonrpc" => "2.0", "id" => id, "method" => "tools/call", "params" => %{"name" => name, "arguments" => arguments}}
+  end
+
+  defp local_assignment_claim_args(%WorkPackage{} = package) do
+    %{
+      "repo" => package.repo,
+      "base_branch" => package.base_branch,
+      "work_package_id" => package.id,
+      "branch" => package.branch_pattern,
+      "worktree_path" => package.worktree_path,
+      "caller_id" => "codex-local-test",
+      "claimed_by" => "local-worker-1"
+    }
+  end
+
+  defp local_claim_worktree_path(work_package_id) do
+    Path.expand(Path.join(System.tmp_dir!(), "sympp-http-local-claim-#{work_package_id}"))
   end
 
   defp claim_request(secret, claimed_by) do

@@ -274,8 +274,12 @@ Unbound/generic MCP sessions also advertise `sympp.health`, the recovery
 Session tools, and static architect schemas. They do not advertise other worker
 mutation tools until a valid grant is bound. Trusted local HTTP sessions with
 explicit state-key continuity may additionally advertise
-`claim_local_assignment`, `claim_local_architect_assignment`, and the local
-operator note tools described above.
+`claim_local_assignment`, `claim_local_architect_assignment`, worker-only bound
+WorkPackage schemas except `claim_work_key`, and the local operator note tools
+described above. Shared names such as `read_guidance_request` remain covered by
+static architect schemas. Those worker schemas are discovery-only before claim:
+worker calls fail `claim_required` without mutating state, and trusted local
+HTTP denials point callers at `claim_local_assignment`.
 
 `sympp.health` is safe to run before or after claim. It reports only server
 version/source, mode, ledger reachability, and a redacted ledger identity; it
@@ -491,13 +495,15 @@ healthy unbound generic sessions advertise health, Solo Session tools,
 `claim_work_key`, `claim_private_handoff`, `create_work_request`, and architect
 tool schemas so fresh Codex sessions can discover WorkRequest and architect
 flows before claim. Unbound HTTP sessions also advertise
-`claim_local_assignment` and `claim_local_architect_assignment` for
-first-claim/reclaim schema discovery, but schema
-visibility is not authorization; claim calls still require trusted local HTTP
-state-key continuity and scope validation. Architect calls still require a live
-claimed architect grant with the required capability and scope, and unclaimed
-architect calls return a claim-required denial. Stale bound sessions expose only
-health, `claim_work_key`, `claim_private_handoff`, and, on HTTP sessions,
+`claim_local_assignment`, `claim_local_architect_assignment`, and the worker
+WorkPackage schemas needed by the MCP WorkPackage skill for first-claim/reclaim
+schema discovery, but schema visibility is not authorization. Claim calls still
+require trusted local HTTP state-key continuity and scope validation, and worker
+WorkPackage calls before a valid worker claim return a claim-required denial
+without mutating state. Architect calls still require a live claimed architect
+grant with the required capability and scope, and unclaimed architect calls
+return a claim-required denial. Stale bound sessions expose only health,
+`claim_work_key`, `claim_private_handoff`, and, on HTTP sessions,
 `claim_local_assignment` and `claim_local_architect_assignment` for refresh; duplicate
 `initialize` on that same stale explicit MCP session does not downgrade it into
 generic unbound discovery.

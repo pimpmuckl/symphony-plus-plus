@@ -134,6 +134,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "split_work_package",
     "publish_phase_update"
   ]
+  @trusted_unbound_worker_schema_tools (@worker_tools -- ["claim_work_key"]) -- @architect_tools
   @phase7_stub_architect_tools [
     "request_child_replan",
     "split_work_package",
@@ -2379,7 +2380,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(%{"phase_id" => string_schema(), "update" => object_schema()}, ["phase_id", "update"])
   end
 
-  defp tool_specs_for_session(config, nil) do
+  defp tool_specs_for_session(%Config{} = config, nil) do
     {:ok, unbound_tool_specs(config)}
   end
 
@@ -2424,6 +2425,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       Enum.map(@bootstrap_tools, &bootstrap_tool_spec/1) ++ architect_tool_specs()
   end
 
+  defp unbound_tool_specs(%__MODULE__{config: config} = server) do
+    [health_tool_spec()] ++
+      Enum.map(@solo_tools, &solo_tool_spec/1) ++
+      [worker_tool_spec("claim_work_key")] ++
+      local_assignment_claim_tool_specs(config) ++
+      local_architect_assignment_claim_tool_specs(config) ++
+      trusted_unbound_worker_schema_tool_specs(server) ++
+      Enum.map(@bootstrap_tools, &bootstrap_tool_spec/1) ++ architect_tool_specs()
+  end
+
+  defp trusted_unbound_worker_schema_tool_specs(%__MODULE__{} = server) do
+    if trusted_local_unbound_http_session?(server) do
+      Enum.map(@trusted_unbound_worker_schema_tools, &worker_tool_spec/1)
+    else
+      []
+    end
+  end
+
+  defp trusted_local_unbound_http_session?(%__MODULE__{
+         initialized: true,
+         session_refresh_required: false,
+         config: %Config{mode: :http, local_daemon_trusted: true},
+         local_daemon_trusted: true,
+         state_key_explicit: true,
+         session: nil
+       }),
+       do: true
+
+  defp trusted_local_unbound_http_session?(%__MODULE__{}), do: false
+
   defp local_assignment_claim_tool_specs(%Config{mode: :http}), do: [worker_tool_spec(@local_assignment_claim_tool)]
   defp local_assignment_claim_tool_specs(%Config{}), do: []
 
@@ -2449,6 +2480,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp tool_specs_for_server(%__MODULE__{session_refresh_required: true, config: config} = server) do
     {:ok, claimable_tool_specs(config) ++ local_operator_tool_specs(server)}
+  end
+
+  defp tool_specs_for_server(%__MODULE__{session: nil} = server) do
+    {:ok, unbound_tool_specs(server) ++ local_operator_tool_specs(server)}
   end
 
   defp tool_specs_for_server(%__MODULE__{config: config, session: session} = server) do
@@ -4398,6 +4433,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp preauthorize_worker_tool_call(%__MODULE__{session: nil} = server, name) do
+    {:error, -32_001, "Unauthorized", %{"resource" => name, "reason" => "claim_required", "action" => worker_claim_action(server)}}
+  end
+
   defp preauthorize_worker_tool_call(%__MODULE__{session: session}, "get_current_assignment") do
     with {:ok, session} <- Auth.require_session(session) do
       require_assignment_introspection(session.assignment)
@@ -4408,6 +4447,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- Auth.require_session(session) do
       require_worker_assignment(session.assignment)
     end
+  end
+
+  defp worker_claim_action(%__MODULE__{} = server) do
+    if trusted_local_unbound_http_session?(server), do: @local_assignment_claim_tool, else: "claim_work_key"
   end
 
   defp preauthorize_architect_tool_call(%__MODULE__{session: nil} = server, name) do

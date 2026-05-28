@@ -64,11 +64,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     "add_comment",
     "list_comments",
     "resolve_comment",
+    "create_guidance_request",
+    "read_guidance_request",
     "request_scope_expansion",
     "attach_branch",
     "attach_pr",
     "sync_pr",
     "submit_review_package",
+    "attach_review_suite_result",
     "mark_ready"
   ]
 
