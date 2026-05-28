@@ -40,6 +40,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       readiness_requirements: ["implementation_complete", "tests_passed", "review_emergency_green"],
       review_suite: %{required: ["emergency"], optional: []}
     },
+    "docs" => %{
+      template: "docs",
+      constraints: %{
+        expiry_seconds: nil,
+        planning_depth: "brief",
+        terminal_readiness_status: "ready_for_human_merge"
+      },
+      required_gates: ["focused_tests", "review_brief"],
+      readiness_requirements: ["tests_passed", "review_brief_green"],
+      review_suite: %{required: ["brief"], optional: ["normal"]}
+    },
     "adapter" => %{
       template: "adapter",
       constraints: %{

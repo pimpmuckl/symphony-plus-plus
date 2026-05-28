@@ -47,6 +47,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
       linked_slice!(repo, work_request,
         id: "WRS-BOARD-SUCCESSOR",
         work_package_id: "WP-BOARD-SUCCESSOR",
+        work_package_kind: "docs",
         status: "ready_for_worker"
       )
 
@@ -77,6 +78,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
     assert "linked_package_status_stale_after_delivery" in superseded.attention_reason_codes
     assert superseded.successor.planned_slice.id == successor_slice.id
     assert superseded.successor.work_package.id == successor_package.id
+    assert successor.work_package.kind == "docs"
     assert successor.delivery_outcome == nil
   end
 

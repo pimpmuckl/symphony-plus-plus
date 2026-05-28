@@ -32,6 +32,13 @@ for release-candidate evidence.
 - Human merge is required.
 - Hotfix review-suite profile passes.
 
+## Docs additional gates
+
+- Owned globs are documentation-only: they must live under documentation roots or target documentation-file globs.
+- Docs validation evidence is recorded as focused test evidence.
+- Brief review evidence is recorded.
+- PR, findings, and investigation recommendation artifacts are not required by default.
+
 ## Investigation additional gates
 
 - Recommendation evidence exists. `request_scope_expansion` records the protected worker recommendation and persists the canonical `recommendation.md` artifact for new investigation packages. Stored legacy `request_scope_expansion` rows do not satisfy readiness unless the canonical artifact already exists. It does not approve expanded scope.

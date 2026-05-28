@@ -260,7 +260,7 @@ scope, and `work_request_id` on every mutation. Approve and skip verify that
 `planned_slice_id` belongs to the scoped WorkRequest before mutating and fail
 closed as not found for sibling slices. Add and approve validate
 `owned_file_globs` against the parent WorkRequest path constraints before
-mutation. `**` must be a complete path segment: `scripts/**/deploy*.ps1` and
+mutation. `docs` slices also require documentation-only owned globs. `**` must be a complete path segment: `scripts/**/deploy*.ps1` and
 `.github/workflows/**` are valid; `scripts/**deploy**`,
 `scripts/**server**`, and `packages/**kraken_batch**` are invalid and return
 structured validation details with field, value, and reason. `mark_work_request_sliced` uses the
@@ -271,7 +271,8 @@ dispatch planned slices, create WorkPackages, alter SecretHandoff, mutate
 Linear, run automatic slicing/package generation, or change dashboard behavior.
 `add_work_request_planned_slice.work_package_kind` must be one of the
 standalone dispatchable WorkPackage kinds advertised by the live MCP input
-schema.
+schema: `quick_fix`, `hotfix`, `docs`, `investigation`, `adapter`, `mcp`,
+`skill`, or `hooks`.
 `dispatch_work_request_planned_slice` is separate from those mutation tools and
 requires `dispatch:work_request` because it creates a WorkPackage, worker grant,
 and worker bootstrap side effects. It does not prepare or record worktree scope;

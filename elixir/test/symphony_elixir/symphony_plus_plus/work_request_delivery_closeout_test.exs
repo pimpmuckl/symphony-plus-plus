@@ -242,7 +242,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
   end
 
   test "completed_no_pr superseded and abandoned close compatible linked packages to terminal states", %{repo: repo} do
-    {no_pr_request, no_pr_slice, no_pr_package} = linked_slice!(repo, status: "reviewing")
+    {no_pr_request, no_pr_slice, no_pr_package} = linked_slice!(repo, status: "reviewing", work_package_kind: "docs")
 
     assert {:ok, no_pr_delivery} =
              Service.record_planned_slice_delivery(
@@ -257,6 +257,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
              )
 
     assert no_pr_delivery.outcome == "completed_no_pr"
+    assert no_pr_package.kind == "docs"
     assert repo.get!(WorkPackage, no_pr_package.id).status == "closed"
     assert %WorkRequest{completed_at: %DateTime{}} = repo.get!(WorkRequest, no_pr_request.id)
 

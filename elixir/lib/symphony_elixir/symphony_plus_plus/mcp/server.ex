@@ -5202,7 +5202,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
          :ok <- require_planned_slice_authoring_status(work_request.status),
          :ok <- require_planned_slice_target_base_branch_scope(work_request, target_base_branch),
-         :ok <- validate_planned_slice_scope_for_tool(work_request, owned_file_globs),
+         :ok <- validate_planned_slice_scope_for_tool(work_request, work_package_kind, owned_file_globs),
          {:ok, planned_slice} <-
            WorkRequestService.add_planned_slice(
              config.repo,
@@ -5517,18 +5517,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     WorkRequestService.skip_planned_slice(repo, work_request_id, planned_slice_id, current_status)
   end
 
-  defp validate_planned_slice_scope_for_tool(%WorkRequest{} = work_request, owned_file_globs) do
-    case ScopeConstraints.validate_owned_file_globs(work_request, owned_file_globs) do
-      :ok -> :ok
+  defp validate_planned_slice_scope_for_tool(%WorkRequest{} = work_request, work_package_kind, owned_file_globs) do
+    with :ok <- ScopeConstraints.validate_owned_file_globs(work_request, owned_file_globs),
+         :ok <- validate_docs_planned_slice_scope(work_package_kind, owned_file_globs) do
+      :ok
+    else
       {:error, errors} -> {:tool_error, {:planned_slice_scope_violation, errors}}
     end
   end
 
   defp maybe_validate_planned_slice_scope_for_approval("approved", %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice) do
-    validate_planned_slice_scope_for_tool(work_request, planned_slice.owned_file_globs || [])
+    validate_planned_slice_scope_for_tool(
+      work_request,
+      planned_slice.work_package_kind,
+      planned_slice.owned_file_globs || []
+    )
   end
 
   defp maybe_validate_planned_slice_scope_for_approval(_next_status, %WorkRequest{}, %PlannedSlice{}), do: :ok
+
+  defp validate_docs_planned_slice_scope("docs", owned_file_globs), do: ScopeConstraints.validate_docs_owned_file_globs(owned_file_globs)
+  defp validate_docs_planned_slice_scope(_work_package_kind, _owned_file_globs), do: :ok
 
   defp dispatch_planned_slice_handoff_opts(%Config{} = config, arguments, claimed_by) do
     with {:ok, repo_root} <- dispatch_planned_slice_repo_root(config, arguments),
@@ -11696,6 +11705,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "field" => Atom.to_string(field),
       "value" => value,
       "reason" => Atom.to_string(reason)
+    }
+  end
+
+  defp scope_validation_detail({:non_documentation_owned_glob, value}) do
+    %{
+      "field" => "owned_file_globs",
+      "value" => value,
+      "reason" => "non_documentation_owned_glob"
     }
   end
 

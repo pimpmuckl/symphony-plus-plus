@@ -31,7 +31,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
   end
 
   test "allowed standalone transitions pass for quick work templates", %{repo: repo} do
-    for kind <- ["quick_fix", "hotfix", "investigation"] do
+    for kind <- ["quick_fix", "hotfix", "docs", "investigation"] do
       assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: kind))
 
       for status <- [
@@ -50,7 +50,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
   end
 
   test "invalid standalone transitions fail for quick work templates", %{repo: repo} do
-    for kind <- ["quick_fix", "hotfix", "investigation"] do
+    for kind <- ["quick_fix", "hotfix", "docs", "investigation"] do
       assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: kind))
 
       assert {:error, :invalid_transition} =
@@ -72,6 +72,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert hotfix.constraints.expiry_seconds == nil
     assert hotfix.review_suite.required == ["emergency"]
     assert hotfix.constraints.terminal_readiness_status == "ready_for_human_merge"
+
+    assert {:ok, docs} = Templates.expand("docs")
+    assert docs.constraints.expiry_seconds == nil
+    assert docs.constraints.planning_depth == "brief"
+    assert docs.review_suite.required == ["brief"]
+    assert docs.constraints.terminal_readiness_status == "ready_for_human_merge"
+    assert docs.readiness_requirements == ["tests_passed", "review_brief_green"]
 
     assert {:ok, phase_child} = Templates.expand("phase_child")
     assert phase_child.constraints.expiry_seconds == nil
@@ -107,7 +114,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     docs =
       File.read!(Path.expand("../../../../implementation_docs_symphplusplus/templates/quick_work_policy_templates.md", __DIR__))
 
-    for kind <- ["quick_fix", "hotfix", "investigation"] do
+    for kind <- ["quick_fix", "hotfix", "docs", "investigation"] do
       assert {:ok, policy} = Templates.expand(kind)
 
       expected_row =

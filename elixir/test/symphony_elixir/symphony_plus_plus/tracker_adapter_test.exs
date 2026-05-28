@@ -353,10 +353,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
       tracker_assignee: "agent-1",
       tracker_active_states: ["ready_for_worker"],
       tracker_terminal_states: ["merged"],
-      tracker_filter_work_kinds: ["adapter", "docs"]
+      tracker_filter_work_kinds: ["adapter", "unsupported_docs"]
     )
 
-    assert {:error, {:unsupported_symphony_plus_plus_work_kinds, ["docs"]}} = Config.validate!()
+    assert {:error, {:unsupported_symphony_plus_plus_work_kinds, ["unsupported_docs"]}} = Config.validate!()
 
     File.write!(Workflow.workflow_file_path(), """
     ---
@@ -385,8 +385,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert Orchestrator.workflow_config_error_message_for_test(invalid_filter_error) ==
              ~s(Invalid WORKFLOW.md config: invalid Symphony++ dispatch filter repos: [""])
 
-    assert Orchestrator.workflow_config_error_message_for_test({:unsupported_symphony_plus_plus_work_kinds, ["docs"]}) ==
-             ~s(Invalid WORKFLOW.md config: unsupported Symphony++ work kinds: ["docs"])
+    assert Orchestrator.workflow_config_error_message_for_test({:unsupported_symphony_plus_plus_work_kinds, ["unsupported_docs"]}) ==
+             ~s(Invalid WORKFLOW.md config: unsupported Symphony++ work kinds: ["unsupported_docs"])
   end
 
   test "malformed tracker config returns workflow validation error" do

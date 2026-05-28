@@ -290,9 +290,9 @@
       "required_arguments": ["work_request_id", "title", "goal", "work_package_kind", "target_base_branch", "owned_file_globs", "forbidden_file_globs", "acceptance_criteria", "validation_steps", "review_lanes", "stop_conditions"],
       "optional_arguments": ["branch_pattern"],
       "argument_constraints": {
-        "work_package_kind": ["quick_fix", "hotfix", "investigation", "adapter", "mcp", "skill", "hooks"]
+        "work_package_kind": ["quick_fix", "hotfix", "docs", "investigation", "adapter", "mcp", "skill", "hooks"]
       },
-      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope, verifies the target WorkRequest is in scope, and validates owned_file_globs against the parent WorkRequest path constraints before creating the planned slice. `**` must be a complete path segment; valid examples include scripts/**/deploy*.ps1 and .github/workflows/**, while scripts/**deploy** and packages/**kraken_batch** are rejected with structured safe validation details. It does not dispatch planned slices, create WorkPackages, alter SecretHandoff, mutate Linear, run automatic slicing/package generation, or change dashboard behavior.",
+      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope, verifies the target WorkRequest is in scope, and validates owned_file_globs against the parent WorkRequest path constraints before creating the planned slice. `docs` slices also require documentation-only owned_file_globs. `**` must be a complete path segment; valid examples include scripts/**/deploy*.ps1 and .github/workflows/**, while scripts/**deploy** and packages/**kraken_batch** are rejected with structured safe validation details. It does not dispatch planned slices, create WorkPackages, alter SecretHandoff, mutate Linear, run automatic slicing/package generation, or change dashboard behavior.",
       "response_policy": "Returns safe JSON with the redacted created planned slice, a minimal parent WorkRequest status projection, scope, and status metadata. It excludes read_work_request detail fields, work-key secrets, API tokens, private handoff payloads, and worker secret material."
     },
     {
@@ -300,7 +300,7 @@
       "purpose": "Approve a planned slice that belongs to a scoped WorkRequest.",
       "required_capabilities": ["write:work_request"],
       "required_arguments": ["work_request_id", "planned_slice_id", "current_status"],
-      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope, verifies the target WorkRequest is in scope, verifies planned_slice_id belongs to that WorkRequest, and validates owned_file_globs against the parent WorkRequest path constraints before approving. Sibling slice ids fail closed as not_found without leaking sibling content. Invalid `**` placement inside a segment returns structured safe validation details with field, value, and reason such as unsupported_globstar.",
+      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope, verifies the target WorkRequest is in scope, verifies planned_slice_id belongs to that WorkRequest, and validates owned_file_globs against the parent WorkRequest path constraints before approving. `docs` slices also require documentation-only owned_file_globs. Sibling slice ids fail closed as not_found without leaking sibling content. Invalid `**` placement inside a segment returns structured safe validation details with field, value, and reason such as unsupported_globstar.",
       "response_policy": "Returns safe JSON with the redacted updated planned slice, a minimal parent WorkRequest status projection, scope, and status metadata. It excludes read_work_request detail fields, work-key secrets, API tokens, private handoff payloads, and worker secret material."
     },
     {

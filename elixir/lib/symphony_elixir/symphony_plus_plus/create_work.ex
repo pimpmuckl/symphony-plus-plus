@@ -18,6 +18,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints
 
   import Ecto.Query, only: [from: 2]
 
@@ -43,6 +44,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
           | :invalid_work_package_id
           | :missing_acceptance_criteria
           | :missing_allowed_file_globs
+          | :non_documentation_allowed_file_globs
           | :overbroad_allowed_file_globs
           | :parent_not_supported
           | :policy_template_mismatch
@@ -75,7 +77,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
          {:ok, acceptance_criteria} <- normalize_acceptance_criteria(Map.get(attrs, "acceptance_criteria", [])),
          {:ok, allowed_file_globs} <- normalize_allowed_file_globs(Map.get(attrs, "allowed_file_globs", [])),
          :ok <- require_acceptance_criteria(policy, acceptance_criteria),
-         :ok <- require_scope_guard_constraints(policy, allowed_file_globs) do
+         :ok <- require_scope_guard_constraints(policy, allowed_file_globs),
+         :ok <- require_docs_scope(kind, allowed_file_globs) do
       {:ok,
        attrs
        |> Map.take([
@@ -171,13 +174,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   def error_message(:invalid_request), do: "Create-work request must be a JSON/YAML object"
   def error_message(:invalid_work_package_id), do: "id must be a nonblank string when provided"
   def error_message(:missing_acceptance_criteria), do: "acceptance_criteria is required for this work kind"
-  def error_message(:missing_allowed_file_globs), do: "allowed_file_globs is required for scope-guard policy templates"
+  def error_message(:missing_allowed_file_globs), do: "allowed_file_globs is required for docs and scope-guard policy templates"
+  def error_message(:non_documentation_allowed_file_globs), do: "docs work allowed_file_globs must be documentation-only"
   def error_message(:overbroad_allowed_file_globs), do: "allowed_file_globs cannot contain repo-wide catch-all globs"
   def error_message(:parent_not_supported), do: "Standalone create-work does not accept parent_id"
   def error_message(:policy_template_mismatch), do: "policy_template/review_suite_template must select the same policy"
 
   def error_message(:standalone_kind_not_supported),
-    do: "Standalone create-work supports quick_fix, hotfix, investigation, adapter, mcp, skill, and hooks work only"
+    do: "Standalone create-work supports quick_fix, hotfix, docs, investigation, adapter, mcp, skill, and hooks work only"
 
   def error_message(:unknown_policy_template), do: "No policy template exists for requested kind"
   def error_message({:invalid_json, reason}), do: "Invalid JSON create-work request: #{inspect(reason)}"
@@ -837,6 +841,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
       :ok
     end
   end
+
+  defp require_docs_scope("docs", []), do: {:error, :missing_allowed_file_globs}
+
+  defp require_docs_scope("docs", allowed_file_globs) do
+    case ScopeConstraints.validate_docs_owned_file_globs(allowed_file_globs) do
+      :ok -> :ok
+      {:error, _errors} -> {:error, :non_documentation_allowed_file_globs}
+    end
+  end
+
+  defp require_docs_scope(_kind, _allowed_file_globs), do: :ok
 
   defp normalize_acceptance_criteria(criteria) when is_list(criteria) do
     criteria = Enum.map(criteria, &normalize_acceptance_criterion/1)

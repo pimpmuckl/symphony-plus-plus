@@ -201,6 +201,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert {:ok, request} =
              CreateWork.parse_request(%{
                repo: "symphony-plus-plus",
+               base_branch: "main",
+               title: "Docs-only package",
+               kind: "docs",
+               allowed_file_globs: ["README.md", "implementation_docs_symphplusplus/**"]
+             })
+
+    assert request["kind"] == "docs"
+    assert request["policy_template"] == "docs"
+    assert request["allowed_file_globs"] == ["README.md", "implementation_docs_symphplusplus/**"]
+
+    assert {:error, :non_documentation_allowed_file_globs} =
+             CreateWork.parse_request(%{
+               repo: "symphony-plus-plus",
+               base_branch: "main",
+               title: "Docs kind cannot own code",
+               kind: "docs",
+               allowed_file_globs: ["elixir/lib/**"]
+             })
+
+    assert {:ok, request} =
+             CreateWork.parse_request(%{
+               repo: "symphony-plus-plus",
                base_branch: "symphony-plus-plus/beta",
                title: "Default current PR policy kind with MCP alias",
                acceptance_criteria: ["Current PR state is required."],
