@@ -35,7 +35,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseoutPausedLea
   end
 
   setup %{repo: repo} do
-    for schema <- [ProgressEvent, PlannedSliceDelivery, PlannedSlice, ClaimLease, AccessGrant, WorkRequest, WorkPackage, Phase] do
+    for schema <- [
+          ProgressEvent,
+          PlannedSliceDelivery,
+          PlannedSlice,
+          ClaimLease,
+          AccessGrant,
+          WorkRequest,
+          WorkPackage,
+          Phase
+        ] do
       repo.delete_all(schema)
     end
 
