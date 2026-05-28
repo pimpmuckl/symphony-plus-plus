@@ -7,7 +7,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
   @worker_capability "worker:lifecycle.transition"
   @architect_capability "architect:lifecycle.transition"
   @phase_child_kind "phase_child"
-  @standalone_kinds ["quick_fix", "hotfix", "investigation", "adapter", "mcp", "skill", "hooks"]
+  @standalone_kinds ["quick_fix", "hotfix", "docs", "investigation", "adapter", "mcp", "skill", "hooks"]
 
   @standalone_transitions %{
     "created" => ["ready_for_worker", "blocked", "abandoned"],

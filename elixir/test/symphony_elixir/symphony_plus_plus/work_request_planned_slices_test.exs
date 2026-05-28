@@ -533,6 +533,57 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
     end
   end
 
+  test "dispatch orchestration creates and links standalone docs planned slices", %{repo: repo, database_path: database_path} do
+    work_request =
+      create_work_request!(
+        repo,
+        id: "WR-DISPATCH-DOCS",
+        status: "ready_for_slicing",
+        constraints: %{"allowed_paths" => ["docs"], "forbidden_paths" => [], "requires_secret" => false}
+      )
+
+    assert {:ok, planned} =
+             Repository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(
+                 id: "WRS-DISPATCH-DOCS",
+                 title: "Document operator flow",
+                 goal: "Update the operator docs for a docs-only package.",
+                 work_package_kind: "docs",
+                 branch_pattern: "docs/operator-flow",
+                 owned_file_globs: ["docs/**"],
+                 forbidden_file_globs: [],
+                 acceptance_criteria: ["Operator docs describe the flow."],
+                 validation_steps: ["markdownlint docs/operator-flow.md"],
+                 review_lanes: ["brief"],
+                 stop_conditions: ["Stop before runtime behavior changes."]
+               )
+             )
+
+    assert {:ok, approved} = Repository.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+
+    secret_store_dir = Path.join(System.tmp_dir!(), "sympp-dispatch-docs-secrets-#{System.unique_integer([:positive])}")
+    handoff_opts = dispatch_handoff_opts(database_path, secret_store_dir, "worker-dispatch-docs")
+
+    try do
+      assert {:ok, dispatch} = PlannedSliceDispatch.dispatch(repo, work_request.id, approved.id, handoff_opts)
+
+      assert dispatch.creation.work_package.kind == "docs"
+      assert dispatch.creation.work_package.policy_template == "docs"
+      assert dispatch.creation.work_package.allowed_file_globs == ["docs/**"]
+      assert dispatch.creation.policy.template == "docs"
+      assert dispatch.planned_slice.status == "dispatched"
+      assert dispatch.planned_slice.work_package_id == dispatch.creation.work_package.id
+
+      assert {:ok, persisted} = Repository.get_planned_slice(repo, work_request.id, approved.id)
+      assert persisted.status == "dispatched"
+      assert persisted.work_package_id == dispatch.creation.work_package.id
+    after
+      File.rm_rf(secret_store_dir)
+    end
+  end
+
   test "dispatch orchestration keeps legacy private-handoff recovery metadata", %{repo: repo, database_path: database_path} do
     work_request = create_work_request!(repo, id: "WR-DISPATCH-LEGACY-HANDOFF", status: "ready_for_slicing")
 
@@ -601,11 +652,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
              Repository.add_planned_slice(
                repo,
                unsupported_request.id,
-               planned_slice_attrs(id: "WRS-DISPATCH-KIND-REJECT", work_package_kind: "docs")
+               planned_slice_attrs(id: "WRS-DISPATCH-KIND-REJECT", work_package_kind: "standard_pr")
              )
 
     assert {:ok, unsupported_approved} =
              Repository.approve_planned_slice(repo, unsupported_request.id, unsupported_planned.id, "planned")
+
+    invalid_docs_request = create_work_request!(repo, id: "WR-DISPATCH-DOCS-SCOPE-REJECT", status: "ready_for_slicing")
+
+    assert {:ok, invalid_docs_planned} =
+             Repository.add_planned_slice(
+               repo,
+               invalid_docs_request.id,
+               planned_slice_attrs(
+                 id: "WRS-DISPATCH-DOCS-SCOPE-REJECT",
+                 work_package_kind: "docs",
+                 owned_file_globs: ["elixir/lib/**"]
+               )
+             )
+
+    assert {:ok, invalid_docs_approved} =
+             Repository.approve_planned_slice(repo, invalid_docs_request.id, invalid_docs_planned.id, "planned")
 
     planned_request = create_work_request!(repo, id: "WR-DISPATCH-PLANNED-REJECT", status: "ready_for_slicing")
     assert {:ok, planned_slice} = Repository.add_planned_slice(repo, planned_request.id, planned_slice_attrs(id: "WRS-DISPATCH-PLANNED-REJECT"))
@@ -625,8 +692,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
       assert {:error, :missing_acceptance_criteria} =
                PlannedSliceDispatch.dispatch(repo, invalid_create_request.id, invalid_create_approved.id, handoff_opts)
 
-      assert {:error, {:unsupported_standalone_kind, "docs"}} =
+      assert {:error, {:unsupported_standalone_kind, "standard_pr"}} =
                PlannedSliceDispatch.dispatch(repo, unsupported_request.id, unsupported_approved.id, handoff_opts)
+
+      assert {:error, {:planned_slice_scope_violation, [{:non_documentation_owned_glob, "elixir/lib/**"}]}} =
+               PlannedSliceDispatch.dispatch(repo, invalid_docs_request.id, invalid_docs_approved.id, handoff_opts)
 
       assert repo.aggregate(WorkPackage, :count, :id) == 0
       assert repo.aggregate(AccessGrant, :count, :id) == 0

@@ -343,7 +343,9 @@ slices fail before approval. The validator checks the slice `owned_file_globs`
 against the parent WorkRequest
 `constraints.allowed_paths` and `constraints.forbidden_paths` without reading
 the host filesystem. Missing or empty `allowed_paths` means there is no
-allow-list restriction, but `forbidden_paths` are still enforced.
+allow-list restriction, but `forbidden_paths` are still enforced. `docs`
+planned slices add a docs-only scope check: owned globs must live under
+documentation roots or target documentation-file globs.
 
 The validator accepts only repo-relative slash-separated paths/globs. It rejects
 absolute paths, drive-qualified paths, backslash separators, empty path
@@ -379,7 +381,8 @@ sympp.dispatch_planned_slice`, the architect MCP
 dispatch control. All dispatch paths accept or derive a WorkRequest id,
 planned-slice id, and claimed worker identity. They validate required
 identifiers and worker identity, validate the slice scope through
-`ScopeConstraints.validate_owned_file_globs/2`, create a standalone WorkPackage
+`ScopeConstraints.validate_owned_file_globs/2` plus the docs-only scope check
+for `docs` slices, create a standalone WorkPackage
 with a ledger-backed `claim_local_assignment` bootstrap, and link the planned
 slice. Worktree preparation is a separate pre-launch step:
 `prepare_work_package_worktree` or the equivalent operator worktree flow creates

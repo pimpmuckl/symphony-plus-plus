@@ -486,6 +486,11 @@ split_work_package(work_package_id, child_specs)
 publish_phase_update(phase_id, update)
 ```
 
+`add_work_request_planned_slice.work_package_kind` accepts the standalone
+dispatchable kinds `quick_fix`, `hotfix`, `docs`, `investigation`, `adapter`,
+`mcp`, `skill`, and `hooks`. `docs` slices require documentation-only
+`owned_file_globs`.
+
 Architect tools require a live architect grant and the matching architect
 capability; worker grants and insufficient architect grants are denied. Worker
 grants cannot be minted with architect-only MCP capabilities, including

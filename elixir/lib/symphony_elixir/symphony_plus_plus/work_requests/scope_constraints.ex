@@ -22,8 +22,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints do
           {:invalid_constraints, field()}
           | {:invalid_owned_file_globs, :owned_file_globs}
           | {:invalid_path, field(), String.t(), path_error_reason()}
+          | {:non_documentation_owned_glob, String.t()}
           | {:outside_allowed_paths, String.t(), [String.t()]}
           | {:forbidden_path_overlap, String.t(), String.t()}
+
+  @docs_path_roots MapSet.new([
+                     "doc",
+                     "docs",
+                     "documentation",
+                     "implementation_docs",
+                     "implementation_docs_symphplusplus"
+                   ])
+  @docs_extensions [".adoc", ".md", ".mdx", ".rst", ".txt"]
 
   @doc """
   Validates planned-slice owned file globs against WorkRequest scope constraints.
@@ -65,6 +75,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints do
   end
 
   def validate_owned_file_globs(_constraints, _owned_file_globs), do: {:error, [{:invalid_constraints, :constraints}]}
+
+  @doc """
+  Validates that a `docs` planned-slice/package scope is documentation-only.
+
+  This is intentionally syntactic and repo-agnostic. Documentation-owned globs
+  either live under a known documentation root or point at documentation files
+  by extension.
+  """
+  @spec validate_docs_owned_file_globs([String.t()]) :: :ok | {:error, [error()]}
+  def validate_docs_owned_file_globs(owned_file_globs) do
+    with {:ok, owned_entries} <- owned_entries(owned_file_globs),
+         {:ok, owned_patterns} <- parse_docs_owned_patterns(owned_entries) do
+      validate_documentation_patterns(owned_patterns)
+    end
+  end
 
   defp validate_patterns(owned_entries, allowed_entries, forbidden_entries) do
     {owned_patterns, owned_errors} = parse_entries(:owned_file_globs, owned_entries)
@@ -133,6 +158,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints do
     |> then(fn {patterns, errors} -> {Enum.reverse(patterns), Enum.reverse(errors)} end)
   end
 
+  defp parse_docs_owned_patterns(owned_entries) do
+    case parse_entries(:owned_file_globs, owned_entries) do
+      {_owned_patterns, [_error | _rest] = owned_errors} -> {:error, owned_errors}
+      {[], []} -> {:error, [{:invalid_owned_file_globs, :owned_file_globs}]}
+      {owned_patterns, []} -> {:ok, owned_patterns}
+    end
+  end
+
   defp parse_pattern(field, value) do
     with :ok <- validate_repo_relative_path(value),
          {:ok, segments} <- parse_segments(value) do
@@ -194,6 +227,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints do
 
       true ->
         {:ok, {:literal, segment}}
+    end
+  end
+
+  defp documentation_pattern?(%{segments: segments}) do
+    docs_path_root?(List.first(segments)) or docs_file_pattern?(List.last(segments))
+  end
+
+  defp docs_path_root?({:literal, segment}) do
+    normalized = String.downcase(segment)
+    MapSet.member?(@docs_path_roots, normalized) or String.ends_with?(normalized, ["_docs", "-docs"])
+  end
+
+  defp docs_path_root?(_segment), do: false
+
+  defp docs_file_pattern?({:literal, segment}) do
+    segment
+    |> String.downcase()
+    |> String.ends_with?(@docs_extensions)
+  end
+
+  defp docs_file_pattern?({:wildcard, source, _regex}) do
+    source
+    |> String.downcase()
+    |> String.ends_with?(@docs_extensions)
+  end
+
+  defp docs_file_pattern?(_segment), do: false
+
+  defp validate_documentation_patterns(owned_patterns) do
+    owned_patterns
+    |> Enum.reject(&documentation_pattern?/1)
+    |> Enum.map(&{:non_documentation_owned_glob, &1.raw})
+    |> case do
+      [] -> :ok
+      errors -> {:error, errors}
     end
   end
 

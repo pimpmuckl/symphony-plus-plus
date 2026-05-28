@@ -2419,8 +2419,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "owned_file_globs", "description"]) =~
              "`**` must be a complete path segment"
 
-    assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "work_package_kind", "enum"]) ==
-             StateMachine.standalone_kinds()
+    planned_slice_kinds = get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "work_package_kind", "enum"])
+    assert planned_slice_kinds == StateMachine.standalone_kinds()
+    assert "docs" in planned_slice_kinds
 
     refute Map.has_key?(get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "forbidden_file_globs"]), "minItems")
     assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "branch_pattern", "type"]) == "string"
@@ -7421,6 +7422,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(changeset_error_response, ["error", "code"]) == -32_602
     assert get_in(changeset_error_response, ["error", "data", "reason"]) == "invalid_planned_slice"
     refute inspect(changeset_error_response) =~ "raw_secret_value"
+    assert {:ok, []} = WorkRequestRepository.list_planned_slices(repo, work_request.id)
+
+    invalid_docs_scope_response =
+      mcp_tool(
+        repo,
+        session,
+        "add_work_request_planned_slice",
+        Map.merge(add_args, %{
+          "title" => "Invalid docs scope",
+          "goal" => "Docs kind cannot own code paths.",
+          "work_package_kind" => "docs",
+          "owned_file_globs" => ["elixir/lib/**"]
+        })
+      )
+
+    assert get_in(invalid_docs_scope_response, ["error", "code"]) == -32_602
+    assert get_in(invalid_docs_scope_response, ["error", "data", "reason"]) == "planned_slice_scope_violation"
+
+    assert [
+             %{
+               "field" => "owned_file_globs",
+               "value" => "elixir/lib/**",
+               "reason" => "non_documentation_owned_glob"
+             }
+           ] = get_in(invalid_docs_scope_response, ["error", "data", "validation_errors"])
+
     assert {:ok, []} = WorkRequestRepository.list_planned_slices(repo, work_request.id)
 
     add_response = mcp_tool(repo, session, "add_work_request_planned_slice", add_args)
@@ -15683,6 +15710,58 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
+  end
+
+  test "docs mark_ready uses docs gates without investigation recommendation artifacts", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-READY-DOCS", kind: "docs", status: "reviewing"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "docs-worker")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    missing_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-docs-missing", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    missing = get_in(missing_response, ["error", "data", "missing"])
+    assert get_in(missing_response, ["error", "data", "reason"]) == "readiness_failed"
+    assert "tests_passed" in missing
+    assert "review_lanes_complete" in missing
+    refute "findings_documented" in missing
+    refute "recommendation_artifact_recorded" in missing
+
+    scope_response =
+      attach_tool(repo, session, "request_scope_expansion", %{
+        "summary" => "Docs scope note",
+        "idempotency_key" => "docs-scope-note"
+      })
+
+    refute Map.has_key?(get_in(scope_response, ["result", "structuredContent", "progress_event", "payload"]), "recommendation_artifact_id")
+
+    attach_tool(repo, session, "append_progress", %{
+      "summary" => "Docs validation passed",
+      "status" => "tests_passed",
+      "idempotency_key" => "docs-validation"
+    })
+
+    attach_tool(repo, session, "append_progress", %{
+      "summary" => "Docs brief review green",
+      "status" => "review_brief_green",
+      "idempotency_key" => "docs-review-brief"
+    })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-docs", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+    assert get_in(ready_response, ["result", "structuredContent", "work_package", "kind"]) == "docs"
     assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
   end
 

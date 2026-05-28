@@ -128,11 +128,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     do: {:error, {:invalid_planned_slice_status, status}}
 
   defp validate_slice_scope(%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice) do
-    case ScopeConstraints.validate_owned_file_globs(work_request, planned_slice) do
-      :ok -> :ok
+    with :ok <- ScopeConstraints.validate_owned_file_globs(work_request, planned_slice),
+         :ok <- validate_docs_slice_scope(planned_slice) do
+      :ok
+    else
       {:error, errors} -> {:error, {:planned_slice_scope_violation, errors}}
     end
   end
+
+  defp validate_docs_slice_scope(%PlannedSlice{work_package_kind: "docs", owned_file_globs: owned_file_globs}) do
+    ScopeConstraints.validate_docs_owned_file_globs(owned_file_globs || [])
+  end
+
+  defp validate_docs_slice_scope(%PlannedSlice{}), do: :ok
 
   defp create_work_request(%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice) do
     %{
