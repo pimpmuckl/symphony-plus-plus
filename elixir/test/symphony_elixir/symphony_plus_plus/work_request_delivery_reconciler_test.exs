@@ -8,6 +8,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
   alias SymphonyElixir.MCPHarness
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service, as: ClaimLeaseService
   alias SymphonyElixir.SymphonyPlusPlus.MCP.Config
   alias SymphonyElixir.SymphonyPlusPlus.MCP.Session
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
@@ -43,6 +45,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
           PlannedSliceDelivery,
           PlannedSlice,
           DecisionLogEntry,
+          ClaimLease,
           AccessGrant,
           WorkPackage,
           WorkRequest,
@@ -96,6 +99,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert delivery.planned_slice_id == planned_slice.id
     assert delivery.recorded_by == "reconciler-test"
     assert repo.get!(WorkPackage, linked_package.id).status == "merged"
+  end
+
+  test "apply records merged PR closeout for stale package and retires worker authority", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(repo,
+        work_request_id: "WR-RECONCILE-STALE-PR-MERGED",
+        work_package_id: "WP-RECONCILE-STALE-PR-MERGED",
+        status: "ready_for_worker"
+      )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "stale-worker")
+
+    assert {:ok, claim_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               linked_package.id,
+               %{"actor_kind" => "agent", "actor_id" => "local:reconcile-claim", "actor_display_name" => "worker-claim"},
+               stale_after_ms: 60_000
+             )
+
+    append_merged_pr_evidence!(repo, linked_package, 913, "head-913")
+
+    assert {:ok, applied} = DeliveryReconciler.reconcile(repo, work_request.id, mode: :apply, recorded_by: "reconciler-test")
+
+    assert applied.applied_count == 1
+    assert [%{status: "applied", planned_slice_id: planned_slice_id, work_package_id: work_package_id}] = applied.results
+    assert planned_slice_id == planned_slice.id
+    assert work_package_id == linked_package.id
+    assert applied.delivery_board.counts["delivered"] == 1
+
+    assert [delivery] = repo.all(PlannedSliceDelivery)
+    assert delivery.outcome == "pr_merged"
+    assert repo.get!(WorkPackage, linked_package.id).status == "merged"
+    assert %AccessGrant{revoked_at: %DateTime{}} = repo.get!(AccessGrant, minted.grant.id)
+    assert %ClaimLease{status: "released", release_reason: "merged_pr_delivery_closeout"} = repo.get!(ClaimLease, claim_lease.id)
   end
 
   test "MCP reconcile_work_request dry-run reports proposed closeout without write capability", %{repo: repo} do

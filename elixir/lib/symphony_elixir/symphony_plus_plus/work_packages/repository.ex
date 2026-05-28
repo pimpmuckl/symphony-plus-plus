@@ -112,33 +112,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
   @doc false
   @spec close_compatible_linked_delivery_package(repo(), WorkRequest.t(), PlannedSlice.t(), String.t()) ::
           {:ok, map() | nil} | {:error, error()}
-  def close_compatible_linked_delivery_package(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, next_status)
-      when is_atom(repo) and is_binary(next_status) do
+  @spec close_compatible_linked_delivery_package(repo(), WorkRequest.t(), PlannedSlice.t(), String.t(), keyword()) ::
+          {:ok, map() | nil} | {:error, error()}
+  def close_compatible_linked_delivery_package(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, next_status, opts \\ [])
+      when is_atom(repo) and is_binary(next_status) and is_list(opts) do
     case linked_work_package_id(planned_slice) do
       {:ok, nil} ->
         {:ok, nil}
 
       {:ok, work_package_id} ->
-        close_linked_delivery_package(repo, work_request, planned_slice, work_package_id, next_status)
+        close_linked_delivery_package(repo, work_request, planned_slice, work_package_id, next_status, opts)
     end
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
-  defp close_linked_delivery_package(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, work_package_id, next_status) do
+  defp close_linked_delivery_package(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, work_package_id, next_status, opts) do
     with :ok <- validate_delivery_closeout_status(next_status),
          {:ok, work_package} <- get(repo, work_package_id),
          :ok <- validate_delivery_closeout_package(work_package, work_request, planned_slice, next_status) do
-      update_compatible_delivery_package(repo, work_package, work_request, planned_slice, next_status)
+      update_compatible_delivery_package(repo, work_package, work_request, planned_slice, next_status, opts)
     end
   end
 
-  defp update_compatible_delivery_package(repo, %WorkPackage{status: next_status} = work_package, work_request, planned_slice, next_status) do
+  defp update_compatible_delivery_package(repo, %WorkPackage{status: next_status} = work_package, work_request, planned_slice, next_status, _opts) do
     update_delivery_closeout_status(repo, work_package, work_request, planned_slice, next_status)
   end
 
-  defp update_compatible_delivery_package(repo, %WorkPackage{} = work_package, work_request, planned_slice, next_status) do
-    with :ok <- reject_active_delivery_closeout_context(repo, work_package.id) do
+  defp update_compatible_delivery_package(repo, %WorkPackage{} = work_package, work_request, planned_slice, next_status, opts) do
+    with :ok <- reject_active_delivery_closeout_context(repo, work_package.id, opts) do
       update_delivery_closeout_status(repo, work_package, work_request, planned_slice, next_status)
     end
   end
@@ -305,11 +307,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
       normalize_string(work_package.branch_pattern) == normalize_string(planned_slice.branch_pattern)
   end
 
-  defp reject_active_delivery_closeout_context(repo, work_package_id) do
+  defp reject_active_delivery_closeout_context(repo, work_package_id, opts) do
     context = WorkPackageActivity.context(repo, work_package_id)
+    allow_active_blockers? = Keyword.get(opts, :allow_active_blockers?, false)
 
     cond do
-      get_in(context, [:blocker_state, :active?]) == true -> {:error, :active_blocker}
+      get_in(context, [:blocker_state, :active?]) == true and not allow_active_blockers? -> {:error, :active_blocker}
       get_in(context, [:runtime_state, :active?]) == true -> {:error, :active_runtime}
       true -> :ok
     end

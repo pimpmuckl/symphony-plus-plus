@@ -122,6 +122,71 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
     end
   end
 
+  @spec retire_current_for_work_package(repo(), String.t(), String.t(), keyword()) ::
+          {:ok, [ClaimLease.t()]} | {:error, error()}
+  def retire_current_for_work_package(repo, work_package_id, reason, opts \\ [])
+      when is_atom(repo) and is_binary(work_package_id) and is_binary(reason) and is_list(opts) do
+    repo.transaction(fn ->
+      case retire_current_for_work_package_transaction(repo, work_package_id, reason, opts) do
+        {:ok, claim_leases} -> claim_leases
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:ok, claim_leases} -> {:ok, claim_leases}
+      {:error, reason} -> {:error, reason}
+    end
+  rescue
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp retire_current_for_work_package_transaction(repo, work_package_id, reason, opts) do
+    now = now(opts)
+
+    current_query =
+      from(claim_lease in ClaimLease,
+        where: claim_lease.work_package_id == ^work_package_id,
+        where: claim_lease.status == "active",
+        order_by: [asc: claim_lease.inserted_at, asc: claim_lease.id]
+      )
+
+    current = repo.all(current_query)
+    ids = Enum.map(current, & &1.id)
+
+    if ids == [] do
+      {:ok, []}
+    else
+      update_query =
+        from(claim_lease in ClaimLease,
+          where: claim_lease.id in ^ids,
+          where: claim_lease.status == "active"
+        )
+
+      case repo.update_all(update_query,
+             set: [
+               status: "released",
+               released_at: now,
+               release_reason: reason,
+               last_seen_at: now,
+               updated_at: now
+             ]
+           ) do
+        {count, _rows} when count == length(ids) ->
+          {:ok,
+           repo.all(
+             from(claim_lease in ClaimLease,
+               where: claim_lease.id in ^ids,
+               order_by: [asc: claim_lease.inserted_at, asc: claim_lease.id]
+             )
+           )}
+
+        {_count, _rows} ->
+          {:error, :claim_not_current}
+      end
+    end
+  end
+
   @spec reclaim_stale(repo(), String.t(), map(), keyword()) :: {:ok, ClaimLease.t()} | {:error, error()}
   def reclaim_stale(repo, work_package_id, attrs, opts \\ [])
       when is_atom(repo) and is_binary(work_package_id) and is_map(attrs) and is_list(opts) do

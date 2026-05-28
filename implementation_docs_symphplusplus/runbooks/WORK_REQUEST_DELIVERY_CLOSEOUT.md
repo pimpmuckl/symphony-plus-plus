@@ -56,7 +56,6 @@ Fixture shape:
 - WorkRequest: `wr_kraken_closeout`.
 - Planned slice: raw status `dispatched`.
 - Linked WorkPackage: raw package status: `ready_for_worker`.
-- Package has no active blocker or active runtime evidence.
 - Either structured merged-PR evidence exists, or the operator has direct
   no-PR completion evidence.
 
@@ -79,7 +78,20 @@ Expected projection after closeout:
 - WorkRequest completion refreshes when every planned slice has terminal
   delivery truth.
 
-If closeout rejects because of an active blocker, active runtime, package
-metadata mismatch, weak PR evidence, or stale terminal conflict, do not paper
-over it with a decision note. Fix the evidence or ask the operator/architect
-for the next lifecycle decision.
+Merged-PR recovery may close a compatible stale linked package even if its raw
+lifecycle, worker grant, or local claim-lease state is stale, but it requires
+strong PR evidence: `pr_url`, `pr_merged_at`, and `merge_commit_sha`. Live worker
+grants are revoked, active/stale local claim leases are released, and both are
+listed in the closeout progress event. Active blockers, paused claim leases,
+active agent runs, malformed PR URLs, PR URL metadata mismatches, package
+metadata mismatches, and weak merge evidence still fail closed.
+
+Supersession may close a compatible stale linked package even when active
+blocker events remain. The blocker events are not resolved or deleted; the
+closeout progress event records the active blocker ids and the delivery board
+keeps blocker attention on the terminal superseded slice.
+
+If closeout rejects because of active runtime on an unsupported outcome,
+package metadata mismatch, weak PR evidence, or stale terminal conflict, do not
+paper over it with a decision note. Fix the evidence or ask the
+operator/architect for the next lifecycle decision.
