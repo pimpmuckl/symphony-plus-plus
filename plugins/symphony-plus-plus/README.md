@@ -379,11 +379,13 @@ The explicit MCP reference entry runs
 cross-platform PowerShell executable. Hosts that use that explicit entry need
 `pwsh` on `PATH`.
 When the plugin is executed from this source checkout, the wrapper can infer the
-repository root. When it runs from an installed plugin cache, set
-`SYMPP_REPO_ROOT` to a Symphony++ checkout or refresh the local cache with
-`scripts/refresh-local-plugin.ps1`, which writes a non-secret source-root hint
-for the wrapper. Set `SYMPP_DATABASE` only when the MCP server should use a
-specific SQLite ledger instead of the runtime default.
+repository root. When it runs from an installed plugin cache, the wrapper first
+uses non-secret `.sympp-source-root` hints from current S++ cache entries.
+Refresh the local cache with `scripts/refresh-local-plugin.ps1` if those hints
+are missing or stale. Set `SYMPP_REPO_ROOT` only as a temporary override to the
+Symphony++ source checkout containing `elixir/mix.exs`; it is not the
+caller/task repository root. Set `SYMPP_DATABASE` only when the MCP server
+should use a specific SQLite ledger instead of the runtime default.
 
 The wrapper defaults to running `mix` directly from `PATH`, so the explicit MCP
 path does not require `mise trust` when `mix` resolves to a real
@@ -407,6 +409,9 @@ from the resolved `elixir/` directory. Use it to attach a local Solo Session,
 append `task_plan`, `finding`, `progress`, `blocker`, `decision`, and
 `validation_note` entries, read the ledger, and pause, resume, complete, or
 archive the session.
+The Solo caller repository identity comes from the CLI arguments `--repo` and
+`--workspace-path`; `SYMPP_REPO_ROOT` only locates the Symphony++ source
+checkout used to run the wrapper.
 
 The generic `symphony_plus_plus` MCP server also advertises first-slice Solo
 tools for unbound sessions: `solo_attach`, `solo_append`, `solo_show`,

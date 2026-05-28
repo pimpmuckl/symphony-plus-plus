@@ -844,6 +844,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
              Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(review_lanes: "normal"))
 
     assert "is invalid" in errors_on(non_list_changeset).review_lanes
+
+    assert {:error, %Ecto.Changeset{} = branch_pattern_changeset} =
+             Repository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(branch_pattern: "feat/live-triggers-v1-native-audio-evidence-*")
+             )
+
+    assert "must be an exact branch or a {{placeholder}} template; '*' wildcards are not supported" in errors_on(branch_pattern_changeset).branch_pattern
   end
 
   test "rejects duplicate ids and missing WorkRequest foreign keys", %{repo: repo} do

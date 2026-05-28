@@ -9,6 +9,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.BranchPattern
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service, as: ClaimLeaseService
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
@@ -1601,7 +1602,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_description("record_planned_slice_delivery") do
-    "Record an idempotent planned-slice delivery closeout. Required evidence depends on outcome: pr_merged needs PR evidence, completed_no_pr needs direct evidence, superseded needs successor and reason, and abandoned needs rationale."
+    "Record an idempotent planned-slice delivery closeout. Required evidence depends on outcome: pr_merged needs PR evidence, completed_no_pr needs direct evidence, superseded needs successor and reason, and abandoned needs rationale. Use abandoned for cleaned no-code failed dispatches that never reached implementation."
   end
 
   defp architect_tool_description("revoke_planned_slice_worker_key") do
@@ -2259,7 +2260,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "validation_steps" => string_array_schema(),
         "review_lanes" => string_array_schema(),
         "stop_conditions" => string_array_schema(),
-        "branch_pattern" => string_schema()
+        "branch_pattern" => described_string_schema("Optional exact branch or {{placeholder}} template. Git wildcard patterns such as `*` are not supported.")
       },
       [
         "work_request_id",
@@ -2913,7 +2914,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       end
     else
       {:error, code, message, data} -> {:error, code, message, data}
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => @local_assignment_claim_tool, "reason" => reason}}
+      {:tool_error, reason} -> invalid_params_error(@local_assignment_claim_tool, reason)
       {:error, reason} -> local_assignment_claim_error(reason)
     end
   rescue
@@ -3007,16 +3008,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         :ok
 
       pattern ->
-        cond do
-          pattern == branch and not local_branch_template_pattern?(pattern) ->
-            :ok
-
-          Keyword.get(opts, :prepared_worktree?, false) and local_branch_template_matches?(work_package, pattern, branch) ->
-            :ok
-
-          true ->
-            {:error, :branch_scope_mismatch}
+        case require_supported_branch_pattern(pattern) do
+          :ok -> require_local_supported_branch_pattern_scope(work_package, pattern, branch, opts)
+          error -> error
         end
+    end
+  end
+
+  defp require_local_supported_branch_pattern_scope(%WorkPackage{} = work_package, pattern, branch, opts) do
+    cond do
+      pattern == branch and not local_branch_template_pattern?(pattern) ->
+        :ok
+
+      Keyword.get(opts, :prepared_worktree?, false) and local_branch_template_matches?(work_package, pattern, branch) ->
+        :ok
+
+      true ->
+        {:error, :branch_scope_mismatch}
     end
   end
 
@@ -3072,20 +3080,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp local_assignment_worktree_branch(worktree_path) when is_binary(worktree_path) do
-    with true <- File.dir?(worktree_path),
-         {:ok, git_dir} <- local_assignment_git_dir(worktree_path),
-         {:ok, head} <- File.read(Path.join(git_dir, "HEAD")),
-         {:ok, branch} <- local_assignment_head_branch(head) do
-      {:ok, branch}
-    else
-      false -> {:error, :git_metadata_missing}
-      {:error, :enoent} -> {:error, :git_metadata_missing}
-      {:error, reason} -> {:error, reason}
+  defp local_assignment_worktree_branch(worktree_path) do
+    case normalize_optional_value(worktree_path) do
+      path when is_binary(path) -> local_assignment_worktree_branch_from_path(path)
+      _missing -> {:error, :git_metadata_missing}
     end
   end
 
-  defp local_assignment_worktree_branch(_worktree_path), do: {:error, :git_metadata_missing}
+  defp local_assignment_worktree_branch_from_path(worktree_path) do
+    case File.dir?(worktree_path) do
+      true ->
+        with {:ok, git_dir} <- local_assignment_git_dir(worktree_path),
+             {:ok, head} <- File.read(Path.join(git_dir, "HEAD")),
+             {:ok, branch} <- local_assignment_head_branch(head) do
+          {:ok, branch}
+        else
+          {:error, :enoent} -> {:error, :git_metadata_missing}
+          {:error, reason} -> {:error, reason}
+        end
+
+      false ->
+        {:error, :git_metadata_missing}
+    end
+  end
 
   defp local_assignment_git_dir(worktree_path) do
     dot_git = Path.join(worktree_path, ".git")
@@ -5198,6 +5215,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, review_lanes} <- required_string_array(arguments, "review_lanes"),
          {:ok, stop_conditions} <- required_string_array(arguments, "stop_conditions"),
          {:ok, branch_pattern} <- optional_string_argument(arguments, "branch_pattern"),
+         :ok <- require_supported_branch_pattern(branch_pattern),
          {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
          {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
          :ok <- require_planned_slice_authoring_status(work_request.status),
@@ -5828,6 +5846,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_approved_dispatch_planned_slice(%PlannedSlice{status: status}),
     do: {:error, {:invalid_planned_slice_status, status}}
 
+  defp require_supported_branch_pattern(branch_pattern) do
+    case BranchPattern.validate(branch_pattern) do
+      :ok -> :ok
+      {:error, reason} -> {:tool_error, {:branch_pattern, branch_pattern, reason}}
+    end
+  end
+
   defp dispatch_work_request_planned_slice_error({:invalid_planned_slice_status, _status}) do
     {:error, -32_602, "Invalid params", %{"tool" => "dispatch_work_request_planned_slice", "reason" => "invalid_planned_slice_status"}}
   end
@@ -5838,6 +5863,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp dispatch_work_request_planned_slice_error({:planned_slice_scope_violation, errors}) do
     invalid_params_error("dispatch_work_request_planned_slice", {:planned_slice_scope_violation, errors})
+  end
+
+  defp dispatch_work_request_planned_slice_error({:unsupported_branch_pattern, branch_pattern, reason}) do
+    invalid_params_error("dispatch_work_request_planned_slice", {:branch_pattern, branch_pattern, reason})
   end
 
   defp dispatch_work_request_planned_slice_error({:unsupported_standalone_kind, _kind}) do
@@ -6325,12 +6354,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     origin = RepoIdentity.local_git_origin_remote(target_repo_root)
 
     same_existing_path?(target_repo_root, expected_repo) or
-      (is_binary(origin) and
-         (same_existing_path?(origin, expected_repo) or
-            RepoIdentity.scope_match?(expected_repo, origin, trusted_remotes: repo_scope_trusted_remotes(config, target_repo_root))))
+      origin_matches_repo_scope?(origin, expected_repo, target_repo_root, config)
   end
 
   defp target_repo_root_matches_repo_scope?(_target_repo_root, _expected_repo, _config), do: false
+
+  defp origin_matches_repo_scope?(origin, expected_repo, target_repo_root, %Config{} = config) when is_binary(origin) do
+    trusted_remotes = repo_scope_trusted_remotes(config, target_repo_root)
+
+    same_existing_path?(origin, expected_repo) or
+      RepoIdentity.scope_match?(expected_repo, origin, trusted_remotes: trusted_remotes)
+  end
+
+  defp origin_matches_repo_scope?(_origin, _expected_repo, _target_repo_root, _config), do: false
 
   defp repo_scope_trusted_remotes(%Config{repo_root: repo_root}, target_repo_root) do
     :symphony_elixir
@@ -11646,6 +11682,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        "tool" => tool,
        "reason" => "planned_slice_scope_violation",
        "validation_errors" => scope_validation_details(errors)
+     }}
+  end
+
+  defp invalid_params_error(tool, {:branch_pattern, value, reason}) do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => Atom.to_string(reason),
+       "validation_errors" => [
+         %{
+           "field" => "branch_pattern",
+           "value" => value,
+           "reason" => Atom.to_string(reason),
+           "message" => BranchPattern.error_message(reason)
+         }
+       ]
      }}
   end
 

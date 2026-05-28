@@ -173,6 +173,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
     case recovery_closeout_mode(delivery) do
       :pr_merged -> prepare_pr_merged_closeout_context(repo, work_package_id, context)
       :superseded -> prepare_superseded_closeout_context(repo, work_package_id, context)
+      :abandoned -> prepare_abandoned_closeout_context(repo, work_package_id, context)
       :normal -> reject_active_linked_closeout_context(repo, work_package_id, context)
     end
   end
@@ -237,7 +238,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
     with :ok <- reject_non_recoverable_superseded_runtime_context(context),
          :ok <- reject_claimed_live_worker_grants(repo, work_package_id),
          {:ok, retired_worker_grant_ids} <- retire_unclaimed_worker_grants(repo, work_package_id),
-         {:ok, retired_claim_lease_ids} <- retire_stale_current_claim_leases(repo, work_package_id) do
+         {:ok, retired_claim_lease_ids} <- retire_stale_current_claim_leases(repo, work_package_id, "superseded_delivery_closeout") do
       {:ok,
        closeout_context(
          context,
@@ -248,20 +249,57 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
     end
   end
 
+  defp prepare_abandoned_closeout_context(repo, work_package_id, context) do
+    with :ok <- reject_active_blocker_context(context),
+         {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
+         :ok <- require_abandonable_no_code_status(work_package),
+         :ok <- require_cleaned_worktree(work_package),
+         :ok <- reject_non_recoverable_abandoned_runtime_context(context),
+         :ok <- reject_claimed_live_worker_grants(repo, work_package_id),
+         {:ok, retired_worker_grant_ids} <- retire_unclaimed_worker_grants(repo, work_package_id),
+         {:ok, retired_claim_lease_ids} <- retire_stale_current_claim_leases(repo, work_package_id, "abandoned_delivery_closeout") do
+      {:ok,
+       closeout_context(
+         context,
+         retired_worker_grant_ids,
+         retired_claim_lease_ids,
+         allow_active_blockers?: false
+       )}
+    end
+  end
+
+  defp require_abandonable_no_code_status(%{status: status}) when status in ["planning", "ready_for_worker"], do: :ok
+  defp require_abandonable_no_code_status(_work_package), do: {:error, :active_runtime}
+
+  defp require_cleaned_worktree(%{worktree_path: worktree_path}) do
+    if filled_string?(worktree_path), do: {:error, :active_runtime}, else: :ok
+  end
+
+  defp reject_non_recoverable_abandoned_runtime_context(context) do
+    reject_non_recoverable_runtime_context(context, [
+      "worker_grant_active",
+      "claim_lease_stale",
+      "agent_run_stale",
+      "package_terminal"
+    ])
+  end
+
   defp reject_non_recoverable_superseded_runtime_context(context) do
+    reject_non_recoverable_runtime_context(context, [
+      "worker_grant_active",
+      "claim_lease_stale",
+      "agent_run_stale",
+      "worker_recycled",
+      "package_terminal"
+    ])
+  end
+
+  defp reject_non_recoverable_runtime_context(context, allowed_reason_codes) do
     reason_codes = List.wrap(get_in(context, [:runtime_state, :reason_codes]))
     active? = get_in(context, [:runtime_state, :active?]) == true
     paused? = get_in(context, [:runtime_state, :paused?]) == true
 
-    blocking_reason_codes =
-      reason_codes --
-        [
-          "worker_grant_active",
-          "claim_lease_stale",
-          "agent_run_stale",
-          "worker_recycled",
-          "package_terminal"
-        ]
+    blocking_reason_codes = reason_codes -- allowed_reason_codes
 
     cond do
       paused? -> {:error, :active_runtime}
@@ -273,6 +311,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
 
   defp recovery_closeout_mode(%PlannedSliceDelivery{outcome: "pr_merged"}), do: :pr_merged
   defp recovery_closeout_mode(%PlannedSliceDelivery{outcome: "superseded"}), do: :superseded
+  defp recovery_closeout_mode(%PlannedSliceDelivery{outcome: "abandoned"}), do: :abandoned
   defp recovery_closeout_mode(%PlannedSliceDelivery{}), do: :normal
 
   defp empty_closeout_context do
@@ -376,7 +415,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
     end
   end
 
-  defp retire_stale_current_claim_leases(repo, work_package_id) do
+  defp retire_stale_current_claim_leases(repo, work_package_id, release_reason) do
     now = DateTime.utc_now(:microsecond)
 
     stale_claim_leases =
@@ -391,7 +430,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
 
     stale_claim_leases
     |> Enum.reduce_while({:ok, []}, fn %ClaimLease{} = claim_lease, {:ok, claim_lease_ids} ->
-      case release_stale_claim_lease(repo, claim_lease, now) do
+      case release_stale_claim_lease(repo, claim_lease, now, release_reason) do
         {:ok, nil} -> {:cont, {:ok, claim_lease_ids}}
         {:ok, claim_lease_id} -> {:cont, {:ok, [claim_lease_id | claim_lease_ids]}}
         {:error, reason} -> {:halt, {:error, reason}}
@@ -403,14 +442,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
     end
   end
 
-  defp release_stale_claim_lease(repo, %ClaimLease{} = claim_lease, %DateTime{} = now) do
+  defp release_stale_claim_lease(repo, %ClaimLease{} = claim_lease, %DateTime{} = now, release_reason) do
     query = observed_active_claim_lease_query(claim_lease)
 
     case repo.update_all(query,
            set: [
              status: "released",
              released_at: now,
-             release_reason: "superseded_delivery_closeout",
+             release_reason: release_reason,
              last_seen_at: now,
              updated_at: now
            ]
@@ -582,17 +621,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
 
   defp valid_absolute_url?(_uri), do: false
 
-  defp pr_repository_matches?(nil, _url_repository), do: true
+  defp pr_repository_matches?(repository, url_repository) do
+    cond do
+      is_nil(repository) ->
+        true
 
-  defp pr_repository_matches?(repository, url_repository) when is_binary(repository) do
-    normalize_repository(repository) == normalize_repository(url_repository)
+      is_binary(repository) and is_binary(url_repository) ->
+        normalize_repository(repository) == normalize_repository(url_repository)
+
+      true ->
+        false
+    end
   end
 
-  defp pr_repository_matches?(_repository, _url_repository), do: false
-
-  defp pr_number_matches?(nil, _url_number), do: true
-  defp pr_number_matches?(number, url_number) when is_integer(number), do: number == url_number
-  defp pr_number_matches?(_number, _url_number), do: false
+  defp pr_number_matches?(number, url_number) do
+    cond do
+      is_nil(number) -> true
+      is_integer(number) and is_integer(url_number) -> number == url_number
+      true -> false
+    end
+  end
 
   defp normalize_repository(repository) when is_binary(repository) do
     repository

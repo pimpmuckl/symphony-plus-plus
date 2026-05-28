@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
   @moduledoc false
 
+  alias SymphonyElixir.SymphonyPlusPlus.BranchPattern
   alias SymphonyElixir.SymphonyPlusPlus.CreateWork
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
@@ -41,6 +42,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
           | {:invalid_planned_slice_status, String.t() | nil}
           | {:invalid_work_request_status, String.t() | nil}
           | {:planned_slice_scope_violation, [ScopeConstraints.error()]}
+          | {:unsupported_branch_pattern, String.t(), atom()}
           | {:unsupported_standalone_kind, String.t() | nil}
           | {:dispatch_link_failed, term(), map()}
 
@@ -51,6 +53,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
       when is_atom(repo) and is_binary(work_request_id) and is_binary(planned_slice_id) and is_list(handoff_opts) and
              is_list(opts) do
     with {:ok, work_request, planned_slice} <- load_dispatchable_slice(repo, work_request_id, planned_slice_id),
+         :ok <- validate_branch_pattern(planned_slice),
          :ok <- validate_slice_scope(work_request, planned_slice),
          request = create_work_request(work_request, planned_slice),
          :ok <- validate_create_work_request(request, planned_slice),
@@ -87,6 +90,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
 
   def error_message({:planned_slice_scope_violation, errors}) do
     "Planned slice owned file globs violate WorkRequest path constraints: #{inspect(errors)}"
+  end
+
+  def error_message({:unsupported_branch_pattern, branch_pattern, reason}) do
+    "Planned slice branch_pattern #{inspect(branch_pattern)} is unsupported: #{BranchPattern.error_message(reason)}"
   end
 
   def error_message({:unsupported_standalone_kind, kind}) do
@@ -126,6 +133,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
 
   defp require_approved_planned_slice(%PlannedSlice{status: status}),
     do: {:error, {:invalid_planned_slice_status, status}}
+
+  defp validate_branch_pattern(%PlannedSlice{branch_pattern: branch_pattern}) do
+    case BranchPattern.validate(branch_pattern) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:unsupported_branch_pattern, branch_pattern, reason}}
+    end
+  end
 
   defp validate_slice_scope(%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice) do
     with :ok <- ScopeConstraints.validate_owned_file_globs(work_request, planned_slice),
