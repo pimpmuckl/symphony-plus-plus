@@ -17,6 +17,8 @@ boundary.
 
 1. Use a dedicated S++ MCP-enabled session connected to the same ledger as
    dispatch.
+   Trusted local HTTP sessions may show worker WorkPackage tool schemas before
+   claim; schema visibility is not authority, so claim first.
 2. For planned-slice/ledger-dispatched V2.1 assignments, claim the package with
    `claim_local_assignment` using the dispatch-provided ledger claim fields plus
    local runtime fields: `branch`, `worktree_path`, `caller_id`, and
@@ -66,6 +68,8 @@ S++ explicitly gives scoped context.
 - `sync_pr(url_or_number, metadata)` only for the attached PR.
 - `submit_review_package(summary, tests, artifacts, head_sha)` with current
   head SHA and required review verdicts.
+- `attach_review_suite_result` when structured Review Suite result evidence is
+  required.
 
 Run the required Review Suite profile. If unavailable, use the package-approved
 provider and record review progress. After material changes, rerun the same

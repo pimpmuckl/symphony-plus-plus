@@ -141,8 +141,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
       assert tool in names
     end
 
-    refute "get_current_assignment" in names
-    refute "append_progress" in names
+    for tool <- [
+          "get_current_assignment",
+          "read_context",
+          "read_task_plan",
+          "update_task_plan",
+          "append_finding",
+          "append_progress",
+          "set_status",
+          "report_blocker",
+          "resolve_blocker",
+          "add_comment",
+          "list_comments",
+          "resolve_comment",
+          "create_guidance_request",
+          "read_guidance_request",
+          "request_scope_expansion",
+          "attach_branch",
+          "attach_pr",
+          "sync_pr",
+          "submit_review_package",
+          "attach_review_suite_result",
+          "mark_ready"
+        ] do
+      assert tool in names
+    end
   end
 
   test "POST /mcp exposes and runs local operator WorkRequest note tools on loopback" do
