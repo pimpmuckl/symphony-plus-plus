@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   @moduledoc false
 
+  @worktree_segment_prefix_length 12
+
   alias SymphonyElixir.PathSafety
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository
@@ -55,7 +57,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
          {:ok, branch} <- ref_name(attrs, "branch", :invalid_branch, target_repo_root, opts),
          {:ok, worktree_parent} <- worktree_parent(attrs, opts),
          {:ok, worktree_path} <- worktree_path(work_package, target_repo_root, branch, worktree_parent),
-         :ok <- validate_recorded_prepare_path(work_package, worktree_path) do
+         {:ok, worktree_path} <- validate_recorded_prepare_path(work_package, worktree_path, target_repo_root, branch, worktree_parent) do
       maybe_replay_prepared(repo, work_package, target_repo_root, base_branch, branch, worktree_path, opts)
     end
   end
@@ -150,9 +152,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   end
 
   defp worktree_path(%WorkPackage{} = work_package, repo_root, branch, worktree_parent) do
-    with {:ok, branch_segment} <- unique_segment(branch, branch),
-         {:ok, package_segment} <- safe_segment(work_package.id),
-         {:ok, repo_segment} <- unique_segment(Path.basename(repo_root), repo_root),
+    with {:ok, branch_segment} <- unique_segment(branch, branch, @worktree_segment_prefix_length),
+         {:ok, package_segment} <- unique_segment(work_package.id, work_package.id, @worktree_segment_prefix_length),
+         {:ok, repo_segment} <- repo_worktree_segment(repo_root),
          candidate <- Path.join([worktree_parent, repo_segment, "#{package_segment}-#{branch_segment}"]),
          {:ok, candidate} <- canonicalize(candidate),
          :ok <- require_inside_root(candidate, worktree_parent) do
@@ -160,14 +162,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     end
   end
 
-  defp validate_recorded_prepare_path(%WorkPackage{worktree_path: nil}, _worktree_path), do: :ok
+  defp validate_recorded_prepare_path(%WorkPackage{worktree_path: nil}, worktree_path, _repo_root, _branch, _worktree_parent), do: {:ok, worktree_path}
 
-  defp validate_recorded_prepare_path(%WorkPackage{worktree_path: recorded_path}, worktree_path) do
+  defp validate_recorded_prepare_path(%WorkPackage{worktree_path: recorded_path} = work_package, worktree_path, repo_root, branch, worktree_parent) do
     with {:ok, recorded_path} <- canonicalize(recorded_path) do
-      if same_path?(recorded_path, worktree_path) do
-        :ok
-      else
-        {:error, {:worktree_path_already_recorded, recorded_path}}
+      cond do
+        same_path?(recorded_path, worktree_path) ->
+          {:ok, recorded_path}
+
+        replayable_managed_prepare_path?(work_package, repo_root, branch, recorded_path, worktree_parent) ->
+          {:ok, recorded_path}
+
+        true ->
+          {:error, {:worktree_path_already_recorded, recorded_path}}
       end
     end
   end
@@ -371,14 +378,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   end
 
   defp managed_path_matches_repo_hash?(repo_root, worktree_path) do
-    with {:ok, repo_segment} <- unique_segment(Path.basename(repo_root), repo_root),
+    with {:ok, repo_segment} <- repo_worktree_segment(repo_root),
+         {:ok, legacy_repo_segment} <- unique_segment(Path.basename(repo_root), repo_root),
          {:ok, worktree_path} <- canonicalize(worktree_path) do
       worktree_path
       |> Path.dirname()
       |> Path.basename()
-      |> Kernel.==(repo_segment)
+      |> then(&(&1 in [repo_segment, legacy_repo_segment]))
     else
       _result -> false
+    end
+  end
+
+  defp replayable_managed_prepare_path?(%WorkPackage{} = work_package, repo_root, branch, recorded_path, worktree_parent) do
+    with true <- inside_root?(recorded_path, worktree_parent),
+         {:ok, legacy_path} <- legacy_worktree_path(work_package, repo_root, branch, worktree_parent) do
+      same_path?(recorded_path, legacy_path)
+    else
+      _result -> false
+    end
+  end
+
+  defp legacy_worktree_path(%WorkPackage{} = work_package, repo_root, branch, worktree_parent) do
+    with {:ok, branch_segment} <- unique_segment(branch, branch),
+         {:ok, package_segment} <- safe_segment(work_package.id),
+         {:ok, repo_segment} <- unique_segment(Path.basename(repo_root), repo_root),
+         candidate <- Path.join([worktree_parent, repo_segment, "#{package_segment}-#{branch_segment}"]),
+         {:ok, candidate} <- canonicalize(candidate),
+         :ok <- require_inside_root(candidate, worktree_parent) do
+      {:ok, candidate}
     end
   end
 
@@ -445,10 +473,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   end
 
   defp unique_segment(display_value, fingerprint_value) do
+    unique_segment(display_value, fingerprint_value, :full)
+  end
+
+  defp unique_segment(display_value, fingerprint_value, prefix_length) do
     with {:ok, safe_value} <- safe_segment(display_value) do
-      {:ok, "#{safe_value}-#{short_hash(fingerprint_value)}"}
+      {:ok, "#{segment_prefix(safe_value, prefix_length)}-#{short_hash(fingerprint_value)}"}
     end
   end
+
+  defp repo_worktree_segment(repo_root), do: unique_segment(Path.basename(repo_root), repo_root, @worktree_segment_prefix_length)
+
+  defp segment_prefix(value, :full), do: value
+  defp segment_prefix(value, prefix_length), do: String.slice(value, 0, prefix_length)
 
   defp short_hash(value) when is_binary(value) do
     :sha256

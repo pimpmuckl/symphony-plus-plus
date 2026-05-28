@@ -5302,7 +5302,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, branch} <- required_argument(arguments, "branch"),
          {:ok, worktree_parent} <- optional_string_argument(arguments, "worktree_parent"),
          {:ok, work_package, scope} <- scoped_worktree_work_package(config.repo, session, work_package_id),
-         :ok <- require_target_repo_root_scope(target_repo_root, work_package),
+         :ok <- require_target_repo_root_scope(target_repo_root, work_package, config),
          :ok <- require_worktree_base_branch_scope(base_branch, work_package),
          {:ok, result} <-
            WorkPackageService.prepare_worktree(
@@ -5329,7 +5329,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
          {:ok, target_repo_root} <- target_repo_root_argument(arguments),
          {:ok, work_package, scope} <- scoped_worktree_work_package(config.repo, session, work_package_id),
-         :ok <- require_cleanup_target_repo_root_scope(target_repo_root, work_package),
+         :ok <- require_cleanup_target_repo_root_scope(target_repo_root, work_package, config),
          {:ok, result} <-
            WorkPackageService.cleanup_worktree(
              config.repo,
@@ -6304,10 +6304,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_target_repo_root_scope(target_repo_root, %WorkPackage{repo: expected_repo}) do
+  defp require_target_repo_root_scope(target_repo_root, %WorkPackage{repo: expected_repo}, %Config{} = config) do
     with {:ok, target_repo_root} <- PathSafety.canonicalize(target_repo_root),
          true <- File.dir?(target_repo_root) do
-      if target_repo_root_matches_repo_scope?(target_repo_root, expected_repo) do
+      if target_repo_root_matches_repo_scope?(target_repo_root, expected_repo, config) do
         :ok
       else
         {:tool_error, "target_repo_root_scope_mismatch"}
@@ -6318,18 +6318,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_cleanup_target_repo_root_scope(_target_repo_root, %WorkPackage{worktree_path: nil}), do: :ok
-  defp require_cleanup_target_repo_root_scope(target_repo_root, %WorkPackage{} = work_package), do: require_target_repo_root_scope(target_repo_root, work_package)
+  defp require_cleanup_target_repo_root_scope(_target_repo_root, %WorkPackage{worktree_path: nil}, %Config{}), do: :ok
+  defp require_cleanup_target_repo_root_scope(target_repo_root, %WorkPackage{} = work_package, %Config{} = config), do: require_target_repo_root_scope(target_repo_root, work_package, config)
 
-  defp target_repo_root_matches_repo_scope?(target_repo_root, expected_repo) when is_binary(expected_repo) do
+  defp target_repo_root_matches_repo_scope?(target_repo_root, expected_repo, %Config{} = config) when is_binary(expected_repo) do
     origin = RepoIdentity.local_git_origin_remote(target_repo_root)
 
     same_existing_path?(target_repo_root, expected_repo) or
       (is_binary(origin) and
-         (same_existing_path?(origin, expected_repo) or repo_identity_match?(expected_repo, origin)))
+         (same_existing_path?(origin, expected_repo) or
+            RepoIdentity.scope_match?(expected_repo, origin, trusted_remotes: repo_scope_trusted_remotes(config, target_repo_root))))
   end
 
-  defp target_repo_root_matches_repo_scope?(_target_repo_root, _expected_repo), do: false
+  defp target_repo_root_matches_repo_scope?(_target_repo_root, _expected_repo, _config), do: false
+
+  defp repo_scope_trusted_remotes(%Config{repo_root: repo_root}, target_repo_root) do
+    :symphony_elixir
+    |> Application.get_env(:sympp_repo_identity_trusted_remotes, [])
+    |> List.wrap()
+    |> Kernel.++([same_checkout_origin_remote(repo_root, target_repo_root)])
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+  end
+
+  defp same_checkout_origin_remote(repo_root, target_repo_root) when is_binary(repo_root) and is_binary(target_repo_root) do
+    if same_existing_path?(repo_root, target_repo_root), do: RepoIdentity.local_git_origin_remote(repo_root)
+  end
+
+  defp same_checkout_origin_remote(_repo_root, _target_repo_root), do: nil
 
   defp same_existing_path?(left, right) when is_binary(left) and is_binary(right) do
     with {:ok, left} <- PathSafety.canonicalize(left),
@@ -6341,21 +6357,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp same_existing_path?(_left, _right), do: false
-
-  defp repo_identity_match?(expected_repo, actual_repo) do
-    catalog = RepoIdentity.catalog([expected_repo, actual_repo])
-    expected = RepoIdentity.fields(catalog, expected_repo)
-    actual = RepoIdentity.fields(catalog, actual_repo)
-
-    not MapSet.disjoint?(repo_identity_values(expected), repo_identity_values(actual))
-  end
-
-  defp repo_identity_values(identity) do
-    [identity.repo_key, identity.repo_display, identity.repo_remote | identity.repo_aliases]
-    |> Enum.filter(&is_binary/1)
-    |> Enum.map(&String.downcase/1)
-    |> MapSet.new()
-  end
 
   defp require_worktree_base_branch_scope(base_branch, %WorkPackage{base_branch: base_branch}), do: :ok
   defp require_worktree_base_branch_scope(_base_branch, %WorkPackage{}), do: {:tool_error, "base_branch_scope_mismatch"}
