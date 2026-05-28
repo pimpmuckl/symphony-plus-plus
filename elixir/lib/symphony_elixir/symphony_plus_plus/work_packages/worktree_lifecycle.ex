@@ -57,7 +57,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
          {:ok, branch} <- ref_name(attrs, "branch", :invalid_branch, target_repo_root, opts),
          {:ok, worktree_parent} <- worktree_parent(attrs, opts),
          {:ok, worktree_path} <- worktree_path(work_package, target_repo_root, branch, worktree_parent),
-         {:ok, worktree_path} <- validate_recorded_prepare_path(work_package, worktree_path, target_repo_root, branch, worktree_parent) do
+         {:ok, worktree_path} <-
+           validate_recorded_prepare_path(work_package, worktree_path, target_repo_root, branch, worktree_parent) do
       maybe_replay_prepared(repo, work_package, target_repo_root, base_branch, branch, worktree_path, opts)
     end
   end
@@ -284,9 +285,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
 
   defp cleanup_existing_or_missing_worktree(repo, %WorkPackage{} = work_package, worktree_path, opts) do
     cond do
-      File.dir?(worktree_path) -> cleanup_existing_worktree(repo, work_package, worktree_path, opts)
-      File.exists?(worktree_path) -> {:error, :invalid_worktree_path}
-      true -> clear_missing_recorded_worktree(repo, work_package, worktree_path, opts)
+      File.dir?(worktree_path) and not git_metadata_present?(worktree_path) ->
+        cleanup_non_git_recorded_worktree_directory(repo, work_package, worktree_path, opts)
+
+      File.dir?(worktree_path) ->
+        cleanup_existing_worktree(repo, work_package, worktree_path, opts)
+
+      File.exists?(worktree_path) ->
+        {:error, :invalid_worktree_path}
+
+      true ->
+        clear_missing_recorded_worktree(repo, work_package, worktree_path, opts)
+    end
+  end
+
+  defp cleanup_non_git_recorded_worktree_directory(repo, %WorkPackage{} = work_package, worktree_path, opts) do
+    with {:ok, stale_metadata_paths} <- require_removable_non_git_directory(worktree_path),
+         {:ok, repo_root} <- cleanup_repo_root(opts),
+         opts <- cleanup_context_opts(opts, repo_root, worktree_path),
+         :ok <- require_missing_recorded_worktree_owner(repo_root, worktree_path, opts),
+         :ok <- remove_stale_metadata_paths(stale_metadata_paths),
+         :ok <- remove_empty_directory(worktree_path),
+         :ok <- git(repo_root, ["worktree", "prune"], opts),
+         {:ok, updated_work_package} <- Repository.update(repo, work_package.id, %{worktree_path: nil}) do
+      {:ok, result(updated_work_package, "stale_record_cleared", nil, nil, nil, repo_root)}
     end
   end
 
@@ -305,6 +327,74 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
       {:ok, result(updated_work_package, "cleaned", worktree_path, nil, nil, repo_root)}
     else
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp git_metadata_present?(worktree_path) do
+    dot_git = Path.join(worktree_path, ".git")
+
+    cond do
+      File.dir?(dot_git) ->
+        File.regular?(Path.join(dot_git, "HEAD"))
+
+      File.regular?(dot_git) ->
+        usable_gitdir_file?(File.read(dot_git), worktree_path)
+
+      true ->
+        false
+    end
+  end
+
+  defp usable_gitdir_file?({:ok, contents}, worktree_path) do
+    case contents |> String.trim() |> String.split(":", parts: 2) do
+      ["gitdir", git_dir] ->
+        git_dir = Path.expand(String.trim(git_dir), worktree_path)
+        File.dir?(git_dir) and File.regular?(Path.join(git_dir, "HEAD"))
+
+      _contents ->
+        false
+    end
+  end
+
+  defp usable_gitdir_file?({:error, _reason}, _worktree_path), do: false
+
+  defp require_removable_non_git_directory(worktree_path) do
+    case File.ls(worktree_path) do
+      {:ok, []} ->
+        {:ok, []}
+
+      {:ok, [".git"]} ->
+        dot_git = Path.join(worktree_path, ".git")
+
+        if File.regular?(dot_git) and not git_metadata_present?(worktree_path) do
+          {:ok, [dot_git]}
+        else
+          {:error, :invalid_worktree_path}
+        end
+
+      {:ok, _entries} ->
+        {:error, :invalid_worktree_path}
+
+      {:error, _reason} ->
+        {:error, :invalid_worktree_path}
+    end
+  end
+
+  defp remove_stale_metadata_paths(paths) do
+    Enum.reduce_while(paths, :ok, fn path, :ok ->
+      case File.rm(path) do
+        :ok -> {:cont, :ok}
+        {:error, :enoent} -> {:cont, :ok}
+        {:error, _reason} -> {:halt, {:error, :invalid_worktree_path}}
+      end
+    end)
+  end
+
+  defp remove_empty_directory(worktree_path) do
+    case File.rmdir(worktree_path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, _reason} -> {:error, :invalid_worktree_path}
     end
   end
 

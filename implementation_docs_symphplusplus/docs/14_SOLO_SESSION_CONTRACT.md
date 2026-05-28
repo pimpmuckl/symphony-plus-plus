@@ -240,6 +240,12 @@ The plugin-installed Solo Session skill and `sympp-solo.ps1` wrapper provide
 agent-facing access to the `mix sympp.solo` CLI from source or installed
 plugin cache. They are convenience surfaces over the local Solo Session ledger,
 not orchestration.
+The wrapper locates the Symphony++ source checkout through source-relative
+paths, installed-cache `.sympp-source-root` hints, or the optional
+`SYMPP_REPO_ROOT` override. `SYMPP_REPO_ROOT` means the Symphony++ checkout
+containing `elixir/mix.exs`; it must not be used for the caller/task
+repository. Solo Session caller identity is always supplied through `repo`,
+`base_branch`, `workspace_path`, and `caller_id`.
 
 By default, Solo Session CLI and wrapper commands use the same shared
 machine-local Symphony++ ledger as the local cockpit and WorkRequest/

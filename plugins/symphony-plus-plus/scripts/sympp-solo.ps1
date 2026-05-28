@@ -16,12 +16,13 @@ function Write-Usage {
   Write-Host "  pwsh plugins/symphony-plus-plus/scripts/sympp-solo.ps1 attach --repo <repo> --base-branch <branch> --workspace-path <abs-path> --caller-id <id> [--database <sqlite-path>]"
   Write-Host ""
   Write-Host "Environment:"
-  Write-Host "  SYMPP_REPO_ROOT   Optional repo checkout root. Required when the plugin runs from installed cache without a source hint."
+  Write-Host "  SYMPP_REPO_ROOT   Optional Symphony++ source checkout root only (the repo containing elixir/mix.exs); not the caller/task repo. Normally leave unset; installed caches use .sympp-source-root hints."
   Write-Host "  SYMPP_DATABASE    Optional SQLite ledger override passed to mix sympp.solo when --database is not already present. Relative paths resolve against the caller workspace. When omitted, mix sympp.solo prefers %USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3 and falls back under temp/relative .agents\splusplus if home is unavailable."
   Write-Host "  SYMPP_LAUNCHER    Optional launcher: 'direct' or 'mise'. Defaults to 'direct'."
   Write-Host "  SYMPP_MIX         Optional mix executable path or name for direct launcher. Defaults to 'mix'."
   Write-Host "  SYMPP_MISE        Optional mise executable path or name for mise launcher. Defaults to 'mise'."
   Write-Host ""
+  Write-Host "Solo repo identity comes from --repo and --workspace-path. SYMPP_REPO_ROOT only locates the Symphony++ wrapper source."
   Write-Host "The local refresh script writes a non-secret .sympp-source-root hint into the installed cache."
 }
 
@@ -33,34 +34,98 @@ function Resolve-OptionalPath([string]$Path) {
   return [System.IO.Path]::GetFullPath($Path)
 }
 
+function Test-SymphonySourceRoot([string]$Path) {
+  return (-not [string]::IsNullOrWhiteSpace($Path)) -and (Test-Path -LiteralPath (Join-Path $Path "elixir/mix.exs"))
+}
+
+function Resolve-SourceHintRoot([string]$HintPath) {
+  $hintText = (Get-Content -LiteralPath $HintPath -Raw).Trim().TrimStart([char]0xFEFF)
+  $hintedRoot = Resolve-OptionalPath $hintText
+  if ($hintedRoot -and (Test-SymphonySourceRoot $hintedRoot)) {
+    return $hintedRoot
+  }
+
+  return $null
+}
+
+function Resolve-RepoRootFromCacheHints([string]$PluginRoot) {
+  $candidateHintPaths = @()
+  $versionsRoot = Split-Path -Parent $PluginRoot
+  $marketplaceRoot = Split-Path -Parent $versionsRoot
+
+  foreach ($packageName in @("symphony-plus-plus", "symphony-plus-plus-mcp")) {
+    $candidateVersionsRoot = Join-Path $marketplaceRoot $packageName
+    if (-not (Test-Path -LiteralPath $candidateVersionsRoot -PathType Container)) {
+      continue
+    }
+
+    foreach ($versionDir in @(Get-ChildItem -LiteralPath $candidateVersionsRoot -Directory -ErrorAction SilentlyContinue)) {
+      $hintPath = Join-Path $versionDir.FullName ".sympp-source-root"
+      if (Test-Path -LiteralPath $hintPath) {
+        $candidateHintPaths += $hintPath
+      }
+    }
+  }
+
+  $roots = @(
+    @(
+      foreach ($hintPath in $candidateHintPaths) {
+        $hintedRoot = Resolve-SourceHintRoot $hintPath
+        if ($hintedRoot) {
+          $hintedRoot
+        }
+      }
+    ) | Group-Object { $_.ToLowerInvariant() } | ForEach-Object { $_.Group[0] }
+  )
+
+  if ($roots.Count -eq 1) {
+    return $roots[0]
+  }
+
+  if ($roots.Count -gt 1) {
+    throw "Installed plugin cache has multiple valid Symphony++ source-root hints. Set SYMPP_REPO_ROOT to the Symphony++ source checkout root, not the caller/task repo."
+  }
+
+  return $null
+}
+
 function Resolve-RepoRoot {
   $configuredRoot = Resolve-OptionalPath $env:SYMPP_REPO_ROOT
   if ($configuredRoot) {
-    if (Test-Path -LiteralPath (Join-Path $configuredRoot "elixir/mix.exs")) {
+    if (Test-SymphonySourceRoot $configuredRoot) {
       return $configuredRoot
     }
 
-    throw "SYMPP_REPO_ROOT does not look like a Symphony++ checkout with elixir/mix.exs: $configuredRoot"
+    throw "SYMPP_REPO_ROOT must point to the Symphony++ source checkout containing elixir/mix.exs, not the caller/task repo: $configuredRoot"
   }
 
   $pluginRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
   $sourceRootHintPath = Join-Path $pluginRoot ".sympp-source-root"
+  $invalidSourceRootHint = $false
   if (Test-Path -LiteralPath $sourceRootHintPath) {
-    $hintText = (Get-Content -LiteralPath $sourceRootHintPath -Raw).Trim().TrimStart([char]0xFEFF)
-    $hintedRoot = Resolve-OptionalPath $hintText
-    if ($hintedRoot -and (Test-Path -LiteralPath (Join-Path $hintedRoot "elixir/mix.exs"))) {
+    $hintedRoot = Resolve-SourceHintRoot $sourceRootHintPath
+    if ($hintedRoot) {
       return $hintedRoot
     }
 
-    throw "Installed plugin source-root hint is invalid. Refresh the plugin cache or set SYMPP_REPO_ROOT."
+    $invalidSourceRootHint = $true
   }
 
   $sourceCandidate = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../../.."))
-  if (Test-Path -LiteralPath (Join-Path $sourceCandidate "elixir/mix.exs")) {
+  if (Test-SymphonySourceRoot $sourceCandidate) {
     return $sourceCandidate
   }
 
-  throw "Cannot infer the Symphony++ checkout. Run scripts/refresh-local-plugin.ps1 from the repo or set SYMPP_REPO_ROOT to the repository root before running the Solo Session wrapper."
+  $cacheHintRoot = Resolve-RepoRootFromCacheHints $pluginRoot
+  if ($cacheHintRoot) {
+    return $cacheHintRoot
+  }
+
+  if ($invalidSourceRootHint) {
+    throw "Installed plugin source-root hint is invalid. Refresh the plugin cache; set SYMPP_REPO_ROOT only to the Symphony++ source checkout root if a temporary override is needed."
+  }
+
+  throw "Cannot infer the Symphony++ source checkout. Run scripts/refresh-local-plugin.ps1 from the Symphony++ repo, or set SYMPP_REPO_ROOT to that source checkout root. Do not set it to the caller/task repo; Solo identity comes from --repo and --workspace-path."
 }
 
 function Resolve-CallerWorkspace {

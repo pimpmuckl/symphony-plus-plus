@@ -3709,6 +3709,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     end
   end
 
+  test "claim_local_assignment diagnoses legacy wildcard branch patterns before claiming", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-WILDCARD-BRANCH")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    repo.update_all(
+      from(work_package in WorkPackage, where: work_package.id == ^package.id),
+      set: [branch_pattern: "feat/live-triggers-v1-native-audio-evidence-*"]
+    )
+
+    wildcard_package = repo.get!(WorkPackage, package.id)
+    prepared_branch = "feat/live-triggers-v1-native-audio-evidence-worker"
+    File.mkdir_p!(Path.join(wildcard_package.worktree_path, ".git"))
+    File.write!(Path.join([wildcard_package.worktree_path, ".git", "HEAD"]), "ref: refs/heads/#{prepared_branch}\n")
+
+    try do
+      {response, _server} =
+        Server.handle_state(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "local-wildcard-branch-pattern",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "claim_local_assignment",
+              "arguments" => local_assignment_claim_args(wildcard_package, %{"branch" => prepared_branch})
+            }
+          },
+          local_mcp_server(local_mcp_config(repo), "local-wildcard-branch-pattern-state")
+        )
+
+      assert get_in(response, ["error", "code"]) == -32_602
+      assert get_in(response, ["error", "data", "reason"]) == "unsupported_branch_pattern_wildcard"
+      assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+      assert unclaimed_grant.claimed_at == nil
+      refute repo.one(from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id))
+    after
+      File.rm_rf!(wildcard_package.worktree_path)
+    end
+  end
+
   test "claim_local_assignment rejects literal templated branch without prepared git metadata", %{repo: repo} do
     package =
       create_local_claim_package!(repo, "SYMPP-LOCAL-TEMPLATE-UNPREPARED", branch_pattern: "agent/{{work_package_id}}/{{slug}}")
@@ -7447,6 +7486,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                "reason" => "non_documentation_owned_glob"
              }
            ] = get_in(invalid_docs_scope_response, ["error", "data", "validation_errors"])
+
+    assert {:ok, []} = WorkRequestRepository.list_planned_slices(repo, work_request.id)
+
+    invalid_branch_response =
+      mcp_tool(
+        repo,
+        session,
+        "add_work_request_planned_slice",
+        Map.put(add_args, "branch_pattern", "feat/live-triggers-v1-native-audio-evidence-*")
+      )
+
+    assert get_in(invalid_branch_response, ["error", "data", "reason"]) == "unsupported_branch_pattern_wildcard"
+
+    assert [
+             %{
+               "field" => "branch_pattern",
+               "value" => "feat/live-triggers-v1-native-audio-evidence-*",
+               "reason" => "unsupported_branch_pattern_wildcard"
+             }
+             | _
+           ] = get_in(invalid_branch_response, ["error", "data", "validation_errors"])
 
     assert {:ok, []} = WorkRequestRepository.list_planned_slices(repo, work_request.id)
 

@@ -4452,7 +4452,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         assert {:ok, repo_identity_catalog} = Dashboard.local_operator_repo_identity_catalog(repo)
         assert {:ok, streams} = Dashboard.solo_session_streams(repo, repo_identity_catalog: repo_identity_catalog)
 
-        assert [%{repo: ^repo_path, repo_key: ^bare_repo, repo_remote: ^raw_remote, base_branch: "main", solo_session_count: 1}] = streams
+        assert [
+                 %{
+                   repo: ^repo_path,
+                   repo_key: ^bare_repo,
+                   repo_remote: ^raw_remote,
+                   base_branch: "main",
+                   solo_session_count: 1
+                 }
+               ] = streams
 
         assert {:ok, persisted_package} = WorkPackageRepository.get(repo, work_package.id)
         assert {:ok, persisted_request} = WorkRequestRepository.get(repo, work_request.id)

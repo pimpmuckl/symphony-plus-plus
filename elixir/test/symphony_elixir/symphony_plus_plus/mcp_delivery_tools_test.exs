@@ -164,6 +164,84 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     assert repo.get!(WorkPackage, linked_package.id).status == "closed"
   end
 
+  test "WR architect abandons no-code failed dispatch after replacement delivery without revoking unrelated grants", %{repo: repo} do
+    {work_request, failed_slice, failed_package} =
+      linked_slice!(repo,
+        work_request_id: "WR-MCP-DELIVERY-ABANDON-FAILED-DISPATCH",
+        work_package_status: "ready_for_worker"
+      )
+
+    session = create_work_request_architect_session(repo, work_request, ["write:work_request"])
+
+    assert {:ok, failed_minted} = AccessGrantService.mint_worker_grant(repo, failed_package.id)
+
+    oracle_slice = create_planned_slice!(repo, work_request, id: "WRS-MCP-DELIVERY-ORACLE-ACTIVE")
+    assert {:ok, approved_oracle} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, oracle_slice.id, "planned")
+
+    oracle_package =
+      create_matching_work_package!(repo, work_request, approved_oracle,
+        id: "WP-MCP-DELIVERY-ORACLE-ACTIVE",
+        status: "ready_for_worker"
+      )
+
+    assert {:ok, _oracle_dispatch} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_oracle.id, "approved", oracle_package.id)
+
+    assert {:ok, oracle_minted} = AccessGrantService.mint_worker_grant(repo, oracle_package.id)
+    assert {:ok, _oracle_assignment} = AccessGrantService.claim(repo, oracle_minted.work_key.secret, claimed_by: "oracle-worker")
+
+    replacement_slice = create_planned_slice!(repo, work_request, id: "WRS-MCP-DELIVERY-REPLACEMENT")
+    assert {:ok, approved_replacement} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, replacement_slice.id, "planned")
+
+    replacement_package =
+      create_matching_work_package!(repo, work_request, approved_replacement,
+        id: "WP-MCP-DELIVERY-REPLACEMENT",
+        status: "ready_for_human_merge"
+      )
+
+    assert {:ok, dispatched_replacement} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_replacement.id, "approved", replacement_package.id)
+
+    replacement_response =
+      record_delivery(
+        repo,
+        session,
+        pr_merged_args(work_request, dispatched_replacement, "delivery-mcp-replacement-pr")
+      )
+
+    assert get_in(replacement_response, ["result", "structuredContent", "planned_slice_delivery", "outcome"]) == "pr_merged"
+    assert repo.get!(WorkPackage, replacement_package.id).status == "merged"
+
+    revoke_response =
+      revoke_worker_key(
+        repo,
+        session,
+        revoke_args(work_request, failed_slice, failed_minted.grant.id, "Failed bootstrap before implementation.")
+      )
+
+    assert get_in(revoke_response, ["error", "data", "reason"]) == "work_package_not_closeout_ready"
+    refute repo.get!(AccessGrant, failed_minted.grant.id).revoked_at
+
+    abandon_response =
+      record_delivery(
+        repo,
+        session,
+        abandoned_args(
+          work_request,
+          failed_slice,
+          "delivery-mcp-abandoned-failed-dispatch",
+          "Wildcard branch dispatch failed before implementation; replacement slice already delivered."
+        )
+      )
+
+    assert get_in(abandon_response, ["result", "structuredContent", "planned_slice_delivery", "outcome"]) == "abandoned"
+    assert repo.get!(WorkPackage, failed_package.id).status == "abandoned"
+    assert repo.get!(AccessGrant, failed_minted.grant.id).revoked_at
+
+    refute repo.get!(AccessGrant, oracle_minted.grant.id).revoked_at
+    assert repo.get!(WorkPackage, oracle_package.id).status == "ready_for_worker"
+  end
+
   test "workers and out-of-scope WR architects cannot record or revoke delivery", %{repo: repo} do
     {work_request, planned_slice, linked_package} = linked_slice!(repo, work_request_id: "WR-MCP-DELIVERY-SCOPED")
     worker_session = create_worker_session(repo, linked_package)
@@ -372,6 +450,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
       "outcome" => "completed_no_pr",
       "idempotency_key" => idempotency_key,
       "no_pr_evidence" => evidence
+    }
+  end
+
+  defp pr_merged_args(work_request, planned_slice, idempotency_key) do
+    %{
+      "work_request_id" => work_request.id,
+      "planned_slice_id" => planned_slice.id,
+      "outcome" => "pr_merged",
+      "idempotency_key" => idempotency_key,
+      "pr_url" => "https://github.com/nextide/symphony-plus-plus/pull/24",
+      "pr_number" => 24,
+      "pr_repository" => "nextide/symphony-plus-plus",
+      "pr_merged_at" => "2026-05-28T12:00:00Z",
+      "merge_commit_sha" => "abc24"
+    }
+  end
+
+  defp abandoned_args(work_request, planned_slice, idempotency_key, rationale) do
+    %{
+      "work_request_id" => work_request.id,
+      "planned_slice_id" => planned_slice.id,
+      "outcome" => "abandoned",
+      "idempotency_key" => idempotency_key,
+      "abandoned_rationale" => rationale
     }
   end
 

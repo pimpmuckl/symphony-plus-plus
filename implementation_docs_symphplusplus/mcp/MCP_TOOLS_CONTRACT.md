@@ -273,6 +273,18 @@ Linear, run automatic slicing/package generation, or change dashboard behavior.
 standalone dispatchable WorkPackage kinds advertised by the live MCP input
 schema: `quick_fix`, `hotfix`, `docs`, `investigation`, `adapter`, `mcp`,
 `skill`, or `hooks`.
+`add_work_request_planned_slice.branch_pattern`, when supplied, must be an
+exact branch or a `{{placeholder}}` template. Git wildcard patterns such as `*`
+are rejected with structured branch-pattern validation details before dispatch
+or worker claim.
+`record_planned_slice_delivery` with `outcome=abandoned` is the supported repair
+path for a linked no-code dispatch that failed before implementation, including
+a `ready_for_worker` package whose managed worktree has already been cleaned.
+It may retire unclaimed worker-grant and stale claim-lease evidence for that
+linked package only. It still rejects claimed worker authority, active agent
+runs, paused leases, active blockers, or an uncleared recorded worktree.
+`revoke_planned_slice_worker_key` remains limited to closeout-ready packages and
+is not required before this abandoned no-code repair path.
 `dispatch_work_request_planned_slice` is separate from those mutation tools and
 requires `dispatch:work_request` because it creates a WorkPackage, worker grant,
 and worker bootstrap side effects. It does not prepare or record worktree scope;
@@ -299,7 +311,8 @@ repo database configuration; divergent explicit MCP database configuration fails
 closed, and matching read-only SQLite URI options such as `mode=ro` or
 `immutable=1` are rejected before dispatch. Missing, out-of-scope,
 non-approved, invalid-status, unsupported-kind, and
-slice-scope violations fail closed before returning sibling content or raw
+unsupported branch-pattern wildcard, and slice-scope violations fail closed
+before returning sibling content or raw
 secret material. The response is intentionally narrower than CLI output:
 WorkRequest id, planned slice id/status/linkage, WorkPackage id metadata,
 non-secret worker bootstrap metadata for `claim_local_assignment`, and any
@@ -333,9 +346,14 @@ worktrees, removes the git worktree through the supplied target repository after
 proving the recorded worktree belongs to that repository, prunes stale worktree
 metadata, clears
 `worktree_path`, and appends redacted progress/audit evidence. It does not
-force-remove dirty worktrees, clean arbitrary paths, clean worktrees from a
-different repository, alter worker secrets, or perform automatic cleanup when
-package statuses change.
+run worktree-local Git commands from missing, empty, or unusable non-git
+managed directories; missing recorded paths, verified empty non-git directories,
+and directories containing only a broken `.git` metadata file under the managed
+root are treated as stale cleanup metadata, with removal allowed only after
+ownership/root checks. It does not force-remove dirty worktrees, clean arbitrary
+paths, clean non-empty non-git directories with non-metadata files, clean
+worktrees from a different repository, alter worker secrets, or perform
+automatic cleanup when package statuses change.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
 artifact counts. `approve_child_ready_state` revalidates the ready child against

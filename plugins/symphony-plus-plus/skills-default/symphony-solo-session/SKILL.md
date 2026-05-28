@@ -46,6 +46,10 @@ pwsh <plugin-root>/scripts/sympp-solo.ps1 -Help
 pwsh <plugin-root>/scripts/sympp-solo.ps1 -ValidateOnly
 ```
 
+Do not set `SYMPP_REPO_ROOT` to the caller/task repository. It is an optional
+Symphony++ source-checkout override only, used when installed cache source hints
+cannot locate the checkout that contains `elixir/mix.exs`.
+
 By default the wrapper uses the shared local ledger at
 `$HOME/.agents/splusplus/symphony_plus_plus.sqlite3`. Set `SYMPP_DATABASE` or
 `--database` only for an intentional isolated ledger.
