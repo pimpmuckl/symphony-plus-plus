@@ -25,8 +25,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
 
     groups = Enum.group_by(infos, & &1.group_key)
 
-    trusted_remote_keys = MapSet.union(trusted_remote_keys(opts), explicit_path_derived_remote_keys(infos))
-    remote_conflict_name_keys = remote_conflict_name_keys(infos)
+    trusted_remotes = trusted_remote_infos(opts)
+    trusted_remote_keys = MapSet.union(remote_keys(trusted_remotes), explicit_path_derived_remote_keys(infos))
+    remote_conflict_name_keys = remote_conflict_name_keys(infos ++ trusted_remotes)
 
     infos
     |> Enum.filter(& &1.catalog_key?)
@@ -41,6 +42,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
   end
 
   def fields(_catalog, _raw_repo), do: empty_identity()
+
+  @spec scope_match?(term(), term()) :: boolean()
+  @spec scope_match?(term(), term(), catalog_opts()) :: boolean()
+  def scope_match?(expected_repo, actual_repo, opts \\ [])
+
+  def scope_match?(expected_repo, actual_repo, opts)
+      when is_binary(expected_repo) and is_binary(actual_repo) and is_list(opts) do
+    catalog = catalog([expected_repo, actual_repo], opts)
+    expected = fields(catalog, expected_repo)
+    actual = fields(catalog, actual_repo)
+
+    not MapSet.disjoint?(identity_values(expected), identity_values(actual))
+  end
+
+  def scope_match?(_expected_repo, _actual_repo, _opts), do: false
 
   @spec local_git_origin_remote(term()) :: String.t() | nil
   def local_git_origin_remote(repo_path) when is_binary(repo_path) do
@@ -67,12 +83,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
     if path_derived_group?(group) and MapSet.member?(remote_conflict_name_keys, info.name_key) do
       owner_qualified_identity(group)
     else
-      collapsed_identity(info, group, trusted_remote_keys)
+      collapsed_identity(info, group, trusted_remote_keys, remote_conflict_name_keys)
     end
   end
 
-  defp collapsed_identity(info, group, trusted_remote_keys) do
-    collapsed_group? = collapsed_group?(group, trusted_remote_keys)
+  defp collapsed_identity(info, group, trusted_remote_keys, remote_conflict_name_keys) do
+    collapsed_group? = collapsed_group?(group, trusted_remote_keys, remote_conflict_name_keys)
     identity_infos = identity_infos(group, info, collapsed_group?)
     remote = identity_infos |> Enum.find(&(&1.kind == :remote)) |> remote_display()
 
@@ -117,7 +133,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
 
   defp identity_infos(group, _info, false), do: Enum.reject(group, &(&1.kind == :remote))
 
-  defp collapsed_group?(group, trusted_remote_keys) do
+  defp collapsed_group?(group, trusted_remote_keys, remote_conflict_name_keys) do
     remote_keys =
       group
       |> Enum.filter(&(&1.kind == :remote))
@@ -125,11 +141,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
       |> Enum.uniq()
 
     cond do
+      remote_name_conflict?(group, remote_conflict_name_keys) -> false
       remote_keys == [] -> true
       length(remote_keys) > 1 -> false
       bare_alias?(group) -> MapSet.member?(trusted_remote_keys, hd(remote_keys)) or derived_remote_alias?(group, hd(remote_keys))
       true -> false
     end
+  end
+
+  defp remote_name_conflict?(group, remote_conflict_name_keys) do
+    Enum.any?(group, &MapSet.member?(remote_conflict_name_keys, &1.name_key))
   end
 
   defp bare_alias?(group), do: Enum.any?(group, &(&1.kind == :bare))
@@ -170,29 +191,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
     |> MapSet.new()
   end
 
-  defp trusted_remote_keys(opts) do
+  defp trusted_remote_infos(opts) do
     opts
     |> Keyword.get(:trusted_remotes, [])
     |> List.wrap()
-    |> Enum.map(&trusted_remote_key/1)
+    |> Enum.map(&trusted_remote_info/1)
     |> Enum.reject(&is_nil/1)
-    |> MapSet.new()
   end
 
-  defp trusted_remote_key(remote) when is_binary(remote) do
+  defp trusted_remote_info(remote) when is_binary(remote) do
     case parse_repo(remote) do
-      %{kind: :remote, full_key: full_key} -> full_key
+      %{kind: :remote} = info -> info
       _other -> nil
     end
   end
 
-  defp trusted_remote_key(_remote), do: nil
+  defp trusted_remote_info(_remote), do: nil
+
+  defp remote_keys(infos) do
+    infos
+    |> Enum.map(& &1.full_key)
+    |> MapSet.new()
+  end
 
   defp aliases(infos) do
     infos
     |> Enum.map(& &1.alias)
     |> Enum.uniq()
     |> Enum.sort_by(&String.downcase/1)
+  end
+
+  defp identity_values(identity) do
+    [identity.repo_key, identity.repo_display, identity.repo_remote | identity.repo_aliases]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.downcase/1)
+    |> MapSet.new()
   end
 
   defp remote_display(nil), do: nil

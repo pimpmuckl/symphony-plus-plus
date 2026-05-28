@@ -99,6 +99,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentityTest do
            }
   end
 
+  test "scope match accepts owner-qualified remotes for bare repos" do
+    assert RepoIdentity.scope_match?("symphony-plus-plus", "https://github.com/Pimpmuckl/symphony-plus-plus.git", trusted_remotes: ["https://github.com/Pimpmuckl/symphony-plus-plus.git"])
+
+    assert RepoIdentity.scope_match?("symphony-plus-plus", "git@github.com:Pimpmuckl/symphony-plus-plus.git", trusted_remotes: ["ssh://git@github.com/Pimpmuckl/symphony-plus-plus.git"])
+  end
+
+  test "scope match rejects owner and repo-name conflicts" do
+    refute RepoIdentity.scope_match?("Pimpmuckl/symphony-plus-plus", "https://github.com/elsewhere/symphony-plus-plus.git")
+    refute RepoIdentity.scope_match?("symphony-plus-plus", "https://github.com/Pimpmuckl/symphony-plus-plus.git")
+    refute RepoIdentity.scope_match?("frontend", "https://github.com/other/frontend.git")
+
+    refute RepoIdentity.scope_match?("frontend", "https://github.com/other/frontend.git", trusted_remotes: ["https://github.com/Pimpmuckl/frontend.git"])
+
+    refute RepoIdentity.scope_match?("symphony-plus-plus", "https://github.com/Pimpmuckl/other-repo.git")
+  end
+
+  test "scope match rejects bare repos when trusted remotes make the bare name ambiguous" do
+    refute RepoIdentity.scope_match?("shared", "https://github.com/alpha/shared.git",
+             trusted_remotes: [
+               "https://github.com/alpha/shared.git",
+               "https://github.com/beta/shared.git"
+             ]
+           )
+  end
+
+  test "scope match preserves exact owner-qualified matches when trusted remotes conflict" do
+    assert RepoIdentity.scope_match?("alpha/shared", "https://github.com/alpha/shared.git",
+             trusted_remotes: [
+               "https://github.com/alpha/shared.git",
+               "https://github.com/beta/shared.git"
+             ]
+           )
+  end
+
   test "derives canonical identity from existing local git repo paths" do
     origin = "https://github.com/Pimpmuckl/nextide-saas-live-chat.git"
     repo_path = TestSupport.git_repo_with_origin_fixture!(origin, prefix: "sympp-repo-identity")

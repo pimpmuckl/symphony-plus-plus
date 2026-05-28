@@ -242,6 +242,86 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     assert replayed.worktree_path == prepared.worktree_path
   end
 
+  test "prepare keeps generated worktree paths compact for long ids and branches", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+    long_id = "SYMPP-WT-LONG-" <> String.duplicate("PACKAGE-", 8)
+    long_branch = "feat/" <> String.duplicate("very-long-worktree-branch-", 5) <> "tail"
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: long_id, kind: "mcp", base_branch: "main"))
+
+    assert {:ok, prepared} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => long_branch},
+               codex_home: codex_home
+             )
+
+    assert {:ok, worktree_root} = WorktreeLifecycle.worktree_root(codex_home: codex_home)
+    relative_path = Path.relative_to(prepared.worktree_path, worktree_root)
+
+    assert String.length(relative_path) <= 80
+    refute prepared.worktree_path =~ String.replace(long_branch, "/", "-")
+    assert File.dir?(prepared.worktree_path)
+  end
+
+  test "prepare replays legacy recorded managed worktree paths", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+    package_id = "SYMPP-WT-LEGACY-001"
+    branch = "feat/legacy-prepare-replay"
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: package_id, kind: "mcp", base_branch: "main"))
+
+    legacy_path = legacy_worktree_path(codex_home, fixture.repo_root, package.id, branch)
+    File.mkdir_p!(Path.dirname(legacy_path))
+    TestSupport.git_output!(fixture.repo_root, ["worktree", "add", "-b", branch, legacy_path, "origin/main"])
+
+    assert {:ok, _updated} = Repository.update(repo, package.id, %{worktree_path: legacy_path})
+
+    assert {:ok, replayed} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => branch},
+               codex_home: codex_home
+             )
+
+    assert replayed.status == "already_prepared"
+    assert replayed.worktree_path == Path.expand(legacy_path)
+    assert File.dir?(legacy_path)
+  end
+
+  test "prepare rejects legacy recorded managed paths for a different branch", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+    package_id = "SYMPP-WT-LEGACY-BRANCH"
+    recorded_branch = "feat/legacy-recorded"
+    requested_branch = "feat/legacy-requested"
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: package_id, kind: "mcp", base_branch: "main"))
+
+    legacy_path = legacy_worktree_path(codex_home, fixture.repo_root, package.id, recorded_branch)
+    File.mkdir_p!(Path.dirname(legacy_path))
+    TestSupport.git_output!(fixture.repo_root, ["worktree", "add", "-b", recorded_branch, legacy_path, "origin/main"])
+
+    assert {:ok, _updated} = Repository.update(repo, package.id, %{worktree_path: legacy_path})
+
+    assert {:error, {:worktree_path_already_recorded, recorded_path}} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => requested_branch},
+               codex_home: codex_home
+             )
+
+    assert recorded_path == Path.expand(legacy_path)
+  end
+
   test "cleanup refuses dirty worktrees and clears clean recorded worktrees", %{repo: repo} do
     fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
     codex_home = Path.join(fixture.root, "codex-home")
@@ -729,5 +809,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     path
     |> String.replace("\\", "/")
     |> String.downcase()
+  end
+
+  defp legacy_worktree_path(codex_home, repo_root, package_id, branch) do
+    {:ok, worktree_root} = WorktreeLifecycle.worktree_root(codex_home: codex_home)
+    {:ok, repo_root} = SymphonyElixir.PathSafety.canonicalize(repo_root)
+
+    Path.join([
+      worktree_root,
+      legacy_unique_segment(Path.basename(repo_root), repo_root),
+      "#{safe_segment(package_id)}-#{legacy_unique_segment(branch, branch)}"
+    ])
+  end
+
+  defp legacy_unique_segment(display_value, fingerprint_value) do
+    "#{safe_segment(display_value)}-#{test_short_hash(fingerprint_value)}"
+  end
+
+  defp safe_segment(value) do
+    value
+    |> String.trim()
+    |> String.replace(~r/[^A-Za-z0-9._-]+/, "-")
+    |> String.trim("-")
+  end
+
+  defp test_short_hash(value) do
+    :sha256
+    |> :crypto.hash(value)
+    |> Base.url_encode64(padding: false)
+    |> binary_part(0, 10)
   end
 end
