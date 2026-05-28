@@ -344,9 +344,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@plugin_default_coordinator_skill_path) =~ "Do not share that session with workers"
     assert File.read!(@plugin_solo_script_path) =~ "mix sympp.solo"
     assert File.read!(@plugin_solo_script_path) =~ ".sympp-source-root"
+    assert File.read!(@plugin_solo_script_path) =~ "not the caller/task repo"
+    assert File.read!(@plugin_solo_script_path) =~ "Resolve-RepoRootFromCacheHints"
     refute File.read!(@plugin_solo_script_path) =~ "Resolve-DefaultDatabase"
     refute File.read!(@plugin_solo_script_path) =~ "solo-sessions.sqlite3"
     refute File.exists?(@mcp_plugin_solo_skill_path)
+    assert File.read!(@plugin_default_solo_skill_path) =~ "Do not set `SYMPP_REPO_ROOT` to the caller/task repository"
+    assert File.read!(@mcp_plugin_solo_script_path) =~ "not the caller/task repo"
+    assert File.read!(@mcp_plugin_solo_script_path) =~ "Resolve-RepoRootFromCacheHints"
     refute File.read!(@mcp_plugin_solo_script_path) =~ "Resolve-DefaultDatabase"
     refute File.read!(@mcp_plugin_solo_script_path) =~ "solo-sessions.sqlite3"
 
@@ -402,6 +407,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@plugin_readme_path) =~ "supported replacement for app-visible"
     assert File.read!(@plugin_readme_path) =~ "Solo/cockpit handoff path"
     assert File.read!(@plugin_readme_path) =~ "shared local Symphony++ default ledger"
+    assert File.read!(@plugin_readme_path) =~ "Solo caller repository identity comes from the CLI arguments"
     assert File.read!(@plugin_readme_path) =~ "diagnose-mcp-lifecycle.ps1 -Doctor"
     assert File.read!(@plugin_readme_path) =~ "solo_ready_mcp_companion_not_enabled"
     assert File.read!(@plugin_readme_path) =~ "symphony-plus-plus-mcp@<marketplace>"
@@ -3152,6 +3158,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           source_hint_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".sympp-source-root"])
           assert same_path?(String.trim(File.read!(source_hint_path)), @repo_root)
         end
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  test "Solo wrapper can resolve source root from sibling installed cache hints" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-solo-cache-hints")
+
+    if powershell do
+      fake_mix = fake_mix_executable(temp_codex_home)
+      default_cache_root = published_plugin_cache_path(temp_codex_home, ["1.0.0"])
+      companion_hint_path = published_plugin_cache_path(temp_codex_home, ["1.0.0", ".sympp-source-root"], "symphony-plus-plus-mcp")
+      wrapper_path = Path.join(default_cache_root, "scripts/sympp-solo.ps1")
+
+      try do
+        File.mkdir_p!(Path.dirname(wrapper_path))
+        File.cp!(@plugin_solo_script_path, wrapper_path)
+        File.write!(Path.join(default_cache_root, ".sympp-source-root"), "#{temp_codex_home}\n")
+        File.mkdir_p!(Path.dirname(companion_hint_path))
+        File.write!(companion_hint_path, "#{@repo_root}\n")
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            ["-NoProfile", "-File", wrapper_path, "-ValidateOnly"],
+            cd: temp_codex_home,
+            stderr_to_stdout: true,
+            env: [{"SYMPP_LAUNCHER", "direct"}, {"SYMPP_MIX", fake_mix}]
+          )
+
+        assert status == 0, output
+        assert output =~ "Symphony++ Solo Session wrapper validation passed."
+        assert output =~ "repoRoot:"
       after
         File.rm_rf!(temp_codex_home)
       end

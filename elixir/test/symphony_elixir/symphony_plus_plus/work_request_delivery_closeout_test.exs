@@ -851,6 +851,126 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert repo.get!(WorkPackage, linked_package.id).status == "implementing"
   end
 
+  test "abandoned closeout retires unclaimed stale runtime evidence after worktree cleanup", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-DELIVERY-ABANDONED-STALE-RUNTIME",
+        status: "ready_for_worker"
+      )
+
+    assert {:ok, _with_worktree} =
+             WorkPackageRepository.update(repo, linked_package.id, %{
+               worktree_path: Path.join(System.tmp_dir!(), "sympp-abandoned-not-cleaned")
+             })
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+
+    attrs =
+      delivery_attrs(%{
+        outcome: "abandoned",
+        idempotency_key: "delivery-abandoned-stale-runtime",
+        abandoned_rationale: "Worker bootstrap failed before implementation; operator cleaned the worktree."
+      })
+
+    assert {:error, :active_runtime} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+
+    assert {:ok, _cleaned_worktree} = WorkPackageRepository.update(repo, linked_package.id, %{worktree_path: nil})
+
+    assert {:ok, claim_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               linked_package.id,
+               %{
+                 "actor_kind" => "agent",
+                 "actor_id" => "local:stale-abandoned-claim",
+                 "actor_display_name" => "stale-abandoned-worker"
+               },
+               now: DateTime.add(DateTime.utc_now(:microsecond), -10, :second),
+               stale_after_ms: 1
+             )
+
+    assert {:ok, agent_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: linked_package.id,
+               status: "running",
+               last_seen_at: DateTime.add(DateTime.utc_now(:microsecond), -301, :second)
+             })
+
+    assert {:ok, delivery} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert delivery.outcome == "abandoned"
+    assert repo.get!(WorkPackage, linked_package.id).status == "abandoned"
+    assert %AccessGrant{revoked_at: %DateTime{}, claimed_at: nil} = repo.get!(AccessGrant, minted.grant.id)
+    assert %ClaimLease{status: "released", release_reason: "abandoned_delivery_closeout"} = repo.get!(ClaimLease, claim_lease.id)
+
+    events = repo.all(ProgressEvent)
+    closeout_event = Enum.find(events, &(&1.payload["type"] == "work_request_delivery_closeout"))
+    assert closeout_event.payload["retired_worker_grant_ids"] == [minted.grant.id]
+    assert closeout_event.payload["retired_claim_lease_ids"] == [claim_lease.id]
+    assert closeout_event.payload["ignored_stale_agent_run_ids"] == [agent_run.id]
+    assert "claim_lease_stale" in closeout_event.payload["runtime_reason_codes_before_closeout"]
+    assert "agent_run_stale" in closeout_event.payload["runtime_reason_codes_before_closeout"]
+  end
+
+  test "abandoned closeout still rejects claimed worker authority after cleanup", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-DELIVERY-ABANDONED-CLAIMED-WORKER",
+        status: "ready_for_worker"
+      )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "active-worker")
+
+    assert {:error, :active_runtime} =
+             Service.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               planned_slice.id,
+               delivery_attrs(%{
+                 outcome: "abandoned",
+                 idempotency_key: "delivery-abandoned-claimed-worker",
+                 abandoned_rationale: "Attempted abandon while worker authority was still claimed."
+               })
+             )
+
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+    assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_worker"
+    assert %AccessGrant{revoked_at: nil} = repo.get!(AccessGrant, minted.grant.id)
+  end
+
+  test "abandoned closeout rejects packages that reached implementation states", %{repo: repo} do
+    for {status, request_id} <- [
+          {"implementing", "WR-DELIVERY-ABANDONED-IMPLEMENTING"},
+          {"ready_for_human_merge", "WR-DELIVERY-ABANDONED-MERGE-READY"}
+        ] do
+      {work_request, planned_slice, linked_package} =
+        linked_slice!(
+          repo,
+          work_request_id: request_id,
+          status: status
+        )
+
+      assert {:error, :active_runtime} =
+               Service.record_planned_slice_delivery(
+                 repo,
+                 work_request.id,
+                 planned_slice.id,
+                 delivery_attrs(%{
+                   outcome: "abandoned",
+                   idempotency_key: "delivery-abandoned-#{status}",
+                   abandoned_rationale: "No-code abandoned repair must not hide implementation state."
+                 })
+               )
+
+      assert repo.get!(WorkPackage, linked_package.id).status == status
+    end
+
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+  end
+
   test "active worker grants prevent closeout until explicitly revoked", %{repo: repo} do
     {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_human_merge")
 

@@ -50,7 +50,8 @@
       "type": "string"
     },
     "branch_pattern": {
-      "type": "string"
+      "type": "string",
+      "description": "Optional exact branch or {{placeholder}} template. Git wildcard patterns such as * are not supported."
     },
     "product_description": {
       "type": "string"

@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.SymphonyPlusPlus.BranchPattern
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.StringList
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
@@ -127,12 +128,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
     |> validate_number(:sequence, greater_than: 0)
     |> validate_inclusion(:work_package_kind, WorkPackage.kinds())
     |> validate_inclusion(:status, @statuses)
+    |> validate_branch_pattern()
   end
 
   defp validate_create_status(changeset) do
     validate_change(changeset, :status, fn
       :status, "planned" -> []
       :status, _status -> [status: "must be planned on create"]
+    end)
+  end
+
+  defp validate_branch_pattern(changeset) do
+    validate_change(changeset, :branch_pattern, fn :branch_pattern, value ->
+      case BranchPattern.validate(value) do
+        :ok ->
+          []
+
+        {:error, reason} ->
+          [branch_pattern: {BranchPattern.error_message(reason), validation: :branch_pattern, reason: reason}]
+      end
     end)
   end
 

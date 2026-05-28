@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.SymphonyPlusPlus.BranchPattern
   alias SymphonyElixir.SymphonyPlusPlus.Policies.Templates
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.StringList
 
@@ -144,7 +145,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
     |> validate_required([:id, :kind, :title, :repo, :base_branch, :acceptance_criteria, :status])
     |> validate_inclusion(:kind, @kinds)
     |> validate_inclusion(:status, @statuses)
+    |> validate_branch_pattern()
     |> validate_policy_template()
+  end
+
+  defp validate_branch_pattern(changeset) do
+    validate_change(changeset, :branch_pattern, fn :branch_pattern, value ->
+      case BranchPattern.validate(value) do
+        :ok ->
+          []
+
+        {:error, reason} ->
+          [branch_pattern: {BranchPattern.error_message(reason), validation: :branch_pattern, reason: reason}]
+      end
+    end)
   end
 
   defp validate_policy_template(changeset) do
