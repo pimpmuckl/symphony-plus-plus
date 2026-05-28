@@ -41,9 +41,9 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
     try do
       assert {:ok, default_opts} = CockpitTask.parse_args_for_test([])
       assert Keyword.fetch!(default_opts, :host) == "127.0.0.1"
-      assert Keyword.fetch!(default_opts, :port) == 4057
+      assert Keyword.fetch!(default_opts, :port) == 19_998
       refute Keyword.has_key?(default_opts, :dashboard_origin)
-      assert CockpitTask.cockpit_url_for_test(default_opts, 4057) == "http://127.0.0.1:4057/sympp/board"
+      assert CockpitTask.cockpit_url_for_test(default_opts, 19_998) == "http://127.0.0.1:19998/sympp/board"
 
       assert {:ok, opts} =
                CockpitTask.parse_args_for_test([

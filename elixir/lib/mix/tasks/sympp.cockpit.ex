@@ -13,7 +13,7 @@ defmodule Mix.Tasks.Sympp.Cockpit do
 
   @shortdoc "Starts the local Symphony++ operator cockpit"
   @default_host "127.0.0.1"
-  @default_port 4057
+  @default_port 19_998
   @board_path "/sympp/board"
   @switches [
     database: :string,

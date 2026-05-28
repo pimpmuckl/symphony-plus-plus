@@ -14,7 +14,7 @@ The default package must not include `plugins/symphony-plus-plus/.mcp.json` at
 all. The sibling `plugins/symphony-plus-plus-mcp` opt-in package owns the
 bundled root `.mcp.json` that uses the documented direct server-map shape.
 Dedicated S++ workflows can copy or reference that package's generic
-`symphony_plus_plus` HTTP server when they explicitly need it.
+command-backed `symphony_plus_plus` launcher when they explicitly need MCP.
 
 MCP discovery is loaded by the Codex host, not by the skill text in an
 already-running thread. During feature-branch development, do not refresh or
@@ -30,24 +30,29 @@ session was intentionally given a server dependency. That server may not appear
 as a global MCP settings entry. Current-session tools appear only after the host
 loads the MCP configuration for that session.
 
-Start one local cockpit/daemon before launching the dedicated Codex session
-that enables the opt-in MCP plugin:
+When Codex starts a dedicated session with the opt-in MCP plugin enabled, the
+plugin launcher starts or reuses the local backend and dashboard before
+bridging MCP traffic. For manual operation, run the local cockpit/daemon from
+`elixir/`:
 
 ```bash
-mix sympp.cockpit
+mix sympp.cockpit --dashboard-origin http://127.0.0.1:19999
 ```
 
-By default it binds `127.0.0.1:4057`, prints
-`http://127.0.0.1:4057/sympp/board`, and serves MCP at
-`http://127.0.0.1:4057/mcp`, backed by the default local ledger. The preferred
+By default it binds `127.0.0.1:19998`, prints
+`http://127.0.0.1:19999/sympp/board` when a dashboard origin is supplied, and
+serves MCP at `http://127.0.0.1:19998/mcp`, backed by the default local ledger. The preferred
 home is
 `$HOME/.agents/splusplus/symphony_plus_plus.sqlite3`
 (`%USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3` on Windows);
 if that home is unavailable, Symphony++ falls back under a temp/relative
 `.agents/splusplus` root. Pass
 `--port 0` for dynamic-port manual tests, or `--port <n>` for a different
-explicit port. The bundled opt-in plugin targets the stable default URL; if you
-use another port, configure that session explicitly.
+explicit port. The bundled opt-in plugin prefers backend port `19998` and
+dashboard port `19999`, reuses healthy S++ listeners, chooses fallback ports
+when defaults are occupied by other services, and records the actual runtime in
+`$HOME/.agents/splusplus/runtime/codex-plugin.json` unless
+`SYMPP_RUNTIME_FILE` overrides it.
 
 Starting the legacy stdio process from a shell does not register tools with an
 already-running model session. S++ MCP opt-in should use a one-session top-level
@@ -71,8 +76,9 @@ The opt-in MCP package reference is intentionally generic. It should not embed
 raw work-key secrets or bearer tokens, private-store handoff targets, or
 operator-local secret material. Repo-local refresh scripts update installed
 caches only during final cutover or explicit manual cache maintenance; they
-write a non-secret source-root hint for the Solo wrapper and legacy stdio
-fallback scripts. The bundled MCP target itself is the local HTTP daemon URL.
+write a non-secret source-root hint for the Solo wrapper and MCP launcher. The
+bundled MCP target itself is a local command-backed stdio-to-HTTP bridge, not a
+static URL.
 Do not refresh user-local plugin caches as part of normal feature-branch
 worker dispatch.
 
@@ -97,19 +103,32 @@ isolated Symphony++ SQLite ledger instead of the default local ledger.
 
 ## Codex MCP Dependency
 
-Configure Codex to connect to the local daemon as a Streamable HTTP MCP
-dependency for the worker session. The bundled opt-in plugin uses this shape:
+Configure Codex before the model session starts. The bundled opt-in plugin uses
+a command-backed launcher so Codex startup can bootstrap the local backend and
+dashboard before MCP tools are listed:
 
 ```toml
 [mcp_servers.symphony_plus_plus]
-url = "http://127.0.0.1:4057/mcp"
+command = "cmd.exe"
+args = ["/d", "/s", "/c", "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.cmd"]
+cwd = "<repo>"
 ```
 
-This URL-only shape is enough only when the Codex host owns a persistent MCP
-session and preserves the returned `Mcp-Session-Id`/state key across
-`initialize`, `tools/list`, claim, and follow-up calls. Stateless one-shot URL
-probes may prove health, but they are not normal worker-claim sessions and
-must not be expected to advertise or authorize `claim_local_assignment`.
+The launcher forwards Codex stdio MCP messages to the backend HTTP `/mcp`
+endpoint while preserving the returned `Mcp-Session-Id`/state key across
+`initialize`, `tools/list`, claim, and follow-up calls. A URL-only config can
+still be used for explicit local experiments:
+
+```toml
+[mcp_servers.symphony_plus_plus]
+url = "http://127.0.0.1:19998/mcp"
+```
+
+That URL-only shape works only when the backend is already listening on the
+configured port before Codex starts; it cannot follow the launcher's dynamic
+fallback port selection. Stateless one-shot URL probes may prove health, but
+they are not normal worker-claim sessions and must not be expected to advertise
+or authorize `claim_local_assignment`.
 
 ## Legacy/Recovery Bootstrap
 

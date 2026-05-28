@@ -25,6 +25,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   @mcp_plugin_worker_skill_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/skills/symphony-worker/SKILL.md")
   @mcp_plugin_architect_skill_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/skills/symphony-architect/SKILL.md")
   @mcp_plugin_start_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1")
+  @mcp_plugin_start_cmd_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.cmd")
   @mcp_plugin_solo_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-solo.ps1")
   @marketplace_path Path.join(@repo_root, ".agents/plugins/marketplace.json")
   @plugin_marketplace_name "symphony-plus-plus"
@@ -199,12 +200,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     plugin_wiring = File.read!(@mcp_plugin_wiring_path)
     template_wiring = File.read!(Path.join(@template_references_dir, "mcp_wiring.md"))
 
-    assert wiring =~ "http://127.0.0.1:4057/mcp"
+    assert wiring =~ "http://127.0.0.1:19998/mcp"
     assert wiring =~ "mix sympp.cockpit"
     assert wiring =~ "$HOME/.agents/splusplus/symphony_plus_plus.sqlite3"
     assert wiring =~ "--port 0"
     assert wiring =~ "[mcp_servers.symphony_plus_plus]"
-    assert wiring =~ "url = \"http://127.0.0.1:4057/mcp\""
+    assert wiring =~ "command = \"cmd.exe\""
+    assert wiring =~ "scripts/start-sympp-mcp.cmd"
     assert wiring =~ "sympp-worker-secret.ps1"
     assert wiring =~ "sympp-worker-secret.sh"
     assert wiring =~ "run-mcp-local-file-once"
@@ -394,12 +396,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@plugin_readme_path) =~ "incompatible_default_plugin_bundles_mcp"
     assert File.read!(@plugin_readme_path) =~ "missing_manifest"
     assert File.read!(@plugin_readme_path) =~ "reporting machine-wide processes"
-    assert File.read!(@plugin_readme_path) =~ "defines the expected\n`symphony_plus_plus` HTTP server"
+    assert File.read!(@plugin_readme_path) =~ "defines the expected\n`symphony_plus_plus` command-backed launcher"
     assert File.read!(@plugin_readme_path) =~ "process scan as unsupported"
     assert File.read!(@plugin_readme_path) =~ "Default Planning And Opt-In MCP"
     assert File.read!(@plugin_readme_path) =~ "symphony-plus-plus:symphony-solo-session"
     assert File.read!(@plugin_readme_path) =~ "sympp-solo.ps1 -ValidateOnly"
-    assert File.read!(@plugin_readme_path) =~ "http://127.0.0.1:4057/mcp"
+    assert File.read!(@plugin_readme_path) =~ "http://127.0.0.1:19998/mcp"
     assert File.read!(@plugin_readme_path) =~ "codex --profile sympp-agent app <path>"
     assert File.read!(@plugin_readme_path) =~ "subprocess/app-server session"
     assert File.read!(@plugin_readme_path) =~ "supported replacement for app-visible"
@@ -436,7 +438,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     refute File.read!(@refresh_script_path) =~ "local target:"
     assert File.read!(@refresh_script_path) =~ "Repair-IncompatibleDefaultPluginCacheEntries"
     assert File.read!(@refresh_script_path) =~ "Sync-ManagedDirectoryChildren"
-    assert File.read!(@refresh_script_path) =~ "Installed plugin MCP fallback wrapper validation failed"
+    assert File.read!(@refresh_script_path) =~ "Installed plugin MCP launcher validation failed"
     assert File.read!(@refresh_script_path) =~ "Default installed plugin cache must not contain root .mcp.json"
     assert File.read!(@refresh_script_path) =~ "Run the activation doctor"
     assert File.read!(@refresh_script_path) =~ "Get-AvailablePowerShellCommandName"
@@ -579,16 +581,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@mcp_plugin_architect_skill_path) =~ "name: symphony-architect"
 
     assert File.read!(@mcp_plugin_start_script_path) =~ "sympp.mcp"
+    assert File.read!(@mcp_plugin_start_cmd_path) =~ "start-sympp-mcp.ps1"
+    assert File.read!(@mcp_plugin_start_cmd_path) =~ "powershell.exe"
+    assert File.read!(@mcp_plugin_start_cmd_path) =~ "goto :run_pwsh"
+    refute File.read!(@mcp_plugin_start_cmd_path) =~ "if %ERRORLEVEL%==0 ("
     assert File.read!(@mcp_plugin_solo_script_path) =~ "sympp.solo"
 
     assert %{
              "symphony_plus_plus" => %{
-               "url" => "http://127.0.0.1:4057/mcp"
+               "type" => "stdio",
+               "command" => "cmd.exe",
+               "cwd" => "."
              }
            } = documented_mcp_server_map(mcp_config)
 
-    refute get_in(documented_mcp_server_map(mcp_config), ["symphony_plus_plus", "command"])
-    refute get_in(documented_mcp_server_map(mcp_config), ["symphony_plus_plus", "args"])
+    args = get_in(documented_mcp_server_map(mcp_config), ["symphony_plus_plus", "args"])
+    assert "/c" in args
+    assert "scripts\\start-sympp-mcp.cmd" in args
+    refute get_in(documented_mcp_server_map(mcp_config), ["symphony_plus_plus", "url"])
 
     serialized = Jason.encode!(manifest) <> Jason.encode!(mcp_config)
     refute serialized =~ "SYMPP_WORK_KEY_SECRET"
@@ -622,7 +632,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         File.write!(
           companion_mcp_path,
-          Jason.encode!(%{"symphony_plus_plus" => %{"url" => "http://127.0.0.1:4057/mcp"}})
+          command_mcp_config_json()
         )
 
         File.write!(
@@ -1380,11 +1390,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
        enabled = true
 
           [ mcp_servers . symphony_plus_plus ] # dedicated old workaround
-       url = "http://127.0.0.1:4057/mcp"
+       url = "http://127.0.0.1:19998/mcp"
        """},
       {"dotted",
        """
-       mcp_servers.symphony_plus_plus.url = "http://127.0.0.1:4057/mcp"
+       mcp_servers.symphony_plus_plus.url = "http://127.0.0.1:19998/mcp"
 
        [plugins."symphony-plus-plus@jonat-local"]
        enabled = true
@@ -1395,7 +1405,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
        enabled = true
 
        [mcp_servers]
-       symphony_plus_plus.url = "http://127.0.0.1:4057/mcp"
+       symphony_plus_plus.url = "http://127.0.0.1:19998/mcp"
        """}
     ]
 
@@ -1900,7 +1910,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         File.write!(
           companion_old_version_mcp_path,
-          Jason.encode!(%{"symphony_plus_plus" => %{"url" => "http://127.0.0.1:4057/mcp"}})
+          command_mcp_config_json()
         )
 
         File.write!(companion_old_version_hint_path, "#{@repo_root}\n")
@@ -1913,7 +1923,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         File.write!(
           companion_new_version_mcp_path,
-          Jason.encode!(%{"symphony_plus_plus" => %{"url" => "http://127.0.0.1:4057/mcp"}})
+          command_mcp_config_json()
         )
 
         File.write!(companion_new_version_hint_path, "#{@repo_root}\n")
@@ -1959,7 +1969,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         File.write!(
           companion_local_mcp_path,
-          Jason.encode!(%{"symphony_plus_plus" => %{"url" => "http://127.0.0.1:4057/mcp"}})
+          command_mcp_config_json()
         )
 
         File.mkdir_p!(Path.dirname(companion_version_manifest_path))
@@ -1971,7 +1981,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         File.write!(
           companion_version_mcp_path,
-          Jason.encode!(%{"symphony_plus_plus" => %{"url" => "http://127.0.0.1:4057/mcp"}})
+          command_mcp_config_json()
         )
 
         File.write!(companion_version_hint_path, "#{@repo_root}\n")
@@ -2035,7 +2045,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         File.cp!(@plugin_lifecycle_diagnostic_path, installed_script_path)
         File.write!(Path.join(temp_codex_home, "config.toml"), "")
 
-        mcp_config = Jason.encode!(%{"symphony_plus_plus" => %{"url" => "http://127.0.0.1:4057/mcp"}})
+        mcp_config = command_mcp_config_json()
 
         for {manifest_path, mcp_path, hint_path, version, source_root} <- [
               {companion_local_manifest_path, companion_local_mcp_path, companion_local_hint_path, "2.0.0", @repo_root},
@@ -2105,7 +2115,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         File.write!(
           companion_mcp_path,
-          Jason.encode!(%{"symphony_plus_plus" => %{"url" => "http://127.0.0.1:4057/mcp"}})
+          command_mcp_config_json()
         )
 
         File.write!(
@@ -2189,21 +2199,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         })
       )
 
-      File.write!(
-        stale_mcp_path,
-        Jason.encode!(%{
-          "symphony_plus_plus" => %{
-            "type" => "stdio",
-            "command" => "pwsh",
-            "args" => [
-              "-NoProfile",
-              "-Command",
-              "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
-            ],
-            "cwd" => "."
-          }
-        })
-      )
+      File.write!(stale_mcp_path, command_mcp_config_json())
 
       File.write!(superseded_manifest_path, File.read!(stale_manifest_path))
       File.write!(superseded_mcp_path, File.read!(stale_mcp_path))
@@ -2213,7 +2209,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         Jason.encode!(%{
           "symphony_plus_plus" => %{
             "type" => "stdio",
-            "command" => "pwsh"
+            "command" => "cmd.exe"
           }
         })
       )
@@ -2237,7 +2233,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         Jason.encode!(%{
           "symphony_plus_plus" => %{
             "type" => "stdio",
-            "command" => "pwsh",
+            "command" => "cmd.exe",
             "args" => ["-NoProfile"],
             "cwd" => "."
           }
@@ -2251,7 +2247,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         Jason.encode!(%{
           "symphony_plus_plus" => %{
             "type" => "stdio",
-            "command" => "pwsh"
+            "command" => "cmd.exe"
           }
         })
       )
@@ -2357,19 +2353,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       opt_in_local_mcp_path = plugin_cache_path(temp_codex_home, ["local", ".mcp.json"], "symphony-plus-plus-mcp")
       opt_in_local_hint_path = plugin_cache_path(temp_codex_home, ["local", ".sympp-source-root"], "symphony-plus-plus-mcp")
 
-      mcp_config =
-        Jason.encode!(%{
-          "symphony_plus_plus" => %{
-            "type" => "stdio",
-            "command" => "pwsh",
-            "args" => [
-              "-NoProfile",
-              "-Command",
-              "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
-            ],
-            "cwd" => "."
-          }
-        })
+      mcp_config = command_mcp_config_json()
 
       try do
         File.mkdir_p!(Path.dirname(default_cache_manifest_path))
@@ -2460,21 +2444,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => opt_in_version, "mcpServers" => "./.mcp.json"})
         )
 
-        File.write!(
-          opt_in_cache_mcp_path,
-          Jason.encode!(%{
-            "symphony_plus_plus" => %{
-              "type" => "stdio",
-              "command" => "pwsh",
-              "args" => [
-                "-NoProfile",
-                "-Command",
-                "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
-              ],
-              "cwd" => "."
-            }
-          })
-        )
+        File.write!(opt_in_cache_mcp_path, command_mcp_config_json())
 
         File.write!(opt_in_cache_hint_path, "C:/sympp/repo-one\n")
 
@@ -2522,21 +2492,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => "0.0.1", "mcpServers" => "./.mcp.json"})
         )
 
-        File.write!(
-          opt_in_mcp_path,
-          Jason.encode!(%{
-            "symphony_plus_plus" => %{
-              "type" => "stdio",
-              "command" => "pwsh",
-              "args" => [
-                "-NoProfile",
-                "-Command",
-                "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
-              ],
-              "cwd" => "."
-            }
-          })
-        )
+        File.write!(opt_in_mcp_path, command_mcp_config_json())
 
         File.write!(opt_in_hint_path, "C:/sympp/stale-local\n")
 
@@ -2591,21 +2547,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => "0.0.1", "mcpServers" => "./.mcp.json"})
         )
 
-        File.write!(
-          opt_in_mcp_path,
-          Jason.encode!(%{
-            "symphony_plus_plus" => %{
-              "type" => "stdio",
-              "command" => "pwsh",
-              "args" => [
-                "-NoProfile",
-                "-Command",
-                "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
-              ],
-              "cwd" => "."
-            }
-          })
-        )
+        File.write!(opt_in_mcp_path, command_mcp_config_json())
 
         File.write!(opt_in_hint_path, "C:/sympp/stale-local\n")
 
@@ -2662,21 +2604,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => "2.0.0", "mcpServers" => "./.mcp.json"})
         )
 
-        File.write!(
-          opt_in_mcp_path,
-          Jason.encode!(%{
-            "symphony_plus_plus" => %{
-              "type" => "stdio",
-              "command" => "pwsh",
-              "args" => [
-                "-NoProfile",
-                "-Command",
-                "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
-              ],
-              "cwd" => "."
-            }
-          })
-        )
+        File.write!(opt_in_mcp_path, command_mcp_config_json())
 
         File.write!(opt_in_hint_path, "C:/sympp/local\n")
         refute File.exists?(plugin_cache_path(temp_codex_home, ["1.0.0", ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp"))
@@ -2726,19 +2654,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       versioned_mcp_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".mcp.json"], "symphony-plus-plus-mcp")
       versioned_hint_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".sympp-source-root"], "symphony-plus-plus-mcp")
 
-      mcp_config =
-        Jason.encode!(%{
-          "symphony_plus_plus" => %{
-            "type" => "stdio",
-            "command" => "pwsh",
-            "args" => [
-              "-NoProfile",
-              "-Command",
-              "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
-            ],
-            "cwd" => "."
-          }
-        })
+      mcp_config = command_mcp_config_json()
 
       try do
         File.mkdir_p!(Path.dirname(diagnostic_path))
@@ -2796,19 +2712,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-local-versioned-ambiguous-#{System.unique_integer([:positive])}")
 
     if powershell do
-      mcp_config =
-        Jason.encode!(%{
-          "symphony_plus_plus" => %{
-            "type" => "stdio",
-            "command" => "pwsh",
-            "args" => [
-              "-NoProfile",
-              "-Command",
-              "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
-            ],
-            "cwd" => "."
-          }
-        })
+      mcp_config = command_mcp_config_json()
 
       try do
         for {label, repo_root} <- [{"local", "C:/sympp/local"}, {@plugin_version, "C:/sympp/versioned"}] do
@@ -2858,19 +2762,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-marketplace-scope-#{System.unique_integer([:positive])}")
 
     if powershell do
-      mcp_config =
-        Jason.encode!(%{
-          "symphony_plus_plus" => %{
-            "type" => "stdio",
-            "command" => "pwsh",
-            "args" => [
-              "-NoProfile",
-              "-Command",
-              "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
-            ],
-            "cwd" => "."
-          }
-        })
+      mcp_config = command_mcp_config_json()
 
       try do
         for {marketplace, label, repo_root} <- [
@@ -2933,19 +2825,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       local_mcp_path = plugin_cache_path(temp_codex_home, ["local", ".mcp.json"], "symphony-plus-plus-mcp")
       local_hint_path = plugin_cache_path(temp_codex_home, ["local", ".sympp-source-root"], "symphony-plus-plus-mcp")
 
-      mcp_config =
-        Jason.encode!(%{
-          "symphony_plus_plus" => %{
-            "type" => "stdio",
-            "command" => "pwsh",
-            "args" => [
-              "-NoProfile",
-              "-Command",
-              "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
-            ],
-            "cwd" => "."
-          }
-        })
+      mcp_config = command_mcp_config_json()
 
       try do
         File.mkdir_p!(Path.dirname(diagnostic_path))
@@ -3017,21 +2897,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
             Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => version, "mcpServers" => "./.mcp.json"})
           )
 
-          File.write!(
-            mcp_path,
-            Jason.encode!(%{
-              "symphony_plus_plus" => %{
-                "type" => "stdio",
-                "command" => "pwsh",
-                "args" => [
-                  "-NoProfile",
-                  "-Command",
-                  "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
-                ],
-                "cwd" => "."
-              }
-            })
-          )
+          File.write!(mcp_path, command_mcp_config_json())
 
           File.write!(hint_path, "#{repo_root}\n")
         end
@@ -3131,21 +2997,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => @plugin_version, "mcpServers" => "./.mcp.json"})
         )
 
-        File.write!(
-          opt_in_mcp_path,
-          Jason.encode!(%{
-            "symphony_plus_plus" => %{
-              "type" => "stdio",
-              "command" => "pwsh",
-              "args" => [
-                "-NoProfile",
-                "-Command",
-                "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
-              ],
-              "cwd" => "."
-            }
-          })
-        )
+        File.write!(opt_in_mcp_path, command_mcp_config_json())
 
         File.write!(opt_in_hint_path, "C:/sympp/repo-two\n")
 
@@ -3254,8 +3106,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           assert File.read!(mcp_work_package_skill_path) == File.read!(@mcp_plugin_skill_path)
           assert File.read!(mcp_architect_skill_path) == File.read!(@mcp_plugin_architect_skill_path)
 
-          assert get_in(documented_mcp_server_map(mcp_config), ["symphony_plus_plus", "url"]) ==
-                   "http://127.0.0.1:4057/mcp"
+          assert get_in(documented_mcp_server_map(mcp_config), ["symphony_plus_plus", "command"]) == "cmd.exe"
+          assert get_in(documented_mcp_server_map(mcp_config), ["symphony_plus_plus", "cwd"]) == "."
         end
       after
         File.rm_rf!(temp_codex_home)
@@ -3295,7 +3147,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         assert status == 0, output
         assert output =~ "Mix 1.99.0 test"
         assert output =~ "Symphony++ Solo Session wrapper validation passed."
-        assert output =~ "Symphony++ generic MCP wrapper validation passed."
+        refute output =~ "Symphony++ generic MCP wrapper validation passed."
         assert output =~ "Validated installed Symphony++ plugin cache:"
         assert output =~ "cache: #{expected_version}"
 
@@ -3374,8 +3226,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         assert status == 0, output
         assert output =~ "Mix 1.99.0 test"
+        assert output =~ "Symphony++ MCP launcher validation passed."
         assert output =~ "Symphony++ Solo Session wrapper validation passed."
-        assert output =~ "Symphony++ generic MCP wrapper validation passed."
         assert output =~ "Validated installed Symphony++ plugin cache:"
         assert output =~ "cache: #{@plugin_version}"
         refute File.exists?(published_plugin_cache_path(temp_codex_home, ["local"], "symphony-plus-plus-mcp"))
@@ -3991,6 +3843,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     )
   end
 
+  defp command_mcp_config do
+    %{
+      "symphony_plus_plus" => %{
+        "type" => "stdio",
+        "command" => "cmd.exe",
+        "args" => [
+          "/d",
+          "/s",
+          "/c",
+          "scripts\\start-sympp-mcp.cmd"
+        ],
+        "cwd" => ".",
+        "startup_timeout_sec" => 180.0,
+        "tool_timeout_sec" => 300.0
+      }
+    }
+  end
+
+  defp command_mcp_config_json, do: Jason.encode!(command_mcp_config())
+
   defp write_activation_cache(codex_home, marketplace_name) do
     default_manifest_path =
       plugin_cache_path(codex_home, ["local", ".codex-plugin", "plugin.json"], "symphony-plus-plus", marketplace_name)
@@ -4012,7 +3884,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
     File.write!(
       companion_mcp_path,
-      Jason.encode!(%{"symphony_plus_plus" => %{"url" => "http://127.0.0.1:4057/mcp"}})
+      command_mcp_config_json()
     )
   end
 

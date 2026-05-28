@@ -3080,6 +3080,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  @dialyzer {:nowarn_function, local_assignment_worktree_branch: 1}
+  @spec local_assignment_worktree_branch(term()) :: {:ok, String.t()} | {:error, atom()}
   defp local_assignment_worktree_branch(worktree_path) do
     case normalize_optional_value(worktree_path) do
       path when is_binary(path) -> local_assignment_worktree_branch_from_path(path)

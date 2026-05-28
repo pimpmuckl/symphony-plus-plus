@@ -11,17 +11,24 @@ per-session stdio Elixir process.
 
 Default local mode should run one local Symphony++ daemon on loopback. That
 daemon owns the cockpit, Solo Session planning memory, and MCP endpoint for the
-machine. Codex clients then connect to the daemon by URL, for example:
+machine. The opt-in Codex plugin uses a command-backed launcher so Codex startup
+can start or reuse that daemon and dashboard before MCP tools are listed:
 
 ```toml
 [mcp_servers.symphony_plus_plus]
-url = "http://127.0.0.1:4057/mcp"
+command = "cmd.exe"
+args = ["/d", "/s", "/c", "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.cmd"]
+cwd = "<repo>"
 ```
 
-That URL-only config is the transport endpoint. Normal worker claim still
-requires a dedicated MCP session that preserves the returned
-`Mcp-Session-Id`/state key across initialize, discovery, claim, and follow-up
-calls; a stateless one-shot URL probe is not a worker-claim session.
+The launcher bridges stdio MCP traffic into the backend HTTP endpoint, which
+defaults to `http://127.0.0.1:19998/mcp`. A URL-only config can still be used
+for explicit local experiments, but it requires the backend to be listening on
+the configured port before Codex starts and cannot follow dynamic fallback port
+selection. Normal worker claim still requires a dedicated MCP session that
+preserves the returned `Mcp-Session-Id`/state key across initialize, discovery,
+claim, and follow-up calls; a stateless one-shot URL probe is not a
+worker-claim session.
 
 The current minimal HTTP slice exposes only the local Streamable HTTP MCP
 endpoint contract:

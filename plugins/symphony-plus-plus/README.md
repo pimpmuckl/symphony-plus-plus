@@ -121,9 +121,12 @@ Repo validation proves only the plugin package contract:
 - `.codex-plugin/plugin.json` does not declare `mcpServers`, and root
   `.mcp.json` is absent, so enabling the default plugin does not ask Codex to
   start S++ MCP in generic/review sessions.
-- `plugins/symphony-plus-plus-mcp/.mcp.json` defines a generic
-  `symphony_plus_plus` HTTP server at `http://127.0.0.1:4057/mcp` using a
-  documented direct server map, not a nested `mcpServers` object, for explicit opt-in use.
+- `plugins/symphony-plus-plus-mcp/.mcp.json` defines a command-backed generic
+  `symphony_plus_plus` launcher using a documented direct server map, not a
+  nested `mcpServers` object, for explicit opt-in use. The launcher starts or
+  reuses the backend on `127.0.0.1:19998`, starts or reuses the dashboard on
+  `127.0.0.1:19999`, and bridges Codex stdio MCP traffic into the backend HTTP
+  `/mcp` endpoint.
 - `scripts/refresh-local-plugin.ps1` removes stale managed default-cache
   `.mcp.json` files, strips stale manifest `mcpServers` from generated default
   cache entries, prunes removed managed skill directories, and writes a
@@ -131,10 +134,10 @@ Repo validation proves only the plugin package contract:
 - `scripts/refresh-local-plugin.ps1 -ValidateInstalledCache` validates the
   installed cache copies, confirms the default manifest remains skill-only,
   confirms default cache roots do not contain `.mcp.json`, checks the opt-in
-  `symphony_plus_plus` HTTP server entry, and validates the Solo Session wrapper
-  from each cache root.
-- `scripts/start-sympp-mcp.ps1 -ValidateOnly` can resolve the checkout and
-  launcher.
+  `symphony_plus_plus` command-backed launcher entry, and validates the Solo
+  Session wrapper from each cache root.
+- `scripts/start-sympp-mcp.cmd -ValidateOnly` can resolve the checkout and
+  launch through `pwsh.exe` or Windows PowerShell.
 - `scripts/sympp-solo.ps1 -ValidateOnly` can resolve the checkout and validate
   the launcher without writing ledger state or requiring a source build.
 
@@ -144,23 +147,22 @@ visibility proves Codex loaded the skill directory. The default plugin should
 stop there. An MCP configuration proves a session was intentionally given a
 server dependency.
 On Windows, when a plugin manifest does declare a generic S++ `mcpServers`
-entry, current Codex host behavior can start a separate stdio process tree for
+entry, current Codex host behavior can start a plugin stdio process for
 each Codex app session, `codex exec`, `codex review`, resumed session, review
-lane, or subagent that loads the enabled plugin. A typical generic plugin tree
-is:
+lane, or subagent that loads the enabled plugin. The opt-in companion keeps
+that behavior scoped to dedicated S++ configs; a typical launcher tree is:
 
 ```text
-pwsh -NoProfile -Command ... scripts/start-sympp-mcp.ps1
-  cmd.exe /c ... mix.bat sympp.mcp --mode stdio --repo-root <repo>
-    erl.exe ... mix sympp.mcp --mode stdio ...
-      erl.exe ... mix sympp.mcp --mode stdio ...
+cmd.exe /d /s /c scripts\start-sympp-mcp.cmd
+  (background, logged) mix sympp.cockpit --port <actual-backend-port> ...
+  (background, logged) npm run dev -- --port <actual-dashboard-port>
 ```
 
 That per-session startup is host-managed by a plugin `mcpServers` declaration;
 the Symphony++ launcher does not call `taskkill`, `Stop-Process`, or global
-Codex cleanup. Windows `SUCCESS: The process with PID ... has been terminated.`
-lines during turn/session cleanup are therefore expected to come from the Codex
-host terminating stdio servers it started, not from Symphony++ scripts.
+Codex cleanup. The foreground process bridges stdio MCP to the backend HTTP
+`/mcp`; backend and frontend output is redirected to the log paths recorded in
+the runtime file.
 
 For non-destructive lifecycle forensics, run the installed diagnostic from the
 plugin root:
@@ -180,7 +182,7 @@ The diagnostic reports installed cache versions, manifest lifecycle status,
 root `.mcp.json` presence/shape, source-root hints, whether the plugin is
 enabled in Codex config, whether a global `[mcp_servers.symphony_plus_plus]`
 entry exists, whether opt-in cache `.mcp.json` defines the expected
-`symphony_plus_plus` HTTP server, and focused live process counts for
+`symphony_plus_plus` command-backed launcher, and focused live process counts for
 `start-sympp-mcp.ps1`,
 `mix.bat sympp.mcp`, and `erl.exe sympp.mcp`.
 By default it scans every `symphony-plus-plus` marketplace cache under the
@@ -283,15 +285,17 @@ and does not require Codex to start or register the `symphony_plus_plus` MCP
 server.
 
 Heavy WorkPackage and architect orchestration still needs explicit MCP tools.
-Start the local cockpit/daemon first:
+In dedicated MCP homes, the opt-in companion plugin starts or reuses the local
+cockpit/backend automatically when Codex starts. For manual operation, start the
+local cockpit/daemon:
 
 ```powershell
 cd elixir
-mix sympp.cockpit
+mix sympp.cockpit --dashboard-origin http://127.0.0.1:19999
 ```
 
-By default it prints `http://127.0.0.1:4057/sympp/board` and serves MCP at
-`http://127.0.0.1:4057/mcp`, backed by the shared local Symphony++ default
+By default it prints `http://127.0.0.1:19999/sympp/board` and serves MCP at
+`http://127.0.0.1:19998/mcp`, backed by the shared local Symphony++ default
 ledger, preferring `$HOME/.agents/splusplus/symphony_plus_plus.sqlite3`
 (`%USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3` on Windows) and
 falling back under a temp/relative `.agents/splusplus` root if home is
@@ -299,9 +303,8 @@ unavailable. Pass `--database <ledger.sqlite3>` only for isolation. Codex must l
 configuration before the model session starts for the tools to be registered in
 that session. The
 sibling `plugins/symphony-plus-plus-mcp` plugin is the bundled opt-in package
-for dedicated configs and points at that local HTTP daemon. If the daemon is not
-running, the tools may be unavailable, but the plugin should not spawn a
-per-session PowerShell/Mix/Erlang process tree.
+for dedicated configs and owns the command-backed launcher that starts/reuses
+that local HTTP daemon and dashboard.
 
 Before debugging Codex plugin visibility, verify the daemon itself from the
 source repository checkout root. This helper is not copied into installed
@@ -339,7 +342,9 @@ Example explicit TOML for an opt-in S++ session:
 
 ```toml
 [mcp_servers.symphony_plus_plus]
-url = "http://127.0.0.1:4057/mcp"
+command = "cmd.exe"
+args = ["/d", "/s", "/c", "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.cmd"]
+cwd = "<repo>"
 ```
 
 Once Codex supports profile-scoped MCP, the preferred product shape is a
@@ -375,9 +380,9 @@ Do not invoke those MCP-dependent skills from a generic visible app thread that
 does not already show S++ MCP tools; use the Solo/cockpit handoff path instead.
 
 The explicit MCP reference entry runs
-`plugins/symphony-plus-plus/scripts/start-sympp-mcp.ps1` through `pwsh`, the
-cross-platform PowerShell executable. Hosts that use that explicit entry need
-`pwsh` on `PATH`.
+`plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.cmd` through `cmd.exe`.
+That wrapper prefers `pwsh.exe` and falls back to Windows PowerShell so hosts do
+not need a hard-coded PowerShell executable in Codex MCP config.
 When the plugin is executed from this source checkout, the wrapper can infer the
 repository root. When it runs from an installed plugin cache, the wrapper first
 uses non-secret `.sympp-source-root` hints from current S++ cache entries.

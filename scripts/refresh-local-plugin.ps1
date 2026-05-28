@@ -358,14 +358,26 @@ function Assert-CachePluginConfig([string]$TargetRoot, [string]$ExpectedVersion)
   if ($null -eq $server) {
     throw "Installed MCP config does not define symphony_plus_plus in a documented MCP config shape: $mcpConfigPath"
   }
-  if ($server.url -ne "http://127.0.0.1:4057/mcp") {
-    throw "Installed MCP server URL must be http://127.0.0.1:4057/mcp: $mcpConfigPath"
+  if (@($server.PSObject.Properties.Name) -contains "url") {
+    throw "Installed opt-in MCP server must use the command-backed launcher, not a URL-only endpoint: $mcpConfigPath"
+  }
+  if ($server.type -ne "stdio") {
+    throw "Installed opt-in MCP server must declare type 'stdio': $mcpConfigPath"
+  }
+  if ($server.command -ne "cmd.exe") {
+    throw "Installed opt-in MCP server command must be cmd.exe so the launcher can resolve pwsh or powershell.exe: $mcpConfigPath"
+  }
+  if ($server.cwd -ne ".") {
+    throw "Installed opt-in MCP server cwd must be '.': $mcpConfigPath"
   }
 
-  foreach ($stdioProperty in @("type", "command", "args", "cwd")) {
-    if (@($server.PSObject.Properties.Name) -contains $stdioProperty) {
-      throw "Installed opt-in MCP server must use the local HTTP daemon URL, not stdio property '$stdioProperty': $mcpConfigPath"
-    }
+  $args = @($server.args)
+  if ($args -notcontains "/c") {
+    throw "Installed opt-in MCP server args must launch the command wrapper through cmd.exe /c: $mcpConfigPath"
+  }
+  $hasStartWrapper = @($args | Where-Object { [string]$_ -match "scripts[\\/]start-sympp-mcp\.cmd" }).Count -gt 0
+  if (-not $hasStartWrapper) {
+    throw "Installed opt-in MCP server args must reference scripts/start-sympp-mcp.cmd: $mcpConfigPath"
   }
 }
 
@@ -374,18 +386,15 @@ function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [s
 
   Push-Location -LiteralPath $TargetRoot
   try {
+    $powershell = Get-AvailablePowerShellCommandName
     if ($PluginName -eq "symphony-plus-plus-mcp") {
-      & pwsh @(
-        "-NoProfile",
-        "-Command",
-        "`$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1' -ValidateOnly"
-      )
+      & cmd.exe @("/d", "/s", "/c", "scripts\start-sympp-mcp.cmd -ValidateOnly")
       if ($LASTEXITCODE -ne 0) {
-        throw "Installed plugin MCP fallback wrapper validation failed for $Label cache with exit code $LASTEXITCODE."
+        throw "Installed plugin MCP launcher validation failed for $Label cache with exit code $LASTEXITCODE."
       }
     }
 
-    & pwsh @(
+    & $powershell @(
       "-NoProfile",
       "-Command",
       "`$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/sympp-solo.ps1' -ValidateOnly"

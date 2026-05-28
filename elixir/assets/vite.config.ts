@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import { defineConfig } from "vite";
 
-const apiOrigin = process.env.SYMPP_API_ORIGIN || "http://127.0.0.1:4057";
+const apiOrigin = process.env.SYMPP_API_ORIGIN || "http://127.0.0.1:19998";
 const dashboardPort = 19999;
 const boardPath = "/sympp/board";
 

@@ -19,10 +19,13 @@ plugin session.
 
 This plugin intentionally bundles:
 
-- `mcpServers: "./.mcp.json"` for the generic `symphony_plus_plus` HTTP server at `http://127.0.0.1:4057/mcp`.
+- `mcpServers: "./.mcp.json"` for a command-backed `symphony_plus_plus`
+  launcher. It starts or reuses the local backend on `127.0.0.1:19998`,
+  starts or reuses the dashboard on `127.0.0.1:19999`, then bridges Codex
+  stdio MCP traffic into the backend HTTP `/mcp` endpoint.
 - The same `assets/splusplus-logo.png` icon used by the default Symphony++ plugin.
 - The MCP-backed architect and WorkPackage skills.
-- The legacy stdio MCP wrapper for explicit fallback/dev bootstrap, plus the Solo wrapper script needed after marketplace/cache packaging.
+- The local MCP launcher plus the Solo wrapper script needed after marketplace/cache packaging.
 
 It intentionally does not bundle the Solo Session, worker, or coordinator
 skills. The default `symphony-plus-plus` plugin owns those MCP-free skills,
@@ -32,9 +35,9 @@ companion packages are enabled in the same Codex home.
 The default `symphony-plus-plus` plugin must remain skill-only and should stay
 enabled broadly. Dedicated MCP homes should enable both plugins: the default
 plugin for baseline worker/coordinator/Solo skills, and this companion for
-architect/WorkPackage MCP adapters. If the cockpit/local daemon is not already
-running, MCP tools may be unavailable, but this bundled plugin target should not
-spawn a per-session Elixir process.
+architect/WorkPackage MCP adapters. Codex starts this companion as a quiet
+stdio process; background backend/frontend logs are redirected under the local
+runtime log directory instead of streaming through every MCP call.
 
 ## Activation
 
@@ -46,7 +49,7 @@ Symphony++ WorkRequest or WorkPackage sessions:
 ```
 
 The command validates that the installed companion package carries the expected
-HTTP MCP manifest, creates a timestamped backup before changing an existing
+command-backed MCP manifest, creates a timestamped backup before changing an existing
 `config.toml`, refuses the default `~/.codex` home, and writes only the
 companion plugin table:
 
@@ -67,17 +70,24 @@ next action:
 .\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName symphony-plus-plus -Doctor
 ```
 
-The doctor checks cache, config, and the local HTTP daemon. It cannot inspect
-tools already registered inside an open Codex model session; if the doctor is
-healthy but tools are still absent, restart or reload the dedicated MCP-enabled
-session.
+The doctor checks cache, config, and the command-backed launcher shape. It
+cannot inspect tools already registered inside an open Codex model session; if
+the doctor is healthy but tools are still absent, restart or reload the
+dedicated MCP-enabled session.
 
 Keep this companion out of generic worker, `worker_smart`, review-suite, and
 `codex review` configs so ordinary review and execution sessions stay MCP-clean.
 
-To prove the daemon independently of Codex plugin loading, start
-`mix sympp.cockpit` and run this from the source repository checkout root. This
-helper is not copied into installed plugin cache directories:
+When the dedicated Codex session starts, the launcher writes the actual backend
+port, dashboard URL, process ids, and log paths to
+`%USERPROFILE%\.agents\splusplus\runtime\codex-plugin.json` by default.
+Override with `SYMPP_RUNTIME_FILE`, `SYMPP_BACKEND_PORT`,
+`SYMPP_DASHBOARD_PORT`, `SYMPP_BACKEND_URL`, or `SYMPP_DASHBOARD_ORIGIN` when a
+specific local setup needs to divert.
+
+To prove the daemon independently of Codex plugin loading, run this from the
+source repository checkout root after the launcher or `mix sympp.cockpit` is
+running. This helper is not copied into installed plugin cache directories:
 
 ```powershell
 .\scripts\smoke-sympp-mcp-http.ps1 -RepoRoot .

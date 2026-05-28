@@ -9,12 +9,13 @@ Give the human overseer fast situational awareness without reading agent transcr
 Start the local operator cockpit from `elixir/` with:
 
 ```powershell
-mix sympp.cockpit
+mix sympp.cockpit --dashboard-origin http://spp.localhost:19999
 ```
 
-The launcher binds to `127.0.0.1:4057` by default, prints
-`http://127.0.0.1:4057/sympp/board`, enables `sympp_local_operator: true`, and
-serves Streamable HTTP MCP at `http://127.0.0.1:4057/mcp`. Pass `--port 0` for
+The launcher binds to `127.0.0.1:19998` by default, prints
+`http://spp.localhost:19999/sympp/board` when a dashboard origin is supplied,
+enables `sympp_local_operator: true`, and serves Streamable HTTP MCP at
+`http://127.0.0.1:19998/mcp`. Pass `--port 0` for
 an OS-assigned port during manual or test runs, or `--port <n>` for a different
 stable port. Omit `--database` to use the shared local ledger at
 the preferred `$HOME/.agents/splusplus/symphony_plus_plus.sqlite3` or
