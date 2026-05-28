@@ -2952,10 +2952,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_local_branch_scope(%WorkPackage{} = work_package, branch, worktree_path) do
     case local_assignment_worktree_branch(worktree_path) do
-      {:ok, ^branch} -> require_local_branch_pattern_scope(work_package, branch, prepared_worktree?: true)
-      {:ok, _branch} -> {:error, :branch_scope_mismatch}
-      {:error, :git_metadata_missing} -> require_local_branch_pattern_scope(work_package, branch, prepared_worktree?: false)
-      {:error, _reason} -> {:error, :branch_scope_mismatch}
+      {:ok, ^branch} ->
+        require_local_branch_pattern_scope(work_package, branch, prepared_worktree?: true)
+
+      {:ok, _branch} ->
+        {:error, :branch_scope_mismatch}
+
+      {:error, :git_metadata_missing} ->
+        require_local_branch_pattern_scope(work_package, branch, prepared_worktree?: false)
+
+      {:error, _reason} ->
+        {:error, :branch_scope_mismatch}
     end
   end
 
@@ -3541,13 +3548,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with :ok <- require_local_value_match(work_request.repo, claim.repo, :repo_scope_mismatch),
          :ok <- require_local_value_match(work_request.base_branch, claim.base_branch, :base_branch_scope_mismatch),
          :ok <- require_local_value_match(anchor.repo, work_request.repo, :architect_anchor_scope_mismatch),
-         :ok <- require_local_value_match(anchor.base_branch, work_request.base_branch, :architect_anchor_scope_mismatch),
-         :ok <- require_local_value_match(anchor.id, ArchitectHandoff.anchor_id_for_work_request(work_request), :architect_anchor_scope_mismatch),
+         :ok <-
+           require_local_value_match(
+             anchor.base_branch,
+             work_request.base_branch,
+             :architect_anchor_scope_mismatch
+           ),
+         :ok <-
+           require_local_value_match(
+             anchor.id,
+             ArchitectHandoff.anchor_id_for_work_request(work_request),
+             :architect_anchor_scope_mismatch
+           ),
          :ok <- require_local_value_match(anchor.phase_id, expected_phase_id, :phase_scope_mismatch),
          :ok <- require_optional_phase_scope(claim.phase_id, expected_phase_id),
-         :ok <- require_architect_handoff_anchor_kind(anchor),
-         :ok <- require_live_local_work_package(anchor) do
-      :ok
+         :ok <- require_architect_handoff_anchor_kind(anchor) do
+      require_live_local_work_package(anchor)
     end
   end
 
@@ -3737,9 +3753,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- require_local_value_match(grant.phase_id, anchor.phase_id, :architect_grant_scope_mismatch),
          :ok <- require_local_value_match(grant.scope_repo, claim.repo, :architect_grant_scope_mismatch),
          :ok <- require_local_value_match(grant.scope_base_branch, claim.base_branch, :architect_grant_scope_mismatch),
-         :ok <- AccessGrantService.require_live_package_authority(repo, grant),
-         :ok <- require_local_architect_handoff_grant(repo, grant) do
-      :ok
+         :ok <- AccessGrantService.require_live_package_authority(repo, grant) do
+      require_local_architect_handoff_grant(repo, grant)
     end
   end
 
@@ -3833,13 +3848,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp append_local_architect_assignment_claim_event(repo, %Session{} = session, claim, %ClaimLease{} = lease, :reclaimed) do
     payload = local_architect_assignment_claim_reclaim_payload(claim, lease)
 
-    PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, claim.architect_anchor_work_package_id, %{
-      "summary" => "Local architect assignment claim lease reclaimed",
-      "body" => "Local architect assignment claim lease was reclaimed for #{claim.claimed_by}.",
-      "status" => "claim_lease_reclaimed",
-      "idempotency_key" => metadata_idempotency_key(payload),
-      "payload" => payload
-    })
+    PlanningRepository.append_audit_progress_event_for_work_package(
+      repo,
+      session.assignment,
+      claim.architect_anchor_work_package_id,
+      %{
+        "summary" => "Local architect assignment claim lease reclaimed",
+        "body" => "Local architect assignment claim lease was reclaimed for #{claim.claimed_by}.",
+        "status" => "claim_lease_reclaimed",
+        "idempotency_key" => metadata_idempotency_key(payload),
+        "payload" => payload
+      }
+    )
   end
 
   defp local_architect_assignment_claim_reclaim_payload(claim, %ClaimLease{} = lease) do

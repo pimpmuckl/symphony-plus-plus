@@ -421,12 +421,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
          now,
          terminal_statuses
        ) do
-    case local_reconnect_architect_grant(repo, work_package_id, phase_id, scope_repo, scope_base_branch, claimed_by, now, terminal_statuses) do
+    case local_reconnect_architect_grant(
+           repo,
+           work_package_id,
+           phase_id,
+           scope_repo,
+           scope_base_branch,
+           claimed_by,
+           now,
+           terminal_statuses
+         ) do
       {:ok, grant} ->
         {:ok, grant}
 
       {:error, :not_found} ->
-        claim_unclaimed_local_architect_grant(repo, work_package_id, phase_id, scope_repo, scope_base_branch, claimed_by, now, terminal_statuses)
+        claim_unclaimed_local_architect_grant(
+          repo,
+          work_package_id,
+          phase_id,
+          scope_repo,
+          scope_base_branch,
+          claimed_by,
+          now,
+          terminal_statuses
+        )
 
       {:error, _reason} = error ->
         error
@@ -463,8 +481,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     end
   end
 
-  defp claim_unclaimed_local_architect_grant(repo, work_package_id, phase_id, scope_repo, scope_base_branch, claimed_by, now, terminal_statuses) do
-    with {:ok, grant} <- local_unclaimed_architect_grant(repo, work_package_id, phase_id, scope_repo, scope_base_branch, now, terminal_statuses) do
+  defp claim_unclaimed_local_architect_grant(
+         repo,
+         work_package_id,
+         phase_id,
+         scope_repo,
+         scope_base_branch,
+         claimed_by,
+         now,
+         terminal_statuses
+       ) do
+    with {:ok, grant} <-
+           local_unclaimed_architect_grant(
+             repo,
+             work_package_id,
+             phase_id,
+             scope_repo,
+             scope_base_branch,
+             now,
+             terminal_statuses
+           ) do
       persist_claim(repo, grant, claimed_by, now, terminal_statuses)
     end
   end
@@ -488,7 +524,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     end
   end
 
-  defp local_unclaimed_architect_grant(repo, work_package_id, phase_id, scope_repo, scope_base_branch, now, terminal_statuses) do
+  defp local_unclaimed_architect_grant(
+         repo,
+         work_package_id,
+         phase_id,
+         scope_repo,
+         scope_base_branch,
+         now,
+         terminal_statuses
+       ) do
     query =
       from(grant in AccessGrant,
         where: grant.work_package_id == ^work_package_id,
@@ -505,8 +549,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
       |> scope_live_package_authority(terminal_statuses)
 
     case repo.one(query) do
-      %AccessGrant{} = grant -> {:ok, grant}
-      nil -> local_architect_grant_missing_reason(repo, work_package_id, phase_id, scope_repo, scope_base_branch, terminal_statuses)
+      %AccessGrant{} = grant ->
+        {:ok, grant}
+
+      nil ->
+        local_architect_grant_missing_reason(
+          repo,
+          work_package_id,
+          phase_id,
+          scope_repo,
+          scope_base_branch,
+          terminal_statuses
+        )
     end
   end
 

@@ -1190,7 +1190,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
 
   defp prompt(%WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, redacted_handoff, handoff_opts, local_architect_claim)
        when is_map(redacted_handoff) do
-    reference_identifiers = prompt_reference_identifiers(work_request, phase, anchor, redacted_handoff, handoff_opts, local_architect_claim)
+    reference_identifiers =
+      prompt_reference_identifiers(
+        work_request,
+        phase,
+        anchor,
+        redacted_handoff,
+        handoff_opts,
+        local_architect_claim
+      )
 
     [
       "You are taking over as the owning Symphony++ v2 architect for the WorkRequest described by the inert reference identifiers below.",
