@@ -19,11 +19,14 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | add_comment | Add a redacted contextual note to a scoped WorkPackage, linked planned slice, or parent WorkRequest. |
 | list_comments | List redacted comments for a scoped WorkPackage, linked planned slice, or parent WorkRequest. |
 | resolve_comment | Mark a scoped comment resolved with server-owned worker attribution. |
+| create_guidance_request | Create a package-scoped guidance request for product, architecture, dependency, or slice-boundary ambiguity. |
+| read_guidance_request | Read a package-scoped guidance request visible to the current worker assignment. |
 | request_scope_expansion | Request broader scope; does not approve it. |
 | attach_branch | Attach branch metadata with the current branch head SHA. |
 | attach_pr | Attach PR metadata. |
 | sync_pr | Refresh metadata for the already attached PR. |
 | submit_review_package | Attach summary/tests/artifacts for the current head review package. |
+| attach_review_suite_result | Attach canonical Review Suite result evidence for the current WorkPackage head. |
 | mark_ready | Move to ready state only if gates pass. |
 
 `claim_private_handoff` is intentionally not a bound worker mutation tool in
@@ -122,16 +125,24 @@ Solo Session tools, `claim_work_key`, `claim_private_handoff`,
 `create_work_request`, and architect tool schemas so fresh Codex sessions can
 discover WorkRequest and architect flows before claim. Unbound HTTP sessions
 also advertise `claim_local_assignment` and
-`claim_local_architect_assignment` for first-claim/reclaim schema
-discovery, but schema visibility is not authorization; claim calls still require
-trusted local HTTP state-key continuity and scope validation. Trusted unbound
-local HTTP sessions with explicit state-key continuity may additionally
-advertise the local operator note tools described above. Architect calls still
-require a live claimed architect grant with the required capability and scope,
-and unclaimed architect calls return a claim-required denial. Unbound sessions
-still do not see the worker mutation surface. Stale bound sessions expose only
-health, `claim_work_key`, `claim_private_handoff`, and, on HTTP sessions,
-`claim_local_assignment` and `claim_local_architect_assignment` for refresh; duplicate
+`claim_local_architect_assignment`; trusted local HTTP sessions with explicit
+state-key continuity additionally advertise worker-only bound WorkPackage
+schemas except `claim_work_key` for first-claim/reclaim schema discovery.
+Shared names such as `read_guidance_request` remain covered by static architect
+schemas. Schema visibility is not authorization. Claim calls still require
+trusted local HTTP state-key continuity and scope validation, and worker
+WorkPackage calls before a valid worker claim return a claim-required denial
+without mutating state. For trusted local HTTP sessions that denial points
+callers at
+`claim_local_assignment`; generic unbound sessions still point at
+`claim_work_key`. Trusted unbound local HTTP sessions with explicit state-key
+continuity may additionally advertise the local operator note tools described
+above.
+Architect calls still require a live claimed architect grant with the required
+capability and scope, and unclaimed architect calls return a claim-required
+denial. Stale bound sessions expose only health, `claim_work_key`,
+`claim_private_handoff`, and, on HTTP sessions, `claim_local_assignment` and
+`claim_local_architect_assignment` for refresh; duplicate
 `initialize` on that same stale explicit MCP session
 does not downgrade it into generic unbound discovery. Worker sessions see the
 bound worker-facing discovery surface without Solo tools or architect-only tool
