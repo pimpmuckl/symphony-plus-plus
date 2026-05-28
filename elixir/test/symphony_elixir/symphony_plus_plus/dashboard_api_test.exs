@@ -4382,6 +4382,91 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end
   end
 
+  test "local operator dashboard collapses raw remote bare and local path repo identities", %{repo: repo} do
+    repo_path =
+      TestSupport.git_repo_with_origin_fixture!(
+        "https://github.com/Pimpmuckl/nextide-saas-vod-intelligence.git",
+        prefix: "sympp-dashboard-repo-mixed"
+      )
+
+    try do
+      with_local_operator_endpoint(fn ->
+        raw_remote = "Pimpmuckl/nextide-saas-vod-intelligence"
+        bare_repo = "nextide-saas-vod-intelligence"
+
+        assert {:ok, work_package} =
+                 WorkPackageRepository.create(
+                   repo,
+                   WorkPackageFactory.attrs(
+                     id: "SYMPP-REPO-MIXED-REMOTE",
+                     repo: raw_remote,
+                     base_branch: "main"
+                   )
+                 )
+
+        assert {:ok, work_request} =
+                 WorkRequestRepository.create(repo, %{
+                   title: "Mixed repo identity projection",
+                   repo: bare_repo,
+                   base_branch: "main",
+                   work_type: "feature",
+                   human_description: "Collapse raw remote, bare repo, and local path identities.",
+                   constraints: %{},
+                   desired_dispatch_shape: "architect_led_feature_branch",
+                   status: "ready_for_clarification"
+                 })
+
+        assert {:ok, solo_session} =
+                 SoloSessionsService.create_or_attach_current(repo, %{
+                   repo: repo_path,
+                   base_branch: "main",
+                   workspace_path: Path.join(@repo_root, "repo-mixed-identity-solo"),
+                   caller_id: "repo-mixed-identity-solo",
+                   title: "Path scoped solo"
+                 })
+
+        payload = json_response(get(local_operator_conn(), "/api/v1/sympp/operator/dashboard"), 200)
+
+        package_card =
+          payload["board"]["groups"]["created"]
+          |> Enum.find(&(&1["id"] == work_package.id))
+
+        assert package_card["repo"] == raw_remote
+        assert package_card["repo_key"] == bare_repo
+        assert package_card["repo_display"] == bare_repo
+        assert package_card["repo_remote"] == raw_remote
+
+        assert [%{"id" => work_request_id, "repo" => ^bare_repo, "repo_key" => ^bare_repo, "repo_remote" => ^raw_remote}] =
+                 payload["work_requests"]["work_requests"]
+
+        assert work_request_id == work_request.id
+
+        assert %{"work_request" => %{"repo" => ^bare_repo, "repo_key" => ^bare_repo, "repo_remote" => ^raw_remote}} =
+                 work_request_detail(payload, work_request.id)
+
+        solo_session_id = solo_session.id
+
+        assert [%{"id" => ^solo_session_id, "repo" => ^repo_path, "repo_key" => ^bare_repo, "repo_remote" => ^raw_remote}] =
+                 payload["solo_sessions"]["solo_sessions"]
+
+        assert {:ok, repo_identity_catalog} = Dashboard.local_operator_repo_identity_catalog(repo)
+        assert {:ok, streams} = Dashboard.solo_session_streams(repo, repo_identity_catalog: repo_identity_catalog)
+
+        assert [%{repo: ^repo_path, repo_key: ^bare_repo, repo_remote: ^raw_remote, base_branch: "main", solo_session_count: 1}] = streams
+
+        assert {:ok, persisted_package} = WorkPackageRepository.get(repo, work_package.id)
+        assert {:ok, persisted_request} = WorkRequestRepository.get(repo, work_request.id)
+        assert {:ok, persisted_session} = SoloSessionsService.get(repo, solo_session.id)
+
+        assert persisted_package.repo == raw_remote
+        assert persisted_request.repo == bare_repo
+        assert persisted_session.repo == repo_path
+      end)
+    after
+      File.rm_rf(repo_path)
+    end
+  end
+
   test "package detail repo identity stays scoped to the authorized package", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
