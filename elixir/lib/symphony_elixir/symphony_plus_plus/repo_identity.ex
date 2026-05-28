@@ -24,7 +24,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
       |> Enum.flat_map(&parse_repo_infos(&1, local_path_remotes?))
 
     groups = Enum.group_by(infos, & &1.group_key)
-    trusted_remote_keys = trusted_remote_keys(opts)
+
+    trusted_remote_keys = MapSet.union(trusted_remote_keys(opts), explicit_path_derived_remote_keys(infos))
     remote_conflict_name_keys = remote_conflict_name_keys(infos)
 
     infos
@@ -137,6 +138,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
 
   defp derived_remote_alias?(group, remote_key) do
     Enum.any?(group, &(&1.derived_trusted_remote? and &1.full_key == remote_key))
+  end
+
+  defp explicit_path_derived_remote_keys(infos) do
+    derived_remote_keys =
+      infos
+      |> Enum.filter(&(&1.derived_trusted_remote? and &1.kind == :remote))
+      |> Enum.map(& &1.full_key)
+      |> MapSet.new()
+
+    explicit_remote_keys =
+      infos
+      |> Enum.filter(&(&1.kind == :remote and not &1.derived_trusted_remote?))
+      |> Enum.map(& &1.full_key)
+      |> MapSet.new()
+
+    MapSet.intersection(derived_remote_keys, explicit_remote_keys)
   end
 
   defp remote_conflict_name_keys(infos) do

@@ -118,6 +118,70 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentityTest do
     assert RepoIdentity.fields(catalog, repo_path) == expected
   end
 
+  test "collapses matching raw remote bare alias and local path origin" do
+    origin = "https://github.com/Pimpmuckl/nextide-saas-vod-intelligence.git"
+    repo_path = TestSupport.git_repo_with_origin_fixture!(origin, prefix: "sympp-repo-identity-mixed")
+
+    catalog =
+      RepoIdentity.catalog(
+        ["Pimpmuckl/nextide-saas-vod-intelligence", "nextide-saas-vod-intelligence", repo_path],
+        local_path_remotes?: true
+      )
+
+    expected_remote = %{
+      repo_key: "nextide-saas-vod-intelligence",
+      repo_display: "nextide-saas-vod-intelligence",
+      repo_remote: "Pimpmuckl/nextide-saas-vod-intelligence",
+      repo_aliases:
+        Enum.sort_by(
+          ["Pimpmuckl/nextide-saas-vod-intelligence", "nextide-saas-vod-intelligence"],
+          &String.downcase/1
+        )
+    }
+
+    expected_path = %{
+      expected_remote
+      | repo_aliases:
+          Enum.sort_by(
+            [repo_path, "nextide-saas-vod-intelligence", "Pimpmuckl/nextide-saas-vod-intelligence"],
+            &String.downcase/1
+          )
+    }
+
+    assert RepoIdentity.fields(catalog, "Pimpmuckl/nextide-saas-vod-intelligence") == expected_remote
+    assert RepoIdentity.fields(catalog, "nextide-saas-vod-intelligence") == expected_remote
+    assert RepoIdentity.fields(catalog, repo_path) == expected_path
+  end
+
+  test "does not promote path origin trust without matching explicit remote" do
+    origin = "https://github.com/Pimpmuckl/nextide-saas-vod-intelligence.git"
+    repo_path = TestSupport.git_repo_with_origin_fixture!(origin, prefix: "sympp-repo-identity-path-only")
+
+    catalog =
+      RepoIdentity.catalog(
+        ["nextide-saas-vod-intelligence", repo_path],
+        local_path_remotes?: true
+      )
+
+    assert RepoIdentity.fields(catalog, "nextide-saas-vod-intelligence") == %{
+             repo_key: "nextide-saas-vod-intelligence",
+             repo_display: "nextide-saas-vod-intelligence",
+             repo_remote: nil,
+             repo_aliases: ["nextide-saas-vod-intelligence"]
+           }
+
+    assert RepoIdentity.fields(catalog, repo_path) == %{
+             repo_key: "nextide-saas-vod-intelligence",
+             repo_display: "nextide-saas-vod-intelligence",
+             repo_remote: "Pimpmuckl/nextide-saas-vod-intelligence",
+             repo_aliases:
+               Enum.sort_by(
+                 [repo_path, "nextide-saas-vod-intelligence", "Pimpmuckl/nextide-saas-vod-intelligence"],
+                 &String.downcase/1
+               )
+           }
+  end
+
   test "derives canonical identity from local bare git repo paths" do
     origin = "https://github.com/Pimpmuckl/nextide-saas-live-chat.git"
     repo_path = Path.join(System.tmp_dir!(), "sympp-repo-identity-bare-#{System.unique_integer([:positive])}.git")
