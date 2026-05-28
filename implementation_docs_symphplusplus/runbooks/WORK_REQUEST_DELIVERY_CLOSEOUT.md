@@ -78,18 +78,30 @@ Expected projection after closeout:
 - WorkRequest completion refreshes when every planned slice has terminal
   delivery truth.
 
+Closeout treats stale AgentRun rows the same way the delivery board does: stale
+rows that are no longer operationally active do not block delivery recording,
+and their ids/reason codes are preserved on the closeout progress event. Fresh
+active AgentRun rows still fail closed.
+
 Merged-PR recovery may close a compatible stale linked package even if its raw
-lifecycle, worker grant, or local claim-lease state is stale, but it requires
-strong PR evidence: `pr_url`, `pr_merged_at`, and `merge_commit_sha`. Live worker
-grants are revoked, active/stale local claim leases are released, and both are
-listed in the closeout progress event. Active blockers, paused claim leases,
-active agent runs, malformed PR URLs, PR URL metadata mismatches, package
+lifecycle, worker grant, local claim-lease state, or AgentRun row is stale, but
+it requires strong PR evidence: `pr_url`, `pr_merged_at`, and
+`merge_commit_sha`. Live worker grants are revoked, active/stale local claim
+leases are released, ignored stale AgentRun ids are audited, and that evidence
+is listed in the closeout progress event. Active blockers, paused claim leases,
+fresh active agent runs, malformed PR URLs, PR URL metadata mismatches, package
 metadata mismatches, and weak merge evidence still fail closed.
 
 Supersession may close a compatible stale linked package even when active
 blocker events remain. The blocker events are not resolved or deleted; the
 closeout progress event records the active blocker ids and the delivery board
 keeps blocker attention on the terminal superseded slice.
+
+Supersession also retires unclaimed live worker grants and stale active local
+claim leases as recut cleanup when successor evidence is in scope. Claimed
+worker grants, fresh/current claim leases, paused claim leases, fresh active
+AgentRun rows, and architect/runtime evidence outside stale recut bookkeeping
+still fail closed.
 
 If closeout rejects because of active runtime on an unsupported outcome,
 package metadata mismatch, weak PR evidence, or stale terminal conflict, do not

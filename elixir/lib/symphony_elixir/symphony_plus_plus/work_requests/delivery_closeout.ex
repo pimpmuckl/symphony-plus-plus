@@ -2,6 +2,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   @moduledoc false
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository, as: ClaimLeaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
@@ -171,7 +172,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
 
     case recovery_closeout_mode(delivery) do
       :pr_merged -> prepare_pr_merged_closeout_context(repo, work_package_id, context)
-      :superseded -> reject_superseded_runtime_closeout_context(repo, work_package_id, context)
+      :superseded -> prepare_superseded_closeout_context(repo, work_package_id, context)
       :normal -> reject_active_linked_closeout_context(repo, work_package_id, context)
     end
   end
@@ -215,7 +216,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
     paused? = get_in(context, [:runtime_state, :paused?]) == true
 
     blocking_reason_codes =
-      reason_codes -- ["worker_grant_active", "claim_lease_active", "claim_lease_stale", "worker_recycled", "package_terminal"]
+      reason_codes --
+        [
+          "worker_grant_active",
+          "claim_lease_active",
+          "claim_lease_stale",
+          "agent_run_stale",
+          "worker_recycled",
+          "package_terminal"
+        ]
 
     cond do
       paused? -> {:error, :active_runtime}
@@ -224,12 +233,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
     end
   end
 
-  defp reject_superseded_runtime_closeout_context(repo, work_package_id, context) do
+  defp prepare_superseded_closeout_context(repo, work_package_id, context) do
+    with :ok <- reject_non_recoverable_superseded_runtime_context(context),
+         :ok <- reject_claimed_live_worker_grants(repo, work_package_id),
+         {:ok, retired_worker_grant_ids} <- retire_unclaimed_worker_grants(repo, work_package_id),
+         {:ok, retired_claim_lease_ids} <- retire_stale_current_claim_leases(repo, work_package_id) do
+      {:ok,
+       closeout_context(
+         context,
+         retired_worker_grant_ids,
+         retired_claim_lease_ids,
+         allow_active_blockers?: true
+       )}
+    end
+  end
+
+  defp reject_non_recoverable_superseded_runtime_context(context) do
+    reason_codes = List.wrap(get_in(context, [:runtime_state, :reason_codes]))
+    active? = get_in(context, [:runtime_state, :active?]) == true
+    paused? = get_in(context, [:runtime_state, :paused?]) == true
+
+    blocking_reason_codes =
+      reason_codes --
+        [
+          "worker_grant_active",
+          "claim_lease_stale",
+          "agent_run_stale",
+          "worker_recycled",
+          "package_terminal"
+        ]
+
     cond do
-      get_in(context, [:runtime_state, :active?]) == true -> {:error, :active_runtime}
-      get_in(context, [:runtime_state, :paused?]) == true -> {:error, :active_runtime}
-      live_worker_grants(repo, work_package_id) != [] -> {:error, :active_runtime}
-      true -> {:ok, closeout_context(context, [], [], allow_active_blockers?: true)}
+      paused? -> {:error, :active_runtime}
+      active? and reason_codes == [] -> {:error, :active_runtime}
+      blocking_reason_codes != [] -> {:error, :active_runtime}
+      true -> :ok
     end
   end
 
@@ -246,6 +284,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
       active_blocker_ids: List.wrap(get_in(context, [:blocker_state, :active_ids])),
       blocker_reason_codes: List.wrap(get_in(context, [:blocker_state, :reason_codes])),
       runtime_reason_codes: List.wrap(get_in(context, [:runtime_state, :reason_codes])),
+      ignored_stale_agent_run_ids: List.wrap(get_in(context, [:runtime_state, :stale_agent_run_ids])),
       retired_worker_grant_ids: retired_worker_grant_ids,
       retired_claim_lease_ids: retired_claim_lease_ids,
       allow_active_blockers?: Keyword.get(opts, :allow_active_blockers?, false)
@@ -260,10 +299,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   end
 
   defp retire_live_worker_grants(repo, work_package_id) do
+    revoke_worker_grants(live_worker_grants(repo, work_package_id, DateTime.utc_now(:microsecond)), repo)
+  end
+
+  defp retire_unclaimed_worker_grants(repo, work_package_id) do
     now = DateTime.utc_now(:microsecond)
 
     repo
     |> live_worker_grants(work_package_id, now)
+    |> Enum.filter(&unclaimed_worker_grant?/1)
+    |> Enum.reduce_while({:ok, []}, fn %AccessGrant{} = grant, {:ok, grant_ids} ->
+      case revoke_unclaimed_worker_grant(repo, grant, now) do
+        {:ok, nil} -> {:cont, {:ok, grant_ids}}
+        {:ok, grant_id} -> {:cont, {:ok, [grant_id | grant_ids]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, grant_ids} -> {:ok, Enum.reverse(grant_ids)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp revoke_worker_grants(grants, repo) do
+    now = DateTime.utc_now(:microsecond)
+
+    grants
     |> Enum.reduce_while({:ok, []}, fn %AccessGrant{} = grant, {:ok, grant_ids} ->
       case grant |> AccessGrant.revoke_changeset(now) |> repo.update() do
         {:ok, %AccessGrant{} = revoked_grant} -> {:cont, {:ok, [revoked_grant.id | grant_ids]}}
@@ -275,6 +336,121 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp reject_claimed_live_worker_grants(repo, work_package_id) do
+    case live_worker_grants(repo, work_package_id) |> Enum.filter(&claimed_worker_grant?/1) do
+      [] -> :ok
+      _claimed_grants -> {:error, :active_runtime}
+    end
+  end
+
+  defp revoke_unclaimed_worker_grant(repo, %AccessGrant{} = grant, %DateTime{} = now) do
+    query =
+      from(stored in AccessGrant,
+        where: stored.id == ^grant.id,
+        where: stored.grant_role == "worker",
+        where: is_nil(stored.revoked_at),
+        where: is_nil(stored.claimed_at),
+        where: is_nil(stored.claimed_by) or fragment("trim(?) = ''", stored.claimed_by),
+        where: is_nil(stored.expires_at) or stored.expires_at > ^now
+      )
+
+    case repo.update_all(query, set: [revoked_at: now, updated_at: now]) do
+      {1, _rows} -> {:ok, grant.id}
+      {0, _rows} -> revoked_unclaimed_worker_grant_miss(repo, grant.id, now)
+    end
+  end
+
+  defp revoked_unclaimed_worker_grant_miss(repo, grant_id, %DateTime{} = now) do
+    case repo.get(AccessGrant, grant_id) do
+      %AccessGrant{} = current_grant -> resolved_unclaimed_worker_grant_miss(current_grant, now)
+      nil -> {:ok, nil}
+    end
+  end
+
+  defp resolved_unclaimed_worker_grant_miss(%AccessGrant{} = grant, %DateTime{} = now) do
+    if live_worker_grant?(grant, now) and claimed_worker_grant?(grant) do
+      {:error, :active_runtime}
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp retire_stale_current_claim_leases(repo, work_package_id) do
+    now = DateTime.utc_now(:microsecond)
+
+    stale_claim_leases =
+      repo.all(
+        from(claim_lease in ClaimLease,
+          where: claim_lease.work_package_id == ^work_package_id,
+          where: claim_lease.status == "active",
+          order_by: [asc: claim_lease.inserted_at, asc: claim_lease.id]
+        )
+      )
+      |> Enum.filter(&ClaimLease.stale?(&1, now))
+
+    stale_claim_leases
+    |> Enum.reduce_while({:ok, []}, fn %ClaimLease{} = claim_lease, {:ok, claim_lease_ids} ->
+      case release_stale_claim_lease(repo, claim_lease, now) do
+        {:ok, nil} -> {:cont, {:ok, claim_lease_ids}}
+        {:ok, claim_lease_id} -> {:cont, {:ok, [claim_lease_id | claim_lease_ids]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, claim_lease_ids} -> {:ok, Enum.reverse(claim_lease_ids)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp release_stale_claim_lease(repo, %ClaimLease{} = claim_lease, %DateTime{} = now) do
+    query = observed_active_claim_lease_query(claim_lease)
+
+    case repo.update_all(query,
+           set: [
+             status: "released",
+             released_at: now,
+             release_reason: "superseded_delivery_closeout",
+             last_seen_at: now,
+             updated_at: now
+           ]
+         ) do
+      {1, _rows} -> {:ok, claim_lease.id}
+      {0, _rows} -> release_stale_claim_lease_miss(repo, claim_lease.id, now)
+    end
+  end
+
+  defp release_stale_claim_lease_miss(repo, claim_lease_id, %DateTime{} = now) do
+    case repo.get(ClaimLease, claim_lease_id) do
+      %ClaimLease{status: "active"} = current_claim_lease -> resolved_active_claim_lease_miss(current_claim_lease, now)
+      %ClaimLease{status: "paused"} -> {:error, :active_runtime}
+      %ClaimLease{} -> {:ok, nil}
+      nil -> {:ok, nil}
+    end
+  end
+
+  defp resolved_active_claim_lease_miss(%ClaimLease{} = claim_lease, %DateTime{} = now) do
+    if ClaimLease.stale?(claim_lease, now) do
+      {:error, :claim_not_current}
+    else
+      {:error, :active_runtime}
+    end
+  end
+
+  defp observed_active_claim_lease_query(%ClaimLease{} = claim_lease) do
+    query =
+      from(stored in ClaimLease,
+        where: stored.id == ^claim_lease.id,
+        where: stored.status == "active"
+      )
+
+    Enum.reduce([:last_seen_at, :lease_expires_at, :stale_after_ms], query, fn field_name, query ->
+      where_observed(query, field_name, Map.get(claim_lease, field_name))
+    end)
+  end
+
+  defp where_observed(query, field_name, nil), do: from(stored in query, where: is_nil(field(stored, ^field_name)))
+  defp where_observed(query, field_name, value), do: from(stored in query, where: field(stored, ^field_name) == ^value)
 
   defp live_worker_grants(repo, work_package_id) do
     live_worker_grants(repo, work_package_id, DateTime.utc_now(:microsecond))
@@ -291,6 +467,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
       )
     )
   end
+
+  defp live_worker_grant?(%AccessGrant{grant_role: "worker", revoked_at: nil, expires_at: nil}, %DateTime{}), do: true
+
+  defp live_worker_grant?(%AccessGrant{grant_role: "worker", revoked_at: nil, expires_at: %DateTime{} = expires_at}, %DateTime{} = now) do
+    DateTime.compare(expires_at, now) == :gt
+  end
+
+  defp live_worker_grant?(%AccessGrant{}, %DateTime{}), do: false
+
+  defp claimed_worker_grant?(%AccessGrant{claimed_at: %DateTime{}}), do: true
+  defp claimed_worker_grant?(%AccessGrant{claimed_by: claimed_by}) when is_binary(claimed_by), do: String.trim(claimed_by) != ""
+  defp claimed_worker_grant?(%AccessGrant{}), do: false
+
+  defp unclaimed_worker_grant?(%AccessGrant{} = grant), do: not claimed_worker_grant?(grant)
 
   defp closeout_progress_replay?(repo, %PlannedSlice{work_package_id: work_package_id}, %PlannedSliceDelivery{} = delivery) do
     with true <- filled_string?(work_package_id),
@@ -440,6 +630,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
     |> put_non_empty(:active_blocker_ids, closeout_context.active_blocker_ids)
     |> put_non_empty(:blocker_reason_codes, closeout_context.blocker_reason_codes)
     |> put_non_empty(:runtime_reason_codes_before_closeout, closeout_context.runtime_reason_codes)
+    |> put_non_empty(:ignored_stale_agent_run_ids, closeout_context.ignored_stale_agent_run_ids)
     |> put_non_empty(:retired_worker_grant_ids, closeout_context.retired_worker_grant_ids)
     |> put_non_empty(:retired_claim_lease_ids, closeout_context.retired_claim_lease_ids)
   end

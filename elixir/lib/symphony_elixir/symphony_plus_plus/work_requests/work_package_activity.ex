@@ -70,6 +70,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
         stale?: false,
         recycled?: false,
         terminal?: false,
+        active_agent_run_ids: [],
+        stale_agent_run_ids: [],
         lifecycle_state: "idle",
         latest_gate_at: nil,
         reason_codes: []
@@ -178,7 +180,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
         stale_claim_leases,
         active_claim_leases,
         active_agent_runs,
-        stale_agent_runs,
         active_grants
       )
 
@@ -202,6 +203,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
       stale?: stale?,
       recycled?: recycled?,
       terminal?: terminal?,
+      active_agent_run_ids: runtime_ids(active_agent_runs),
+      stale_agent_run_ids: runtime_ids(stale_agent_runs),
       lifecycle_state: runtime_lifecycle_state(active?, paused?, stale?, recycled?, terminal?),
       latest_gate_at: latest_runtime_gate_at(grants, agent_runs, claim_leases, progress_events, work_package, now),
       reason_codes: reason_codes
@@ -214,12 +217,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
     {Enum.filter(agent_runs, &active_agent_run?(&1, now)), Enum.filter(agent_runs, &stale_agent_run?(&1, now))}
   end
 
-  defp active_runtime?(true = _paused?, _stale_claim_leases, _active_claim_leases, _active_agent_runs, _stale_agent_runs, _active_grants),
+  defp active_runtime?(true = _paused?, _stale_claim_leases, _active_claim_leases, _active_agent_runs, _active_grants),
     do: true
 
-  defp active_runtime?(_paused?, stale_claim_leases, active_claim_leases, active_agent_runs, stale_agent_runs, active_grants) do
-    stale_claim_leases != [] or active_claim_leases != [] or active_agent_runs != [] or stale_agent_runs != [] or
-      active_grants != []
+  defp active_runtime?(_paused?, stale_claim_leases, active_claim_leases, active_agent_runs, active_grants) do
+    stale_claim_leases != [] or active_claim_leases != [] or active_agent_runs != [] or active_grants != []
   end
 
   defp stale_runtime?(true = _paused?, _stale_claim_leases, _stale_agent_runs), do: false
@@ -396,6 +398,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
   end
 
   defp map_value(map, key) when is_map(map) and is_atom(key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+
+  defp runtime_ids(runtimes) do
+    runtimes
+    |> Enum.map(&map_value(&1, :id))
+    |> Enum.filter(&filled_string?/1)
+  end
 
   defp latest_timestamp(timestamps) do
     timestamps

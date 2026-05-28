@@ -556,20 +556,28 @@ Delivery outcomes are:
   rejected. Standalone linked packages move to `merged`; when strong evidence
   proves a stale linked package already merged, live worker grants are revoked
   and active/stale local claim leases are released and audited as part of
-  closeout. Active blockers, paused claim leases, active agent runs, and other
-  non-worker runtime evidence still reject. Phase-child PR delivery
+  closeout. Stale AgentRun rows that are no longer operationally active are
+  ignored but audited with closeout progress. Active blockers, paused claim
+  leases, fresh active agent runs, and other non-worker runtime evidence still
+  reject. Phase-child PR delivery
   requires
   `merge_child_into_phase` first; after the child is already
   `merged_into_phase`, closeout records the delivery without redoing the phase
   merge.
 - `completed_no_pr`: requires `no_pr_evidence` and closes a compatible linked
-  package to `closed`.
+  package to `closed`. Stale AgentRun rows that are no longer operationally
+  active under delivery-board freshness rules are ignored but audited with
+  closeout progress; fresh active AgentRun rows still reject.
 - `superseded`: requires `successor_planned_slice_id` and
   `superseded_reason`; optional `successor_work_package_id` must be linked to
   that successor slice and in scope. A compatible linked package closes to
   `closed`. Active blocker events on the superseded package do not block this
   recut closeout; they remain historical evidence and are echoed in the
-  closeout progress event and delivery-board attention.
+  closeout progress event and delivery-board attention. Unclaimed live worker
+  grants and stale active local claim leases are retired and audited as stale
+  recut cleanup; claimed worker grants, fresh/current claim leases, paused claim
+  leases, fresh active AgentRun rows, and unrelated runtime evidence still
+  reject.
 - `abandoned`: requires `abandoned_rationale` and moves a compatible linked
   package to `abandoned`.
 
