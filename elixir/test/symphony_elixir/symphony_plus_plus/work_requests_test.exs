@@ -839,7 +839,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
                stale_after_ms: 60_000
              )
 
-    assert {:ok, _agent_run} =
+    assert {:ok, agent_run} =
              AgentRunRepository.start_run(repo, %{
                work_package_id: agent_package.id,
                status: "running",
@@ -910,9 +910,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert "package_terminal" in terminal_runtime.reason_codes
 
     agent_runtime = get_in(contexts, [agent_package.id, :runtime_state])
-    assert agent_runtime.active? == true
+    assert agent_runtime.active? == false
     assert agent_runtime.stale? == true
+    assert agent_runtime.lifecycle_state == "stale"
     assert "agent_run_stale" in agent_runtime.reason_codes
+    assert agent_runtime.active_agent_run_ids == []
+    assert agent_runtime.stale_agent_run_ids == [agent_run.id]
   end
 
   test "migration is idempotent", %{repo: repo} do

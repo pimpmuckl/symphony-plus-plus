@@ -177,6 +177,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_worker"
   end
 
+  test "PR merged recovery closeout ignores stale agent runtime rows that are not operationally active", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_human_merge")
+
+    assert {:ok, agent_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: linked_package.id,
+               status: "running",
+               last_seen_at: DateTime.add(DateTime.utc_now(:microsecond), -301, :second)
+             })
+
+    assert {:ok, %{slices: [before_closeout]}} = DeliveryBoard.project(repo, work_request.id)
+    assert before_closeout.operational_state.key == "merge_ready"
+    assert before_closeout.work_package.runtime_state.active? == false
+    assert before_closeout.work_package.runtime_state.stale? == true
+    assert before_closeout.work_package.runtime_state.stale_agent_run_ids == [agent_run.id]
+    assert "agent_run_stale" in before_closeout.work_package.runtime_state.reason_codes
+
+    attrs =
+      delivery_attrs(%{
+        outcome: "pr_merged",
+        idempotency_key: "delivery-pr-merged-stale-agent-runtime",
+        pr_url: "https://github.com/nextide/symphony-plus-plus/pull/131",
+        pr_number: 131,
+        pr_repository: "nextide/symphony-plus-plus",
+        pr_merged_at: ~U[2026-05-24 12:57:00.000000Z],
+        merge_commit_sha: "abc131"
+      })
+
+    assert {:ok, delivery} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert delivery.outcome == "pr_merged"
+    assert repo.get!(WorkPackage, linked_package.id).status == "merged"
+
+    assert [event] = repo.all(ProgressEvent)
+    assert "agent_run_stale" in event.payload["runtime_reason_codes_before_closeout"]
+    assert event.payload["ignored_stale_agent_run_ids"] == [agent_run.id]
+
+    assert {:ok, %{counts: %{"delivered" => 1}, slices: [after_closeout]}} = DeliveryBoard.project(repo, work_request.id)
+    assert after_closeout.operational_state.key == "delivered"
+    refute "linked_package_active_after_delivery" in after_closeout.attention_reason_codes
+  end
+
   test "PR merged recovery closeout still rejects paused claim lease", %{repo: repo} do
     {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_worker")
 
@@ -670,6 +711,89 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert %AccessGrant{revoked_at: nil} = repo.get!(AccessGrant, minted.grant.id)
   end
 
+  test "superseded closeout retires unclaimed worker authority and stale claim lease", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "implementing")
+    successor_slice = create_planned_slice!(repo, work_request, id: "WRS-DELIVERY-UNCLAIMED-SUCCESSOR")
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _whitespace_claim_metadata} = minted.grant |> AccessGrant.changeset(%{claimed_by: "   "}) |> repo.update()
+
+    assert {:ok, claim_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               linked_package.id,
+               %{
+                 "actor_kind" => "agent",
+                 "actor_id" => "local:stale-superseded-claim",
+                 "actor_display_name" => "stale-worker"
+               },
+               now: DateTime.add(DateTime.utc_now(:microsecond), -10, :second),
+               stale_after_ms: 1
+             )
+
+    assert {:ok, delivery} =
+             Service.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               planned_slice.id,
+               delivery_attrs(%{
+                 outcome: "superseded",
+                 idempotency_key: "delivery-superseded-unclaimed-worker-authority",
+                 successor_planned_slice_id: successor_slice.id,
+                 superseded_reason: "Recut onto a concrete branch after the old worker authority went stale."
+               })
+             )
+
+    assert delivery.outcome == "superseded"
+    assert repo.get!(WorkPackage, linked_package.id).status == "closed"
+    assert %AccessGrant{revoked_at: %DateTime{}, claimed_at: nil} = repo.get!(AccessGrant, minted.grant.id)
+    assert %ClaimLease{status: "released", release_reason: "superseded_delivery_closeout"} = repo.get!(ClaimLease, claim_lease.id)
+
+    events = repo.all(ProgressEvent)
+    closeout_event = Enum.find(events, &(&1.payload["type"] == "work_request_delivery_closeout"))
+    assert closeout_event.payload["retired_worker_grant_ids"] == [minted.grant.id]
+    assert closeout_event.payload["retired_claim_lease_ids"] == [claim_lease.id]
+    assert "claim_lease_stale" in closeout_event.payload["runtime_reason_codes_before_closeout"]
+
+    assert {:ok, %{counts: %{"superseded" => 1}, slices: [slice, _successor]}} = DeliveryBoard.project(repo, work_request.id)
+    assert slice.operational_state.key == "superseded"
+    refute "linked_package_active_after_delivery" in slice.attention_reason_codes
+  end
+
+  test "superseded closeout still rejects fresh claim lease authority", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "implementing")
+    successor_slice = create_planned_slice!(repo, work_request, id: "WRS-DELIVERY-CURRENT-CLAIM-SUCCESSOR")
+
+    assert {:ok, claim_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               linked_package.id,
+               %{
+                 "actor_kind" => "agent",
+                 "actor_id" => "local:current-superseded-claim",
+                 "actor_display_name" => "current-worker"
+               },
+               stale_after_ms: 60_000
+             )
+
+    assert {:error, :active_runtime} =
+             Service.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               planned_slice.id,
+               delivery_attrs(%{
+                 outcome: "superseded",
+                 idempotency_key: "delivery-superseded-current-claim",
+                 successor_planned_slice_id: successor_slice.id,
+                 superseded_reason: "Attempted recut while current worker authority was still active."
+               })
+             )
+
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+    assert repo.get!(WorkPackage, linked_package.id).status == "implementing"
+    assert %ClaimLease{status: "active", released_at: nil} = repo.get!(ClaimLease, claim_lease.id)
+  end
+
   test "repository blocker exception still rejects active runtime at closeout mutation", %{repo: repo} do
     {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "implementing")
 
@@ -807,7 +931,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert delivery.outcome == "completed_no_pr"
   end
 
-  test "stale agent runs prevent closeout until explicitly stopped", %{repo: repo} do
+  test "stale agent runs do not block normal closeout and remain audited", %{repo: repo} do
     {work_request, planned_slice, linked_package} =
       linked_slice!(repo,
         work_request_id: "WR-DELIVERY-STALE-AGENT-RUN",
@@ -827,15 +951,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
       delivery_attrs(%{
         outcome: "completed_no_pr",
         idempotency_key: "delivery-stale-agent-run",
-        no_pr_evidence: "The package status is terminal, but the stale AgentRun still needs explicit closeout."
+        no_pr_evidence: "The package status is terminal, and the only runtime evidence is stale."
       })
 
-    assert {:error, :active_runtime} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
-    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
-
-    assert {:ok, _stopped_run} = AgentRunRepository.mark_stopped(repo, agent_run.id, "worker stopped")
     assert {:ok, delivery} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
     assert delivery.outcome == "completed_no_pr"
+
+    assert [event] = repo.all(ProgressEvent)
+    assert event.payload["previous_status"] == "closed"
+    assert "agent_run_stale" in event.payload["runtime_reason_codes_before_closeout"]
+    assert event.payload["ignored_stale_agent_run_ids"] == [agent_run.id]
   end
 
   defp linked_slice!(repo, overrides) do

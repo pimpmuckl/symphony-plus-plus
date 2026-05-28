@@ -8,6 +8,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
   alias SymphonyElixir.MCPHarness
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
+  alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
+  alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service, as: ClaimLeaseService
   alias SymphonyElixir.SymphonyPlusPlus.MCP.Config
@@ -45,6 +47,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
           PlannedSliceDelivery,
           PlannedSlice,
           DecisionLogEntry,
+          AgentRun,
           ClaimLease,
           AccessGrant,
           WorkPackage,
@@ -99,6 +102,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert delivery.planned_slice_id == planned_slice.id
     assert delivery.recorded_by == "reconciler-test"
     assert repo.get!(WorkPackage, linked_package.id).status == "merged"
+  end
+
+  test "apply records merged PR closeout when only stale agent runtime evidence remains", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(repo,
+        work_request_id: "WR-RECONCILE-STALE-AGENT-RUN",
+        work_package_id: "WP-RECONCILE-STALE-AGENT-RUN",
+        status: "ready_for_human_merge"
+      )
+
+    assert {:ok, agent_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: linked_package.id,
+               status: "running",
+               last_seen_at: DateTime.add(DateTime.utc_now(:microsecond), -301, :second)
+             })
+
+    append_merged_pr_evidence!(repo, linked_package, 914, "head-914")
+
+    assert {:ok, applied} = DeliveryReconciler.reconcile(repo, work_request.id, mode: :apply, recorded_by: "reconciler-test")
+
+    assert applied.applied_count == 1
+    assert [%{status: "applied", planned_slice_id: planned_slice_id, work_package_id: work_package_id}] = applied.results
+    assert planned_slice_id == planned_slice.id
+    assert work_package_id == linked_package.id
+    assert applied.delivery_board.counts["delivered"] == 1
+    assert Map.get(applied.delivery_board.counts, "needs_closeout", 0) == 0
+
+    assert [delivery] = repo.all(PlannedSliceDelivery)
+    assert delivery.outcome == "pr_merged"
+    assert repo.get!(WorkPackage, linked_package.id).status == "merged"
+
+    closeout_event = closeout_event!(repo)
+    assert "agent_run_stale" in closeout_event.payload["runtime_reason_codes_before_closeout"]
+    assert closeout_event.payload["ignored_stale_agent_run_ids"] == [agent_run.id]
   end
 
   test "apply records merged PR closeout for stale package and retires worker authority", %{repo: repo} do
@@ -600,6 +638,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
                  merge_state: %{merged: true}
                }
              })
+  end
+
+  defp closeout_event!(repo) do
+    closeout_events =
+      repo.all(ProgressEvent)
+      |> Enum.filter(&(Map.get(&1.payload || %{}, "type") == "work_request_delivery_closeout"))
+
+    assert [event] = closeout_events
+    event
   end
 
   defp work_request_attrs(overrides) do
