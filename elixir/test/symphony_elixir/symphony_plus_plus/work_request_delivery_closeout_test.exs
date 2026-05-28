@@ -12,6 +12,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
@@ -76,6 +77,168 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 1
     assert repo.aggregate(ProgressEvent, :count, :id) == 1
     assert repo.get!(WorkPackage, linked_package.id).status == "merged"
+  end
+
+  test "PR merged recovery closeout merges stale linked package and retires worker grant", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_worker")
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "stale-worker")
+
+    attrs =
+      delivery_attrs(%{
+        outcome: "pr_merged",
+        idempotency_key: "delivery-pr-merged-stale-worker",
+        pr_url: "https://github.com/nextide/symphony-plus-plus/pull/124",
+        pr_number: 124,
+        pr_repository: "nextide/symphony-plus-plus",
+        pr_merged_at: ~U[2026-05-24 12:30:00.000000Z],
+        merge_commit_sha: "abc124"
+      })
+
+    assert {:ok, delivery} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert delivery.outcome == "pr_merged"
+
+    assert repo.get!(WorkPackage, linked_package.id).status == "merged"
+    assert %AccessGrant{revoked_at: %DateTime{}} = repo.get!(AccessGrant, minted.grant.id)
+
+    assert [event] = repo.all(ProgressEvent)
+    assert event.status == "merged"
+    assert event.payload["previous_status"] == "ready_for_worker"
+    assert event.payload["retired_worker_grant_ids"] == [minted.grant.id]
+    assert "worker_grant_active" in event.payload["runtime_reason_codes_before_closeout"]
+
+    assert {:ok, %{counts: %{"delivered" => 1}, slices: [slice]}} = DeliveryBoard.project(repo, work_request.id)
+    assert slice.operational_state.key == "delivered"
+    assert slice.work_package.raw_status == "merged"
+  end
+
+  test "PR merged recovery closeout merges stale linked package and retires active claim lease", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "implementing")
+
+    assert {:ok, claim_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               linked_package.id,
+               %{"actor_kind" => "agent", "actor_id" => "local:pr-recovery-claim", "actor_display_name" => "worker-claim"},
+               stale_after_ms: 60_000
+             )
+
+    attrs =
+      delivery_attrs(%{
+        outcome: "pr_merged",
+        idempotency_key: "delivery-pr-merged-active-runtime",
+        pr_url: "https://github.com/nextide/symphony-plus-plus/pull/125",
+        pr_number: 125,
+        pr_repository: "nextide/symphony-plus-plus",
+        pr_merged_at: ~U[2026-05-24 12:45:00.000000Z],
+        merge_commit_sha: "abc125"
+      })
+
+    assert {:ok, delivery} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert delivery.outcome == "pr_merged"
+
+    assert repo.get!(WorkPackage, linked_package.id).status == "merged"
+    assert %ClaimLease{status: "released", release_reason: "merged_pr_delivery_closeout"} = repo.get!(ClaimLease, claim_lease.id)
+
+    assert [event] = repo.all(ProgressEvent)
+    assert event.payload["previous_status"] == "implementing"
+    assert event.payload["retired_claim_lease_ids"] == [claim_lease.id]
+    assert "claim_lease_active" in event.payload["runtime_reason_codes_before_closeout"]
+
+    assert {:ok, %{counts: %{"delivered" => 1}, slices: [slice]}} = DeliveryBoard.project(repo, work_request.id)
+    assert slice.operational_state.key == "delivered"
+    assert slice.work_package.raw_status == "merged"
+  end
+
+  test "PR merged recovery closeout still rejects active agent runtime", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_worker")
+
+    assert {:ok, _agent_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: linked_package.id,
+               status: "running",
+               last_seen_at: DateTime.utc_now(:microsecond)
+             })
+
+    attrs =
+      delivery_attrs(%{
+        outcome: "pr_merged",
+        idempotency_key: "delivery-pr-merged-active-agent-runtime",
+        pr_url: "https://github.com/nextide/symphony-plus-plus/pull/129",
+        pr_number: 129,
+        pr_repository: "nextide/symphony-plus-plus",
+        pr_merged_at: ~U[2026-05-24 12:55:00.000000Z],
+        merge_commit_sha: "abc129"
+      })
+
+    assert {:error, :active_runtime} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+    assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_worker"
+  end
+
+  test "PR merged recovery closeout still rejects paused claim lease", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_worker")
+
+    assert {:ok, claim_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               linked_package.id,
+               %{"actor_kind" => "agent", "actor_id" => "local:paused-pr-recovery", "actor_display_name" => "paused-worker"},
+               stale_after_ms: 60_000
+             )
+
+    assert {:ok, _paused_lease} =
+             ClaimLeaseService.pause(
+               repo,
+               claim_lease.id,
+               %{"actor_kind" => "operator", "actor_id" => "operator:pause"},
+               reason: "operator paused the worker"
+             )
+
+    attrs =
+      delivery_attrs(%{
+        outcome: "pr_merged",
+        idempotency_key: "delivery-pr-merged-paused-claim-lease",
+        pr_url: "https://github.com/nextide/symphony-plus-plus/pull/130",
+        pr_number: 130,
+        pr_repository: "nextide/symphony-plus-plus",
+        pr_merged_at: ~U[2026-05-24 12:56:00.000000Z],
+        merge_commit_sha: "abc130"
+      })
+
+    assert {:error, :active_runtime} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+    assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_worker"
+    assert %ClaimLease{status: "paused"} = repo.get!(ClaimLease, claim_lease.id)
+  end
+
+  test "PR merged recovery closeout still rejects active blockers", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_worker")
+
+    assert {:ok, _blocker} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: linked_package.id,
+               summary: "Closeout blocked",
+               status: "blocked",
+               idempotency_key: "pr-merged-active-blocker",
+               payload: %{type: "blocker", source_tool: "report_blocker", blocker_id: "pr-merged-active-blocker", active: true}
+             })
+
+    attrs =
+      delivery_attrs(%{
+        outcome: "pr_merged",
+        idempotency_key: "delivery-pr-merged-active-blocker",
+        pr_url: "https://github.com/nextide/symphony-plus-plus/pull/126",
+        pr_number: 126,
+        pr_repository: "nextide/symphony-plus-plus",
+        pr_merged_at: ~U[2026-05-24 12:50:00.000000Z],
+        merge_commit_sha: "abc126"
+      })
+
+    assert {:error, :active_blocker} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+    assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_worker"
   end
 
   test "completed_no_pr superseded and abandoned close compatible linked packages to terminal states", %{repo: repo} do
@@ -190,6 +353,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
 
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
     assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_human_merge"
+  end
+
+  test "linked PR merged closeout rejects malformed PR URL evidence and rolls back", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_human_merge")
+
+    assert {:error, :malformed_pr_evidence} =
+             Service.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               planned_slice.id,
+               delivery_attrs(%{
+                 outcome: "pr_merged",
+                 idempotency_key: "delivery-malformed-pr",
+                 pr_url: "https://github.com/nextide/other/pull/789",
+                 pr_number: 789,
+                 pr_repository: "nextide/symphony-plus-plus",
+                 pr_merged_at: ~U[2026-05-24 14:15:00.000000Z],
+                 merge_commit_sha: "fed789"
+               })
+             )
+
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+    assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_human_merge"
+  end
+
+  test "standalone PR merged closeout rejects malformed PR URL evidence", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-DELIVERY-STANDALONE-MALFORMED-PR", status: "ready_for_slicing")
+    planned_slice = create_planned_slice!(repo, work_request, id: "WRS-DELIVERY-STANDALONE-MALFORMED-PR")
+
+    assert {:error, :malformed_pr_evidence} =
+             Service.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               planned_slice.id,
+               delivery_attrs(%{
+                 outcome: "pr_merged",
+                 idempotency_key: "delivery-standalone-malformed-pr",
+                 pr_url: "https://github.com/nextide/other/pull/801",
+                 pr_number: 801,
+                 pr_repository: "nextide/symphony-plus-plus",
+                 pr_merged_at: ~U[2026-05-24 14:20:00.000000Z]
+               })
+             )
+
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
   end
 
   test "replayed closeout skips weak PR evidence only with matching audit and terminal state", %{repo: repo} do
@@ -367,7 +575,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert repo.get!(WorkPackage, linked_package.id).status == "reviewing"
   end
 
-  test "active blockers prevent terminal package mutation", %{repo: repo} do
+  test "active blockers still prevent normal no-PR closeout", %{repo: repo} do
     {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "reviewing")
 
     assert {:ok, _blocker} =
@@ -393,6 +601,129 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
 
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
     assert repo.get!(WorkPackage, linked_package.id).status == "reviewing"
+  end
+
+  test "superseded closeout closes stale package while preserving active blocker evidence", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "implementing")
+    successor_slice = create_planned_slice!(repo, work_request, id: "WRS-DELIVERY-BLOCKED-SUCCESSOR")
+
+    assert {:ok, blocker_event} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: linked_package.id,
+               summary: "Review scope blocked",
+               status: "blocked",
+               idempotency_key: "spec-md-review-scope",
+               payload: %{type: "blocker", source_tool: "report_blocker", blocker_id: "spec-md-review-scope", active: true}
+             })
+
+    assert {:ok, delivery} =
+             Service.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               planned_slice.id,
+               delivery_attrs(%{
+                 outcome: "superseded",
+                 idempotency_key: "delivery-superseded-with-blocker",
+                 successor_planned_slice_id: successor_slice.id,
+                 superseded_reason: "Recut around the active review-scope blocker."
+               })
+             )
+
+    assert delivery.outcome == "superseded"
+    assert repo.get!(WorkPackage, linked_package.id).status == "closed"
+
+    events = repo.all(ProgressEvent)
+    assert Enum.find(events, &(&1.id == blocker_event.id)).payload["active"] == true
+    closeout_event = Enum.find(events, &(&1.payload["type"] == "work_request_delivery_closeout"))
+    assert closeout_event.summary =~ "active blockers preserved"
+    assert closeout_event.payload["active_blocker_ids"] == ["spec-md-review-scope"]
+    assert closeout_event.payload["blocker_reason_codes"] == ["active_blocker"]
+
+    assert {:ok, %{counts: %{"superseded" => 1}, slices: [slice, _successor]}} = DeliveryBoard.project(repo, work_request.id)
+    assert slice.operational_state.key == "superseded"
+    assert slice.work_package.raw_status == "closed"
+    assert "linked_package_blocked_after_delivery" in slice.attention_reason_codes
+  end
+
+  test "superseded closeout still rejects active runtime evidence", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "implementing")
+    successor_slice = create_planned_slice!(repo, work_request, id: "WRS-DELIVERY-RUNTIME-SUCCESSOR")
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "active-worker")
+
+    assert {:error, :active_runtime} =
+             Service.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               planned_slice.id,
+               delivery_attrs(%{
+                 outcome: "superseded",
+                 idempotency_key: "delivery-superseded-active-runtime",
+                 successor_planned_slice_id: successor_slice.id,
+                 superseded_reason: "Attempted recut while runtime was still active."
+               })
+             )
+
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+    assert repo.get!(WorkPackage, linked_package.id).status == "implementing"
+    assert %AccessGrant{revoked_at: nil} = repo.get!(AccessGrant, minted.grant.id)
+  end
+
+  test "repository blocker exception still rejects active runtime at closeout mutation", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "implementing")
+
+    assert {:ok, _blocker} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: linked_package.id,
+               summary: "Scope blocker still active",
+               status: "blocked",
+               idempotency_key: "delivery-recheck-active-blocker",
+               payload: %{
+                 type: "blocker",
+                 source_tool: "report_blocker",
+                 blocker_id: "spec-md-review-scope",
+                 active: true,
+                 reason: "Review scope was blocked before recut."
+               }
+             })
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "active-worker")
+
+    assert {:error, :active_runtime} =
+             WorkPackageRepository.close_compatible_linked_delivery_package(
+               repo,
+               work_request,
+               planned_slice,
+               "closed",
+               allow_active_blockers?: true
+             )
+
+    assert repo.get!(WorkPackage, linked_package.id).status == "implementing"
+    assert %AccessGrant{revoked_at: nil} = repo.get!(AccessGrant, minted.grant.id)
+  end
+
+  test "superseded closeout rejects successor slices outside the WorkRequest", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "implementing")
+    other_request = create_work_request!(repo, id: "WR-DELIVERY-OTHER-SUCCESSOR", status: "ready_for_slicing")
+    other_successor = create_planned_slice!(repo, other_request, id: "WRS-DELIVERY-OTHER-SUCCESSOR")
+
+    assert {:error, :not_found} =
+             Service.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               planned_slice.id,
+               delivery_attrs(%{
+                 outcome: "superseded",
+                 idempotency_key: "delivery-superseded-out-of-scope",
+                 successor_planned_slice_id: other_successor.id,
+                 superseded_reason: "Attempted recut to an unrelated request."
+               })
+             )
+
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+    assert repo.get!(WorkPackage, linked_package.id).status == "implementing"
   end
 
   test "active worker grants prevent closeout until explicitly revoked", %{repo: repo} do

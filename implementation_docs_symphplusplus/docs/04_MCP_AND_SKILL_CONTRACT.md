@@ -551,8 +551,14 @@ already closed-out slice is rejected.
 Delivery outcomes are:
 
 - `pr_merged`: requires `pr_url` and ISO-8601 `pr_merged_at`; linked packages
-  also require `merge_commit_sha` as strong merge evidence. Standalone linked
-  packages move to `merged`. Phase-child PR delivery requires
+  also require `merge_commit_sha` as strong merge evidence. Malformed PR URLs
+  and GitHub URL metadata that conflicts with provided PR number/repository are
+  rejected. Standalone linked packages move to `merged`; when strong evidence
+  proves a stale linked package already merged, live worker grants are revoked
+  and active/stale local claim leases are released and audited as part of
+  closeout. Active blockers, paused claim leases, active agent runs, and other
+  non-worker runtime evidence still reject. Phase-child PR delivery
+  requires
   `merge_child_into_phase` first; after the child is already
   `merged_into_phase`, closeout records the delivery without redoing the phase
   merge.
@@ -561,16 +567,20 @@ Delivery outcomes are:
 - `superseded`: requires `successor_planned_slice_id` and
   `superseded_reason`; optional `successor_work_package_id` must be linked to
   that successor slice and in scope. A compatible linked package closes to
-  `closed`.
+  `closed`. Active blocker events on the superseded package do not block this
+  recut closeout; they remain historical evidence and are echoed in the
+  closeout progress event and delivery-board attention.
 - `abandoned`: requires `abandoned_rationale` and moves a compatible linked
   package to `abandoned`.
 
-Linked package mutation is transactional with the delivery record. The service
-rejects mismatched package metadata, active blockers, active runtime evidence,
-stale terminal status conflicts, weak PR evidence, and closeout progress
-idempotency collisions. When all planned slices are terminal, closeout refreshes
-the WorkRequest completion projection. Decision-log entries remain rationale
-and scope history; they do not prove delivery happened.
+Linked package mutation is transactional with the delivery record. The normal
+path rejects mismatched package metadata, active blockers, active runtime
+evidence, stale terminal status conflicts, weak PR evidence, and closeout
+progress idempotency collisions. The recovery exceptions are limited to
+strong-evidence `pr_merged` closeout and intentional `superseded` recut
+closeout. When all planned slices are terminal, closeout refreshes the
+WorkRequest completion projection. Decision-log entries remain rationale and
+scope history; they do not prove delivery happened.
 
 `reconcile_work_request` repairs stale closeout state only from structured
 PR/GitHub evidence. Omitted or false `apply` is a `read:work_request` dry-run

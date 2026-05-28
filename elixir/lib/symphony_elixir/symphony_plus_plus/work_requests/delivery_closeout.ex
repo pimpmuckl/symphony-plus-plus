@@ -2,6 +2,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   @moduledoc false
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository, as: ClaimLeaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion
@@ -16,8 +17,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   @type error ::
           Repository.error()
           | WorkPackageRepository.error()
+          | ClaimLeaseRepository.error()
           | PlanningRepository.error()
           | :idempotency_key_conflict
+          | :malformed_pr_evidence
           | :missing_strong_pr_evidence
 
   @spec record(Repository.repo(), String.t(), String.t(), map()) ::
@@ -49,10 +52,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   end
 
   defp validate_terminal_evidence(%PlannedSlice{work_package_id: work_package_id}, %PlannedSliceDelivery{outcome: "pr_merged"} = delivery) do
-    if filled_string?(work_package_id) and not strong_pr_evidence?(delivery) do
-      {:error, :missing_strong_pr_evidence}
-    else
-      :ok
+    cond do
+      not merged_pr_fields?(delivery) ->
+        {:error, :missing_strong_pr_evidence}
+
+      filled_string?(work_package_id) and not filled_string?(delivery.merge_commit_sha) ->
+        {:error, :missing_strong_pr_evidence}
+
+      not well_formed_pr_evidence?(delivery) ->
+        {:error, :malformed_pr_evidence}
+
+      true ->
+        :ok
     end
   end
 
@@ -76,52 +87,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
     end
   end
 
-  defp perform_closeout(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %PlannedSliceDelivery{} = delivery) do
-    with :ok <- reject_active_linked_closeout_context(repo, planned_slice),
-         {:ok, closeout} <- close_linked_work_package(repo, work_request, planned_slice, delivery),
-         {:ok, _event} <- append_closeout_progress(repo, work_request, planned_slice, delivery, closeout),
+  defp perform_closeout(
+         repo,
+         %WorkRequest{} = work_request,
+         %PlannedSlice{} = planned_slice,
+         %PlannedSliceDelivery{} = delivery
+       ) do
+    with {:ok, closeout_context} <- prepare_linked_closeout_context(repo, planned_slice, delivery),
+         {:ok, closeout} <- close_linked_work_package(repo, work_request, planned_slice, delivery, closeout_context),
+         {:ok, _event} <-
+           append_closeout_progress(repo, work_request, planned_slice, delivery, closeout, closeout_context),
          {:ok, _refreshed} <- Completion.refresh_in_transaction(repo, work_request.id) do
       {:ok, delivery}
     end
   end
 
-  defp close_linked_work_package(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %PlannedSliceDelivery{} = delivery) do
+  defp close_linked_work_package(
+         repo,
+         %WorkRequest{} = work_request,
+         %PlannedSlice{} = planned_slice,
+         %PlannedSliceDelivery{} = delivery,
+         closeout_context
+       ) do
     WorkPackageRepository.close_compatible_linked_delivery_package(
       repo,
       work_request,
       planned_slice,
-      terminal_status_for_outcome(delivery.outcome)
+      terminal_status_for_outcome(delivery.outcome),
+      allow_active_blockers?: Map.get(closeout_context, :allow_active_blockers?, false)
     )
   end
 
-  defp append_closeout_progress(_repo, %WorkRequest{}, %PlannedSlice{}, %PlannedSliceDelivery{}, nil), do: {:ok, nil}
+  defp append_closeout_progress(
+         _repo,
+         %WorkRequest{},
+         %PlannedSlice{},
+         %PlannedSliceDelivery{},
+         nil,
+         _closeout_context
+       ),
+       do: {:ok, nil}
 
-  defp append_closeout_progress(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %PlannedSliceDelivery{} = delivery, closeout)
+  defp append_closeout_progress(
+         repo,
+         %WorkRequest{} = work_request,
+         %PlannedSlice{} = planned_slice,
+         %PlannedSliceDelivery{} = delivery,
+         closeout,
+         closeout_context
+       )
        when is_map(closeout) do
     with {:ok, event} <-
            PlanningRepository.append_progress_event(repo, %{
              work_package_id: closeout.work_package.id,
-             summary: "Recorded WorkRequest delivery closeout: #{delivery.outcome}",
+             summary: closeout_progress_summary(delivery, closeout_context),
              status: closeout.next_status,
              idempotency_key: closeout_idempotency_key(delivery),
-             payload: %{
-               type: "work_request_delivery_closeout",
-               source_tool: "record_planned_slice_delivery",
-               work_request_id: work_request.id,
-               planned_slice_id: planned_slice.id,
-               delivery_id: delivery.id,
-               outcome: delivery.outcome,
-               previous_status: closeout.previous_status,
-               next_status: closeout.next_status,
-               status_changed: closeout.changed?,
-               pr_url: delivery.pr_url,
-               pr_number: delivery.pr_number,
-               pr_repository: delivery.pr_repository,
-               pr_merged_at: delivery.pr_merged_at,
-               merge_commit_sha: delivery.merge_commit_sha,
-               successor_planned_slice_id: delivery.successor_planned_slice_id,
-               successor_work_package_id: delivery.successor_work_package_id
-             }
+             payload: closeout_progress_payload(work_request, planned_slice, delivery, closeout, closeout_context)
            }),
          true <- closeout_progress_event_matches?(event, planned_slice, delivery, closeout.next_status) do
       {:ok, event}
@@ -133,36 +155,141 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
 
   defp terminal_status_for_outcome(outcome), do: PlannedSliceDelivery.terminal_status_for_outcome(outcome)
 
-  defp reject_active_linked_closeout_context(repo, %PlannedSlice{work_package_id: work_package_id}) do
-    if filled_string?(work_package_id) do
-      context = WorkPackageActivity.context(repo, work_package_id)
+  defp prepare_linked_closeout_context(
+         repo,
+         %PlannedSlice{work_package_id: work_package_id},
+         %PlannedSliceDelivery{} = delivery
+       ) do
+    case filled_string?(work_package_id) do
+      true -> prepare_linked_package_closeout_context(repo, work_package_id, delivery)
+      false -> {:ok, empty_closeout_context()}
+    end
+  end
 
-      cond do
-        get_in(context, [:blocker_state, :active?]) == true -> {:error, :active_blocker}
-        get_in(context, [:runtime_state, :active?]) == true -> {:error, :active_runtime}
-        get_in(context, [:runtime_state, :paused?]) == true -> {:error, :active_runtime}
-        active_linked_worker_grant?(repo, work_package_id) -> {:error, :active_runtime}
-        true -> :ok
-      end
+  defp prepare_linked_package_closeout_context(repo, work_package_id, %PlannedSliceDelivery{} = delivery) do
+    context = WorkPackageActivity.context(repo, work_package_id)
+
+    case recovery_closeout_mode(delivery) do
+      :pr_merged -> prepare_pr_merged_closeout_context(repo, work_package_id, context)
+      :superseded -> reject_superseded_runtime_closeout_context(repo, work_package_id, context)
+      :normal -> reject_active_linked_closeout_context(repo, work_package_id, context)
+    end
+  end
+
+  defp prepare_pr_merged_closeout_context(repo, work_package_id, context) do
+    with :ok <- reject_active_blocker_context(context),
+         :ok <- reject_non_recoverable_pr_runtime_context(context),
+         {:ok, retired_worker_grant_ids} <- retire_live_worker_grants(repo, work_package_id),
+         {:ok, retired_claim_lease_ids} <- retire_current_claim_leases(repo, work_package_id) do
+      {:ok,
+       closeout_context(
+         context,
+         retired_worker_grant_ids,
+         retired_claim_lease_ids,
+         allow_active_blockers?: false
+       )}
+    end
+  end
+
+  defp reject_active_linked_closeout_context(repo, work_package_id, context) do
+    cond do
+      get_in(context, [:blocker_state, :active?]) == true -> {:error, :active_blocker}
+      get_in(context, [:runtime_state, :active?]) == true -> {:error, :active_runtime}
+      get_in(context, [:runtime_state, :paused?]) == true -> {:error, :active_runtime}
+      live_worker_grants(repo, work_package_id) != [] -> {:error, :active_runtime}
+      true -> {:ok, closeout_context(context, [], [], allow_active_blockers?: false)}
+    end
+  end
+
+  defp reject_active_blocker_context(context) do
+    if get_in(context, [:blocker_state, :active?]) == true do
+      {:error, :active_blocker}
     else
       :ok
     end
   end
 
-  defp active_linked_worker_grant?(repo, work_package_id) do
+  defp reject_non_recoverable_pr_runtime_context(context) do
+    reason_codes = List.wrap(get_in(context, [:runtime_state, :reason_codes]))
+    active? = get_in(context, [:runtime_state, :active?]) == true
+    paused? = get_in(context, [:runtime_state, :paused?]) == true
+
+    blocking_reason_codes =
+      reason_codes -- ["worker_grant_active", "claim_lease_active", "claim_lease_stale", "worker_recycled", "package_terminal"]
+
+    cond do
+      paused? -> {:error, :active_runtime}
+      active? and blocking_reason_codes != [] -> {:error, :active_runtime}
+      true -> :ok
+    end
+  end
+
+  defp reject_superseded_runtime_closeout_context(repo, work_package_id, context) do
+    cond do
+      get_in(context, [:runtime_state, :active?]) == true -> {:error, :active_runtime}
+      get_in(context, [:runtime_state, :paused?]) == true -> {:error, :active_runtime}
+      live_worker_grants(repo, work_package_id) != [] -> {:error, :active_runtime}
+      true -> {:ok, closeout_context(context, [], [], allow_active_blockers?: true)}
+    end
+  end
+
+  defp recovery_closeout_mode(%PlannedSliceDelivery{outcome: "pr_merged"}), do: :pr_merged
+  defp recovery_closeout_mode(%PlannedSliceDelivery{outcome: "superseded"}), do: :superseded
+  defp recovery_closeout_mode(%PlannedSliceDelivery{}), do: :normal
+
+  defp empty_closeout_context do
+    closeout_context(WorkPackageActivity.empty_context(), [], [], allow_active_blockers?: false)
+  end
+
+  defp closeout_context(context, retired_worker_grant_ids, retired_claim_lease_ids, opts) do
+    %{
+      active_blocker_ids: List.wrap(get_in(context, [:blocker_state, :active_ids])),
+      blocker_reason_codes: List.wrap(get_in(context, [:blocker_state, :reason_codes])),
+      runtime_reason_codes: List.wrap(get_in(context, [:runtime_state, :reason_codes])),
+      retired_worker_grant_ids: retired_worker_grant_ids,
+      retired_claim_lease_ids: retired_claim_lease_ids,
+      allow_active_blockers?: Keyword.get(opts, :allow_active_blockers?, false)
+    }
+  end
+
+  defp retire_current_claim_leases(repo, work_package_id) do
+    case ClaimLeaseRepository.retire_current_for_work_package(repo, work_package_id, "merged_pr_delivery_closeout") do
+      {:ok, claim_leases} -> {:ok, Enum.map(claim_leases, & &1.id)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp retire_live_worker_grants(repo, work_package_id) do
     now = DateTime.utc_now(:microsecond)
 
-    repo.one(
+    repo
+    |> live_worker_grants(work_package_id, now)
+    |> Enum.reduce_while({:ok, []}, fn %AccessGrant{} = grant, {:ok, grant_ids} ->
+      case grant |> AccessGrant.revoke_changeset(now) |> repo.update() do
+        {:ok, %AccessGrant{} = revoked_grant} -> {:cont, {:ok, [revoked_grant.id | grant_ids]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, grant_ids} -> {:ok, Enum.reverse(grant_ids)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp live_worker_grants(repo, work_package_id) do
+    live_worker_grants(repo, work_package_id, DateTime.utc_now(:microsecond))
+  end
+
+  defp live_worker_grants(repo, work_package_id, %DateTime{} = now) do
+    repo.all(
       from(grant in AccessGrant,
         where: grant.work_package_id == ^work_package_id,
         where: grant.grant_role == "worker",
         where: is_nil(grant.revoked_at),
         where: is_nil(grant.expires_at) or grant.expires_at > ^now,
-        select: grant.id,
-        limit: 1
+        order_by: [asc: grant.inserted_at, asc: grant.id]
       )
     )
-    |> is_binary()
   end
 
   defp closeout_progress_replay?(repo, %PlannedSlice{work_package_id: work_package_id}, %PlannedSliceDelivery{} = delivery) do
@@ -205,11 +332,120 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
       map_value(payload, :outcome) == delivery.outcome
   end
 
-  defp strong_pr_evidence?(%PlannedSliceDelivery{} = delivery) do
+  defp merged_pr_fields?(%PlannedSliceDelivery{} = delivery) do
     filled_string?(delivery.pr_url) and
-      match?(%DateTime{}, delivery.pr_merged_at) and
-      filled_string?(delivery.merge_commit_sha)
+      match?(%DateTime{}, delivery.pr_merged_at)
   end
+
+  defp well_formed_pr_evidence?(%PlannedSliceDelivery{} = delivery) do
+    case github_pr_url_parts(delivery.pr_url) do
+      {:ok, parts} ->
+        pr_repository_matches?(delivery.pr_repository, parts.repository) and
+          pr_number_matches?(delivery.pr_number, parts.number)
+
+      :not_github ->
+        valid_absolute_url?(delivery.pr_url)
+
+      :error ->
+        false
+    end
+  end
+
+  defp github_pr_url_parts(url) when is_binary(url) do
+    uri = URI.parse(String.trim(url))
+
+    cond do
+      not valid_absolute_url?(uri) ->
+        :error
+
+      String.downcase(uri.host || "") not in ["github.com", "www.github.com"] ->
+        :not_github
+
+      true ->
+        github_pr_path_parts(uri.path)
+    end
+  end
+
+  defp github_pr_url_parts(_url), do: :error
+
+  defp github_pr_path_parts(path) do
+    case path |> to_string() |> String.split("/", trim: true) do
+      [owner, repo, "pull", number | _rest] -> github_pr_number_parts(owner, repo, number)
+      _invalid_path -> :error
+    end
+  end
+
+  defp github_pr_number_parts(owner, repo, number) do
+    case Integer.parse(number) do
+      {number, ""} when number > 0 -> {:ok, %{repository: "#{owner}/#{repo}", number: number}}
+      _invalid_number -> :error
+    end
+  end
+
+  defp valid_absolute_url?(url) when is_binary(url) do
+    url |> String.trim() |> URI.parse() |> valid_absolute_url?()
+  end
+
+  defp valid_absolute_url?(%URI{scheme: scheme, host: host}) do
+    scheme in ["http", "https"] and filled_string?(host)
+  end
+
+  defp valid_absolute_url?(_uri), do: false
+
+  defp pr_repository_matches?(nil, _url_repository), do: true
+
+  defp pr_repository_matches?(repository, url_repository) when is_binary(repository) do
+    normalize_repository(repository) == normalize_repository(url_repository)
+  end
+
+  defp pr_repository_matches?(_repository, _url_repository), do: false
+
+  defp pr_number_matches?(nil, _url_number), do: true
+  defp pr_number_matches?(number, url_number) when is_integer(number), do: number == url_number
+  defp pr_number_matches?(_number, _url_number), do: false
+
+  defp normalize_repository(repository) when is_binary(repository) do
+    repository
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp closeout_progress_summary(%PlannedSliceDelivery{} = delivery, closeout_context) do
+    if closeout_context.active_blocker_ids != [] do
+      "Recorded WorkRequest delivery closeout: #{delivery.outcome} (active blockers preserved)"
+    else
+      "Recorded WorkRequest delivery closeout: #{delivery.outcome}"
+    end
+  end
+
+  defp closeout_progress_payload(%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %PlannedSliceDelivery{} = delivery, closeout, closeout_context) do
+    %{
+      type: "work_request_delivery_closeout",
+      source_tool: "record_planned_slice_delivery",
+      work_request_id: work_request.id,
+      planned_slice_id: planned_slice.id,
+      delivery_id: delivery.id,
+      outcome: delivery.outcome,
+      previous_status: closeout.previous_status,
+      next_status: closeout.next_status,
+      status_changed: closeout.changed?,
+      pr_url: delivery.pr_url,
+      pr_number: delivery.pr_number,
+      pr_repository: delivery.pr_repository,
+      pr_merged_at: delivery.pr_merged_at,
+      merge_commit_sha: delivery.merge_commit_sha,
+      successor_planned_slice_id: delivery.successor_planned_slice_id,
+      successor_work_package_id: delivery.successor_work_package_id
+    }
+    |> put_non_empty(:active_blocker_ids, closeout_context.active_blocker_ids)
+    |> put_non_empty(:blocker_reason_codes, closeout_context.blocker_reason_codes)
+    |> put_non_empty(:runtime_reason_codes_before_closeout, closeout_context.runtime_reason_codes)
+    |> put_non_empty(:retired_worker_grant_ids, closeout_context.retired_worker_grant_ids)
+    |> put_non_empty(:retired_claim_lease_ids, closeout_context.retired_claim_lease_ids)
+  end
+
+  defp put_non_empty(payload, _key, []), do: payload
+  defp put_non_empty(payload, key, values) when is_list(values), do: Map.put(payload, key, values)
 
   defp closeout_idempotency_key(%PlannedSliceDelivery{} = delivery) do
     Enum.join(
