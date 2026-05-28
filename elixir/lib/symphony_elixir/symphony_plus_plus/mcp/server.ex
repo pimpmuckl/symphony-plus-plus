@@ -3072,6 +3072,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  @dialyzer {:nowarn_function, local_assignment_worktree_branch: 1}
+  @spec local_assignment_worktree_branch(term()) :: {:ok, String.t()} | {:error, atom()}
   defp local_assignment_worktree_branch(worktree_path) when is_binary(worktree_path) do
     with true <- File.dir?(worktree_path),
          {:ok, git_dir} <- local_assignment_git_dir(worktree_path),
@@ -6323,11 +6325,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp target_repo_root_matches_repo_scope?(target_repo_root, expected_repo, %Config{} = config) when is_binary(expected_repo) do
     origin = RepoIdentity.local_git_origin_remote(target_repo_root)
+    trusted_remotes = repo_scope_trusted_remotes(config, target_repo_root)
 
     same_existing_path?(target_repo_root, expected_repo) or
       (is_binary(origin) and
          (same_existing_path?(origin, expected_repo) or
-            RepoIdentity.scope_match?(expected_repo, origin, trusted_remotes: repo_scope_trusted_remotes(config, target_repo_root))))
+            RepoIdentity.scope_match?(expected_repo, origin, trusted_remotes: trusted_remotes)))
   end
 
   defp target_repo_root_matches_repo_scope?(_target_repo_root, _expected_repo, _config), do: false

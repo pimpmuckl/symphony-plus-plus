@@ -387,7 +387,7 @@ function New-CockpitCommand([string]$SourceCheckoutRoot) {
   }
 
   $elixirRoot = [System.IO.Path]::GetFullPath((Join-Path $SourceCheckoutRoot "elixir"))
-  return "Set-Location $(Quote-PowerShellLiteral $elixirRoot); mix sympp.cockpit"
+  return "Set-Location $(Quote-PowerShellLiteral $elixirRoot); mix sympp.cockpit --port 19998 --dashboard-origin http://127.0.0.1:19999"
 }
 
 function New-VerifyHttpMcpCommand([string]$SourceCheckoutRoot) {
@@ -1132,7 +1132,7 @@ function Get-SymppMcpServerStatus($McpConfig) {
       return "invalid_url"
     }
 
-    if ($server.url -eq "http://127.0.0.1:4057/mcp") {
+    if ($server.url -eq "http://127.0.0.1:19998/mcp") {
       return "ok"
     }
 
@@ -1141,7 +1141,7 @@ function Get-SymppMcpServerStatus($McpConfig) {
   if ($server.type -ne "stdio") {
     return "invalid_type"
   }
-  if ($server.command -ne "pwsh") {
+  if ($server.command -ne "cmd.exe") {
     return "unexpected_command"
   }
   if ($server.cwd -ne ".") {
@@ -1149,9 +1149,9 @@ function Get-SymppMcpServerStatus($McpConfig) {
   }
 
   $args = @($server.args)
-  $hasNoProfile = @($args | Where-Object { [string]$_ -eq "-NoProfile" }).Count -gt 0
-  $hasStartScript = @($args | Where-Object { [string]$_ -match "scripts[\\/]start-sympp-mcp\.ps1" }).Count -gt 0
-  if (-not $hasNoProfile -or -not $hasStartScript) {
+  $hasCmdLaunch = @($args | Where-Object { [string]$_ -eq "/c" }).Count -gt 0
+  $hasStartScript = @($args | Where-Object { [string]$_ -match "scripts[\\/]start-sympp-mcp\.cmd" }).Count -gt 0
+  if (-not $hasCmdLaunch -or -not $hasStartScript) {
     return "invalid_args"
   }
 
@@ -2313,7 +2313,7 @@ function Invoke-McpCompanionEnable($Summary, [string]$RequestedMarketplaceName, 
     companion_cache_lifecycle = $companionPackage.default_plugin_lifecycle_status
     companion_reference_mcp_server_status = $companionPackage.reference_mcp_server_status
     companion_http_mcp_reachability_status = $companionPackage.http_mcp_reachability_status
-    restart_action = "Restart or reload the dedicated Symphony++ MCP Codex session so plugin MCP servers register before the model starts."
+    restart_action = "Restart or reload the dedicated Symphony++ MCP Codex session so the plugin launcher starts or reuses the backend/dashboard before the model starts."
     smoke_command = $smokeCommand
     boundary = "Keep symphony-plus-plus-mcp out of generic worker, worker_smart, review-suite, and codex review configs; use a dedicated S++ MCP-enabled config/session instead."
   }
@@ -2333,7 +2333,7 @@ function Write-McpCompanionEnableSummary($Result) {
   Write-Host ""
   Write-Host "Next steps:"
   Write-Host "  - $($Result.restart_action)"
-  Write-Host "  - Verify the local HTTP MCP daemon:"
+  Write-Host "  - Optional: verify the local HTTP MCP daemon after the Codex session starts:"
   Write-Host "    $($Result.smoke_command)"
   Write-Host ""
   Write-Host "Boundary: $($Result.boundary)"
@@ -2632,6 +2632,8 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     "companion_config_entry_unsupported"
   } elseif ($companionEnabled -ne $true) {
     "companion_installed_not_enabled"
+  } elseif ($companionPackage.http_mcp_reachability_status -eq "not_applicable") {
+    "ready"
   } elseif ($companionPackage.http_mcp_reachability_status -eq "mcp_endpoint_available") {
     "ready"
   } elseif ($companionPackage.http_mcp_reachability_status -eq "unreachable") {
@@ -2641,7 +2643,7 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
   }
 
   if (-not $companionSelectionBlocked -and -not $companionReady) {
-    $actions += New-SourceCheckoutAction "refresh_mcp_companion_cache" "workrequest_mcp" "Refresh the opt-in MCP companion cache and validate its HTTP .mcp.json." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($companionRefreshMarketplaceArg)-PluginName symphony-plus-plus-mcp -ValidateInstalledCache")
+    $actions += New-SourceCheckoutAction "refresh_mcp_companion_cache" "workrequest_mcp" "Refresh the opt-in MCP companion cache and validate its command-backed .mcp.json." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($companionRefreshMarketplaceArg)-PluginName symphony-plus-plus-mcp -ValidateInstalledCache")
   } elseif (-not $companionSelectionBlocked -and $companionReady -and $companionEnabled -ne $true -and $otherMarketplaceMcpCompanionEnabled) {
     $actions += New-ReadinessAction "resolve_mcp_companion_marketplace_conflict" "config" "Another symphony-plus-plus-mcp marketplace is already enabled in this Codex config; disable or relocate that entry before enabling $companionMarketplace."
   } elseif (-not $companionSelectionBlocked -and $companionReady -and $companionEnabled -ne $true -and $defaultCodexHomeSelected) {
@@ -2663,7 +2665,7 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     } else {
       $actions += New-ReadinessAction "enable_mcp_companion" "workrequest_mcp" "Enable the opt-in MCP companion only in a dedicated S++ config/session: [plugins.`"$companionConfigKey`"] enabled = true." $enableCommand
     }
-    $actions += New-ReadinessAction "restart_codex_session" "workrequest_mcp" "Restart or reload that dedicated Codex session so plugin MCP servers register before the model starts."
+    $actions += New-ReadinessAction "restart_codex_session" "workrequest_mcp" "Restart or reload that dedicated Codex session so the plugin launcher can start or reuse the S++ backend/dashboard before the model starts."
   } elseif (-not $companionSelectionBlocked -and $companionStatus -eq "endpoint_unreachable") {
     $actions += New-SourceCheckoutAction "start_cockpit" "workrequest_mcp" "Start the local Symphony++ cockpit/HTTP MCP daemon." $SourceCheckout (New-CockpitCommand $sourceRoot)
     $actions += New-SourceCheckoutAction "verify_http_mcp" "workrequest_mcp" "Verify the local HTTP MCP daemon source revision independently of Codex plugin loading." $SourceCheckout (New-VerifyHttpMcpCommand $sourceRoot)
@@ -2734,11 +2736,15 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
       cache_lifecycle = if ($null -ne $companionPackage) { $companionPackage.default_plugin_lifecycle_status } else { $null }
       reference_mcp_server_status = if ($null -ne $companionPackage) { $companionPackage.reference_mcp_server_status } else { $null }
       http_mcp_reachability_status = if ($null -ne $companionPackage) { $companionPackage.http_mcp_reachability_status } else { $null }
-      url = "http://127.0.0.1:4057/mcp"
+      transport = if ($null -ne $companionPackage -and $companionPackage.http_mcp_reachability_status -eq "not_applicable") { "command_stdio_to_http_bridge" } else { "http_url" }
+      default_backend_url = "http://127.0.0.1:19998"
+      default_mcp_url = "http://127.0.0.1:19998/mcp"
+      default_dashboard_url = "http://127.0.0.1:19999/sympp/board"
+      runtime_file = [System.IO.Path]::GetFullPath((Join-Path $HOME ".agents/splusplus/runtime/codex-plugin.json"))
     }
     next_actions = @($actions)
     warnings = @($warnings)
-    session_visibility_note = "This doctor verifies source/cache/config and the local HTTP daemon. It cannot inspect tools already registered inside an open Codex model session; restart or reload the dedicated MCP-enabled session after config/cache changes."
+    session_visibility_note = "This doctor verifies source/cache/config and the command-backed launcher shape. It cannot inspect tools already registered inside an open Codex model session; restart or reload the dedicated MCP-enabled session after config/cache changes."
     generic_review_boundary = "Keep symphony-plus-plus-mcp out of generic worker, worker_smart, review-suite, and codex review configs; use a dedicated S++ MCP-enabled config/session instead."
   }
 }
@@ -2768,7 +2774,10 @@ function Write-DoctorSummary($Summary) {
   Write-Host "  cache: $($readiness.workrequest_mcp.cache_label) / $($readiness.workrequest_mcp.cache_lifecycle)"
   Write-Host "  server: $($readiness.workrequest_mcp.reference_mcp_server_status)"
   Write-Host "  endpoint: $($readiness.workrequest_mcp.http_mcp_reachability_status)"
-  Write-Host "  url: $($readiness.workrequest_mcp.url)"
+  Write-Host "  transport: $($readiness.workrequest_mcp.transport)"
+  Write-Host "  backend: $($readiness.workrequest_mcp.default_backend_url)"
+  Write-Host "  dashboard: $($readiness.workrequest_mcp.default_dashboard_url)"
+  Write-Host "  runtime file: $($readiness.workrequest_mcp.runtime_file)"
   Write-Host ""
 
   if (@($readiness.warnings).Count -gt 0) {

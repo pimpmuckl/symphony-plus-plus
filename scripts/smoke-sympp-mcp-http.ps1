@@ -1,5 +1,5 @@
 param(
-  [string]$Url = "http://127.0.0.1:4057/mcp",
+  [string]$Url = "http://127.0.0.1:19998/mcp",
   [switch]$Json,
   [switch]$Bound,
   [string]$WorkKeySecretEnv,

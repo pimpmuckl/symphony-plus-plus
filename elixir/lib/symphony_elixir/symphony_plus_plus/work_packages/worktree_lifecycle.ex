@@ -57,7 +57,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
          {:ok, branch} <- ref_name(attrs, "branch", :invalid_branch, target_repo_root, opts),
          {:ok, worktree_parent} <- worktree_parent(attrs, opts),
          {:ok, worktree_path} <- worktree_path(work_package, target_repo_root, branch, worktree_parent),
-         {:ok, worktree_path} <- validate_recorded_prepare_path(work_package, worktree_path, target_repo_root, branch, worktree_parent) do
+         {:ok, worktree_path} <-
+           validate_recorded_prepare_path(work_package, worktree_path, target_repo_root, branch, worktree_parent) do
       maybe_replay_prepared(repo, work_package, target_repo_root, base_branch, branch, worktree_path, opts)
     end
   end

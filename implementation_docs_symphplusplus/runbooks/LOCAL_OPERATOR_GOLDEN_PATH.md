@@ -107,20 +107,28 @@ Start the cockpit with the same `$demoLedger` path printed by the generator.
 
 ## Start The Cockpit
 
-From the repository root, start the local operator cockpit:
+From the repository root, start the local operator cockpit backend:
 
 ```powershell
 Set-Location elixir
-mix sympp.cockpit
+mix sympp.cockpit --dashboard-origin http://127.0.0.1:19999
 ```
 
-The task binds to `127.0.0.1:4057` by default, prints
-`http://127.0.0.1:4057/sympp/board`, serves MCP at
-`http://127.0.0.1:4057/mcp`, and runs until interrupted. Open the printed URL
-in your browser. Use `--port 0` only when you intentionally want a dynamic port
-for manual testing.
+The task binds to `127.0.0.1:19998` by default, prints
+`http://127.0.0.1:19999/sympp/board` when a dashboard origin is supplied,
+serves MCP at `http://127.0.0.1:19998/mcp`, and runs until interrupted.
+In a second shell, start the dashboard that serves the printed URL:
 
-In a second shell from the repository root, prove the local HTTP MCP daemon
+```powershell
+Set-Location elixir\assets
+npm run dev -- --host 127.0.0.1 --port 19999
+```
+
+Open `http://127.0.0.1:19999/sympp/board` in your browser after both processes
+are running. Use `--port 0` only when you intentionally want a dynamic port for
+manual testing.
+
+In a third shell from the repository root, prove the local HTTP MCP daemon
 before troubleshooting Codex app plugin visibility:
 
 ```powershell

@@ -582,17 +582,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
 
   defp valid_absolute_url?(_uri), do: false
 
-  defp pr_repository_matches?(nil, _url_repository), do: true
-
-  defp pr_repository_matches?(repository, url_repository) when is_binary(repository) do
-    normalize_repository(repository) == normalize_repository(url_repository)
+  defp pr_repository_matches?(repository, url_repository) do
+    cond do
+      is_nil(repository) -> true
+      is_binary(repository) -> normalize_repository(repository) == normalize_repository(url_repository)
+      true -> false
+    end
   end
 
-  defp pr_repository_matches?(_repository, _url_repository), do: false
-
-  defp pr_number_matches?(nil, _url_number), do: true
-  defp pr_number_matches?(number, url_number) when is_integer(number), do: number == url_number
-  defp pr_number_matches?(_number, _url_number), do: false
+  defp pr_number_matches?(number, url_number) do
+    cond do
+      is_nil(number) -> true
+      is_integer(number) -> number == url_number
+      true -> false
+    end
+  end
 
   defp normalize_repository(repository) when is_binary(repository) do
     repository

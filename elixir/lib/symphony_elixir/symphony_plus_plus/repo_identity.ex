@@ -44,9 +44,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
   def fields(_catalog, _raw_repo), do: empty_identity()
 
   @spec scope_match?(term(), term()) :: boolean()
-  @spec scope_match?(term(), term(), catalog_opts()) :: boolean()
-  def scope_match?(expected_repo, actual_repo, opts \\ [])
+  def scope_match?(expected_repo, actual_repo), do: scope_match?(expected_repo, actual_repo, [])
 
+  @spec scope_match?(term(), term(), catalog_opts()) :: boolean()
   def scope_match?(expected_repo, actual_repo, opts)
       when is_binary(expected_repo) and is_binary(actual_repo) and is_list(opts) do
     catalog = catalog([expected_repo, actual_repo], opts)

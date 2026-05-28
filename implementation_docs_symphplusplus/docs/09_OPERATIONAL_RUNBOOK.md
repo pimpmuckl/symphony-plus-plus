@@ -76,12 +76,12 @@ To inspect local Symphony++ package state and manage pre-package WorkRequests,
 start the local operator cockpit from `elixir/`:
 
 ```powershell
-mix sympp.cockpit
+mix sympp.cockpit --dashboard-origin http://127.0.0.1:19999
 ```
 
-The command binds to `127.0.0.1:4057` by default, prints
-`http://127.0.0.1:4057/sympp/board`, serves MCP at
-`http://127.0.0.1:4057/mcp`, initializes the shared local SQLite ledger in the
+The command binds to `127.0.0.1:19998` by default, prints
+`http://127.0.0.1:19999/sympp/board` when a dashboard origin is supplied, serves
+MCP at `http://127.0.0.1:19998/mcp`, initializes the shared local SQLite ledger in the
 preferred `$HOME/.agents/splusplus/` home or the existing fallback root, and
 blocks until interrupted. Use `--database <ledger.sqlite3>` only when you
 intentionally need an isolated ledger. Use `--port 0` only when you
