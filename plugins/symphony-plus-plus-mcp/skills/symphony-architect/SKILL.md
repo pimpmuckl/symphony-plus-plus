@@ -66,6 +66,8 @@ then prepare or provide worker worktree scope before launch so the worker can
 pass `branch`, `worktree_path`, `caller_id`, and `claimed_by` without asking
 for secrets.
 
+Dispatch workers into worktrees, the MPC has `prepare_work_package_worktree` to help.
+
 Worker prompts must include:
 
 - `symphony-plus-plus:symphony-worker`.

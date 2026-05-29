@@ -37,6 +37,7 @@ Worker prompts should include:
   WorkPackage. Each worker uses its own session.
 - Task-specific scope, evidence, constraints, and deviations from the baseline
   worker contract.
+- Create a worktree for each worker agent to work in
 
 ## Supervise
 
