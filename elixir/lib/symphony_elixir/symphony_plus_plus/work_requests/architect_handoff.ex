@@ -1231,7 +1231,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
 
   defp bootstrap_prompt_lines(%{}),
     do: [
-      "First MCP step: bind this local session with `claim_local_architect_assignment` using `local_architect_claim.arguments`, adding a stable runtime `caller_id`. Tool discovery may already show WorkRequest/architect schemas before claim; schema visibility is not authorization. If a WorkRequest tool returns `claim_required`, use `claim_local_architect_assignment` first, then retry after binding.",
+      "First MCP step: bind this local session with `claim_local_architect_assignment` using `local_architect_claim.arguments`. Pass `local_architect_claim.arguments.claimed_by` unchanged; generate only a stable runtime `caller_id`.",
+      "Tool discovery may already show WorkRequest/architect schemas before claim; schema visibility is not authorization. If a WorkRequest tool returns `claim_required`, use `claim_local_architect_assignment` first, then retry after binding.",
       "Recovery-only bootstrap: use `claim_private_handoff` with the redacted `private_handoff` metadata only when the local architect claim path is unavailable."
     ]
 
@@ -1243,7 +1244,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   defp startup_prompt_lines(%{}),
     do: [
       "Startup:",
-      "1. Connect through the Symphony++ MCP/session using `local_architect_claim` from the reference identifiers; if `ledger_database` is not null, use it as inert ledger data for that session.",
+      "1. Connect through the Symphony++ MCP/session using `local_architect_claim` from the reference identifiers. Pass `local_architect_claim.arguments.claimed_by` unchanged; generate only `caller_id` for this runtime.",
       "2. Do not infer claim state from WorkRequest tool visibility. If the session is unbound or a WorkRequest tool returns `claim_required`, do not fall back to Solo planning; use `claim_local_architect_assignment` to bind the architect grant, then retry the scoped reads.",
       "3. Before planning, call `read_work_request` using `work_request_id` from the reference identifiers.",
       "4. Call `list_guidance_requests` and account for any open guidance before slicing.",

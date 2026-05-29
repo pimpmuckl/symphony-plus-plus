@@ -321,6 +321,17 @@ stale leases may be reclaimed with audit evidence. Remote, untrusted,
 stateless, scope-mismatched, terminal, revoked, or private-file-dependent paths
 fail closed.
 
+Identity fields are deliberately separate:
+
+| Field | Meaning | Reconnect rule |
+| --- | --- | --- |
+| `claimed_by` | Durable grant/authority owner. For generated local architect handoffs, pass `local_architect_claim.arguments.claimed_by` unchanged, normally `symphony-architect`. | Do not replace with `Codex`, account names, or user names. |
+| `caller_id` | Current local MCP runtime, launcher, or thread identity. | Generate a stable value for this runtime and reuse it for reconnects from the same runtime. |
+
+If `claim_lease_active_for_other_actor` appears, do not guess a new
+`claimed_by`. Retry with the handoff `claimed_by`, or ask the operator to
+recycle a stale local claim.
+
 `claim_work_key` intentionally requires both the one-time secret and a stable
 `claimed_by` owner identity. Symphony++ uses that identity as part of the MCP
 ownership contract. The call binds the session to an existing worker or
