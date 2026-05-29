@@ -54,6 +54,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     "revoke_child_worker_key",
     "list_work_requests",
     "read_work_request",
+    "list_comments",
     "read_work_request_delivery_board",
     "reconcile_work_request",
     "record_planned_slice_delivery",
@@ -4605,6 +4606,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(decision_response, ["result", "structuredContent", "decision_log_entry", "created_by"]) == "local-architect-1"
+
+    assert {:ok, comment} =
+             CommentService.create(repo, %{
+               target_kind: "work_request",
+               target_id: work_request.id,
+               body: "Architect visible note",
+               source_type: "operator",
+               author_name: "operator"
+             })
+
+    list_comments_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-list-comments",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "list_comments",
+            "arguments" => %{"target_kind" => "work_request", "target_id" => work_request.id}
+          }
+        },
+        claimed_server
+      )
+
+    assert [%{"id" => comment_id}] = get_in(list_comments_response, ["result", "structuredContent", "comments"])
+    assert comment_id == comment.id
 
     {other_runtime_response, _server} =
       Server.handle_state(

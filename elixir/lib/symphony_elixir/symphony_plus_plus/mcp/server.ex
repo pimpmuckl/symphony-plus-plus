@@ -106,6 +106,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "revoke_child_worker_key",
     "list_work_requests",
     "read_work_request",
+    "list_comments",
     "read_work_request_delivery_board",
     "reconcile_work_request",
     "record_planned_slice_delivery",
@@ -951,6 +952,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp dispatch(
+         "tools/call",
+         %{"name" => "list_comments"} = params,
+         %__MODULE__{session: %Session{assignment: %{grant_role: "architect"}}} = server
+       ) do
+    case prepare_architect_tool_call(server, params, "list_comments") do
+      {:ok, arguments} -> architect_tool("list_comments", arguments, server)
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:error, reason} -> architect_error(reason, "list_comments")
+    end
+  end
+
   defp dispatch("tools/call", %{"name" => name} = params, %__MODULE__{} = server) when name in @worker_tools do
     case prepare_worker_tool_call(server, params, name) do
       {:ok, arguments} -> worker_tool(name, arguments, server)
@@ -1597,6 +1610,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "Read a scoped WorkRequest with clarification questions, decisions, visible planned slices, and status summaries."
   end
 
+  defp architect_tool_description("list_comments") do
+    "List comments attached to a scoped WorkRequest, planned slice, or linked WorkPackage."
+  end
+
   defp architect_tool_description("read_work_request_delivery_board") do
     "Read the scoped WorkRequest delivery-board projection for visible planned-slice closeout without broad package visibility."
   end
@@ -2089,6 +2106,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       ["work_request_id"]
     )
   end
+
+  defp architect_tool_input_schema("list_comments"), do: worker_tool_input_schema("list_comments")
 
   defp architect_tool_input_schema("read_work_request_delivery_board") do
     schema(
@@ -4895,6 +4914,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_work_request", "reason" => reason}}
       {:error, :not_found} -> not_found_error("read_work_request")
       {:error, reason} -> architect_error(reason, "read_work_request")
+    end
+  end
+
+  defp architect_tool("list_comments", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "read:work_request"),
+         {:ok, target_kind} <- required_argument(arguments, "target_kind"),
+         :ok <- require_comment_target_kind(target_kind),
+         {:ok, target_id} <- required_argument(arguments, "target_id"),
+         :ok <- require_architect_comment_target_scope(config.repo, session, target_kind, target_id),
+         {:ok, comments} <- CommentService.list_for_target(config.repo, target_kind, target_id) do
+      {:ok,
+       tool_result(%{
+         "comments" => Enum.map(comments, &comment_payload/1),
+         "target" => %{"kind" => target_kind, "id" => target_id}
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "list_comments", "reason" => reason}}
+      {:error, reason} -> architect_error(reason, "list_comments")
     end
   end
 
@@ -9799,6 +9836,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_capability("revoke_child_worker_key"), do: "revoke:child_worker_key"
   defp architect_tool_capability("list_work_requests"), do: "read:work_request"
   defp architect_tool_capability("read_work_request"), do: "read:work_request"
+  defp architect_tool_capability("list_comments"), do: "read:work_request"
   defp architect_tool_capability("read_work_request_delivery_board"), do: "read:work_request"
   defp architect_tool_capability("reconcile_work_request"), do: "read:work_request"
   defp architect_tool_capability("record_planned_slice_delivery"), do: "write:work_request"
@@ -12108,6 +12146,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_worker_comment_target_scope(_repo, %Session{}, _target_kind, _target_id) do
     {:tool_error, "invalid_target_kind"}
   end
+
+  defp require_architect_comment_target_scope(repo, %Session{} = session, target_kind, target_id) do
+    with {:ok, filters, _scope} <- scoped_work_request_filters(repo, session) do
+      require_architect_comment_target_scope(repo, filters, target_kind, target_id)
+    end
+  end
+
+  defp require_architect_comment_target_scope(repo, filters, "work_request", target_id) do
+    repo
+    |> scoped_work_request(target_id, filters)
+    |> comment_target_scope_result()
+  end
+
+  defp require_architect_comment_target_scope(repo, filters, "planned_slice", target_id) do
+    case repo.one(
+           from(planned_slice in PlannedSlice,
+             join: work_request in WorkRequest,
+             on: work_request.id == planned_slice.work_request_id,
+             where: planned_slice.id == ^target_id,
+             select: work_request,
+             limit: 1
+           )
+         ) do
+      %WorkRequest{} = work_request -> comment_target_scope_result(require_work_request_scope(work_request, filters))
+      nil -> {:tool_error, "comment_target_out_of_scope"}
+    end
+  end
+
+  defp require_architect_comment_target_scope(repo, filters, "work_package", target_id) do
+    case linked_work_request_for_work_package(repo, target_id) do
+      %WorkRequest{} = work_request -> comment_target_scope_result(require_work_request_scope(work_request, filters))
+      nil -> {:tool_error, "comment_target_out_of_scope"}
+    end
+  end
+
+  defp require_architect_comment_target_scope(_repo, _filters, _target_kind, _target_id) do
+    {:tool_error, "invalid_target_kind"}
+  end
+
+  defp comment_target_scope_result({:ok, %WorkRequest{}}), do: :ok
+  defp comment_target_scope_result(:ok), do: :ok
+  defp comment_target_scope_result({:error, :not_found}), do: {:tool_error, "comment_target_out_of_scope"}
+  defp comment_target_scope_result({:error, :forbidden}), do: {:tool_error, "comment_target_out_of_scope"}
+  defp comment_target_scope_result({:error, reason}), do: {:error, reason}
 
   defp authorize_solo_tool_call(%__MODULE__{session_refresh_required: true}, tool) do
     {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "claim_required", "action" => "claim_work_key"}}
