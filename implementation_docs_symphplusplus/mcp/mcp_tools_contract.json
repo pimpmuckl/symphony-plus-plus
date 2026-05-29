@@ -90,11 +90,17 @@
       "name": "submit_review_package",
       "purpose": "Attach summary/tests/artifacts for the current head review package.",
       "head_policy": "head_sha is required on every submit_review_package call and must match the latest attached branch head.",
+      "status_policy": "A valid current-head review package normalizes stale active package statuses such as ready_for_worker, claimed, planning, or implementing to reviewing.",
       "readiness_policy": "The latest review package for the current head is authoritative; older same-head packages are superseded."
     },
     {
       "name": "attach_review_suite_result",
-      "purpose": "Attach canonical Review Suite result evidence for the current WorkPackage head."
+      "purpose": "Attach canonical Review Suite result evidence for the current WorkPackage head.",
+      "passing_vocabulary": {
+        "status": ["passed", "pass", "green", "success", "completed"],
+        "verdict": ["green", "clean", "passed", "pass", "success", "approved"]
+      },
+      "status_policy": "A valid passing current-head Review Suite result normalizes stale active package statuses such as ready_for_worker, claimed, planning, or implementing to reviewing."
     },
     {
       "name": "mark_ready",
@@ -258,17 +264,30 @@
       "name": "answer_work_request_question",
       "purpose": "Answer an open clarification question that belongs to a scoped WorkRequest.",
       "required_capabilities": ["write:work_request"],
-      "required_arguments": ["work_request_id", "question_id", "current_status", "answer"],
-      "optional_arguments": ["answered_by"],
-      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope, verifies the target WorkRequest is in scope, and verifies question_id belongs to that WorkRequest before mutating. Sibling question ids fail closed as not_found without leaking sibling content. This tool does not apply dashboard-only lifecycle helper policy.",
+      "required_arguments": ["work_request_id", "question_id", "answer"],
+      "optional_arguments": ["expected_question_status", "answered_by", "current_status"],
+      "status_argument_policy": "Callers should omit question status. The server defaults to open. expected_question_status=open and deprecated current_status=open are accepted only as optional legacy guards; any other value is rejected with invalid_question_status.",
+      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope, verifies the target WorkRequest is in scope, verifies question_id belongs to that WorkRequest before mutating, and closes only open questions. Sibling question ids fail closed as not_found without leaking sibling content. This tool does not apply dashboard-only lifecycle helper policy.",
       "response_policy": "Returns safe JSON with the redacted updated clarification question, a minimal parent WorkRequest status projection, scope, and status metadata. It excludes read_work_request detail fields, work-key secrets, API tokens, private handoff payloads, and worker secret material."
+    },
+    {
+      "name": "answer_work_request_question_and_record_decision",
+      "purpose": "Answer an open clarification question and atomically record the resulting WorkRequest decision.",
+      "required_capabilities": ["write:work_request"],
+      "required_arguments": ["work_request_id", "question_id", "answer", "source_type", "decision", "rationale", "scope_impact"],
+      "optional_arguments": ["expected_question_status", "answered_by", "created_by", "source_id", "current_status"],
+      "status_argument_policy": "Callers should omit question status. The server defaults to open. expected_question_status=open and deprecated current_status=open are accepted only as optional legacy guards; any other value is rejected with invalid_question_status.",
+      "scope_policy": "Requires the same explicit phase-scoped architect grant and question ownership checks as answer_work_request_question. The answer and decision commit atomically so a failed decision does not leave the question answered.",
+      "response_policy": "Returns safe JSON with the redacted answered clarification question, decision log entry, minimal parent WorkRequest status projection, scope, and status metadata. It excludes read_work_request detail fields, work-key secrets, API tokens, private handoff payloads, and worker secret material."
     },
     {
       "name": "close_work_request_question",
       "purpose": "Close an open clarification question that belongs to a scoped WorkRequest without recording an answer.",
       "required_capabilities": ["write:work_request"],
-      "required_arguments": ["work_request_id", "question_id", "current_status"],
-      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope, verifies the target WorkRequest is in scope, and verifies question_id belongs to that WorkRequest before mutating. Sibling question ids fail closed as not_found without leaking sibling content. This tool does not apply dashboard-only lifecycle helper policy.",
+      "required_arguments": ["work_request_id", "question_id"],
+      "optional_arguments": ["expected_question_status", "current_status"],
+      "status_argument_policy": "Callers should omit question status. The server defaults to open. expected_question_status=open and deprecated current_status=open are accepted only as optional legacy guards; any other value is rejected with invalid_question_status.",
+      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope, verifies the target WorkRequest is in scope, verifies question_id belongs to that WorkRequest before mutating, and closes only open questions. Sibling question ids fail closed as not_found without leaking sibling content. This tool does not apply dashboard-only lifecycle helper policy.",
       "response_policy": "Returns safe JSON with the redacted updated clarification question, a minimal parent WorkRequest status projection, scope, and status metadata. It excludes read_work_request detail fields, work-key secrets, API tokens, private handoff payloads, and worker secret material."
     },
     {

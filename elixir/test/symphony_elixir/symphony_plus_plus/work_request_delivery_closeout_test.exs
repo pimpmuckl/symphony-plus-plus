@@ -687,6 +687,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert "linked_package_blocked_after_delivery" in slice.attention_reason_codes
   end
 
+  test "abandoned no-code closeout closes cleaned package while preserving active blocker evidence", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_worker")
+
+    assert {:ok, _blocker_event} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: linked_package.id,
+               summary: "Worker dependency blocked",
+               status: "blocked",
+               idempotency_key: "abandoned-active-blocker",
+               payload: %{type: "blocker", source_tool: "report_blocker", blocker_id: "worker-dependency", active: true}
+             })
+
+    assert {:ok, delivery} =
+             Service.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               planned_slice.id,
+               delivery_attrs(%{
+                 outcome: "abandoned",
+                 idempotency_key: "delivery-abandoned-with-blocker",
+                 abandoned_rationale: "No code was produced and the architect recut the work."
+               })
+             )
+
+    assert delivery.outcome == "abandoned"
+    assert repo.get!(WorkPackage, linked_package.id).status == "abandoned"
+
+    closeout_event =
+      repo.all(ProgressEvent)
+      |> Enum.find(&(&1.payload["type"] == "work_request_delivery_closeout"))
+
+    assert closeout_event.summary =~ "active blockers preserved"
+    assert closeout_event.payload["active_blocker_ids"] == ["worker-dependency"]
+  end
+
   test "superseded closeout still rejects active runtime evidence", %{repo: repo} do
     {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "implementing")
     successor_slice = create_planned_slice!(repo, work_request, id: "WRS-DELIVERY-RUNTIME-SUCCESSOR")

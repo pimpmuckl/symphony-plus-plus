@@ -153,14 +153,16 @@ material are not returned.
 Explicit phase-scoped architect MCP sessions with `write:work_request` can
 mutate the same scoped clarification and decision surface through
 `set_work_request_status`, `ask_work_request_question`,
-`answer_work_request_question`, `close_work_request_question`, and
-`record_work_request_decision`, and can mutate planned slices through
+`answer_work_request_question`, `answer_work_request_question_and_record_decision`,
+`close_work_request_question`, and `record_work_request_decision`, and can mutate
+planned slices through
 `add_work_request_planned_slice`, `approve_work_request_planned_slice`,
 `skip_work_request_planned_slice`, and `mark_work_request_sliced`. Each
 mutation requires `work_request_id` and first verifies the target WorkRequest
 is inside the frozen repo/base-branch scope. Answer and close calls also
-require `question_id` and verify the question belongs to that scoped
-WorkRequest before mutation; sibling question ids fail closed as not found.
+require `question_id`, verify the question belongs to that scoped WorkRequest,
+and default the expected question status to `open`; sibling question ids fail
+closed as not found.
 Approve and skip calls also require `planned_slice_id` and verify the planned
 slice belongs to that scoped WorkRequest before mutation; sibling slice ids
 fail closed as not found. Responses are JSON-safe and redacted and include the

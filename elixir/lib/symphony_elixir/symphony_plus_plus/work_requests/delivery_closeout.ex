@@ -250,8 +250,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   end
 
   defp prepare_abandoned_closeout_context(repo, work_package_id, context) do
-    with :ok <- reject_active_blocker_context(context),
-         {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
+    with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
          :ok <- require_abandonable_no_code_status(work_package),
          :ok <- require_cleaned_worktree(work_package),
          :ok <- reject_non_recoverable_abandoned_runtime_context(context),
@@ -263,7 +262,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
          context,
          retired_worker_grant_ids,
          retired_claim_lease_ids,
-         allow_active_blockers?: false
+         allow_active_blockers?: true
        )}
     end
   end

@@ -138,14 +138,17 @@ reads and fail closed rather than reading scope from a mutable anchor package.
 
 Explicit phase-scoped architect MCP sessions with `write:work_request` can call
 `set_work_request_status`, `ask_work_request_question`,
-`answer_work_request_question`, `close_work_request_question`, and
-`record_work_request_decision` for the same frozen repo/base-branch scope. The
-same sessions can call `add_work_request_planned_slice`,
+`answer_work_request_question`, `answer_work_request_question_and_record_decision`,
+`close_work_request_question`, and `record_work_request_decision` for the same
+frozen repo/base-branch scope. The same sessions can call
+`add_work_request_planned_slice`,
 `approve_work_request_planned_slice`, `skip_work_request_planned_slice`, and
 `mark_work_request_sliced`. Each mutation requires a scoped `work_request_id`;
 answer and close calls also prove the `question_id` belongs to that WorkRequest
-before mutating, while approve and skip prove the `planned_slice_id` belongs to
-that WorkRequest before mutating. `mark_work_request_sliced` keeps the existing
+before mutating and default the expected question status to `open`, while
+approve and skip prove the `planned_slice_id` belongs to that WorkRequest before
+mutating.
+`mark_work_request_sliced` keeps the existing
 approved-slice requirement. These write tools still do not dispatch planned
 slices, create WorkPackages, alter SecretHandoff, change dashboard behavior, or
 mutate Linear.

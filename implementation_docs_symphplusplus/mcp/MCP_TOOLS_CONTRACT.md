@@ -29,6 +29,12 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | attach_review_suite_result | Attach canonical Review Suite result evidence for the current WorkPackage head. |
 | mark_ready | Move to ready state only if gates pass. |
 
+Valid current-head review package or passing Review Suite evidence may normalize
+stale active package statuses (`ready_for_worker`, `claimed`, `planning`, or
+`implementing`) to `reviewing`. `attach_review_suite_result` accepts passing
+status values `passed`, `pass`, `green`, `success`, `completed` and passing
+verdict values `green`, `clean`, `passed`, `pass`, `success`, `approved`.
+
 `claim_private_handoff` is intentionally not a bound worker mutation tool in
 this table. It is listed under Bootstrap tools for explicit legacy/recovery
 claim paths.
@@ -98,6 +104,7 @@ ledger identity for operator diagnosis:
 | set_work_request_status | Move a scoped WorkRequest between valid statuses with optimistic `current_status` checking. |
 | ask_work_request_question | Add a clarification question to a scoped WorkRequest, optionally with a structured human decision prompt. |
 | answer_work_request_question | Answer an open clarification question that belongs to a scoped WorkRequest. |
+| answer_work_request_question_and_record_decision | Answer an open clarification question and atomically record the resulting WorkRequest decision. |
 | close_work_request_question | Close an open clarification question that belongs to a scoped WorkRequest without recording an answer. |
 | record_work_request_decision | Record a durable decision log entry on a scoped WorkRequest. |
 | add_work_request_planned_slice | Add a planned slice to a scoped WorkRequest. |
@@ -227,12 +234,17 @@ exclude work-key secrets, tokens, private handoff payloads, and worker secret
 material. MCP tools must not be bypassed with direct SQLite deletion for
 planning scratch cleanup.
 `set_work_request_status`, `ask_work_request_question`,
-`answer_work_request_question`, `close_work_request_question`, and
-`record_work_request_decision` require `write:work_request`, the same explicit
-phase-scoped frozen repo/base-branch scope, and `work_request_id` on every
-mutation. They do not accept caller-supplied repo or base-branch arguments.
-Answer and close calls also verify that `question_id` belongs to the scoped
-WorkRequest before mutating and fail closed as not found for sibling questions.
+`answer_work_request_question`, `answer_work_request_question_and_record_decision`,
+`close_work_request_question`, and `record_work_request_decision` require
+`write:work_request`, the same explicit phase-scoped frozen repo/base-branch
+scope, and `work_request_id` on every mutation. They do not accept
+caller-supplied repo or base-branch arguments. Answer and close calls also
+verify that `question_id` belongs to the scoped WorkRequest before mutating and
+default the expected question status to `open`. Callers should omit question
+status; optional `expected_question_status=open` and deprecated
+`current_status=open` are accepted only as legacy guards. Other values return a
+structured `invalid_question_status` error. Sibling question ids fail closed as
+not found.
 Responses return JSON-safe redacted updated question or decision objects plus a
 minimal parent WorkRequest status projection and scope/status metadata; they do
 not return the full `read_work_request` detail shape. These tools cover only

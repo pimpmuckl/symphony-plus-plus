@@ -65,6 +65,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     "set_work_request_status",
     "ask_work_request_question",
     "answer_work_request_question",
+    "answer_work_request_question_and_record_decision",
     "close_work_request_question",
     "record_work_request_decision",
     "add_work_request_planned_slice",
@@ -2383,10 +2384,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["set_work_request_status", "inputSchema", "required"]) == ["work_request_id", "current_status", "next_status"]
     assert get_in(tools_by_name, ["ask_work_request_question", "inputSchema", "required"]) == ["work_request_id", "category", "question", "why_needed"]
     assert get_in(tools_by_name, ["ask_work_request_question", "inputSchema", "properties", "decision_prompt", "required"]) == ["tl_dr", "details", "options"]
-    assert get_in(tools_by_name, ["answer_work_request_question", "inputSchema", "required"]) == ["work_request_id", "question_id", "current_status", "answer"]
+
+    assert get_in(tools_by_name, ["answer_work_request_question", "inputSchema", "required"]) == [
+             "work_request_id",
+             "question_id",
+             "answer"
+           ]
+
     assert get_in(tools_by_name, ["answer_work_request_question", "inputSchema", "properties", "answered_by", "type"]) == "string"
+    assert get_in(tools_by_name, ["answer_work_request_question", "inputSchema", "properties", "current_status", "description"]) =~ "Deprecated alias"
     assert get_in(tools_by_name, ["escalate_guidance_request", "inputSchema", "properties", "decision_prompt", "required"]) == ["tl_dr", "details", "options"]
-    assert get_in(tools_by_name, ["close_work_request_question", "inputSchema", "required"]) == ["work_request_id", "question_id", "current_status"]
+    assert get_in(tools_by_name, ["close_work_request_question", "inputSchema", "required"]) == ["work_request_id", "question_id"]
+
+    assert get_in(tools_by_name, ["answer_work_request_question_and_record_decision", "inputSchema", "required"]) == [
+             "work_request_id",
+             "question_id",
+             "answer",
+             "source_type",
+             "decision",
+             "rationale",
+             "scope_impact"
+           ]
 
     assert get_in(tools_by_name, ["record_work_request_decision", "inputSchema", "required"]) == [
              "work_request_id",
@@ -7278,11 +7296,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert MapSet.new(Map.keys(ask_payload["work_request"])) == MapSet.new(["id", "status", "updated_at"])
     refute inspect(ask_response) =~ "raw_secret_value"
 
+    wrong_status_response =
+      mcp_tool(repo, session, "answer_work_request_question", %{
+        "work_request_id" => work_request.id,
+        "question_id" => question_id,
+        "expected_question_status" => "ready_for_slicing",
+        "answer" => "Wrong status domain."
+      })
+
+    assert get_in(wrong_status_response, ["error", "data", "reason"]) == "invalid_question_status"
+    assert get_in(wrong_status_response, ["error", "data", "status_domain"]) == "clarification_question"
+    assert get_in(wrong_status_response, ["error", "data", "expected_statuses"]) == ["open"]
+    assert get_in(wrong_status_response, ["error", "data", "got"]) == "ready_for_slicing"
+
+    malformed_status_response =
+      mcp_tool(repo, session, "answer_work_request_question", %{
+        "work_request_id" => work_request.id,
+        "question_id" => question_id,
+        "expected_question_status" => 123,
+        "answer" => "Malformed status guard."
+      })
+
+    assert get_in(malformed_status_response, ["error", "data", "reason"]) == "invalid_question_status"
+    assert get_in(malformed_status_response, ["error", "data", "got"]) == "non_string"
+
     answer_response =
       mcp_tool(repo, session, "answer_work_request_question", %{
         "work_request_id" => work_request.id,
         "question_id" => question_id,
-        "current_status" => "open",
         "answer" => "Use signed URL https://example.test/path?sig=raw_secret_value instead."
       })
 
@@ -7310,6 +7351,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(close_response, ["result", "structuredContent", "clarification_question", "status"]) == "closed"
 
+    combined_ask_response =
+      mcp_tool(repo, session, "ask_work_request_question", %{
+        "work_request_id" => work_request.id,
+        "category" => "product",
+        "question" => "Should we keep this backend-only?",
+        "why_needed" => "The answer should become decision-log truth."
+      })
+
+    combined_question_id = get_in(combined_ask_response, ["result", "structuredContent", "clarification_question", "id"])
+
+    combined_response =
+      mcp_tool(repo, session, "answer_work_request_question_and_record_decision", %{
+        "work_request_id" => work_request.id,
+        "question_id" => combined_question_id,
+        "answer" => "Keep it backend-only.",
+        "source_type" => "architect",
+        "decision" => "Keep the WorkRequest backend-only.",
+        "rationale" => "The UI is out of scope.",
+        "scope_impact" => "No dashboard changes."
+      })
+
+    combined_payload = get_in(combined_response, ["result", "structuredContent"])
+    assert get_in(combined_payload, ["clarification_question", "status"]) == "answered"
+    assert get_in(combined_payload, ["decision_log_entry", "source_id"]) == combined_question_id
+    assert get_in(combined_payload, ["decision_log_entry", "created_by"]) == "architect-1"
+
     decision_response =
       mcp_tool(repo, session, "record_work_request_decision", %{
         "work_request_id" => work_request.id,
@@ -7327,9 +7394,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute inspect(decision_response) =~ "raw_secret_value"
 
     assert {:ok, questions} = WorkRequestRepository.list_questions(repo, work_request.id)
-    assert Enum.map(questions, & &1.status) == ["answered", "closed"]
+    assert Enum.map(questions, & &1.status) == ["answered", "closed", "answered"]
     assert {:ok, decisions} = WorkRequestRepository.list_decisions(repo, work_request.id)
-    assert Enum.map(decisions, & &1.source_id) == ["comment-1"]
+    assert Enum.map(decisions, & &1.source_id) == [combined_question_id, "comment-1"]
   end
 
   test "ask_work_request_question rejects malformed decision prompts without echoing nested input", %{repo: repo} do
@@ -15491,6 +15558,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(non_passing_response, ["error", "data", "reason"]) == "non_passing_review_suite_result"
+    assert get_in(non_passing_response, ["error", "data", "expected_verdicts"]) == ["green", "clean", "passed", "pass", "success", "approved"]
 
     arbitrary_payload_response =
       MCPHarness.request(
@@ -15561,6 +15629,60 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(stale_head_response, ["error", "data", "reason"]) == "stale_head_sha"
+  end
+
+  test "review evidence accepts clean vocabulary and promotes stale package status to reviewing", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-REVIEW-PROMOTE", kind: "mcp", status: "ready_for_worker")
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-REVIEW-PROMOTE/worker", "head_sha" => "review-head-a"})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Review package is ready",
+      "tests" => ["mix test"],
+      "artifacts" => ["review-log.txt"],
+      "head_sha" => "review-head-a",
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
+    })
+
+    assert {:ok, promoted_after_review_package} = WorkPackageRepository.get(repo, package.id)
+    assert promoted_after_review_package.status == "reviewing"
+
+    assert {:ok, suite_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-REVIEW-SUITE-CLEAN", kind: "mcp", status: "ready_for_worker")
+             )
+
+    assert {:ok, suite_minted} = AccessGrantService.mint_worker_grant(repo, suite_package.id)
+    assert {:ok, suite_assignment} = AccessGrantService.claim(repo, suite_minted.work_key.secret, claimed_by: "worker-2")
+    suite_session = MCPHarness.session(suite_assignment, proof_hash: suite_minted.grant.secret_hash)
+
+    attach_tool(repo, suite_session, "attach_branch", %{"branch" => "agent/SYMPP-REVIEW-SUITE-CLEAN/worker", "head_sha" => "suite-head-clean"})
+
+    suite_response =
+      attach_tool(repo, suite_session, "attach_review_suite_result", %{
+        "work_package_id" => suite_package.id,
+        "head_sha" => "suite-head-clean",
+        "suite" => "review-suite",
+        "anchor" => "review-suite-clean",
+        "summary" => "Review completed cleanly",
+        "status" => "completed",
+        "verdict" => "clean"
+      })
+
+    assert get_in(suite_response, ["result", "structuredContent", "progress_event", "payload", "status"]) == "completed"
+    assert get_in(suite_response, ["result", "structuredContent", "progress_event", "payload", "verdict"]) == "clean"
+
+    assert {:ok, promoted_after_suite} = WorkPackageRepository.get(repo, suite_package.id)
+    assert promoted_after_suite.status == "reviewing"
   end
 
   test "review-suite result idempotent retry replays after current head advances", %{repo: repo} do
