@@ -153,16 +153,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository do
     end
   end
 
-  defp visible_to_architect_query(%{"phase_id" => phase_id, "repo" => repo_name, "base_branch" => base_branch}) do
+  defp visible_to_architect_query(%{"phase_id" => phase_id, "repo" => repo_name, "base_branch" => base_branch} = filters) do
+    work_package_ids = normalized_work_package_ids(Map.get(filters, "work_package_ids"))
+
     from(guidance_request in GuidanceRequest,
       join: work_package in WorkPackage,
       on: work_package.id == guidance_request.work_package_id,
-      where: work_package.phase_id == ^phase_id,
       where: work_package.repo == ^repo_name,
       where: work_package.base_branch == ^base_branch,
+      where: work_package.phase_id == ^phase_id or (is_nil(work_package.phase_id) and work_package.id in ^work_package_ids),
       order_by: [asc: guidance_request.inserted_at, asc: guidance_request.id]
     )
   end
+
+  defp normalized_work_package_ids(ids) when is_list(ids) do
+    ids
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp normalized_work_package_ids(_ids), do: []
 
   defp maybe_filter_status(query, status) when is_binary(status) and status != "" do
     from(guidance_request in query, where: guidance_request.status == ^status)

@@ -15,6 +15,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
 
   import Ecto.Query, only: [from: 2]
 
+  @abandonable_no_code_statuses ["planning", "ready_for_worker"]
+  @abandoned_no_code_status "abandoned"
+  @implementation_history_statuses [
+    "implementing",
+    "reviewing",
+    "ci_waiting",
+    "ready_for_human_merge",
+    "ready_for_architect_merge",
+    "merging_into_phase",
+    "merged_into_phase",
+    "merged",
+    "closed"
+  ]
+
   @type error ::
           Repository.error()
           | WorkPackageRepository.error()
@@ -251,7 +265,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
 
   defp prepare_abandoned_closeout_context(repo, work_package_id, context) do
     with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
-         :ok <- require_abandonable_no_code_status(work_package),
+         :ok <- require_abandonable_no_code_status(repo, work_package),
          :ok <- require_cleaned_worktree(work_package),
          :ok <- reject_non_recoverable_abandoned_runtime_context(context),
          :ok <- reject_claimed_live_worker_grants(repo, work_package_id),
@@ -267,8 +281,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
     end
   end
 
-  defp require_abandonable_no_code_status(%{status: status}) when status in ["planning", "ready_for_worker"], do: :ok
-  defp require_abandonable_no_code_status(_work_package), do: {:error, :active_runtime}
+  defp require_abandonable_no_code_status(_repo, %{status: status}) when status in @abandonable_no_code_statuses, do: :ok
+
+  defp require_abandonable_no_code_status(repo, %{id: work_package_id, status: @abandoned_no_code_status}) do
+    with {:ok, events} <- PlanningRepository.list_progress_events(repo, work_package_id) do
+      cond do
+        not Enum.any?(events, &abandoned_progress_event?/1) -> {:error, :active_runtime}
+        Enum.any?(events, &implementation_history_event?/1) -> {:error, :active_runtime}
+        true -> :ok
+      end
+    end
+  end
+
+  defp require_abandonable_no_code_status(_repo, _work_package), do: {:error, :active_runtime}
+
+  defp abandoned_progress_event?(%{status: @abandoned_no_code_status}), do: true
+
+  defp abandoned_progress_event?(%{payload: payload}) when is_map(payload) do
+    map_value(payload, :status) == @abandoned_no_code_status or
+      map_value(payload, :next_status) == @abandoned_no_code_status
+  end
+
+  defp abandoned_progress_event?(_event), do: false
+
+  defp implementation_history_event?(event) do
+    event
+    |> progress_history_statuses()
+    |> Enum.any?(&(&1 in @implementation_history_statuses))
+  end
+
+  defp progress_history_statuses(%{status: status, payload: payload}) when is_map(payload) do
+    [
+      status,
+      map_value(payload, :status),
+      map_value(payload, :previous_status),
+      map_value(payload, :next_status),
+      map_value(payload, :work_package_status)
+    ]
+    |> Enum.filter(&is_binary/1)
+  end
+
+  defp progress_history_statuses(%{status: status}) when is_binary(status), do: [status]
+  defp progress_history_statuses(_event), do: []
 
   defp require_cleaned_worktree(%{worktree_path: worktree_path}) do
     if filled_string?(worktree_path), do: {:error, :active_runtime}, else: :ok
