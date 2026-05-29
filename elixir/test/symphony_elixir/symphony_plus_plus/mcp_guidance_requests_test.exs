@@ -16,6 +16,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixir.WorkPackageFactory
 
   @phase_id "phase-guidance-requests-test"
@@ -88,6 +92,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
     repo.delete_all(GuidanceRequest)
     repo.delete_all(ProgressEvent)
     repo.delete_all(AccessGrant)
+    repo.delete_all(PlannedSlice)
+    repo.delete_all(WorkRequest)
     repo.delete_all(WorkPackage)
     repo.delete_all(Phase)
 
@@ -251,6 +257,80 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
 
     worker_read_response = mcp_tool(repo, worker_session, "read_guidance_request", %{"guidance_request_id" => visible_request_id})
     assert get_in(worker_read_response, ["result", "structuredContent", "guidance_request", "answer"]) =~ "Ask the architect first"
+  end
+
+  test "WorkRequest architect sees guidance for unphased dispatched slice packages", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-GUIDANCE-WR-DISPATCHED")
+    planned_slice = create_planned_slice!(repo, work_request, id: "WRS-GUIDANCE-WR-DISPATCHED")
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    package =
+      create_matching_work_package!(repo, work_request, approved_slice,
+        id: "WP-GUIDANCE-WR-DISPATCHED",
+        phase_id: nil,
+        status: "planning"
+      )
+
+    assert is_nil(package.phase_id)
+    assert {:ok, _dispatched_slice} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", package.id)
+
+    worker_session = create_worker_session_for_package(repo, package, "wr-worker")
+
+    guidance_request_id =
+      create_guidance_request(repo, worker_session, %{
+        "summary" => "Need WorkRequest architect guidance",
+        "question" => "Should this no-code dispatch be abandoned?",
+        "context" => "The package is linked through a WorkRequest planned slice, not a phase child.",
+        "idempotency_key" => "wr-linked-guidance"
+      })
+
+    {_anchor, architect_session} = create_work_request_architect_session(repo, work_request)
+    list_response = mcp_tool(repo, architect_session, "list_guidance_requests", %{"status" => "open"})
+    assert list_response["error"] == nil
+    listed_ids = list_response |> get_in(["result", "structuredContent", "guidance_requests"]) |> Enum.map(& &1["id"])
+
+    assert listed_ids == [guidance_request_id]
+
+    answer_response =
+      mcp_tool(repo, architect_session, "answer_guidance_request", %{
+        "guidance_request_id" => guidance_request_id,
+        "answer" => "Abandon the failed dispatch and continue with the recut slice."
+      })
+
+    assert get_in(answer_response, ["result", "structuredContent", "guidance_request", "status"]) == "answered"
+  end
+
+  test "WorkRequest linked guidance does not expose packages owned by another phase", %{repo: repo} do
+    other_phase_id = "phase-guidance-wr-other"
+    assert {:ok, _phase} = PhaseRepository.create(repo, %{id: other_phase_id, title: "Other guidance phase"})
+
+    work_request = create_work_request!(repo, id: "WR-GUIDANCE-WR-OTHER-PHASE")
+    planned_slice = create_planned_slice!(repo, work_request, id: "WRS-GUIDANCE-WR-OTHER-PHASE")
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    package =
+      create_matching_work_package!(repo, work_request, approved_slice,
+        id: "WP-GUIDANCE-WR-OTHER-PHASE",
+        phase_id: other_phase_id,
+        status: "planning"
+      )
+
+    assert {:ok, _dispatched_slice} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", package.id)
+
+    worker_session = create_worker_session_for_package(repo, package, "other-phase-worker")
+
+    _guidance_request_id =
+      create_guidance_request(repo, worker_session, %{
+        "summary" => "Other phase guidance",
+        "question" => "This should stay inside the package phase.",
+        "context" => "The package has its own phase owner.",
+        "idempotency_key" => "wr-linked-other-phase-guidance"
+      })
+
+    {_anchor, architect_session} = create_work_request_architect_session(repo, work_request)
+    list_response = mcp_tool(repo, architect_session, "list_guidance_requests", %{"status" => "open"})
+    assert list_response["error"] == nil
+    assert get_in(list_response, ["result", "structuredContent", "guidance_requests"]) == []
   end
 
   test "architect escalation records human_info_needed blocker that blocks readiness", %{repo: repo} do
@@ -516,6 +596,70 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
     {anchor, MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)}
   end
 
+  defp create_work_request_architect_session(repo, %WorkRequest{} = work_request) do
+    phase_id = ArchitectHandoff.phase_id_for_work_request(work_request)
+
+    assert {:ok, _phase} = PhaseRepository.create(repo, %{id: phase_id, title: "Architect handoff for #{work_request.id}"})
+
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               work_package_attrs(
+                 id: ArchitectHandoff.anchor_id_for_work_request(work_request),
+                 kind: "delegation",
+                 title: "Architect handoff: #{work_request.title}",
+                 repo: work_request.repo,
+                 base_branch: work_request.base_branch,
+                 phase_id: phase_id,
+                 status: "planning",
+                 allowed_file_globs: ["elixir/lib", "elixir/lib/**"],
+                 acceptance_criteria: ["Own the WorkRequest architecture."]
+               )
+             )
+
+    assert {:ok, minted} =
+             AccessGrantService.mint_architect_grant(repo, phase_id,
+               work_package_id: anchor.id,
+               capabilities: @architect_capabilities
+             )
+
+    assert {:ok, assignment} =
+             AccessGrantRepository.claim(repo, minted.work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    {anchor, MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)}
+  end
+
+  defp create_work_request!(repo, overrides) do
+    assert {:ok, work_request} = WorkRequestRepository.create(repo, work_request_attrs(overrides))
+    work_request
+  end
+
+  defp create_planned_slice!(repo, %WorkRequest{} = work_request, overrides) do
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(work_request, overrides))
+
+    planned_slice
+  end
+
+  defp create_matching_work_package!(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, overrides) do
+    attrs =
+      [
+        kind: planned_slice.work_package_kind,
+        title: planned_slice.title,
+        repo: work_request.repo,
+        base_branch: planned_slice.target_base_branch,
+        branch_pattern: planned_slice.branch_pattern,
+        product_description: work_request.human_description,
+        allowed_file_globs: planned_slice.owned_file_globs,
+        acceptance_criteria: planned_slice.acceptance_criteria
+      ]
+      |> Keyword.merge(overrides)
+      |> work_package_attrs()
+
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, attrs)
+    work_package
+  end
+
   defp create_worker_session(repo, work_package_id, overrides \\ []) do
     phase_id = Keyword.get(overrides, :phase_id, @phase_id)
 
@@ -565,6 +709,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
     |> Keyword.put_new(:base_branch, @base_branch)
     |> Keyword.put_new(:allowed_file_globs, ["elixir/lib/**"])
     |> WorkPackageFactory.attrs()
+  end
+
+  defp work_request_attrs(overrides) do
+    defaults = %{
+      id: "WR-GUIDANCE-#{System.unique_integer([:positive])}",
+      title: "Guidance WorkRequest",
+      repo: @repo_name,
+      base_branch: @base_branch,
+      work_type: "feature",
+      human_description: "Route worker guidance through the owning WorkRequest architect.",
+      constraints: %{"allowed_paths" => ["elixir/lib"], "forbidden_paths" => [], "requires_secret" => false},
+      desired_dispatch_shape: "architect_led_feature_branch",
+      status: "ready_for_slicing"
+    }
+
+    Enum.into(overrides, defaults)
+  end
+
+  defp planned_slice_attrs(%WorkRequest{} = work_request, overrides) do
+    defaults = %{
+      id: "WRS-GUIDANCE-#{System.unique_integer([:positive])}",
+      title: "Guidance linked slice",
+      goal: "Keep package guidance visible to the WorkRequest architect.",
+      work_package_kind: "mcp",
+      target_base_branch: work_request.base_branch,
+      branch_pattern: "feat/guidance-linked-slice",
+      owned_file_globs: ["elixir/lib/symphony_elixir/symphony_plus_plus/**"],
+      forbidden_file_globs: ["elixir/assets/**"],
+      acceptance_criteria: ["Guidance remains answerable through the owning architect."],
+      validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/mcp_guidance_requests_test.exs"],
+      review_lanes: ["brief"],
+      stop_conditions: ["Do not broaden guidance visibility across WorkRequests."]
+    }
+
+    Enum.into(overrides, defaults)
   end
 
   defp mcp_tool(repo, session, name, arguments) do

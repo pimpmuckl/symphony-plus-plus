@@ -6044,9 +6044,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
          {:ok, phase_id} <- architect_phase_scope(repo, session) do
       scope = Map.put(scope, "phase_id", phase_id)
-      {:ok, Map.put(filters, "phase_id", phase_id), scope}
+
+      filters =
+        filters
+        |> Map.put("phase_id", phase_id)
+        |> maybe_put_work_request_guidance_package_ids(repo)
+
+      {:ok, filters, scope}
     end
   end
+
+  defp maybe_put_work_request_guidance_package_ids(%{"repo" => repo_name, "base_branch" => base_branch, "phase_id" => phase_id} = filters, repo) do
+    work_package_ids =
+      repo.all(
+        from(planned_slice in PlannedSlice,
+          join: work_request in WorkRequest,
+          on: work_request.id == planned_slice.work_request_id,
+          where: work_request.repo == ^repo_name,
+          where: work_request.base_branch == ^base_branch,
+          where: not is_nil(planned_slice.work_package_id),
+          select: {work_request, planned_slice.work_package_id}
+        )
+      )
+      |> Enum.filter(fn {work_request, _work_package_id} -> ArchitectHandoff.phase_id_for_work_request(work_request) == phase_id end)
+      |> Enum.map(fn {_work_request, work_package_id} -> work_package_id end)
+      |> Enum.uniq()
+
+    case work_package_ids do
+      [] -> filters
+      ids -> Map.put(filters, "work_package_ids", ids)
+    end
+  end
+
+  defp maybe_put_work_request_guidance_package_ids(filters, _repo), do: filters
 
   defp require_work_request_anchor_scope(repo, %Session{} = session, %AccessGrant{} = grant) do
     if architect_explicit_phase_grant?(grant) do

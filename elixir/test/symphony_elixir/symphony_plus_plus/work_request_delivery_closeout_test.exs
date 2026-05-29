@@ -342,6 +342,105 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert %WorkRequest{completed_at: %DateTime{}} = repo.get!(WorkRequest, abandoned_request.id)
   end
 
+  test "abandoned closeout accepts an already-abandoned no-code package after worker authority is cleared", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(repo,
+        work_request_id: "WR-DELIVERY-ABANDONED-ALREADY-TERMINAL",
+        status: "ready_for_worker"
+      )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "stopped-worker")
+
+    assert {:ok, claim_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               linked_package.id,
+               %{
+                 "actor_kind" => "agent",
+                 "actor_id" => "local:stopped-worker",
+                 "actor_display_name" => "stopped-worker"
+               },
+               stale_after_ms: 60_000
+             )
+
+    assert {:ok, _released_lease} = ClaimLeaseService.release(repo, claim_lease.id, reason: "worker stopped before code")
+    assert {:ok, _revoked_grant} = AccessGrantService.revoke(repo, minted.grant.id)
+
+    assert {:ok, _abandoned_progress} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: linked_package.id,
+               summary: "Worker stopped before implementation.",
+               status: "abandoned",
+               idempotency_key: "abandoned-before-closeout",
+               payload: %{
+                 "previous_status" => "blocked",
+                 "next_status" => "abandoned"
+               }
+             })
+
+    assert {:ok, _abandoned_package} = WorkPackageRepository.update(repo, linked_package.id, %{status: "abandoned", worktree_path: nil})
+
+    attrs =
+      delivery_attrs(%{
+        outcome: "abandoned",
+        idempotency_key: "delivery-abandoned-already-terminal",
+        abandoned_rationale: "Worker stopped before implementation and the package was already marked abandoned."
+      })
+
+    assert {:ok, delivery} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert delivery.outcome == "abandoned"
+    assert repo.get!(WorkPackage, linked_package.id).status == "abandoned"
+
+    closeout_event = repo.all(ProgressEvent) |> Enum.find(&(&1.payload["source_tool"] == "record_planned_slice_delivery"))
+    assert closeout_event.payload["previous_status"] == "abandoned"
+    assert "package_terminal" in closeout_event.payload["runtime_reason_codes_before_closeout"]
+  end
+
+  test "abandoned closeout rejects already-abandoned packages with implementation history", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(repo,
+        work_request_id: "WR-DELIVERY-ABANDONED-WITH-HISTORY",
+        status: "ready_for_worker"
+      )
+
+    assert {:ok, _implementation_progress} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: linked_package.id,
+               summary: "Implementation started before the package was abandoned.",
+               status: "implementing",
+               idempotency_key: "abandoned-with-implementation-history",
+               payload: %{
+                 "previous_status" => "ready_for_worker",
+                 "next_status" => "implementing"
+               }
+             })
+
+    assert {:ok, _abandoned_progress} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: linked_package.id,
+               summary: "Package was later abandoned.",
+               status: "abandoned",
+               idempotency_key: "abandoned-after-implementation-history",
+               payload: %{
+                 "previous_status" => "implementing",
+                 "next_status" => "abandoned"
+               }
+             })
+
+    assert {:ok, _abandoned_package} = WorkPackageRepository.update(repo, linked_package.id, %{status: "abandoned", worktree_path: nil})
+
+    attrs =
+      delivery_attrs(%{
+        outcome: "abandoned",
+        idempotency_key: "delivery-abandoned-with-history",
+        abandoned_rationale: "This should not hide implementation history."
+      })
+
+    assert {:error, :active_runtime} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+  end
+
   test "phase-child PR merged closeout must use merge_child_into_phase", %{repo: repo} do
     {work_request, planned_slice, linked_package} =
       linked_slice!(repo,
