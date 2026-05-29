@@ -428,6 +428,14 @@ retry matches an already recorded review package, Symphony++ replays that
 success even after the current branch head has moved forward. The replay does
 not make older-head evidence current for readiness.
 
+Valid current-head review evidence can normalize stale active package lifecycle
+bookkeeping to `reviewing`. This applies when `submit_review_package` or a
+passing `attach_review_suite_result` is accepted while the raw package status is
+`ready_for_worker`, `claimed`, `planning`, or `implementing`. Passing Review
+Suite status values are `passed`, `pass`, `green`, `success`, and `completed`;
+passing verdict values are `green`, `clean`, `passed`, `pass`, `success`, and
+`approved`.
+
 After `mark_ready` succeeds, worker evidence is frozen. Evidence-mutating tools
 such as progress, findings, blockers, branch/PR metadata, scope requests, and
 review packages reject new writes for the ready package while preserving
@@ -474,8 +482,9 @@ record_planned_slice_delivery(work_request_id, planned_slice_id, outcome, idempo
 revoke_planned_slice_worker_key(work_request_id, planned_slice_id, grant_id, reason)
 set_work_request_status(work_request_id, current_status, next_status)
 ask_work_request_question(work_request_id, category, question, why_needed, asked_by_agent_run_id?, decision_prompt?)
-answer_work_request_question(work_request_id, question_id, current_status, answer, answered_by?)
-close_work_request_question(work_request_id, question_id, current_status)
+answer_work_request_question(work_request_id, question_id, answer, answered_by?, expected_question_status?, current_status?)
+answer_work_request_question_and_record_decision(work_request_id, question_id, answer, source_type, decision, rationale, scope_impact, answered_by?, created_by?, source_id?, expected_question_status?, current_status?)
+close_work_request_question(work_request_id, question_id, expected_question_status?, current_status?)
 record_work_request_decision(work_request_id, source_type, decision, rationale, scope_impact, created_by, source_id?)
 add_work_request_planned_slice(work_request_id, title, goal, work_package_kind, target_base_branch, owned_file_globs, forbidden_file_globs, acceptance_criteria, validation_steps, review_lanes, stop_conditions, branch_pattern?)
 approve_work_request_planned_slice(work_request_id, planned_slice_id, current_status)
@@ -651,22 +660,28 @@ and a redacted reason, records redacted audit evidence, and never accepts or
 returns raw worker secrets.
 
 `set_work_request_status`, `ask_work_request_question`,
-`answer_work_request_question`, `close_work_request_question`, and
-`record_work_request_decision` are architect mutation tools gated by
-`write:work_request`. They use the same explicit phase-scoped frozen
-repo/base-branch scope model as the read tools and require `work_request_id` on
-every call before mutating. Out-of-scope WorkRequests fail closed as not found
-or scoped denial without leaking sibling content. `answer_work_request_question`
+`answer_work_request_question`, `answer_work_request_question_and_record_decision`,
+`close_work_request_question`, and `record_work_request_decision` are architect
+mutation tools gated by `write:work_request`. They use the same explicit
+phase-scoped frozen repo/base-branch scope model as the read tools and require
+`work_request_id` on every call before mutating. Out-of-scope WorkRequests fail
+closed as not found or scoped denial without leaking sibling content.
+`answer_work_request_question`, `answer_work_request_question_and_record_decision`,
 and `close_work_request_question` also verify that `question_id` belongs to the
-scoped WorkRequest before calling the mutation service; sibling question ids
-fail closed as not found. The tools return JSON-safe redacted payloads for the
-updated clarification question or decision entry, plus a minimal parent
-WorkRequest status projection, scope, and status metadata. Mutation responses
-do not expose the full `read_work_request` detail shape. They expose the
-existing WorkRequest service primitives: status movement is explicit through
-`set_work_request_status`, and question/decision tools do not mirror
-dashboard-only helper guards, auto-transition the parent request, or introduce
-a new lifecycle/status transition matrix.
+scoped WorkRequest before calling the mutation service and default the expected
+question status to `open`. Callers should omit question status; optional
+`expected_question_status=open` and deprecated `current_status=open` are accepted
+only as legacy guards, and any other value returns a structured
+`invalid_question_status` error. Sibling question ids fail closed as not found.
+The combined answer-and-decision tool commits both records atomically. The tools
+return JSON-safe redacted payloads for the updated
+clarification question or decision entry, plus a minimal parent WorkRequest
+status projection, scope, and status metadata. Mutation responses do not expose
+the full `read_work_request` detail shape. They expose the existing WorkRequest
+service primitives: status movement is explicit through `set_work_request_status`,
+and question/decision tools do not mirror dashboard-only helper guards,
+auto-transition the parent request, or introduce a new lifecycle/status
+transition matrix.
 
 `ask_work_request_question` may include an optional `decision_prompt` object for
 human-facing answer cards. The object contains redacted strings only:

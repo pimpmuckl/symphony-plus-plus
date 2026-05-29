@@ -117,6 +117,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "set_work_request_status",
     "ask_work_request_question",
     "answer_work_request_question",
+    "answer_work_request_question_and_record_decision",
     "close_work_request_question",
     "record_work_request_decision",
     "add_work_request_planned_slice",
@@ -141,6 +142,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "split_work_package",
     "publish_phase_update"
   ]
+  @passing_review_suite_statuses ["passed", "pass", "green", "success", "completed"]
+  @passing_review_suite_verdicts ["green", "clean", "passed", "pass", "success", "approved"]
+  @review_promotable_work_package_statuses ["ready_for_worker", "claimed", "planning", "implementing"]
   @child_work_package_keys [
     "acceptance_criteria",
     "allowed_file_globs",
@@ -1637,6 +1641,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "Answer an open clarification question that belongs to a scoped WorkRequest."
   end
 
+  defp architect_tool_description("answer_work_request_question_and_record_decision") do
+    "Answer an open clarification question and atomically record the resulting WorkRequest decision."
+  end
+
   defp architect_tool_description("close_work_request_question") do
     "Close an open clarification question that belongs to a scoped WorkRequest without recording an answer."
   end
@@ -2209,11 +2217,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       %{
         "work_request_id" => string_schema(),
         "question_id" => string_schema(),
-        "current_status" => string_schema(),
+        "expected_question_status" => string_schema(),
+        "current_status" => described_string_schema("Deprecated alias for expected_question_status."),
         "answer" => string_schema(),
         "answered_by" => string_schema()
       },
-      ["work_request_id", "question_id", "current_status", "answer"]
+      ["work_request_id", "question_id", "answer"]
+    )
+  end
+
+  defp architect_tool_input_schema("answer_work_request_question_and_record_decision") do
+    schema(
+      %{
+        "work_request_id" => string_schema(),
+        "question_id" => string_schema(),
+        "expected_question_status" => string_schema(),
+        "current_status" => described_string_schema("Deprecated alias for expected_question_status."),
+        "answer" => string_schema(),
+        "answered_by" => string_schema(),
+        "source_type" => string_enum_schema(DecisionLogEntry.source_types()),
+        "source_id" => string_schema(),
+        "decision" => string_schema(),
+        "rationale" => string_schema(),
+        "scope_impact" => string_schema(),
+        "created_by" => string_schema()
+      },
+      ["work_request_id", "question_id", "answer", "source_type", "decision", "rationale", "scope_impact"]
     )
   end
 
@@ -2222,9 +2251,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       %{
         "work_request_id" => string_schema(),
         "question_id" => string_schema(),
-        "current_status" => string_schema()
+        "expected_question_status" => string_schema(),
+        "current_status" => described_string_schema("Deprecated alias for expected_question_status.")
       },
-      ["work_request_id", "question_id", "current_status"]
+      ["work_request_id", "question_id"]
     )
   end
 
@@ -5103,14 +5133,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, question_id} <- required_argument(arguments, "question_id"),
-         {:ok, current_status} <- required_argument(arguments, "current_status"),
+         {:ok, expected_question_status} <- expected_question_status_argument(arguments),
          {:ok, answer} <- required_argument(arguments, "answer"),
          {:ok, answered_by} <- optional_string_argument(arguments, "answered_by", session_claimed_by(session)),
          {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
          {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
          {:ok, _question} <- scoped_work_request_question(config.repo, work_request_id, question_id),
          {:ok, question_record} <-
-           WorkRequestService.answer_question(config.repo, question_id, current_status, %{
+           WorkRequestService.answer_question(config.repo, question_id, expected_question_status, %{
              "answer" => answer,
              "answered_by" => answered_by
            }),
@@ -5122,14 +5152,61 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          "scope" => scope,
          "status" => %{
            "work_request_status" => updated_work_request.status,
-           "previous_question_status" => current_status,
+           "previous_question_status" => expected_question_status,
            "question_status" => question_record.status
          }
        })}
     else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "answer_work_request_question", "reason" => reason}}
+      {:tool_error, reason} -> invalid_params_error("answer_work_request_question", reason)
       {:error, :not_found} -> not_found_error("answer_work_request_question")
       {:error, reason} -> architect_error(reason, "answer_work_request_question")
+    end
+  end
+
+  defp architect_tool("answer_work_request_question_and_record_decision", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, question_id} <- required_argument(arguments, "question_id"),
+         {:ok, expected_question_status} <- expected_question_status_argument(arguments),
+         {:ok, answer} <- required_argument(arguments, "answer"),
+         {:ok, answered_by} <- optional_string_argument(arguments, "answered_by", session_claimed_by(session)),
+         {:ok, source_type} <- required_argument(arguments, "source_type"),
+         {:ok, decision} <- required_argument(arguments, "decision"),
+         {:ok, rationale} <- required_argument(arguments, "rationale"),
+         {:ok, scope_impact} <- required_argument(arguments, "scope_impact"),
+         {:ok, created_by} <- optional_string_argument(arguments, "created_by", answered_by),
+         {:ok, source_id} <- optional_string_argument(arguments, "source_id", question_id),
+         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
+         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, _question} <- scoped_work_request_question(config.repo, work_request_id, question_id),
+         {:ok, %{decision: decision_record, question: question_record}} <-
+           answer_question_and_record_decision_transaction(config.repo, work_request_id, question_id, expected_question_status, %{
+             "answer" => answer,
+             "answered_by" => answered_by,
+             "source_type" => source_type,
+             "source_id" => source_id,
+             "decision" => decision,
+             "rationale" => rationale,
+             "scope_impact" => scope_impact,
+             "created_by" => created_by
+           }),
+         {:ok, updated_work_request} <- scoped_work_request(config.repo, work_request_id, filters) do
+      {:ok,
+       tool_result(%{
+         "work_request" => work_request_mutation_payload(updated_work_request),
+         "clarification_question" => clarification_question_payload(question_record),
+         "decision_log_entry" => decision_log_entry_payload(decision_record),
+         "scope" => scope,
+         "status" => %{
+           "work_request_status" => updated_work_request.status,
+           "previous_question_status" => expected_question_status,
+           "question_status" => question_record.status
+         }
+       })}
+    else
+      {:tool_error, reason} -> invalid_params_error("answer_work_request_question_and_record_decision", reason)
+      {:error, :not_found} -> not_found_error("answer_work_request_question_and_record_decision")
+      {:error, reason} -> architect_error(reason, "answer_work_request_question_and_record_decision")
     end
   end
 
@@ -5137,11 +5214,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, question_id} <- required_argument(arguments, "question_id"),
-         {:ok, current_status} <- required_argument(arguments, "current_status"),
+         {:ok, expected_question_status} <- expected_question_status_argument(arguments),
          {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
          {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
          {:ok, _question} <- scoped_work_request_question(config.repo, work_request_id, question_id),
-         {:ok, question_record} <- WorkRequestService.close_question(config.repo, question_id, current_status),
+         {:ok, question_record} <- WorkRequestService.close_question(config.repo, question_id, expected_question_status),
          {:ok, updated_work_request} <- scoped_work_request(config.repo, work_request_id, filters) do
       {:ok,
        tool_result(%{
@@ -5150,12 +5227,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          "scope" => scope,
          "status" => %{
            "work_request_status" => updated_work_request.status,
-           "previous_question_status" => current_status,
+           "previous_question_status" => expected_question_status,
            "question_status" => question_record.status
          }
        })}
     else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "close_work_request_question", "reason" => reason}}
+      {:tool_error, reason} -> invalid_params_error("close_work_request_question", reason)
       {:error, :not_found} -> not_found_error("close_work_request_question")
       {:error, reason} -> architect_error(reason, "close_work_request_question")
     end
@@ -8725,7 +8802,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            }) do
       {:ok, result}
     else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "attach_review_suite_result", "reason" => reason}}
+      {:tool_error, reason} -> invalid_params_error("attach_review_suite_result", reason)
       {:error, _code, _message, _data} = error -> error
       {:error, reason} -> worker_error(reason, "attach_review_suite_result")
     end
@@ -9678,6 +9755,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_capability("set_work_request_status"), do: "write:work_request"
   defp architect_tool_capability("ask_work_request_question"), do: "write:work_request"
   defp architect_tool_capability("answer_work_request_question"), do: "write:work_request"
+  defp architect_tool_capability("answer_work_request_question_and_record_decision"), do: "write:work_request"
   defp architect_tool_capability("close_work_request_question"), do: "write:work_request"
   defp architect_tool_capability("record_work_request_decision"), do: "write:work_request"
   defp architect_tool_capability("add_work_request_planned_slice"), do: "write:work_request"
@@ -10157,6 +10235,60 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp expected_question_status_argument(arguments) do
+    cond do
+      Map.has_key?(arguments, "expected_question_status") ->
+        parse_question_status_guard(Map.get(arguments, "expected_question_status"))
+
+      Map.has_key?(arguments, "current_status") ->
+        parse_question_status_guard(Map.get(arguments, "current_status"))
+
+      true ->
+        {:ok, "open"}
+    end
+  end
+
+  defp parse_question_status_guard(status) when is_binary(status) do
+    status
+    |> String.trim()
+    |> require_open_question_status()
+  end
+
+  defp parse_question_status_guard(_status), do: {:tool_error, {:invalid_question_status, "non_string", ["open"]}}
+
+  defp require_open_question_status("open"), do: {:ok, "open"}
+  defp require_open_question_status(status), do: {:tool_error, {:invalid_question_status, status, ["open"]}}
+
+  defp answer_question_and_record_decision_transaction(repo, work_request_id, question_id, expected_question_status, attrs) do
+    repo.transaction(fn ->
+      with {:ok, question_record} <-
+             WorkRequestService.answer_question(repo, question_id, expected_question_status, %{
+               "answer" => Map.fetch!(attrs, "answer"),
+               "answered_by" => Map.fetch!(attrs, "answered_by")
+             }),
+           {:ok, decision_record} <-
+             WorkRequestService.record_decision(
+               repo,
+               work_request_id,
+               optional_put(
+                 %{
+                   "source_type" => Map.fetch!(attrs, "source_type"),
+                   "decision" => Map.fetch!(attrs, "decision"),
+                   "rationale" => Map.fetch!(attrs, "rationale"),
+                   "scope_impact" => Map.fetch!(attrs, "scope_impact"),
+                   "created_by" => Map.fetch!(attrs, "created_by")
+                 },
+                 "source_id",
+                 Map.get(attrs, "source_id")
+               )
+             ) do
+        %{question: question_record, decision: decision_record}
+      else
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+  end
+
   defp append_progress_event_or_replay(repo, %Session{} = session, attrs, idempotency_key, tool) do
     case existing_progress_event(repo, session, idempotency_key) do
       {:ok, event} ->
@@ -10586,7 +10718,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case review_package_head_sha(requested_head_sha, progress_events, work_package) do
       {:ok, head_sha} ->
         case append_metadata_event(repo, session, arguments, "submit_review_package", "review_package_submitted", payload) do
-          {:ok, result} -> persist_review_artifacts_or_rollback(repo, session, artifacts, head_sha, result)
+          {:ok, result} -> persist_review_artifacts_and_promote_or_rollback(repo, session, artifacts, head_sha, result, work_package)
           {:error, code, message, data} -> repo.rollback({:mcp_error, code, message, data})
         end
 
@@ -10625,9 +10757,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
   end
 
-  defp persist_review_artifacts_or_rollback(repo, %Session{} = session, artifacts, head_sha, result) do
-    case append_review_artifacts(repo, session, artifacts, head_sha) do
-      :ok -> result
+  defp persist_review_artifacts_and_promote_or_rollback(repo, %Session{} = session, artifacts, head_sha, result, %WorkPackage{} = work_package) do
+    with :ok <- append_review_artifacts(repo, session, artifacts, head_sha),
+         :ok <- promote_stale_package_to_reviewing(repo, work_package) do
+      result
+    else
       {:error, reason} -> repo.rollback(reason)
     end
   end
@@ -10720,6 +10854,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp promote_stale_package_to_reviewing(repo, %WorkPackage{status: status} = work_package)
+       when status in @review_promotable_work_package_statuses do
+    promote_package_status_to_reviewing(repo, work_package.id, status, 0)
+  end
+
+  defp promote_stale_package_to_reviewing(_repo, %WorkPackage{}), do: :ok
+
+  defp promote_package_status_to_reviewing(repo, work_package_id, expected_status, attempts) do
+    case WorkPackageRepository.update_status(repo, work_package_id, expected_status, "reviewing") do
+      {:ok, %WorkPackage{}} ->
+        :ok
+
+      {:error, :stale_status} when attempts < 3 ->
+        retry_review_promotion_from_latest_status(repo, work_package_id, attempts + 1)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp retry_review_promotion_from_latest_status(repo, work_package_id, attempts) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, %WorkPackage{status: status}} when status in @review_promotable_work_package_statuses ->
+        promote_package_status_to_reviewing(repo, work_package_id, status, attempts)
+
+      {:ok, %WorkPackage{}} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp replay_existing_review_suite_result(repo, %Session{} = session, arguments, payload) do
     case PlanningService.require_valid_assignment(repo, session.assignment) do
       :ok -> replay_existing_review_suite_result_for_valid_assignment(repo, session, arguments, payload)
@@ -10755,7 +10922,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- reject_failed_review_suite_result_override(state.progress_events, work_package_id, head_sha),
          payload <- review_suite_payload(payload, arguments, head_sha),
          {:ok, result} <- append_metadata_event(repo, session, arguments, "attach_review_suite_result", "review_suite_passed", payload),
-         :ok <- append_review_suite_artifact(repo, work_package_id, head_sha) do
+         :ok <- append_review_suite_artifact(repo, work_package_id, head_sha),
+         :ok <- promote_stale_package_to_reviewing(repo, state.work_package) do
       result
     else
       {:tool_error, reason} ->
@@ -10809,7 +10977,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if review_suite_status_passed?(status) and review_suite_verdict_passed?(verdict) do
       :ok
     else
-      {:tool_error, "non_passing_review_suite_result"}
+      {:tool_error, {:non_passing_review_suite_result, normalized_review_suite_status(status), normalized_review_suite_verdict(verdict)}}
     end
   end
 
@@ -10819,11 +10987,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp normalized_review_suite_verdict(_verdict), do: ""
 
   defp review_suite_status_passed?(status) do
-    normalized_review_suite_status(status) in ["passed", "pass", "green", "success"]
+    normalized_review_suite_status(status) in @passing_review_suite_statuses
   end
 
   defp review_suite_verdict_passed?(verdict) do
-    normalized_review_suite_verdict(verdict) in ["green", "passed", "pass", "success", "approved"]
+    normalized_review_suite_verdict(verdict) in @passing_review_suite_verdicts
   end
 
   defp append_review_suite_artifact(repo, work_package_id, head_sha) do
@@ -11700,6 +11868,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            "message" => BranchPattern.error_message(reason)
          }
        ]
+     }}
+  end
+
+  defp invalid_params_error(tool, {:invalid_question_status, got, expected}) do
+    expected = Enum.map(expected, &to_string/1)
+
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "invalid_question_status",
+       "status_domain" => "clarification_question",
+       "expected_statuses" => expected,
+       "got" => got,
+       "message" => "expected clarification question status=#{Enum.join(expected, " or ")}, got #{got}"
+     }}
+  end
+
+  defp invalid_params_error(tool, {:non_passing_review_suite_result, status, verdict}) do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "non_passing_review_suite_result",
+       "status_domain" => "review_suite_result",
+       "got" => %{"status" => status, "verdict" => verdict},
+       "expected_statuses" => @passing_review_suite_statuses,
+       "expected_verdicts" => @passing_review_suite_verdicts
      }}
   end
 
