@@ -4417,6 +4417,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp local_assignment_claim_error({:storage_failed, _reason} = reason), do: service_error(reason, @local_assignment_claim_tool)
   defp local_assignment_claim_error({:migration_failed, _reason} = reason), do: service_error(reason, @local_assignment_claim_tool)
 
+  defp local_assignment_claim_error(:claim_lease_active_for_other_actor) do
+    {:error, -32_001, "Unauthorized",
+     claim_lease_active_for_other_actor_data(
+       @local_assignment_claim_tool,
+       "Reuse the ledger claim values, including claimed_by, caller_id, branch, and worktree_path. If the live claim is stale, ask the architect or operator to recycle it."
+     )}
+  end
+
   defp local_assignment_claim_error(reason) do
     {:error, -32_001, "Unauthorized", %{"tool" => @local_assignment_claim_tool, "reason" => reason_text(reason)}}
   end
@@ -4429,8 +4437,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp local_architect_assignment_claim_error({:migration_failed, _reason} = reason),
     do: service_error(reason, @local_architect_assignment_claim_tool)
 
+  defp local_architect_assignment_claim_error(:claim_lease_active_for_other_actor) do
+    {:error, -32_001, "Unauthorized",
+     claim_lease_active_for_other_actor_data(
+       @local_architect_assignment_claim_tool,
+       "Pass local_architect_claim.arguments.claimed_by unchanged and use caller_id only for the current runtime. If the live claim is stale, ask the operator to recycle it."
+     )}
+  end
+
   defp local_architect_assignment_claim_error(reason) do
     {:error, -32_001, "Unauthorized", %{"tool" => @local_architect_assignment_claim_tool, "reason" => reason_text(reason)}}
+  end
+
+  defp claim_lease_active_for_other_actor_data(tool, hint) do
+    %{
+      "tool" => tool,
+      "reason" => "claim_lease_active_for_other_actor",
+      "action" => "reuse_claim_identity_or_recycle_stale_claim",
+      "hint" => hint
+    }
   end
 
   defp private_handoff_claim_error(:database_busy), do: service_error(:database_busy, "claim_private_handoff")

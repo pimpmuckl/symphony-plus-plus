@@ -3580,6 +3580,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(other_caller_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
+    assert get_in(other_caller_response, ["error", "data", "action"]) == "reuse_claim_identity_or_recycle_stale_claim"
+    assert get_in(other_caller_response, ["error", "data", "hint"]) =~ "Reuse the ledger claim values"
 
     assert {:ok, %ClaimLease{id: ^lease_id, status: "active", last_seen_at: ^last_seen_at}} =
              ClaimLeaseService.current_for_work_package(repo, package.id)
@@ -3618,6 +3620,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(other_caller_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
+    assert get_in(other_caller_response, ["error", "data", "action"]) == "reuse_claim_identity_or_recycle_stale_claim"
+    assert get_in(other_caller_response, ["error", "data", "hint"]) =~ "Reuse the ledger claim values"
 
     assert {:ok, %ClaimLease{id: ^lease_id, status: "active", actor_display_name: "local-worker-1"}} =
              ClaimLeaseService.current_for_work_package(repo, package.id)
@@ -4601,6 +4605,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(decision_response, ["result", "structuredContent", "decision_log_entry", "created_by"]) == "local-architect-1"
+
+    {other_runtime_response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-other-runtime",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_architect_assignment",
+            "arguments" => Map.put(arguments, "caller_id", "codex-local-architect-other-runtime")
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-architect-other-runtime-state")
+      )
+
+    assert get_in(other_runtime_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
+    assert get_in(other_runtime_response, ["error", "data", "action"]) == "reuse_claim_identity_or_recycle_stale_claim"
+    assert get_in(other_runtime_response, ["error", "data", "hint"]) =~ "claimed_by unchanged"
 
     {reconnect_response, reconnected_server} =
       Server.handle_state(
