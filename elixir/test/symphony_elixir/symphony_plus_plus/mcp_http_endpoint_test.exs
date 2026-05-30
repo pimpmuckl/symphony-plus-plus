@@ -132,11 +132,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
           "solo_list",
           "solo_show",
           "solo_update_status",
-          "sympp.health",
-          "read_work_request",
-          "list_guidance_requests",
-          "record_work_request_decision",
-          "add_work_request_planned_slice"
+          "sympp.health"
         ] do
       assert tool in names
     end
@@ -162,9 +158,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
           "sync_pr",
           "submit_review_package",
           "attach_review_suite_result",
-          "mark_ready"
+          "mark_ready",
+          "read_work_request",
+          "list_guidance_requests",
+          "record_work_request_decision",
+          "add_work_request_planned_slice"
         ] do
-      assert tool in names
+      refute tool in names
     end
   end
 
@@ -243,6 +243,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
 
     assert "get_current_assignment" in tool_names
     assert "append_progress" in tool_names
+    refute "claim_work_key" in tool_names
     refute "solo_attach" in tool_names
 
     assignment_tool =
