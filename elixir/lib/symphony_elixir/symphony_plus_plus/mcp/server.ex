@@ -100,6 +100,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "attach_review_suite_result",
     "mark_ready"
   ]
+  @bound_worker_tools @worker_tools -- ["claim_work_key"]
   @architect_tools [
     "create_child_work_package",
     "mint_child_worker_key",
@@ -137,7 +138,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "split_work_package",
     "publish_phase_update"
   ]
-  @trusted_unbound_worker_schema_tools (@worker_tools -- ["claim_work_key"]) -- @architect_tools
   @phase7_stub_architect_tools [
     "request_child_replan",
     "split_work_package",
@@ -2442,14 +2442,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "architect"}} = session}, %Config{repo: repo}) do
-    with {:ok, architect_specs} <- architect_tool_specs(repo, session) do
-      {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_specs]}
-    end
+  defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "architect"}}}, %Config{}) do
+    {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs()]}
   end
 
   defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "worker"}}}, %Config{}),
-    do: {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
+    do: {:ok, [health_tool_spec() | Enum.map(@bound_worker_tools, &worker_tool_spec/1)]}
 
   defp tool_specs_for_session_result({:ok, %Session{}}, %Config{}), do: {:error, {:unauthorized, :unsupported_grant_role}}
 
@@ -2466,31 +2464,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       [bootstrap_tool_spec("claim_private_handoff")]
   end
 
-  defp unbound_tool_specs(%Config{} = config) do
+  defp unbound_tool_specs(%Config{} = config), do: unbound_tool_specs_for_config(config)
+
+  defp unbound_tool_specs(%__MODULE__{config: config}), do: unbound_tool_specs_for_config(config)
+
+  defp unbound_tool_specs_for_config(%Config{} = config) do
     [health_tool_spec()] ++
       Enum.map(@solo_tools, &solo_tool_spec/1) ++
       [worker_tool_spec("claim_work_key")] ++
       local_assignment_claim_tool_specs(config) ++
       local_architect_assignment_claim_tool_specs(config) ++
-      Enum.map(@bootstrap_tools, &bootstrap_tool_spec/1) ++ architect_tool_specs()
-  end
-
-  defp unbound_tool_specs(%__MODULE__{config: config} = server) do
-    [health_tool_spec()] ++
-      Enum.map(@solo_tools, &solo_tool_spec/1) ++
-      [worker_tool_spec("claim_work_key")] ++
-      local_assignment_claim_tool_specs(config) ++
-      local_architect_assignment_claim_tool_specs(config) ++
-      trusted_unbound_worker_schema_tool_specs(server) ++
-      Enum.map(@bootstrap_tools, &bootstrap_tool_spec/1) ++ architect_tool_specs()
-  end
-
-  defp trusted_unbound_worker_schema_tool_specs(%__MODULE__{} = server) do
-    if trusted_local_unbound_http_session?(server) do
-      Enum.map(@trusted_unbound_worker_schema_tools, &worker_tool_spec/1)
-    else
-      []
-    end
+      Enum.map(@bootstrap_tools, &bootstrap_tool_spec/1)
   end
 
   defp trusted_local_unbound_http_session?(%__MODULE__{
@@ -2512,21 +2496,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp local_architect_assignment_claim_tool_specs(%Config{}), do: []
 
   defp architect_tool_specs, do: Enum.map(@architect_tools, &architect_tool_spec/1)
-
-  defp architect_tool_specs(repo, %Session{} = session) do
-    with {:ok, effective_assignment} <- effective_architect_assignment(repo, session.assignment) do
-      architect_tool_specs_for_assignment(effective_assignment)
-    end
-  end
-
-  defp architect_tool_specs_for_assignment(assignment) do
-    specs =
-      @architect_tools
-      |> Enum.filter(&(require_architect_capabilities(assignment, architect_tool_required_capabilities(&1)) == :ok))
-      |> Enum.map(&architect_tool_spec/1)
-
-    {:ok, specs}
-  end
 
   defp tool_specs_for_server(%__MODULE__{session_refresh_required: true, config: config} = server) do
     {:ok, claimable_tool_specs(config) ++ local_operator_tool_specs(server)}

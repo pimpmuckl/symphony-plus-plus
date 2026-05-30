@@ -77,20 +77,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
           "solo_list",
           "solo_show",
           "solo_update_status",
-          "sympp.health",
-          "read_work_request",
-          "list_guidance_requests",
-          "record_work_request_decision",
-          "add_work_request_planned_slice"
+          "sympp.health"
         ] do
       assert tool in names
     end
 
     refute "get_current_assignment" in names
     refute "append_progress" in names
+    refute "read_work_request" in names
+    refute "record_work_request_decision" in names
+    refute "add_work_request_planned_slice" in names
   end
 
-  test "trusted local HTTP advertises worker schemas before local claim and authorizes them after claim", %{config: config} do
+  test "trusted local HTTP advertises local claim schemas before local claim and worker schemas after claim", %{config: config} do
     trusted_config = %{config | local_daemon_trusted: true}
     package_id = "SYMPP-HTTP-TRUSTED-LOCAL-CLAIM"
 
@@ -120,37 +119,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
 
     for tool <- [
           "claim_local_assignment",
-          "get_current_assignment",
-          "read_context",
-          "read_task_plan",
-          "update_task_plan",
-          "append_finding",
-          "append_progress",
-          "set_status",
-          "report_blocker",
-          "resolve_blocker",
-          "add_comment",
-          "list_comments",
-          "resolve_comment",
-          "create_guidance_request",
-          "read_guidance_request",
-          "request_scope_expansion",
-          "attach_branch",
-          "attach_pr",
-          "sync_pr",
-          "submit_review_package",
-          "attach_review_suite_result",
-          "mark_ready"
+          "claim_local_architect_assignment",
+          "claim_work_key",
+          "claim_private_handoff",
+          "create_work_request",
+          "sympp.health"
         ] do
       assert tool in names
     end
 
-    read_guidance_tool =
-      tools.response
-      |> get_in(["result", "tools"])
-      |> Enum.find(&(&1["name"] == "read_guidance_request"))
-
-    assert read_guidance_tool["description"] =~ "architect grant"
+    refute "get_current_assignment" in names
+    refute "append_progress" in names
+    refute "read_work_request" in names
 
     assert {:ok, preclaim_progress} =
              HTTPTransport.handle(
@@ -179,6 +159,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
 
     assert get_in(claim.response, ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
     refute inspect(claim.response) =~ minted.work_key.secret
+
+    assert {:ok, claimed_tools} =
+             HTTPTransport.handle(trusted_config, tools_list_request("trusted-worker-tools"), client_key: "trusted-client", state_key: init.state_key)
+
+    claimed_names = tool_names(claimed_tools.response)
+    assert "get_current_assignment" in claimed_names
+    assert "append_progress" in claimed_names
+    refute "claim_work_key" in claimed_names
 
     assert {:ok, assignment} =
              HTTPTransport.handle(trusted_config, get_current_assignment_request(), client_key: "trusted-client", state_key: init.state_key)
@@ -372,7 +360,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
     assert {:ok, tools} =
              HTTPTransport.handle(config, tools_list_request("tools-after-claim"), client_key: "client-a", state_key: init.state_key)
 
-    assert "claim_work_key" in tool_names(tools.response)
+    refute "claim_work_key" in tool_names(tools.response)
     assert "get_current_assignment" in tool_names(tools.response)
 
     assert {:ok, assignment} =
