@@ -7,6 +7,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.PolicyTest do
   alias SymphonyElixir.SymphonyPlusPlus.Authorization.Scope
   alias SymphonyElixir.SymphonyPlusPlus.Authorization.Target
 
+  @architect_capabilities [
+    "read:work_request",
+    "write:work_request",
+    "dispatch:work_request",
+    "read:guidance_request",
+    "write:guidance_request"
+  ]
+
   test "worker can use package-scoped planning and evidence actions for its exact package" do
     actor = Actor.new(:worker, scopes: [Scope.work_package("wp-1")])
     target = Target.package_resource(:task_plan, "wp-1")
@@ -39,7 +47,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.PolicyTest do
   end
 
   test "architect can read scoped operational state but writes only claimed work request lineage" do
-    actor = Actor.new(:architect, scopes: [Scope.work_request("wr-1"), Scope.repo("nextide/symphony-plus-plus", "main")])
+    actor = architect([Scope.work_request("wr-1"), Scope.repo("nextide/symphony-plus-plus", "main")])
     sibling_target = Target.work_request("wr-2", repo: "nextide/symphony-plus-plus", base_branch: "main")
     child_target = Target.planned_slice("wrs-1", "wr-1", work_package_id: "wp-1")
 
@@ -53,7 +61,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.PolicyTest do
   end
 
   test "architect reads and external comments deny without a matching scope" do
-    actor = Actor.new(:architect, scopes: [Scope.work_request("wr-1")])
+    actor = architect([Scope.work_request("wr-1")])
     sibling_target = Target.work_request("wr-2")
 
     assert %Decision{allowed?: false, reason_code: "scope_mismatch", legacy_reason: "outside_session_scope"} =
@@ -64,7 +72,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.PolicyTest do
   end
 
   test "repo scope alone does not authorize work request mutation" do
-    actor = Actor.new(:architect, scopes: [Scope.repo("nextide/symphony-plus-plus", "main")])
+    actor = architect([Scope.repo("nextide/symphony-plus-plus", "main")])
     target = Target.work_request("wr-1", repo: "nextide/symphony-plus-plus", base_branch: "main")
 
     assert %Decision{allowed?: true, matched_scope: %Scope{type: :repo}} = Policy.decide(actor, :work_request_read, target)
@@ -74,7 +82,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.PolicyTest do
   end
 
   test "repo scope base branch must match when scope is branch pinned" do
-    actor = Actor.new(:architect, scopes: [Scope.repo("nextide/symphony-plus-plus", "main")])
+    actor = architect([Scope.repo("nextide/symphony-plus-plus", "main")])
 
     assert %Decision{allowed?: false, reason_code: "scope_mismatch"} =
              Policy.decide(actor, :work_request_read, Target.work_request("wr-1", repo: "nextide/symphony-plus-plus"))
@@ -84,7 +92,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.PolicyTest do
   end
 
   test "explicit planned slice scope authorizes planned slice actions only" do
-    actor = Actor.new(:architect, scopes: [Scope.planned_slice("wrs-1")])
+    actor = architect([Scope.planned_slice("wrs-1")])
     target = Target.planned_slice("wrs-1", "wr-1")
 
     assert %Decision{allowed?: true, matched_scope: %Scope{type: :planned_slice, id: "wrs-1"}} =
@@ -95,7 +103,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.PolicyTest do
   end
 
   test "architect work package anchor authorizes package-scoped actions only" do
-    actor = Actor.new(:architect, scopes: [Scope.work_package("wp-anchor")])
+    actor = architect([Scope.work_package("wp-anchor")])
 
     assert %Decision{allowed?: true, matched_scope: %Scope{type: :work_package, id: "wp-anchor"}} =
              Policy.decide(actor, :task_plan_update, Target.package_resource(:task_plan, "wp-anchor"))
@@ -104,14 +112,58 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.PolicyTest do
              Policy.decide(actor, :work_request_update, Target.work_request("wr-1"))
   end
 
+  test "architect actions require migration capability metadata before scoped allow" do
+    actor = Actor.new(:architect, scopes: [Scope.work_request("wr-1")], capabilities: [])
+
+    assert %Decision{
+             allowed?: false,
+             reason_code: "insufficient_capability",
+             legacy_reason: "insufficient_capability",
+             requirements: [%{"capability" => "write:work_request"}]
+           } = Policy.decide(actor, :work_request_update, Target.work_request("wr-1"))
+
+    dispatch_actor = architect([Scope.work_request("wr-1")], ["write:work_request"])
+
+    assert %Decision{allowed?: false, reason_code: "insufficient_capability"} =
+             Policy.decide(dispatch_actor, :planned_slice_dispatch, Target.planned_slice("wrs-1", "wr-1"))
+  end
+
   test "phase scope authorizes migration-era architect targets with phase identity" do
-    actor = Actor.new(:architect, scopes: [Scope.phase("phase-1")])
+    actor = architect([Scope.phase("phase-1", repo: "nextide/symphony-plus-plus", base_branch: "main")])
 
     assert %Decision{allowed?: true, matched_scope: %Scope{type: :phase, id: "phase-1"}} =
-             Policy.decide(actor, :work_request_update, Target.work_request("wr-1", phase_id: "phase-1"))
+             Policy.decide(
+               actor,
+               :work_request_update,
+               Target.work_request("wr-1", phase_id: "phase-1", repo: "nextide/symphony-plus-plus", base_branch: "main")
+             )
 
     assert %Decision{allowed?: true, matched_scope: %Scope{type: :phase, id: "phase-1"}} =
-             Policy.decide(actor, :planned_slice_dispatch, Target.planned_slice("wrs-1", "wr-1", phase_id: "phase-1"))
+             Policy.decide(
+               actor,
+               :planned_slice_dispatch,
+               Target.planned_slice("wrs-1", "wr-1", phase_id: "phase-1", repo: "nextide/symphony-plus-plus", base_branch: "main")
+             )
+  end
+
+  test "phase scope fails closed without matching frozen repo and base branch" do
+    actor_without_snapshot = architect([Scope.phase("phase-1")])
+
+    assert %Decision{allowed?: false, reason_code: "scope_mismatch"} =
+             Policy.decide(
+               actor_without_snapshot,
+               :work_request_update,
+               Target.work_request("wr-1", phase_id: "phase-1", repo: "nextide/symphony-plus-plus", base_branch: "main")
+             )
+
+    actor = architect([Scope.phase("phase-1", repo: "nextide/symphony-plus-plus", base_branch: "main")])
+
+    assert %Decision{allowed?: false, reason_code: "scope_mismatch"} =
+             Policy.decide(
+               actor,
+               :work_request_update,
+               Target.work_request("wr-1", phase_id: "phase-1", repo: "nextide/symphony-plus-plus", base_branch: "dev")
+             )
   end
 
   test "operator ledger scope allows dangerous actions with audit marker" do
@@ -125,7 +177,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.PolicyTest do
   end
 
   test "policy represents precondition and lifecycle denials with stable reason codes" do
-    actor = Actor.new(:architect, scopes: [Scope.work_request("wr-1")])
+    actor = architect([Scope.work_request("wr-1")])
 
     assert %Decision{allowed?: false, reason: :precondition_denied, reason_code: "target_not_found"} =
              Policy.decide(actor, :work_request_update, Target.new(:work_request, "wr-missing", resolution: :not_found))
@@ -135,5 +187,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.PolicyTest do
 
     assert %Decision{allowed?: false, reason: :lifecycle_denied, reason_code: "invalid_transition"} =
              Policy.decide(actor, :work_package_update, Target.work_package("wp-1"), lifecycle_denial: :invalid_transition)
+  end
+
+  defp architect(scopes, capabilities \\ @architect_capabilities) do
+    Actor.new(:architect, scopes: scopes, capabilities: capabilities)
   end
 end

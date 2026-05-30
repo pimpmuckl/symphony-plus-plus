@@ -123,7 +123,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Policy do
   end
 
   defp decide_resolved(%Actor{role: :architect} = actor, action, %Target{} = target) when action in @architect_actions do
-    allow_with_scope(actor, action, target, architect_scope_types(action), legacy_reason: "outside_session_scope")
+    case required_architect_capability(actor, action) do
+      :ok ->
+        allow_with_scope(actor, action, target, architect_scope_types(action), legacy_reason: "outside_session_scope")
+
+      {:error, capability} ->
+        Decision.authorization_denied(actor, action, target, :insufficient_capability,
+          legacy_reason: "insufficient_capability",
+          requirements: [%{"capability" => capability}]
+        )
+    end
   end
 
   defp decide_resolved(%Actor{role: :worker} = actor, action, %Target{} = target) when action in @worker_package_actions do
@@ -143,6 +152,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Policy do
   defp architect_scope_types(action) when action in @planned_slice_actions, do: [:work_request, :planned_slice, :phase]
   defp architect_scope_types(action) when action in @worker_package_actions, do: [:work_request, :work_package, :phase]
   defp architect_scope_types(_action), do: [:work_request, :phase]
+
+  defp required_architect_capability(%Actor{capabilities: capabilities}, action) do
+    capability = architect_capability(action)
+
+    if capability in capabilities do
+      :ok
+    else
+      {:error, capability}
+    end
+  end
+
+  defp architect_capability(:planned_slice_dispatch), do: "dispatch:work_request"
+  defp architect_capability(:delivery_reconcile_dry_run), do: "read:work_request"
+  defp architect_capability(:guidance_request_read), do: "read:guidance_request"
+  defp architect_capability(action) when action in [:guidance_request_answer, :guidance_request_escalate], do: "write:guidance_request"
+  defp architect_capability(action) when action in @read_actions, do: "read:work_request"
+  defp architect_capability(_action), do: "write:work_request"
 
   defp allow_with_scope(%Actor{} = actor, action, %Target{} = target, allowed_scope_types, opts) do
     audit = Keyword.get(opts, :audit, %{})
@@ -183,8 +209,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Policy do
     target.repo == repo and (is_nil(base_branch) or target.base_branch == base_branch)
   end
 
-  defp scope_matches_target?(%Scope{type: :phase, id: scope_id}, %Target{} = target) when is_binary(scope_id) do
-    target.phase_id == scope_id
+  defp scope_matches_target?(%Scope{type: :phase, id: scope_id, repo: repo, base_branch: base_branch}, %Target{} = target)
+       when is_binary(scope_id) and is_binary(repo) and is_binary(base_branch) do
+    target.phase_id == scope_id and target.repo == repo and target.base_branch == base_branch
   end
 
   defp scope_matches_target?(%Scope{}, %Target{}), do: false

@@ -85,7 +85,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver do
       optional_work_request_scope(Keyword.get(opts, :work_request_id)),
       optional_work_package_scope(assignment.work_package_id),
       optional_repo_scope(Keyword.get(opts, :repo), Keyword.get(opts, :base_branch)),
-      optional_phase_scope(assignment.phase_id)
+      optional_phase_scope(assignment.phase_id, Keyword.get(opts, :repo), Keyword.get(opts, :base_branch))
     ]
     |> Enum.reject(&is_nil/1)
   end
@@ -102,8 +102,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver do
   defp optional_repo_scope(repo, base_branch) when is_binary(repo), do: Scope.repo(repo, base_branch)
   defp optional_repo_scope(_repo, _base_branch), do: nil
 
-  defp optional_phase_scope(phase_id) when is_binary(phase_id), do: Scope.phase(phase_id, metadata: %{migration_only: true})
-  defp optional_phase_scope(_phase_id), do: nil
+  defp optional_phase_scope(phase_id, repo, base_branch)
+       when is_binary(phase_id) and is_binary(repo) and is_binary(base_branch) do
+    Scope.phase(phase_id, repo: repo, base_branch: base_branch, metadata: %{migration_only: true})
+  end
+
+  defp optional_phase_scope(_phase_id, _repo, _base_branch), do: nil
 
   defp assignment_metadata(%Assignment{} = assignment) do
     %{

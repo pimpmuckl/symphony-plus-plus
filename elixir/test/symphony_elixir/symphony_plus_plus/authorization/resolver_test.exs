@@ -27,7 +27,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ResolverTest do
     assert Enum.any?(actor.scopes, &match?(%Scope{type: :work_request, id: "wr-1"}, &1))
     assert Enum.any?(actor.scopes, &match?(%Scope{type: :work_package, id: "wp-anchor"}, &1))
     assert Enum.any?(actor.scopes, &match?(%Scope{type: :repo, repo: "nextide/symphony-plus-plus", base_branch: "main"}, &1))
-    assert Enum.any?(actor.scopes, &match?(%Scope{type: :phase, id: "phase-1", metadata: %{migration_only: true}}, &1))
+
+    assert Enum.any?(
+             actor.scopes,
+             &match?(
+               %Scope{
+                 type: :phase,
+                 id: "phase-1",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main",
+                 metadata: %{migration_only: true}
+               },
+               &1
+             )
+           )
   end
 
   test "resolves local operator to trusted ledger scope" do
