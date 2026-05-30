@@ -43,6 +43,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ResolverTest do
            )
   end
 
+  test "prefers persisted grant scopes over capability-era fallback inputs" do
+    actor =
+      assignment("architect",
+        work_package_id: "wp-anchor",
+        phase_id: "phase-1",
+        scopes: [Scope.work_request("wr-persisted")]
+      )
+      |> ActorResolver.from_assignment(work_request_id: "wr-fallback", repo: "nextide/symphony-plus-plus", base_branch: "main")
+
+    assert actor.scopes == [Scope.work_request("wr-persisted")]
+  end
+
+  test "preserves fallback work request scope when persisted legacy scopes are incomplete" do
+    actor =
+      assignment("architect",
+        work_package_id: "wp-anchor",
+        phase_id: "phase-1",
+        scopes: [Scope.repo("nextide/symphony-plus-plus", "main"), Scope.work_package("wp-anchor")]
+      )
+      |> ActorResolver.from_assignment(work_request_id: "wr-fallback", repo: "nextide/symphony-plus-plus", base_branch: "main")
+
+    assert Enum.any?(actor.scopes, &match?(%Scope{type: :work_request, id: "wr-fallback"}, &1))
+    assert Enum.any?(actor.scopes, &match?(%Scope{type: :repo, repo: "nextide/symphony-plus-plus", base_branch: "main"}, &1))
+    assert Enum.count(actor.scopes, &match?(%Scope{type: :work_package, id: "wp-anchor"}, &1)) == 1
+  end
+
   test "resolves local operator to trusted ledger scope" do
     assert %Actor{
              id: "operator-1",
@@ -58,6 +84,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ResolverTest do
              source: :mcp_assignment,
              scopes: [%Scope{type: :ledger, metadata: %{source: :mcp_assignment}}]
            } = ActorResolver.from_assignment(assignment("operator", []))
+  end
+
+  test "preserves operator ledger scope when persisted scope rows exist" do
+    actor =
+      ActorResolver.from_assignment(assignment("operator", scopes: [Scope.work_package("wp-legacy")]))
+
+    assert Enum.any?(actor.scopes, &match?(%Scope{type: :ledger}, &1))
+    assert Enum.any?(actor.scopes, &match?(%Scope{type: :work_package, id: "wp-legacy"}, &1))
   end
 
   test "target resolver stubs current worker, architect, and operator targets" do
@@ -83,7 +117,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ResolverTest do
       grant_role: role,
       capabilities: Keyword.get(opts, :capabilities, []),
       claimed_at: ~U[2026-05-30 20:54:59Z],
-      claimed_by: "#{role}-actor"
+      claimed_by: "#{role}-actor",
+      scopes: Keyword.get(opts, :scopes, [])
     }
   end
 end

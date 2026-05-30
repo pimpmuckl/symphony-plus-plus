@@ -2,6 +2,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Auth do
   @moduledoc false
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.GrantScope
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.MCP.Session
@@ -21,10 +22,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Auth do
       {:ok, %AccessGrant{} = grant} ->
         with :ok <- require_proof(session, grant),
              :ok <- AccessGrantService.require_live_package_authority(repo, grant),
+             {:ok, scopes} <- load_grant_scopes(repo, grant),
              {:ok, live_session} <-
-               Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: session.proof_hash) do
+               Session.from_grant(grant, DateTime.utc_now(:microsecond),
+                 proof_hash: session.proof_hash,
+                 scopes: scopes
+               ) do
           {:ok, live_session}
         else
+          {:error, {:scope_lookup_failed, reason}} -> {:error, {:service_unavailable, {:scope_lookup_failed, reason}}}
           {:error, reason} -> {:error, {:unauthorized, reason}}
         end
 
@@ -48,6 +54,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Auth do
   defp fetch_grant(repo, grant_id) do
     fetch = &AccessGrantRepository.get/2
     fetch.(repo, grant_id)
+  end
+
+  defp load_grant_scopes(repo, %AccessGrant{} = grant) do
+    case AccessGrantRepository.list_scopes(repo, grant.id) do
+      {:ok, scope_rows} -> {:ok, Enum.map(scope_rows, &GrantScope.to_authorization_scope/1)}
+      {:error, reason} -> {:error, {:scope_lookup_failed, reason}}
+    end
   end
 
   defp require_proof(%Session{proof_hash: proof_hash}, %AccessGrant{secret_hash: secret_hash})

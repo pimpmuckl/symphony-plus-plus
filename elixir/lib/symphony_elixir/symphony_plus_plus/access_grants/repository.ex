@@ -6,11 +6,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
   alias Ecto.Changeset
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.GrantScope
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Scope, as: AuthScope
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
+
+  # Mirrors ArchitectHandoff deterministic IDs without adding a reverse module dependency from AccessGrants.
+  @architect_handoff_anchor_id_prefix "SYMPP-WR-ARCH-"
+  @architect_handoff_phase_id_prefix "phase-wr-architect-"
+  @architect_handoff_anchor_kind "delegation"
 
   @type repo :: module()
 
@@ -46,13 +53,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     changeset = AccessGrant.create_changeset(attrs)
 
     with {:ok, changeset} <- validate_architect_phase_anchor(repo, changeset) do
-      changeset
-      |> repo.insert()
-      |> normalize_insert_result()
+      repo.transaction(fn -> insert_grant_with_scopes(repo, changeset, attrs) end)
+      |> normalize_transaction_result()
     end
   rescue
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
     error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp insert_grant_with_scopes(repo, changeset, attrs) do
+    with {:ok, grant} <- changeset |> repo.insert() |> normalize_insert_result(),
+         {:ok, _scopes} <- ensure_grant_scopes(repo, grant, attrs) do
+      grant
+    else
+      {:error, reason} -> repo.rollback(reason)
+    end
   end
 
   @spec get(repo(), String.t()) :: {:ok, AccessGrant.t()} | {:error, error()}
@@ -107,6 +122,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
+  @spec list_scopes(repo(), String.t()) :: {:ok, [GrantScope.t()]} | {:error, error()}
+  def list_scopes(repo, access_grant_id) when is_atom(repo) and is_binary(access_grant_id) do
+    scopes =
+      repo.all(
+        from(scope in GrantScope,
+          where: scope.access_grant_id == ^access_grant_id,
+          order_by: [asc: scope.inserted_at, asc: scope.id]
+        )
+      )
+
+    {:ok, scopes}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec ensure_grant_scopes(repo(), AccessGrant.t(), map()) :: {:ok, [AuthScope.t()]} | {:error, error()}
+  def ensure_grant_scopes(repo, %AccessGrant{} = access_grant, attrs \\ %{}) when is_atom(repo) and is_map(attrs) do
+    with :ok <- ensure_scope_rows(repo, access_grant, attrs),
+         {:ok, scope_rows} <- list_scopes(repo, access_grant.id) do
+      {:ok, Enum.map(scope_rows, &GrantScope.to_authorization_scope/1)}
+    end
+  end
+
   @spec claim(repo(), String.t(), map(), DateTime.t()) :: {:ok, Assignment.t()} | {:error, error()}
   def claim(repo, secret, attrs, now)
       when is_atom(repo) and is_binary(secret) and is_map(attrs) and is_struct(now, DateTime) do
@@ -126,7 +164,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
          :ok <- claimable?(access_grant, normalized_now),
          {:ok, claimed_by} <- claimed_by(attrs),
          {:ok, claimed} <- persist_claim(repo, access_grant, claimed_by, normalized_now, terminal_statuses) do
-      {:ok, assignment(claimed)}
+      assignment(repo, claimed)
     else
       false -> {:error, :invalid_secret}
       {:error, _reason} = error -> error
@@ -173,15 +211,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
              normalized_now,
              terminal_statuses
            ) do
+      context = %{
+        work_package_id: work_package_id,
+        phase_id: phase_id,
+        scope_repo: scope_repo,
+        scope_base_branch: scope_base_branch,
+        claimed_by: claimed_by,
+        now: normalized_now,
+        terminal_statuses: terminal_statuses
+      }
+
       reconnect_or_claim_local_architect_grant(
         repo,
-        work_package_id,
-        phase_id,
-        scope_repo,
-        scope_base_branch,
-        claimed_by,
-        normalized_now,
-        terminal_statuses
+        context,
+        attrs
       )
     end
   rescue
@@ -235,7 +278,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     end
   end
 
-  defp persist_claim(repo, access_grant, claimed_by, now, terminal_statuses) do
+  defp persist_claim(repo, access_grant, claimed_by, now, terminal_statuses, attrs \\ %{}) do
     query =
       from(grant in AccessGrant,
         where:
@@ -250,6 +293,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
           repo
           |> get(access_grant.id)
           |> clear_completion_after_grant(repo)
+          |> ensure_grant_scopes_and_return(repo, attrs)
           |> return_claim_or_rollback(repo)
 
         {0, _rows} ->
@@ -401,7 +445,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
   defp reconnect_or_claim_local_worker_grant(repo, work_package_id, claimed_by, now, terminal_statuses) do
     case local_reconnect_grant(repo, work_package_id, claimed_by, now, terminal_statuses) do
       {:ok, grant} ->
-        {:ok, grant}
+        ensure_grant_scopes_and_return({:ok, grant}, repo, %{})
 
       {:error, :not_found} ->
         claim_unclaimed_local_worker_grant(repo, work_package_id, claimed_by, now, terminal_statuses)
@@ -411,39 +455,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     end
   end
 
-  defp reconnect_or_claim_local_architect_grant(
-         repo,
-         work_package_id,
-         phase_id,
-         scope_repo,
-         scope_base_branch,
-         claimed_by,
-         now,
-         terminal_statuses
-       ) do
+  defp reconnect_or_claim_local_architect_grant(repo, context, attrs) do
     case local_reconnect_architect_grant(
            repo,
-           work_package_id,
-           phase_id,
-           scope_repo,
-           scope_base_branch,
-           claimed_by,
-           now,
-           terminal_statuses
+           context.work_package_id,
+           context.phase_id,
+           context.scope_repo,
+           context.scope_base_branch,
+           context.claimed_by,
+           context.now,
+           context.terminal_statuses
          ) do
       {:ok, grant} ->
-        {:ok, grant}
+        ensure_grant_scopes_and_return({:ok, grant}, repo, attrs)
 
       {:error, :not_found} ->
         claim_unclaimed_local_architect_grant(
           repo,
-          work_package_id,
-          phase_id,
-          scope_repo,
-          scope_base_branch,
-          claimed_by,
-          now,
-          terminal_statuses
+          context,
+          attrs
         )
 
       {:error, _reason} = error ->
@@ -481,27 +511,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     end
   end
 
-  defp claim_unclaimed_local_architect_grant(
-         repo,
-         work_package_id,
-         phase_id,
-         scope_repo,
-         scope_base_branch,
-         claimed_by,
-         now,
-         terminal_statuses
-       ) do
+  defp claim_unclaimed_local_architect_grant(repo, context, attrs) do
     with {:ok, grant} <-
            local_unclaimed_architect_grant(
              repo,
-             work_package_id,
-             phase_id,
-             scope_repo,
-             scope_base_branch,
-             now,
-             terminal_statuses
+             context.work_package_id,
+             context.phase_id,
+             context.scope_repo,
+             context.scope_base_branch,
+             context.now,
+             context.terminal_statuses
            ) do
-      persist_claim(repo, grant, claimed_by, now, terminal_statuses)
+      persist_claim(repo, grant, context.claimed_by, context.now, context.terminal_statuses, attrs)
     end
   end
 
@@ -643,17 +664,429 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     end
   end
 
-  defp assignment(%AccessGrant{} = access_grant) do
-    %Assignment{
-      grant_id: access_grant.id,
-      work_package_id: access_grant.work_package_id,
-      phase_id: access_grant.phase_id,
-      display_key: access_grant.display_key,
-      grant_role: access_grant.grant_role,
-      capabilities: access_grant.capabilities,
-      claimed_at: access_grant.claimed_at,
-      claimed_by: access_grant.claimed_by
-    }
+  defp ensure_grant_scopes_and_return({:ok, %AccessGrant{} = grant}, repo, attrs) do
+    case ensure_grant_scopes(repo, grant, normalize_attr_map(attrs)) do
+      {:ok, _scopes} -> {:ok, grant}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp ensure_grant_scopes_and_return({:error, _reason} = error, _repo, _attrs), do: error
+
+  defp ensure_scope_rows(repo, %AccessGrant{} = access_grant, attrs) do
+    attrs = normalize_attr_map(attrs)
+
+    case required_grant_scopes(repo, access_grant, attrs) do
+      {:ok, scopes} -> ensure_scope_rows(repo, access_grant.id, scopes)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp ensure_scope_rows(repo, access_grant_id, scopes) do
+    Enum.reduce_while(scopes, :ok, fn scope, :ok ->
+      case ensure_scope_row(repo, access_grant_id, scope) do
+        {:ok, _scope_row} -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp required_grant_scopes(repo, %AccessGrant{} = access_grant, attrs) do
+    with :ok <- validate_requested_architect_scopes(repo, access_grant, attrs) do
+      scopes =
+        (default_grant_scopes(repo, access_grant, attrs) ++ explicit_grant_scopes(attrs))
+        |> Enum.uniq_by(&GrantScope.scope_key/1)
+
+      {:ok, scopes}
+    end
+  end
+
+  defp validate_requested_architect_scopes(_repo, %AccessGrant{grant_role: grant_role}, _attrs)
+       when grant_role != "architect" do
+    :ok
+  end
+
+  defp validate_requested_architect_scopes(repo, %AccessGrant{} = access_grant, attrs) do
+    work_request_ids = requested_scope_ids(attrs, "work_request_id", :work_request)
+    planned_slice_ids = requested_scope_ids(attrs, "planned_slice_id", :planned_slice)
+
+    case validate_requested_work_request_scopes(repo, access_grant, work_request_ids) do
+      :ok -> validate_requested_planned_slice_scopes(repo, access_grant, planned_slice_ids, work_request_ids)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp requested_scope_ids(attrs, attr_key, scope_type) do
+    attr_ids = attrs |> string_attr(attr_key) |> List.wrap()
+    explicit_ids = attrs |> explicit_grant_scopes() |> Enum.flat_map(&explicit_scope_id(&1, scope_type))
+
+    Enum.uniq(attr_ids ++ explicit_ids)
+  end
+
+  defp explicit_scope_id(%AuthScope{type: type, id: id}, type) when is_binary(id), do: [id]
+  defp explicit_scope_id(%AuthScope{}, _type), do: []
+
+  defp validate_requested_work_request_scopes(_repo, %AccessGrant{}, []), do: :ok
+
+  defp validate_requested_work_request_scopes(repo, %AccessGrant{} = access_grant, work_request_ids) do
+    Enum.reduce_while(work_request_ids, :ok, fn work_request_id, :ok ->
+      case validate_requested_work_request_scope(repo, access_grant, work_request_id) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_requested_work_request_scope(_repo, %AccessGrant{}, nil), do: :ok
+
+  defp validate_requested_work_request_scope(repo, %AccessGrant{} = access_grant, work_request_id) do
+    case persisted_scope_ids(repo, access_grant.id, "work_request") do
+      [] ->
+        if work_request_matches_anchor?(repo, access_grant, work_request_id), do: :ok, else: {:error, :invalid_scope}
+
+      scope_ids ->
+        if work_request_id in scope_ids, do: :ok, else: {:error, :invalid_scope}
+    end
+  end
+
+  defp validate_requested_planned_slice_scopes(_repo, %AccessGrant{}, [], _work_request_ids), do: :ok
+
+  defp validate_requested_planned_slice_scopes(repo, %AccessGrant{} = access_grant, planned_slice_ids, work_request_ids) do
+    Enum.reduce_while(planned_slice_ids, :ok, fn planned_slice_id, :ok ->
+      case validate_requested_planned_slice_scope(repo, access_grant, planned_slice_id, work_request_ids) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_requested_planned_slice_scope(repo, %AccessGrant{} = access_grant, planned_slice_id, work_request_ids) do
+    scope_ids = persisted_scope_ids(repo, access_grant.id, "planned_slice")
+
+    case require_matching_persisted_scope(scope_ids, planned_slice_id) do
+      :ok -> validate_planned_slice_anchor(repo, access_grant, planned_slice_id, work_request_ids)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp require_matching_persisted_scope([], _scope_id), do: :ok
+
+  defp require_matching_persisted_scope(scope_ids, scope_id) do
+    if scope_id in scope_ids, do: :ok, else: {:error, :invalid_scope}
+  end
+
+  defp persisted_scope_ids(repo, access_grant_id, scope_type) do
+    query =
+      from(scope in GrantScope,
+        where: scope.access_grant_id == ^access_grant_id,
+        where: scope.scope_type == ^scope_type,
+        select: scope.scope_id
+      )
+
+    Enum.reject(repo.all(query), &is_nil/1)
+  end
+
+  defp work_request_matches_anchor?(repo, %AccessGrant{} = access_grant, work_request_id) do
+    work_request_matches_handoff_anchor?(repo, access_grant, work_request_id) or
+      work_request_has_anchor_slice?(repo, access_grant, work_request_id)
+  end
+
+  defp work_request_matches_handoff_anchor?(repo, %AccessGrant{} = access_grant, work_request_id)
+       when is_binary(work_request_id) do
+    with :ok <- require_handoff_scope_attrs(access_grant, work_request_id),
+         {:ok, anchor} <- WorkPackageRepository.get(repo, access_grant.work_package_id),
+         {:ok, work_request} <- WorkRequestRepository.get(repo, work_request_id) do
+      handoff_anchor_matches_grant?(anchor, access_grant) and
+        handoff_work_request_matches_grant?(work_request, access_grant)
+    else
+      _reason -> false
+    end
+  end
+
+  defp work_request_matches_handoff_anchor?(_repo, %AccessGrant{}, _work_request_id), do: false
+
+  defp require_handoff_scope_attrs(
+         %AccessGrant{
+           work_package_id: work_package_id,
+           phase_id: phase_id,
+           scope_repo: scope_repo,
+           scope_base_branch: scope_base_branch
+         },
+         work_request_id
+       )
+       when is_binary(work_package_id) and is_binary(phase_id) and is_binary(scope_repo) and
+              is_binary(scope_base_branch) do
+    if work_package_id == architect_handoff_anchor_id(work_request_id) and
+         phase_id == architect_handoff_phase_id(work_request_id) do
+      :ok
+    else
+      {:error, :invalid_scope}
+    end
+  end
+
+  defp require_handoff_scope_attrs(%AccessGrant{}, _work_request_id), do: {:error, :invalid_scope}
+
+  defp handoff_anchor_matches_grant?(%WorkPackage{} = anchor, %AccessGrant{} = access_grant) do
+    anchor.id == access_grant.work_package_id and
+      anchor.phase_id == access_grant.phase_id and
+      anchor.kind == @architect_handoff_anchor_kind and
+      anchor.repo == access_grant.scope_repo and
+      anchor.base_branch == access_grant.scope_base_branch
+  end
+
+  defp handoff_work_request_matches_grant?(work_request, %AccessGrant{} = access_grant) do
+    work_request.repo == access_grant.scope_repo and
+      work_request.base_branch == access_grant.scope_base_branch
+  end
+
+  defp architect_handoff_anchor_id(work_request_id) do
+    @architect_handoff_anchor_id_prefix <> architect_handoff_stable_suffix(work_request_id)
+  end
+
+  defp architect_handoff_phase_id(work_request_id) do
+    @architect_handoff_phase_id_prefix <> architect_handoff_stable_suffix(work_request_id)
+  end
+
+  defp architect_handoff_stable_suffix(work_request_id) do
+    :sha256
+    |> :crypto.hash([work_request_id])
+    |> Base.url_encode64(padding: false)
+    |> binary_part(0, 16)
+  end
+
+  defp work_request_has_anchor_slice?(repo, %AccessGrant{work_package_id: work_package_id}, work_request_id)
+       when is_binary(work_package_id) do
+    query =
+      from(slice in "sympp_work_request_planned_slices",
+        where: field(slice, :work_package_id) == ^work_package_id,
+        where: field(slice, :work_request_id) == ^work_request_id,
+        select: 1,
+        limit: 1
+      )
+
+    repo.one(query) == 1
+  end
+
+  defp work_request_has_anchor_slice?(_repo, %AccessGrant{}, _work_request_id), do: false
+
+  defp validate_planned_slice_anchor(repo, %AccessGrant{work_package_id: work_package_id}, planned_slice_id, work_request_ids)
+       when is_binary(work_package_id) do
+    query =
+      from(slice in "sympp_work_request_planned_slices",
+        where: field(slice, :id) == ^planned_slice_id,
+        where: field(slice, :work_package_id) == ^work_package_id,
+        select: field(slice, :work_request_id),
+        limit: 1
+      )
+
+    case repo.one(query) do
+      slice_work_request_id when is_binary(slice_work_request_id) ->
+        if work_request_ids == [] or slice_work_request_id in work_request_ids do
+          :ok
+        else
+          {:error, :invalid_scope}
+        end
+
+      _slice_work_request_id ->
+        {:error, :invalid_scope}
+    end
+  end
+
+  defp validate_planned_slice_anchor(_repo, %AccessGrant{}, _planned_slice_id, _work_request_id), do: {:error, :invalid_scope}
+
+  defp default_grant_scopes(_repo, %AccessGrant{grant_role: "worker", work_package_id: work_package_id}, _attrs)
+       when is_binary(work_package_id) do
+    [AuthScope.work_package(work_package_id)]
+  end
+
+  defp default_grant_scopes(repo, %AccessGrant{grant_role: "architect"} = access_grant, attrs) do
+    [
+      architect_work_request_scope(repo, access_grant, attrs),
+      explicit_planned_slice_scope(attrs),
+      optional_work_package_scope(access_grant.work_package_id),
+      optional_repo_scope(access_grant.scope_repo, access_grant.scope_base_branch)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp default_grant_scopes(_repo, %AccessGrant{}, _attrs), do: []
+
+  defp architect_work_request_scope(repo, %AccessGrant{work_package_id: work_package_id}, attrs) do
+    case string_attr(attrs, "work_request_id") do
+      work_request_id when is_binary(work_request_id) ->
+        AuthScope.work_request(work_request_id)
+
+      nil ->
+        case work_request_id_for_work_package(repo, work_package_id) do
+          {:ok, work_request_id} -> AuthScope.work_request(work_request_id)
+          {:error, :not_found} -> nil
+        end
+    end
+  end
+
+  defp work_request_id_for_work_package(_repo, work_package_id) when not is_binary(work_package_id), do: {:error, :not_found}
+
+  defp work_request_id_for_work_package(repo, work_package_id) do
+    query =
+      from(slice in "sympp_work_request_planned_slices",
+        where: field(slice, :work_package_id) == ^work_package_id,
+        select: field(slice, :work_request_id),
+        limit: 1
+      )
+
+    case repo.one(query) do
+      work_request_id when is_binary(work_request_id) -> {:ok, work_request_id}
+      _work_request_id -> {:error, :not_found}
+    end
+  end
+
+  defp explicit_planned_slice_scope(attrs) do
+    case string_attr(attrs, "planned_slice_id") do
+      planned_slice_id when is_binary(planned_slice_id) -> AuthScope.planned_slice(planned_slice_id)
+      nil -> nil
+    end
+  end
+
+  defp optional_work_package_scope(work_package_id) when is_binary(work_package_id), do: AuthScope.work_package(work_package_id)
+  defp optional_work_package_scope(_work_package_id), do: nil
+
+  defp optional_repo_scope(repo, base_branch) when is_binary(repo), do: AuthScope.repo(repo, base_branch)
+  defp optional_repo_scope(_repo, _base_branch), do: nil
+
+  defp explicit_grant_scopes(attrs) do
+    case Map.get(attrs, "scopes") do
+      scopes when is_list(scopes) -> Enum.flat_map(scopes, &explicit_grant_scope/1)
+      _scopes -> []
+    end
+  end
+
+  defp explicit_grant_scope(%AuthScope{} = scope), do: [scope]
+
+  defp explicit_grant_scope(%{} = attrs) do
+    attrs = normalize_attr_map(attrs)
+    type = Map.get(attrs, "type") || Map.get(attrs, "scope_type")
+
+    explicit_grant_scope_for_type(type, attrs)
+  end
+
+  defp explicit_grant_scope(_scope), do: []
+
+  defp explicit_grant_scope_for_type(type, _attrs) when type in [:ledger, "ledger"], do: [AuthScope.ledger()]
+  defp explicit_grant_scope_for_type(type, attrs) when type in [:repo, "repo"], do: explicit_repo_scope(attrs)
+
+  defp explicit_grant_scope_for_type(type, attrs) when type in [:work_request, "work_request"],
+    do: explicit_id_scope(attrs, &AuthScope.work_request/1)
+
+  defp explicit_grant_scope_for_type(type, attrs) when type in [:planned_slice, "planned_slice"],
+    do: explicit_id_scope(attrs, &AuthScope.planned_slice/1)
+
+  defp explicit_grant_scope_for_type(type, attrs) when type in [:work_package, "work_package"],
+    do: explicit_id_scope(attrs, &AuthScope.work_package/1)
+
+  defp explicit_grant_scope_for_type(_type, _attrs), do: []
+
+  defp explicit_repo_scope(attrs) do
+    case string_attr(attrs, "repo") do
+      repo when is_binary(repo) -> [AuthScope.repo(repo, string_attr(attrs, "base_branch"))]
+      nil -> []
+    end
+  end
+
+  defp explicit_id_scope(attrs, build_scope) do
+    case string_attr(attrs, "id") || string_attr(attrs, "scope_id") do
+      id when is_binary(id) -> [build_scope.(id)]
+      nil -> []
+    end
+  end
+
+  defp ensure_scope_row(repo, access_grant_id, %AuthScope{} = scope) do
+    attrs = GrantScope.attrs_from_scope(access_grant_id, scope)
+    scope_key = GrantScope.scope_key(attrs)
+
+    case existing_scope_row(repo, access_grant_id, scope_key) do
+      {:ok, %GrantScope{} = scope_row} ->
+        {:ok, scope_row}
+
+      {:error, :not_found} ->
+        insert_scope_row(repo, access_grant_id, scope_key, attrs)
+    end
+  end
+
+  defp existing_scope_row(repo, access_grant_id, scope_key) do
+    query =
+      from(scope in GrantScope,
+        where: scope.access_grant_id == ^access_grant_id,
+        where: scope.scope_key == ^scope_key,
+        limit: 1
+      )
+
+    case repo.one(query) do
+      %GrantScope{} = scope_row -> {:ok, scope_row}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp insert_scope_row(repo, access_grant_id, scope_key, attrs) do
+    attrs
+    |> GrantScope.create_changeset()
+    |> repo.insert()
+    |> case do
+      {:ok, scope_row} ->
+        {:ok, scope_row}
+
+      {:error, %Changeset{} = changeset} ->
+        if duplicate_scope_key?(changeset) do
+          existing_scope_row(repo, access_grant_id, scope_key)
+        else
+          {:error, changeset}
+        end
+    end
+  end
+
+  defp duplicate_scope_key?(changeset) do
+    Enum.any?(changeset.errors, fn
+      {:scope_key, {_message, options}} -> Keyword.get(options, :constraint) == :unique
+      _error -> false
+    end)
+  end
+
+  defp normalize_attr_map(attrs) when is_map(attrs) do
+    Map.new(attrs, fn {key, value} -> {normalize_attr_key(key), value} end)
+  end
+
+  defp normalize_attr_map(attrs) when is_list(attrs), do: attrs |> Map.new() |> normalize_attr_map()
+  defp normalize_attr_map(_attrs), do: %{}
+
+  defp normalize_attr_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp normalize_attr_key(key), do: to_string(key)
+
+  defp string_attr(attrs, key) do
+    case Map.get(attrs, key) do
+      value when is_binary(value) ->
+        if String.trim(value) == "", do: nil, else: value
+
+      _value ->
+        nil
+    end
+  end
+
+  defp assignment(repo, %AccessGrant{} = access_grant) do
+    with {:ok, scope_rows} <- list_scopes(repo, access_grant.id) do
+      scopes = Enum.map(scope_rows, &GrantScope.to_authorization_scope/1)
+
+      {:ok,
+       %Assignment{
+         grant_id: access_grant.id,
+         work_package_id: access_grant.work_package_id,
+         phase_id: access_grant.phase_id,
+         display_key: access_grant.display_key,
+         grant_role: access_grant.grant_role,
+         capabilities: access_grant.capabilities,
+         claimed_at: access_grant.claimed_at,
+         claimed_by: access_grant.claimed_by,
+         scopes: scopes
+       }}
+    end
   end
 
   defp secure_equal?(left, right) when is_binary(left) and is_binary(right) and byte_size(left) == byte_size(right) do
@@ -677,6 +1110,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
       {:error, changeset}
     end
   end
+
+  defp normalize_transaction_result({:ok, %AccessGrant{} = grant}), do: {:ok, grant}
+  defp normalize_transaction_result({:error, reason}), do: {:error, reason}
 
   defp validate_architect_phase_anchor(_repo, %Changeset{valid?: false} = changeset), do: {:error, changeset}
 

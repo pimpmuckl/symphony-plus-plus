@@ -38,7 +38,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver do
   defp actor_from_assignment(:worker, %Assignment{} = assignment, opts) do
     Actor.new(:worker,
       id: assignment.claimed_by,
-      scopes: worker_scopes(assignment, opts),
+      scopes: assignment_scopes(assignment) || worker_scopes(assignment, opts),
       capabilities: assignment.capabilities || [],
       source: :mcp_assignment,
       metadata: assignment_metadata(assignment)
@@ -48,7 +48,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver do
   defp actor_from_assignment(:architect, %Assignment{} = assignment, opts) do
     Actor.new(:architect,
       id: assignment.claimed_by,
-      scopes: architect_scopes(assignment, opts),
+      scopes: architect_assignment_scopes(assignment, opts),
       capabilities: assignment.capabilities || [],
       source: :mcp_assignment,
       metadata: assignment_metadata(assignment)
@@ -58,7 +58,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver do
   defp actor_from_assignment(:operator, %Assignment{} = assignment, _opts) do
     Actor.new(:operator,
       id: assignment.claimed_by,
-      scopes: [Scope.ledger(metadata: %{source: :mcp_assignment})],
+      scopes: operator_scopes(assignment),
       capabilities: assignment.capabilities || [],
       source: :mcp_assignment,
       metadata: assignment_metadata(assignment)
@@ -68,17 +68,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver do
   defp actor_from_assignment(role, %Assignment{} = assignment, _opts) do
     Actor.new(role,
       id: assignment.claimed_by,
+      scopes: assignment_scopes(assignment) || [],
       capabilities: assignment.capabilities || [],
       source: :mcp_assignment,
       metadata: assignment_metadata(assignment)
     )
   end
 
+  defp assignment_scopes(%Assignment{scopes: scopes}) when is_list(scopes) and scopes != [], do: scopes
+  defp assignment_scopes(%Assignment{}), do: nil
+
   defp worker_scopes(%Assignment{work_package_id: work_package_id}, _opts) when is_binary(work_package_id) do
     [Scope.work_package(work_package_id)]
   end
 
   defp worker_scopes(%Assignment{}, _opts), do: []
+
+  defp operator_scopes(%Assignment{} = assignment) do
+    ledger_scopes = [Scope.ledger(metadata: %{source: :mcp_assignment})]
+
+    case assignment_scopes(assignment) do
+      nil -> ledger_scopes
+      scopes -> merge_scopes(ledger_scopes, scopes)
+    end
+  end
+
+  defp architect_assignment_scopes(%Assignment{} = assignment, opts) do
+    persisted_scopes = assignment_scopes(assignment)
+    fallback_scopes = architect_scopes(assignment, opts)
+
+    cond do
+      is_nil(persisted_scopes) -> fallback_scopes
+      Enum.any?(persisted_scopes, &match?(%Scope{type: :work_request}, &1)) -> persisted_scopes
+      true -> merge_scopes(persisted_scopes, fallback_scopes)
+    end
+  end
 
   defp architect_scopes(%Assignment{} = assignment, opts) do
     [
@@ -108,6 +132,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver do
   end
 
   defp optional_phase_scope(_phase_id, _repo, _base_branch), do: nil
+
+  defp merge_scopes(scopes, fallback_scopes) do
+    scope_keys = MapSet.new(Enum.map(scopes, &scope_key/1))
+    scopes ++ Enum.reject(fallback_scopes, &(scope_key(&1) in scope_keys))
+  end
+
+  defp scope_key(%Scope{type: :repo, repo: repo, base_branch: base_branch}), do: {:repo, repo, base_branch}
+  defp scope_key(%Scope{type: type, id: id}), do: {type, id}
 
   defp assignment_metadata(%Assignment{} = assignment) do
     %{

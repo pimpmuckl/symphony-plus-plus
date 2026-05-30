@@ -148,7 +148,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
          {:ok, anchor} <- WorkPackageRepository.get(repo, anchor_id(work_request)),
          {:ok, anchor} <- validate_anchor(anchor, work_request, phase),
          {:ok, grants} <- AccessGrantRepository.list_for_work_package(repo, anchor.id) do
-      existing_display_for_latest_handoff(work_request, phase, anchor, grants, handoff_opts, now)
+      existing_display_for_latest_handoff(repo, work_request, phase, anchor, grants, handoff_opts, now)
     end
   end
 
@@ -726,7 +726,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       |> Enum.filter(&active_unclaimed_handoff_grant?(&1, phase, anchor, now))
       |> Enum.reverse()
 
-    replayable_grant? = &replayable_grant?(&1, work_request, phase, anchor, now)
+    replayable_grant? = &matching_handoff_grant?(repo, &1, work_request, phase, anchor, now)
     replayable_grants = Enum.filter(active_handoff_grants, replayable_grant?)
     stale_grants = Enum.reject(active_handoff_grants, replayable_grant?)
 
@@ -734,6 +734,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   end
 
   defp existing_display_for_latest_handoff(
+         repo,
          %WorkRequest{} = work_request,
          %Phase{} = phase,
          %WorkPackage{} = anchor,
@@ -743,7 +744,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
        ) do
     grants
     |> latest_active_unclaimed_handoff_grants(phase, anchor, now)
-    |> Enum.filter(&replayable_grant?(&1, work_request, phase, anchor, now))
+    |> Enum.filter(&matching_handoff_grant?(repo, &1, work_request, phase, anchor, now))
     |> existing_display_for_replayable_handoffs(work_request, phase, anchor, handoff_opts)
   end
 
@@ -936,6 +937,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     with {:ok, minted} <-
            AccessGrantService.mint_architect_grant(repo, phase.id,
              work_package_id: anchor.id,
+             work_request_id: work_request.id,
              capabilities: @architect_capabilities
            ),
          {:ok, handoff} <- store_architect_secret_handoff(repo, anchor, minted.grant, minted.work_key.secret, handoff_opts) do
@@ -1078,22 +1080,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       live_expires_at?(grant.expires_at, now)
   end
 
-  defp replayable_grant?(%AccessGrant{} = grant, %WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, now) do
+  defp matching_handoff_grant?(repo, %AccessGrant{} = grant, %WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, now) do
     active_unclaimed_handoff_grant?(grant, phase, anchor, now) and
       grant.scope_repo == work_request.repo and
       grant.scope_base_branch == work_request.base_branch and
-      exact_capabilities?(grant.capabilities)
+      required_capabilities?(grant.capabilities) and
+      scoped_to_work_request?(repo, grant, work_request)
+  end
+
+  defp scoped_to_work_request?(repo, %AccessGrant{} = grant, %WorkRequest{} = work_request) do
+    case work_request_scope_ids(repo, grant) do
+      {:ok, scope_ids} ->
+        work_request.id in scope_ids
+
+      {:error, _reason} ->
+        false
+    end
+  end
+
+  defp work_request_scope_ids(repo, %AccessGrant{} = grant) do
+    case AccessGrantRepository.list_scopes(repo, grant.id) do
+      {:ok, scopes} ->
+        scope_ids =
+          scopes
+          |> Enum.filter(&(&1.scope_type == "work_request"))
+          |> Enum.map(& &1.scope_id)
+
+        {:ok, scope_ids}
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   defp live_expires_at?(%DateTime{} = expires_at, %DateTime{} = now), do: DateTime.compare(expires_at, now) == :gt
   defp live_expires_at?(nil, %DateTime{}), do: true
   defp live_expires_at?(_expires_at, _now), do: false
 
-  defp exact_capabilities?(capabilities) when is_list(capabilities) do
-    Enum.sort(capabilities) == Enum.sort(@architect_capabilities)
+  defp required_capabilities?(capabilities) when is_list(capabilities) do
+    capability_set = MapSet.new(capabilities)
+    Enum.all?(@architect_capabilities, &MapSet.member?(capability_set, &1))
   end
 
-  defp exact_capabilities?(_capabilities), do: false
+  defp required_capabilities?(_capabilities), do: false
 
   defp result(status, %WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, %AccessGrant{} = grant, handoff, handoff_opts) do
     redacted_handoff = handoff |> redact_handoff() |> put_handoff_database(handoff_opts)

@@ -26,7 +26,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
            grant_role: grant.grant_role,
            capabilities: grant.capabilities,
            claimed_at: grant.claimed_at,
-           claimed_by: grant.claimed_by
+           claimed_by: grant.claimed_by,
+           scopes: Keyword.get(opts, :scopes, [])
          },
          proof_hash: Keyword.get(opts, :proof_hash)
        )}
