@@ -18,16 +18,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
   @spec remember(Config.t(), String.t(), String.t(), term(), Server.t(), term()) :: :ok
   def remember(%Config{mode: :http, repo: repo} = config, client_key, state_key, payload, %Server{} = server, response)
       when is_atom(repo) and is_binary(client_key) and is_binary(state_key) do
-    with :ok <- Repository.ensure_migrated(repo) do
-      cleanup_stale(repo)
+    case Repository.ensure_migrated(repo) do
+      :ok ->
+        cleanup_stale(repo)
 
-      case remember_action(config, client_key, state_key, payload, server, response) do
-        {:upsert, attrs} -> upsert(repo, attrs)
-        {:touch, id, now} -> touch(repo, id, now)
-        :skip -> :ok
-      end
-    else
-      _error -> :ok
+        case remember_action(config, client_key, state_key, payload, server, response) do
+          {:upsert, attrs} -> upsert(repo, attrs)
+          {:touch, id, now} -> touch(repo, id, now)
+          :skip -> :ok
+        end
+
+      _error ->
+        :ok
     end
   rescue
     _error -> :ok
@@ -84,23 +86,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
   defp remember_action(_config, _client_key, _state_key, _payload, %Server{}, _response), do: :skip
 
   defp remember_local_claim(%Config{repo: repo}, client_key, state_key, %Session{} = session, response, tool_name) do
-    with {:ok, %ClaimLease{} = lease} <- local_claim_lease(repo, session, response) do
-      now = now()
+    case local_claim_lease(repo, session, response) do
+      {:ok, %ClaimLease{} = lease} ->
+        now = now()
 
-      {:upsert,
-       client_key
-       |> session_attrs(state_key, session, now)
-       |> Map.merge(%{
-         recoverable: true,
-         recovery_kind: tool_name,
-         claim_lease_id: lease.id,
-         actor_kind: lease.actor_kind,
-         actor_id: lease.actor_id,
-         actor_display_name: lease.actor_display_name,
-         last_rehydrated_at: nil
-       })}
-    else
-      _error -> remember_unbound_initialized(client_key, state_key, tool_name)
+        {:upsert,
+         client_key
+         |> session_attrs(state_key, session, now)
+         |> Map.merge(%{
+           recoverable: true,
+           recovery_kind: tool_name,
+           claim_lease_id: lease.id,
+           actor_kind: lease.actor_kind,
+           actor_id: lease.actor_id,
+           actor_display_name: lease.actor_display_name,
+           last_rehydrated_at: nil
+         })}
+
+      _error ->
+        remember_unbound_initialized(client_key, state_key, tool_name)
     end
   end
 
@@ -196,7 +200,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
   defp renew_or_reclaim_lease(_repo, %ClaimLease{}, %SessionBinding{}), do: {:error, :claim_lease_not_active}
 
   defp reclaim_lease(repo, work_package_id, %SessionBinding{} = binding, reason) do
-    ClaimLeaseService.reclaim_stale(repo, work_package_id, actor(binding), reason: reason, stale_after_ms: @lease_stale_after_ms)
+    ClaimLeaseService.reclaim_stale(repo, work_package_id, actor(binding),
+      reason: reason,
+      stale_after_ms: @lease_stale_after_ms
+    )
   end
 
   defp require_grant_matches_binding(%AccessGrant{} = grant, %SessionBinding{} = binding) do
