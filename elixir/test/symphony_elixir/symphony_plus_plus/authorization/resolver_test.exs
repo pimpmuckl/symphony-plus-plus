@@ -79,7 +79,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ResolverTest do
         work_package_id: "wp-worker",
         scopes: [
           Scope.ledger(),
-          Scope.repo("nextide/symphony-plus-plus", "main"),
+          Scope.repo("service-a", "main"),
+          Scope.repo("service-b", "release"),
           Scope.work_request("wr-overbroad"),
           Scope.work_package("wp-other"),
           Scope.work_package("wp-worker")

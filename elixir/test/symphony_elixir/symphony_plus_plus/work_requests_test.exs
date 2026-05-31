@@ -17,6 +17,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.RepoScope
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity
@@ -99,6 +100,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     repo.delete_all(PlannedSlice)
     repo.delete_all(WorkPackage)
     repo.delete_all(ClarificationQuestion)
+    repo.delete_all(RepoScope)
     repo.delete_all(WorkRequest)
     :ok
   end
@@ -113,6 +115,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert %DateTime{} = created.updated_at
     assert created.completed_at == nil
     assert created.archived_at == nil
+    assert {:ok, [primary_scope]} = Repository.list_repo_scopes(repo, created.id)
+    assert primary_scope.repo == created.repo
+    assert primary_scope.base_branch == created.base_branch
 
     assert {:ok, fetched} = Service.get(repo, created.id)
     assert fetched == created
@@ -159,6 +164,62 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
 
     assert {:ok, [^first, ^second]} = Repository.list(repo, filters)
     assert {:ok, [^first, ^second]} = Service.list(repo, filters)
+  end
+
+  test "stores explicit WorkRequest repo scopes while primary list filters stay compatible", %{repo: repo} do
+    assert {:ok, request} =
+             Repository.create(
+               repo,
+               attrs(
+                 id: "WR-MULTI-REPO",
+                 repo: "service-a",
+                 base_branch: "main",
+                 repo_scopes: [
+                   %{repo: "service-a", base_branch: "main"},
+                   %{repo: "service-b", base_branch: "release"}
+                 ]
+               )
+             )
+
+    assert {:ok, scopes} = Repository.list_repo_scopes(repo, request.id)
+    assert Enum.map(scopes, &{&1.repo, &1.base_branch}) == [{"service-a", "main"}, {"service-b", "release"}]
+
+    scope_keys = MapSet.new(Enum.map(scopes, &{&1.repo, &1.base_branch}))
+    assert MapSet.member?(scope_keys, {"service-a", "main"})
+    assert MapSet.member?(scope_keys, {"service-b", "release"})
+    refute MapSet.member?(scope_keys, {"service-c", "main"})
+
+    assert {:ok, [^request]} = Repository.list(repo, %{repo: "service-a", base_branch: "main"})
+    assert {:ok, []} = Repository.list(repo, %{repo: "service-b", base_branch: "release"})
+  end
+
+  test "primary repo updates preserve existing secondary repo scopes", %{repo: repo} do
+    assert {:ok, request} =
+             Repository.create(
+               repo,
+               attrs(
+                 id: "WR-MULTI-REPO-UPDATE",
+                 repo: "service-a",
+                 base_branch: "main",
+                 repo_scopes: [
+                   %{repo: "service-a", base_branch: "main"},
+                   %{repo: "service-b", base_branch: "release"}
+                 ]
+               )
+             )
+
+    assert {:ok, _updated} = Repository.update(repo, request.id, %{repo: "service-a-renamed"})
+
+    assert {:ok, scopes} = Repository.list_repo_scopes(repo, request.id)
+    assert Enum.map(scopes, &{&1.repo, &1.base_branch}) == [{"service-a-renamed", "main"}, {"service-b", "release"}]
+  end
+
+  test "repo scope primary attrs support repo-only scopes" do
+    changeset = RepoScope.primary_attrs("WR-REPO-ONLY", "service-a", nil) |> RepoScope.create_changeset()
+
+    assert changeset.valid?
+    assert Ecto.Changeset.get_field(changeset, :base_branch) == nil
+    assert Ecto.Changeset.get_field(changeset, :scope_key) == "repo:service-a:"
   end
 
   test "updates fields while preserving stable id and inserted timestamp", %{repo: repo} do
@@ -933,6 +994,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert "sympp_work_requests_status_index" in index_names
     assert "sympp_work_requests_repo_base_branch_index" in index_names
     assert "sympp_work_requests_status_repo_base_branch_index" in index_names
+
+    %{rows: repo_scope_index_rows} = SQL.query!(repo, "PRAGMA index_list(sympp_work_request_repo_scopes)")
+    repo_scope_index_names = Enum.map(repo_scope_index_rows, &Enum.at(&1, 1))
+
+    assert "sympp_work_request_repo_scopes_work_request_scope_key_unique_index" in repo_scope_index_names
+    assert "sympp_work_request_repo_scopes_repo_base_branch_index" in repo_scope_index_names
   end
 
   defp attrs(overrides) do

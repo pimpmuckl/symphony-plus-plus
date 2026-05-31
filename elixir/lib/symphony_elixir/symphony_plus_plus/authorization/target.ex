@@ -11,6 +11,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Target do
     :work_request_id,
     :planned_slice_id,
     :work_package_id,
+    repo_scopes: [],
     resolution: :resolved,
     metadata: %{}
   ]
@@ -40,6 +41,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Target do
           id: String.t() | nil,
           repo: String.t() | nil,
           base_branch: String.t() | nil,
+          repo_scopes: [repo_scope()],
           phase_id: String.t() | nil,
           work_request_id: String.t() | nil,
           planned_slice_id: String.t() | nil,
@@ -47,6 +49,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Target do
           resolution: resolution(),
           metadata: map()
         }
+
+  @type repo_scope :: %{repo: String.t(), base_branch: String.t() | nil}
 
   @spec ledger(keyword()) :: t()
   def ledger(opts \\ []), do: new(:ledger, nil, opts)
@@ -100,6 +104,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Target do
       id: id,
       repo: Keyword.get(opts, :repo),
       base_branch: Keyword.get(opts, :base_branch),
+      repo_scopes: normalize_repo_scopes(Keyword.get(opts, :repo_scopes, [])),
       phase_id: Keyword.get(opts, :phase_id),
       work_request_id: Keyword.get(opts, :work_request_id),
       planned_slice_id: Keyword.get(opts, :planned_slice_id),
@@ -112,4 +117,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Target do
   @spec resolved?(t()) :: boolean()
   def resolved?(%__MODULE__{resolution: :resolved}), do: true
   def resolved?(%__MODULE__{}), do: false
+
+  defp normalize_repo_scopes(scopes) when is_list(scopes) do
+    Enum.flat_map(scopes, &normalize_repo_scope/1)
+  end
+
+  defp normalize_repo_scopes(_scopes), do: []
+
+  defp normalize_repo_scope(%{repo: repo} = scope) when is_binary(repo) do
+    [%{repo: repo, base_branch: Map.get(scope, :base_branch) || Map.get(scope, "base_branch")}]
+  end
+
+  defp normalize_repo_scope(%{"repo" => repo} = scope) when is_binary(repo) do
+    [%{repo: repo, base_branch: Map.get(scope, "base_branch") || Map.get(scope, :base_branch)}]
+  end
+
+  defp normalize_repo_scope(_scope), do: []
 end

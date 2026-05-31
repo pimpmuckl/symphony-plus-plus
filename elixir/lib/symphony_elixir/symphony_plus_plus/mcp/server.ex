@@ -4958,8 +4958,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
          :ok <- authorize_work_request_list_policy(session, scope, "list_work_requests"),
          filters = work_request_list_filters(filters, status),
-         {:ok, work_requests} <- WorkRequestService.list(config.repo, work_request_repository_filters(filters)) do
-      work_requests = filter_scoped_work_requests(work_requests, filters, session)
+         {:ok, work_requests} <- WorkRequestService.list(config.repo, work_request_repository_filters(filters)),
+         {:ok, work_requests} <- filter_scoped_work_requests(config.repo, work_requests, filters, session) do
       cards = work_request_cards(work_requests)
 
       {:ok,
@@ -5368,6 +5368,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            ),
          :ok <-
            authorize_work_request_policy(
+             config.repo,
              session,
              :decision_record,
              work_request,
@@ -6361,14 +6362,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp work_request_list_filters(filters, status), do: Map.put(filters, "status", status)
 
   defp work_request_repository_filters(filters) do
-    Map.take(filters, ["repo", "base_branch", "status"])
+    Map.take(filters, ["status"])
   end
 
-  defp filter_scoped_work_requests(work_requests, filters, %Session{} = session) do
-    Enum.filter(work_requests, fn work_request ->
-      work_request_matches_filters?(work_request, filters) and
-        work_request_policy_allowed?(session, :work_request_read, work_request, "list_work_requests")
+  defp filter_scoped_work_requests(repo, work_requests, filters, %Session{} = session) do
+    Enum.reduce_while(work_requests, {:ok, []}, fn work_request, {:ok, scoped} ->
+      with {:ok, matches_filters?} <- work_request_matches_filters?(repo, work_request, filters) do
+        if matches_filters? do
+          filter_policy_allowed_work_request(repo, session, work_request, scoped)
+        else
+          {:cont, {:ok, scoped}}
+        end
+      else
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
     end)
+    |> case do
+      {:ok, scoped} -> {:ok, Enum.reverse(scoped)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp filter_policy_allowed_work_request(repo, %Session{} = session, %WorkRequest{} = work_request, scoped) do
+    case authorize_work_request_policy(repo, session, :work_request_read, work_request, "list_work_requests") do
+      :ok ->
+        {:cont, {:ok, [work_request | scoped]}}
+
+      {:error, {:authorization_policy_denied, _code, _message, %{"reason_code" => "scope_mismatch"}}} ->
+        {:cont, {:ok, scoped}}
+
+      {:error, reason} ->
+        {:halt, {:error, reason}}
+    end
   end
 
   defp work_request_filter_payload(nil), do: %{}
@@ -6515,10 +6540,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp session_claimed_by(%Session{}), do: "architect"
 
-  defp work_request_policy_allowed?(%Session{} = session, action, %WorkRequest{} = work_request, tool) do
-    authorize_work_request_policy(session, action, work_request, tool) == :ok
-  end
-
   defp authorized_work_request_scope(repo, %Session{} = session, work_request_id, action, tool) do
     if architect_session?(session) do
       authorized_architect_work_request_scope(repo, session, work_request_id, action, tool)
@@ -6529,17 +6550,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp authorized_architect_work_request_scope(repo, %Session{} = session, work_request_id, action, tool) do
     with {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
-         {:ok, work_request} <- scoped_work_request(repo, work_request_id, filters),
-         :ok <- authorize_work_request_policy(session, action, work_request, tool) |> mask_architect_scope_denial() do
+         {:ok, work_request} <- scoped_work_request(repo, work_request_id, filters, repo_scopes?: repo_scope_read_action?(action)),
+         :ok <- authorize_work_request_policy(repo, session, action, work_request, tool) |> mask_architect_scope_denial() do
       {:ok, work_request, filters, scope}
     end
   end
 
   defp authorized_actor_work_request_scope(repo, %Session{} = session, work_request_id, action, tool) do
     with {:ok, work_request} <- WorkRequestService.get(repo, work_request_id),
-         :ok <- authorize_work_request_policy(session, action, work_request, tool),
+         :ok <- authorize_work_request_policy(repo, session, action, work_request, tool),
          {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
-         :ok <- require_work_request_scope(work_request, filters) do
+         :ok <- require_work_request_scope(repo, work_request, filters, repo_scopes?: repo_scope_read_action?(action)) do
       {:ok, work_request, filters, scope}
     end
   end
@@ -6568,7 +6589,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, planned_slice} <- WorkRequestService.get_planned_slice(repo, work_request_id, planned_slice_id),
          :ok <- authorize_planned_slice_policy(session, action, work_request, planned_slice, tool),
          {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
-         :ok <- require_work_request_scope(work_request, filters) do
+         :ok <- require_work_request_scope(repo, work_request, filters) do
       {:ok, work_request, planned_slice, filters, scope}
     end
   end
@@ -6616,21 +6637,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp work_request_policy_action("mark_work_request_sliced"), do: :work_request_update
   defp work_request_policy_action("dispatch_work_request_planned_slice"), do: :planned_slice_dispatch
 
+  defp repo_scope_read_action?(action), do: action in [:work_request_read, :delivery_board_read]
+
   defp authorize_work_request_repo_policy(%Session{} = session, action, %{"repo" => repo, "base_branch" => base_branch} = scope, tool) do
     target = Target.repo(repo, base_branch, phase_id: Map.get(scope, "phase_id"))
 
     authorize_policy(session, action, target, tool)
   end
 
-  defp authorize_work_request_policy(%Session{} = session, action, %WorkRequest{} = work_request, tool) do
-    target =
-      Target.work_request(work_request.id,
-        repo: work_request.repo,
-        base_branch: work_request.base_branch,
-        phase_id: ArchitectHandoff.phase_id_for_work_request(work_request)
-      )
+  defp authorize_work_request_policy(repo, %Session{} = session, action, %WorkRequest{} = work_request, tool) do
+    with {:ok, repo_scopes} <- work_request_repo_scope_payloads(repo, work_request) do
+      target =
+        Target.work_request(work_request.id,
+          repo: work_request.repo,
+          base_branch: work_request.base_branch,
+          phase_id: ArchitectHandoff.phase_id_for_work_request(work_request),
+          repo_scopes: repo_scopes
+        )
 
-    authorize_policy(session, action, target, tool)
+      authorize_policy(session, action, target, tool)
+    end
   end
 
   defp authorize_planned_slice_policy(%Session{} = session, action, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, tool) do
@@ -6720,9 +6746,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     Enum.any?(scopes, &match?(%Scope{type: :work_request}, &1))
   end
 
-  defp scoped_work_request(repo, work_request_id, filters) do
+  defp scoped_work_request(repo, work_request_id, filters, opts \\ []) do
     with {:ok, %WorkRequest{} = work_request} <- WorkRequestService.get(repo, work_request_id),
-         :ok <- require_work_request_scope(work_request, filters) do
+         :ok <- require_work_request_scope(repo, work_request, filters, opts) do
       {:ok, work_request}
     else
       {:error, :forbidden} -> {:error, :not_found}
@@ -6908,7 +6934,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with :ok <- require_work_package_scope(work_package, filters) do
       case linked_work_request_for_work_package(repo, work_package.id) do
         nil -> {:error, :forbidden}
-        %WorkRequest{} = work_request -> require_work_request_scope(work_request, filters)
+        %WorkRequest{} = work_request -> require_work_request_scope(repo, work_request, filters)
       end
     end
   end
@@ -7001,11 +7027,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
   end
 
-  defp require_work_request_scope(%WorkRequest{} = work_request, filters) do
-    if work_request_matches_filters?(work_request, filters) do
-      :ok
-    else
-      {:error, :forbidden}
+  defp require_work_request_scope(repo, %WorkRequest{} = work_request, filters, opts \\ []) do
+    match_fun = if Keyword.get(opts, :repo_scopes?, false), do: &work_request_matches_filters?/3, else: &work_request_matches_primary_filters?/3
+
+    with {:ok, matches?} <- match_fun.(repo, work_request, filters) do
+      if matches?, do: :ok, else: {:error, :forbidden}
     end
   end
 
@@ -7028,14 +7054,57 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_planned_slice_authoring_status(status) when status in ["ready_for_slicing", "sliced"], do: :ok
   defp require_planned_slice_authoring_status(_status), do: {:tool_error, "invalid_status"}
 
-  defp work_request_matches_filters?(%WorkRequest{} = work_request, filters) do
-    Enum.all?(filters, fn
-      {"repo", repo} when is_binary(repo) -> work_request.repo == repo
-      {"base_branch", base_branch} when is_binary(base_branch) -> work_request.base_branch == base_branch
-      {"status", status} when is_binary(status) -> work_request.status == status
-      {"phase_id", phase_id} when is_binary(phase_id) -> ArchitectHandoff.phase_id_for_work_request(work_request) == phase_id
-      _filter -> true
-    end)
+  defp work_request_matches_filters?(repo, %WorkRequest{} = work_request, filters) do
+    with {:ok, repo_scopes} <- work_request_repo_scope_payloads(repo, work_request) do
+      {:ok,
+       repo_scope_matches_filters?(repo_scopes, filters) and
+         Enum.all?(filters, fn
+           {"status", status} when is_binary(status) -> work_request.status == status
+           {"phase_id", phase_id} when is_binary(phase_id) -> ArchitectHandoff.phase_id_for_work_request(work_request) == phase_id
+           _filter -> true
+         end)}
+    end
+  end
+
+  defp work_request_matches_primary_filters?(_repo, %WorkRequest{} = work_request, filters) do
+    {:ok,
+     Enum.all?(filters, fn
+       {"repo", repo} when is_binary(repo) -> work_request.repo == repo
+       {"base_branch", base_branch} when is_binary(base_branch) -> work_request.base_branch == base_branch
+       {"status", status} when is_binary(status) -> work_request.status == status
+       {"phase_id", phase_id} when is_binary(phase_id) -> ArchitectHandoff.phase_id_for_work_request(work_request) == phase_id
+       _filter -> true
+     end)}
+  end
+
+  defp repo_scope_matches_filters?(repo_scopes, filters) do
+    repo = Map.get(filters, "repo")
+    base_branch = Map.get(filters, "base_branch")
+
+    cond do
+      is_binary(repo) and is_binary(base_branch) ->
+        Enum.any?(repo_scopes, &match?(%{repo: ^repo, base_branch: ^base_branch}, &1))
+
+      is_binary(repo) ->
+        Enum.any?(repo_scopes, &match?(%{repo: ^repo}, &1))
+
+      is_binary(base_branch) ->
+        Enum.any?(repo_scopes, &match?(%{base_branch: ^base_branch}, &1))
+
+      true ->
+        true
+    end
+  end
+
+  defp work_request_repo_scope_payloads(repo, %WorkRequest{} = work_request) do
+    with {:ok, repo_scopes} <- WorkRequestRepository.list_repo_scopes(repo, work_request.id) do
+      scopes =
+        [%{repo: work_request.repo, base_branch: work_request.base_branch} | Enum.map(repo_scopes, &%{repo: &1.repo, base_branch: &1.base_branch})]
+        |> Enum.filter(&is_binary(&1.repo))
+        |> Enum.uniq_by(&{&1.repo, &1.base_branch})
+
+      {:ok, scopes}
+    end
   end
 
   defp work_package_matches_filters?(%WorkPackage{} = work_package, filters) do

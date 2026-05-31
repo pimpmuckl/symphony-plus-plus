@@ -214,7 +214,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Policy do
   end
 
   defp scope_matches_target?(%Scope{type: :repo, repo: repo, base_branch: base_branch}, %Target{} = target) when is_binary(repo) do
-    target.repo == repo and (is_nil(base_branch) or target.base_branch == base_branch)
+    repo_scope_matches_target?(repo, base_branch, target)
   end
 
   defp scope_matches_target?(%Scope{type: :phase, id: scope_id, repo: repo, base_branch: base_branch}, %Target{} = target)
@@ -223,6 +223,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Policy do
   end
 
   defp scope_matches_target?(%Scope{}, %Target{}), do: false
+
+  defp repo_scope_matches_target?(repo, base_branch, %Target{} = target) do
+    target_primary_repo_scope_matches?(repo, base_branch, target) or
+      Enum.any?(target.repo_scopes, &repo_scope_matches?(repo, base_branch, &1))
+  end
+
+  defp target_primary_repo_scope_matches?(repo, base_branch, %Target{} = target) do
+    target.repo == repo and (is_nil(base_branch) or target.base_branch == base_branch)
+  end
+
+  defp repo_scope_matches?(repo, base_branch, %{repo: scope_repo, base_branch: scope_base_branch}) do
+    scope_repo == repo and (is_nil(base_branch) or scope_base_branch == base_branch)
+  end
+
+  defp repo_scope_matches?(_repo, _base_branch, _scope), do: false
 
   defp target_resolution_reason(%Target{resolution: :not_found}), do: :target_not_found
   defp target_resolution_reason(%Target{resolution: :ambiguous}), do: :target_ambiguous
