@@ -9,6 +9,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.MCPError
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Policy
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Scope
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Target
   alias SymphonyElixir.SymphonyPlusPlus.BranchPattern
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service, as: ClaimLeaseService
@@ -137,6 +142,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "merge_child_into_phase",
     "split_work_package",
     "publish_phase_update"
+  ]
+  @work_request_policy_tools [
+    "list_work_requests",
+    "read_work_request",
+    "read_work_request_delivery_board",
+    "set_work_request_status",
+    "ask_work_request_question",
+    "answer_work_request_question",
+    "answer_work_request_question_and_record_decision",
+    "close_work_request_question",
+    "record_work_request_decision",
+    "add_work_request_planned_slice",
+    "approve_work_request_planned_slice",
+    "skip_work_request_planned_slice",
+    "mark_work_request_sliced",
+    "dispatch_work_request_planned_slice"
   ]
   @phase7_stub_architect_tools [
     "request_child_replan",
@@ -4468,10 +4489,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with :ok <- require_tool_arguments_object(params, name),
          :ok <- preauthorize_architect_tool_call(server, name),
          :ok <- prepare_mcp_repository_for_tool(server.config.repo, name),
-         :ok <- authorize_architect_tool_call(server, name) do
+         :ok <- maybe_authorize_architect_tool_call(server, name) do
       architect_tool_arguments(params, name)
     end
   end
+
+  defp maybe_authorize_architect_tool_call(%__MODULE__{config: config, session: session}, name) when name in @work_request_policy_tools do
+    with {:ok, session} <- Auth.require_session(session, config.repo) do
+      authorize_work_request_tool_policy_preauthorization(config.repo, session, name)
+    end
+  end
+
+  defp maybe_authorize_architect_tool_call(%__MODULE__{} = server, name), do: authorize_architect_tool_call(server, name)
 
   defp prepare_bootstrap_tool_call(%__MODULE__{} = server, params, name) do
     with :ok <- require_tool_arguments_object(params, name),
@@ -4518,6 +4547,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp preauthorize_architect_tool_call(%__MODULE__{session: nil} = server, name) do
     authorize_architect_tool_call(server, name)
+  end
+
+  defp preauthorize_architect_tool_call(%__MODULE__{session: session}, name) when name in @work_request_policy_tools do
+    with {:ok, _session} <- Auth.require_session(session) do
+      :ok
+    end
   end
 
   defp preauthorize_architect_tool_call(%__MODULE__{session: session}, _name) do
@@ -4851,12 +4886,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("list_work_requests", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "read:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, status} <- optional_work_request_status(arguments),
          {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
+         :ok <- authorize_work_request_list_policy(session, scope, "list_work_requests"),
          filters = work_request_list_filters(filters, status),
          {:ok, work_requests} <- WorkRequestService.list(config.repo, work_request_repository_filters(filters)) do
-      work_requests = filter_scoped_work_requests(work_requests, filters)
+      work_requests = filter_scoped_work_requests(work_requests, filters, session)
       cards = work_request_cards(work_requests)
 
       {:ok,
@@ -4873,11 +4909,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("read_work_request", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "read:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, work_request, _filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :work_request_read, "read_work_request"),
          {:ok, payload} <- work_request_detail_payload(config.repo, work_request, include_planning_scratch?: include_planning_scratch?) do
       {:ok, tool_result(Map.put(payload, "scope", scope))}
     else
@@ -4906,11 +4942,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("read_work_request_delivery_board", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "read:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, work_request, filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :delivery_board_read, "read_work_request_delivery_board"),
          {:ok, planned_slices} <- WorkRequestService.list_planned_slices(config.repo, work_request_id),
          {:ok, delivery_board} <-
            scoped_delivery_board(config.repo, work_request, planned_slices, filters, include_planning_scratch?: include_planning_scratch?) do
@@ -5092,12 +5128,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("set_work_request_status", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, current_status} <- required_argument(arguments, "current_status"),
          {:ok, next_status} <- required_argument(arguments, "next_status"),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, _work_request, _filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :work_request_update, "set_work_request_status"),
          {:ok, updated_work_request} <- WorkRequestService.update_status(config.repo, work_request_id, current_status, next_status) do
       {:ok,
        tool_result(%{
@@ -5116,15 +5152,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("ask_work_request_question", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, category} <- required_argument(arguments, "category"),
          {:ok, question} <- required_argument(arguments, "question"),
          {:ok, why_needed} <- required_argument(arguments, "why_needed"),
          {:ok, decision_prompt} <- optional_decision_prompt_argument(arguments, "decision_prompt"),
          {:ok, asked_by_agent_run_id} <- optional_string_argument(arguments, "asked_by_agent_run_id"),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, _work_request, filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :question_create, "ask_work_request_question"),
          {:ok, question_record} <-
            WorkRequestService.ask_question(
              config.repo,
@@ -5162,14 +5198,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("answer_work_request_question", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, question_id} <- required_argument(arguments, "question_id"),
          {:ok, expected_question_status} <- expected_question_status_argument(arguments),
          {:ok, answer} <- required_argument(arguments, "answer"),
          {:ok, answered_by} <- optional_string_argument(arguments, "answered_by", session_claimed_by(session)),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, _work_request, filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :question_answer, "answer_work_request_question"),
          {:ok, _question} <- scoped_work_request_question(config.repo, work_request_id, question_id),
          {:ok, question_record} <-
            WorkRequestService.answer_question(config.repo, question_id, expected_question_status, %{
@@ -5196,7 +5232,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("answer_work_request_question_and_record_decision", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, question_id} <- required_argument(arguments, "question_id"),
          {:ok, expected_question_status} <- expected_question_status_argument(arguments),
@@ -5208,8 +5244,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, scope_impact} <- required_argument(arguments, "scope_impact"),
          {:ok, created_by} <- optional_string_argument(arguments, "created_by", answered_by),
          {:ok, source_id} <- optional_string_argument(arguments, "source_id", question_id),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, work_request, filters, scope} <-
+           authorized_work_request_scope(
+             config.repo,
+             session,
+             work_request_id,
+             :question_answer,
+             "answer_work_request_question_and_record_decision"
+           ),
+         :ok <-
+           authorize_work_request_policy(
+             session,
+             :decision_record,
+             work_request,
+             "answer_work_request_question_and_record_decision"
+           ),
          {:ok, _question} <- scoped_work_request_question(config.repo, work_request_id, question_id),
          {:ok, %{decision: decision_record, question: question_record}} <-
            answer_question_and_record_decision_transaction(config.repo, work_request_id, question_id, expected_question_status, %{
@@ -5243,12 +5292,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("close_work_request_question", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, question_id} <- required_argument(arguments, "question_id"),
          {:ok, expected_question_status} <- expected_question_status_argument(arguments),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, _work_request, filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :question_close, "close_work_request_question"),
          {:ok, _question} <- scoped_work_request_question(config.repo, work_request_id, question_id),
          {:ok, question_record} <- WorkRequestService.close_question(config.repo, question_id, expected_question_status),
          {:ok, updated_work_request} <- scoped_work_request(config.repo, work_request_id, filters) do
@@ -5271,7 +5320,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("record_work_request_decision", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, source_type} <- required_argument(arguments, "source_type"),
          {:ok, decision} <- required_argument(arguments, "decision"),
@@ -5279,8 +5328,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, scope_impact} <- required_argument(arguments, "scope_impact"),
          {:ok, created_by} <- required_argument(arguments, "created_by"),
          {:ok, source_id} <- optional_string_argument(arguments, "source_id"),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, _work_request, filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :decision_record, "record_work_request_decision"),
          {:ok, decision_record} <-
            WorkRequestService.record_decision(
              config.repo,
@@ -5313,7 +5362,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("add_work_request_planned_slice", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, title} <- required_argument(arguments, "title"),
          {:ok, goal} <- required_argument(arguments, "goal"),
@@ -5327,8 +5376,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, stop_conditions} <- required_string_array(arguments, "stop_conditions"),
          {:ok, branch_pattern} <- optional_string_argument(arguments, "branch_pattern"),
          :ok <- require_supported_branch_pattern(branch_pattern),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, work_request, filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :planned_slice_create, "add_work_request_planned_slice"),
          :ok <- require_planned_slice_authoring_status(work_request.status),
          :ok <- require_planned_slice_target_base_branch_scope(work_request, target_base_branch),
          :ok <- validate_planned_slice_scope_for_tool(work_request, work_package_kind, owned_file_globs),
@@ -5373,19 +5422,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("approve_work_request_planned_slice", arguments, %__MODULE__{config: config, session: session}) do
-    mutate_work_request_planned_slice_status("approve_work_request_planned_slice", arguments, config.repo, session, "approved")
+    mutate_work_request_planned_slice_status(
+      "approve_work_request_planned_slice",
+      arguments,
+      config.repo,
+      session,
+      "approved",
+      :planned_slice_approve
+    )
   end
 
   defp architect_tool("skip_work_request_planned_slice", arguments, %__MODULE__{config: config, session: session}) do
-    mutate_work_request_planned_slice_status("skip_work_request_planned_slice", arguments, config.repo, session, "skipped")
+    mutate_work_request_planned_slice_status(
+      "skip_work_request_planned_slice",
+      arguments,
+      config.repo,
+      session,
+      "skipped",
+      :planned_slice_skip
+    )
   end
 
   defp architect_tool("mark_work_request_sliced", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, current_status} <- required_argument(arguments, "current_status"),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, _work_request, _filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :work_request_update, "mark_work_request_sliced"),
          {:ok, updated_work_request} <- WorkRequestService.mark_sliced(config.repo, work_request_id, current_status) do
       {:ok,
        tool_result(%{
@@ -5404,13 +5467,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("dispatch_work_request_planned_slice", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "dispatch:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
-         {:ok, planned_slice} <- scoped_work_request_planned_slice(config.repo, work_request_id, planned_slice_id),
+         {:ok, work_request, planned_slice, _filters, scope} <-
+           authorized_planned_slice_scope(
+             config.repo,
+             session,
+             work_request_id,
+             planned_slice_id,
+             :planned_slice_dispatch,
+             "dispatch_work_request_planned_slice"
+           ),
          :ok <- require_planned_slice_target_base_branch_scope(work_request, planned_slice.target_base_branch),
          :ok <- require_approved_dispatch_planned_slice(planned_slice),
          {:ok, handoff_opts, dispatch_opts} <- dispatch_planned_slice_bootstrap_opts(config, arguments, claimed_by),
@@ -5599,16 +5668,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp mutate_work_request_planned_slice_status(tool, arguments, repo, session, next_status) do
-    with {:ok, session} <- architect_session(repo, session, "write:work_request"),
+  defp mutate_work_request_planned_slice_status(tool, arguments, repo, session, next_status, action) do
+    with {:ok, session} <- Auth.require_session(session, repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
          {:ok, current_status} <- required_argument(arguments, "current_status"),
-         {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
-         {:ok, work_request} <- scoped_work_request(repo, work_request_id, filters),
+         {:ok, work_request, planned_slice_for_validation, filters, scope} <-
+           authorized_planned_slice_scope(repo, session, work_request_id, planned_slice_id, action, tool),
          :ok <- require_planned_slice_authoring_status(work_request.status),
-         {:ok, planned_slice_for_validation} <-
-           scoped_work_request_planned_slice(repo, work_request_id, planned_slice_id),
          :ok <-
            maybe_validate_planned_slice_scope_for_approval(next_status, work_request, planned_slice_for_validation),
          {:ok, planned_slice} <-
@@ -6152,8 +6219,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     Map.take(filters, ["repo", "base_branch", "status"])
   end
 
-  defp filter_scoped_work_requests(work_requests, filters) do
-    Enum.filter(work_requests, &work_request_matches_filters?(&1, filters))
+  defp filter_scoped_work_requests(work_requests, filters, %Session{} = session) do
+    Enum.filter(work_requests, fn work_request ->
+      work_request_matches_filters?(work_request, filters) and
+        work_request_policy_allowed?(session, :work_request_read, work_request, "list_work_requests")
+    end)
   end
 
   defp work_request_filter_payload(nil), do: %{}
@@ -6299,6 +6369,166 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp session_claimed_by(%Session{}), do: "architect"
+
+  defp work_request_policy_allowed?(%Session{} = session, action, %WorkRequest{} = work_request, tool) do
+    authorize_work_request_policy(session, action, work_request, tool) == :ok
+  end
+
+  defp authorized_work_request_scope(repo, %Session{} = session, work_request_id, action, tool) do
+    if architect_session?(session) do
+      authorized_architect_work_request_scope(repo, session, work_request_id, action, tool)
+    else
+      authorized_actor_work_request_scope(repo, session, work_request_id, action, tool)
+    end
+  end
+
+  defp authorized_architect_work_request_scope(repo, %Session{} = session, work_request_id, action, tool) do
+    with {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
+         {:ok, work_request} <- scoped_work_request(repo, work_request_id, filters),
+         :ok <- authorize_work_request_policy(session, action, work_request, tool) |> mask_architect_scope_denial() do
+      {:ok, work_request, filters, scope}
+    end
+  end
+
+  defp authorized_actor_work_request_scope(repo, %Session{} = session, work_request_id, action, tool) do
+    with {:ok, work_request} <- WorkRequestService.get(repo, work_request_id),
+         :ok <- authorize_work_request_policy(session, action, work_request, tool),
+         {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
+         :ok <- require_work_request_scope(work_request, filters) do
+      {:ok, work_request, filters, scope}
+    end
+  end
+
+  defp authorized_planned_slice_scope(repo, %Session{} = session, work_request_id, planned_slice_id, action, tool) do
+    if architect_session?(session) do
+      authorized_architect_planned_slice_scope(repo, session, work_request_id, planned_slice_id, action, tool)
+    else
+      authorized_actor_planned_slice_scope(repo, session, work_request_id, planned_slice_id, action, tool)
+    end
+  end
+
+  defp authorized_architect_planned_slice_scope(repo, %Session{} = session, work_request_id, planned_slice_id, action, tool) do
+    with {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
+         {:ok, work_request} <- scoped_work_request(repo, work_request_id, filters),
+         {:ok, planned_slice} <- scoped_work_request_planned_slice(repo, work_request_id, planned_slice_id),
+         :ok <-
+           authorize_planned_slice_policy(session, action, work_request, planned_slice, tool)
+           |> mask_architect_scope_denial() do
+      {:ok, work_request, planned_slice, filters, scope}
+    end
+  end
+
+  defp authorized_actor_planned_slice_scope(repo, %Session{} = session, work_request_id, planned_slice_id, action, tool) do
+    with {:ok, work_request} <- WorkRequestService.get(repo, work_request_id),
+         {:ok, planned_slice} <- WorkRequestService.get_planned_slice(repo, work_request_id, planned_slice_id),
+         :ok <- authorize_planned_slice_policy(session, action, work_request, planned_slice, tool),
+         {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
+         :ok <- require_work_request_scope(work_request, filters) do
+      {:ok, work_request, planned_slice, filters, scope}
+    end
+  end
+
+  defp authorize_work_request_list_policy(%Session{} = session, scope, tool) do
+    case authorize_work_request_repo_policy(session, :work_request_read, scope, tool) do
+      :ok ->
+        :ok
+
+      {:error, {:authorization_policy_denied, _code, _message, %{"reason_code" => "scope_mismatch"}}} = error ->
+        if work_request_scoped_session?(session), do: :ok, else: error
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp authorize_work_request_tool_policy_preauthorization(repo, %Session{} = session, tool) do
+    target = Target.repo("policy-preauthorization", nil)
+
+    case authorize_policy(session, work_request_policy_action(tool), target, tool) do
+      :ok ->
+        :ok
+
+      {:error, {:authorization_policy_denied, _code, _message, %{"reason_code" => "scope_mismatch"}}} ->
+        with {:ok, _filters, _scope} <- scoped_work_request_filters(repo, session), do: :ok
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp work_request_policy_action("list_work_requests"), do: :work_request_read
+  defp work_request_policy_action("read_work_request"), do: :work_request_read
+  defp work_request_policy_action("read_work_request_delivery_board"), do: :delivery_board_read
+  defp work_request_policy_action("set_work_request_status"), do: :work_request_update
+  defp work_request_policy_action("ask_work_request_question"), do: :question_create
+  defp work_request_policy_action("answer_work_request_question"), do: :question_answer
+  defp work_request_policy_action("answer_work_request_question_and_record_decision"), do: :question_answer
+  defp work_request_policy_action("close_work_request_question"), do: :question_close
+  defp work_request_policy_action("record_work_request_decision"), do: :decision_record
+  defp work_request_policy_action("add_work_request_planned_slice"), do: :planned_slice_create
+  defp work_request_policy_action("approve_work_request_planned_slice"), do: :planned_slice_approve
+  defp work_request_policy_action("skip_work_request_planned_slice"), do: :planned_slice_skip
+  defp work_request_policy_action("mark_work_request_sliced"), do: :work_request_update
+  defp work_request_policy_action("dispatch_work_request_planned_slice"), do: :planned_slice_dispatch
+
+  defp authorize_work_request_repo_policy(%Session{} = session, action, %{"repo" => repo, "base_branch" => base_branch} = scope, tool) do
+    target = Target.repo(repo, base_branch, phase_id: Map.get(scope, "phase_id"))
+
+    authorize_policy(session, action, target, tool)
+  end
+
+  defp authorize_work_request_policy(%Session{} = session, action, %WorkRequest{} = work_request, tool) do
+    target =
+      Target.work_request(work_request.id,
+        repo: work_request.repo,
+        base_branch: work_request.base_branch,
+        phase_id: ArchitectHandoff.phase_id_for_work_request(work_request)
+      )
+
+    authorize_policy(session, action, target, tool)
+  end
+
+  defp authorize_planned_slice_policy(%Session{} = session, action, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, tool) do
+    target =
+      Target.planned_slice(planned_slice.id, work_request.id,
+        repo: work_request.repo,
+        base_branch: planned_slice.target_base_branch || work_request.base_branch,
+        phase_id: ArchitectHandoff.phase_id_for_work_request(work_request),
+        work_package_id: planned_slice.work_package_id
+      )
+
+    authorize_policy(session, action, target, tool)
+  end
+
+  defp authorize_policy(%Session{} = session, action, %Target{} = target, tool) do
+    with {:ok, actor} <- ActorResolver.from_session(session) do
+      actor
+      |> Policy.decide(action, target)
+      |> MCPError.from_decision(tool)
+      |> wrap_authorization_policy_denial()
+    end
+  end
+
+  defp wrap_authorization_policy_denial(:ok), do: :ok
+
+  defp wrap_authorization_policy_denial({:error, code, message, data}) do
+    {:error, {:authorization_policy_denied, code, message, data}}
+  end
+
+  defp mask_architect_scope_denial({:error, {:authorization_policy_denied, _code, _message, %{"reason_code" => "scope_mismatch"}}}) do
+    {:error, :not_found}
+  end
+
+  defp mask_architect_scope_denial(result), do: result
+
+  defp architect_session?(%Session{assignment: %{grant_role: "architect"}}), do: true
+  defp architect_session?(%Session{}), do: false
+
+  defp work_request_scoped_session?(%Session{assignment: %{scopes: scopes}}) when is_list(scopes) do
+    Enum.any?(scopes, &match?(%Scope{type: :work_request}, &1))
+  end
+
+  defp work_request_scoped_session?(%Session{}), do: false
 
   defp scoped_work_request(repo, work_request_id, filters) do
     with {:ok, %WorkRequest{} = work_request} <- WorkRequestService.get(repo, work_request_id),
@@ -11879,6 +12109,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_error(:assignment_revoked, resource), do: auth_error({:unauthorized, :revoked}, resource)
   defp architect_error(:architect_grant_required, resource), do: auth_error({:unauthorized, :architect_grant_required}, resource)
   defp architect_error(:insufficient_capability, resource), do: auth_error({:unauthorized, :insufficient_capability}, resource)
+  defp architect_error({:authorization_policy_denied, code, message, data}, _resource), do: {:error, code, message, data}
   defp architect_error(:phase_scope_not_available, resource), do: auth_error(:forbidden, resource)
   defp architect_error(:forbidden, resource), do: auth_error(:forbidden, resource)
   defp architect_error({:service_unavailable, _reason} = reason, resource), do: auth_error(reason, resource)

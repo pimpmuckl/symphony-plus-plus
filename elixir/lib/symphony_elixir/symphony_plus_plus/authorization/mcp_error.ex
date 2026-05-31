@@ -23,6 +23,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.MCPError do
        "action" => Atom.to_string(decision.action),
        "target" => target_payload(decision)
      }
+     |> maybe_put("legacy_reason", decision.legacy_reason)
      |> maybe_put("requirements", decision.requirements)
      |> maybe_put("redactions", decision.redactions)
      |> Redactor.redact_output()}
