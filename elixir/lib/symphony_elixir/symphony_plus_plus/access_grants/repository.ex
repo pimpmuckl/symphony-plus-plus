@@ -692,9 +692,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
   end
 
   defp required_grant_scopes(repo, %AccessGrant{} = access_grant, attrs) do
-    with :ok <- validate_requested_architect_scopes(repo, access_grant, attrs) do
+    with :ok <- validate_requested_architect_scopes(repo, access_grant, attrs),
+         {:ok, default_scopes} <- default_grant_scopes(repo, access_grant, attrs) do
       scopes =
-        (default_grant_scopes(repo, access_grant, attrs) ++ explicit_grant_scopes(attrs))
+        (default_scopes ++ explicit_grant_scopes(attrs))
         |> Enum.uniq_by(&GrantScope.scope_key/1)
 
       {:ok, scopes}
@@ -953,38 +954,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
 
   defp default_grant_scopes(_repo, %AccessGrant{grant_role: "worker", work_package_id: work_package_id}, _attrs)
        when is_binary(work_package_id) do
-    [AuthScope.work_package(work_package_id)]
+    {:ok, [AuthScope.work_package(work_package_id)]}
   end
 
   defp default_grant_scopes(repo, %AccessGrant{grant_role: "architect"} = access_grant, attrs) do
-    [
-      architect_work_request_scope(repo, access_grant, attrs),
-      explicit_planned_slice_scope(attrs),
-      optional_work_package_scope(access_grant.work_package_id),
-      optional_repo_scope(access_grant.scope_repo, access_grant.scope_base_branch)
-    ]
-    |> Enum.reject(&is_nil/1)
+    with {:ok, work_request_scope} <- architect_work_request_scope(repo, access_grant, attrs) do
+      scopes =
+        [
+          work_request_scope,
+          explicit_planned_slice_scope(attrs),
+          optional_work_package_scope(access_grant.work_package_id),
+          optional_repo_scope(access_grant.scope_repo, access_grant.scope_base_branch)
+        ]
+        |> Enum.reject(&is_nil/1)
+
+      {:ok, scopes}
+    end
   end
 
-  defp default_grant_scopes(_repo, %AccessGrant{}, _attrs), do: []
+  defp default_grant_scopes(_repo, %AccessGrant{}, _attrs), do: {:ok, []}
 
-  defp architect_work_request_scope(repo, %AccessGrant{work_package_id: work_package_id}, attrs) do
+  defp architect_work_request_scope(repo, %AccessGrant{} = access_grant, attrs) do
     case string_attr(attrs, "work_request_id") do
       work_request_id when is_binary(work_request_id) ->
-        AuthScope.work_request(work_request_id)
+        validated_work_request_scope(repo, access_grant, work_request_id)
 
       nil ->
-        case requested_planned_slice_work_request_id_from_attrs(repo, work_package_id, attrs) do
-          {:ok, work_request_id} -> AuthScope.work_request(work_request_id)
-          {:error, :not_found} -> work_package_work_request_scope(repo, work_package_id)
+        case requested_planned_slice_work_request_id_from_attrs(repo, access_grant.work_package_id, attrs) do
+          {:ok, work_request_id} -> validated_work_request_scope(repo, access_grant, work_request_id)
+          {:error, :not_found} -> work_package_work_request_scope(repo, access_grant)
         end
     end
   end
 
-  defp work_package_work_request_scope(repo, work_package_id) do
-    case work_request_id_for_work_package(repo, work_package_id) do
-      {:ok, work_request_id} -> AuthScope.work_request(work_request_id)
-      {:error, :not_found} -> nil
+  defp work_package_work_request_scope(repo, %AccessGrant{} = access_grant) do
+    case work_request_id_for_work_package(repo, access_grant.work_package_id) do
+      {:ok, work_request_id} -> validated_work_request_scope(repo, access_grant, work_request_id)
+      {:error, :not_found} -> {:ok, nil}
+    end
+  end
+
+  defp validated_work_request_scope(repo, %AccessGrant{} = access_grant, work_request_id) do
+    if work_request_matches_grant_scope?(repo, access_grant, work_request_id) do
+      {:ok, AuthScope.work_request(work_request_id)}
+    else
+      {:error, :invalid_scope}
     end
   end
 

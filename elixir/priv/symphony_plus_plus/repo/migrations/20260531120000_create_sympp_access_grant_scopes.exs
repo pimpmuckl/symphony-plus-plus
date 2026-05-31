@@ -109,9 +109,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo.Migrations.CreateSymppAccessGrant
     FROM sympp_access_grants AS grants
     JOIN sympp_work_request_planned_slices AS slices
       ON slices.work_package_id = grants.work_package_id
+    JOIN sympp_work_requests AS work_requests
+      ON work_requests.id = slices.work_request_id
     WHERE grants.grant_role = 'architect'
       AND slices.work_request_id IS NOT NULL
       AND trim(slices.work_request_id) != ''
+      AND work_requests.repo = grants.scope_repo
+      AND (
+        work_requests.base_branch = grants.scope_base_branch
+        OR (work_requests.base_branch IS NULL AND grants.scope_base_branch IS NULL)
+      )
     """)
   end
 end

@@ -376,6 +376,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     assert [%GrantScope{scope_type: "planned_slice", scope_id: "wrs-requested-planned-slice"}] = Enum.filter(scope_rows, &(&1.scope_type == "planned_slice"))
   end
 
+  test "architect grants reject default slice-derived work request scope outside anchor repo", %{repo: repo} do
+    assert {:ok, phase} =
+             PhaseRepository.create(repo, %{
+               id: "phase-invalid-default-work-request-scope",
+               title: "Invalid default WorkRequest scope"
+             })
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 kind: "phase_child",
+                 phase_id: phase.id,
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main"
+               )
+             )
+
+    insert_work_request!(repo, "wr-default-cross-repo", "nextide/other", work_package.base_branch)
+    insert_planned_slice!(repo, "wrs-default-cross-repo", "wr-default-cross-repo", work_package.id, work_package.base_branch)
+
+    assert {:error, :invalid_scope} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+  end
+
   test "default worker grants are non-expiring and remain claimable", %{repo: repo} do
     assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
     assert {:ok, minted} = Service.mint_worker_grant(repo, work_package.id)
@@ -1065,6 +1093,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
       now = DateTime.utc_now(:microsecond)
       worker_key = WorkKey.generate()
       architect_key = WorkKey.generate()
+      foreign_architect_key = WorkKey.generate()
       operator_key = WorkKey.generate()
 
       assert {:ok, phase} = PhaseRepository.create(Repo, %{id: "phase-grant-scope-backfill", title: "Grant scope backfill"})
@@ -1083,6 +1112,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
 
       insert_work_request!(Repo, "wr-grant-scope-backfill", work_package.repo, work_package.base_branch)
       insert_planned_slice!(Repo, "wrs-grant-scope-backfill", "wr-grant-scope-backfill", work_package.id, work_package.base_branch)
+
+      assert {:ok, foreign_work_package} =
+               WorkPackageRepository.create(
+                 Repo,
+                 WorkPackageFactory.attrs(
+                   id: "SYMPP-GRANT-SCOPE-FOREIGN",
+                   kind: "phase_child",
+                   phase_id: phase.id,
+                   repo: work_package.repo,
+                   base_branch: work_package.base_branch
+                 )
+               )
+
+      insert_work_request!(Repo, "wr-grant-scope-foreign-branch", work_package.repo, "feature/other")
+      insert_planned_slice!(Repo, "wrs-grant-scope-foreign-branch", "wr-grant-scope-foreign-branch", foreign_work_package.id, "feature/other")
 
       Repo.query!(
         """
@@ -1103,6 +1147,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
           "worker",
           nil,
           Jason.encode!(["worker:claim"]),
+          nil,
+          nil,
+          nil,
+          nil,
+          now,
+          now
+        ]
+      )
+
+      Repo.query!(
+        """
+        INSERT INTO sympp_access_grants
+          (id, work_package_id, phase_id, scope_repo, scope_base_branch, display_key,
+           secret_hash, grant_role, provenance, capabilities, expires_at, revoked_at,
+           claimed_at, claimed_by, inserted_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+          "grant-architect-scope-foreign",
+          foreign_work_package.id,
+          phase.id,
+          foreign_work_package.repo,
+          foreign_work_package.base_branch,
+          foreign_architect_key.display_key,
+          WorkKey.secret_hash(foreign_architect_key.secret),
+          "architect",
+          nil,
+          Jason.encode!(["read:work_request", "write:work_request"]),
           nil,
           nil,
           nil,
@@ -1197,6 +1269,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
       assert ["repo", nil, "nextide/symphony-plus-plus", "main"] in architect_scopes.rows
       assert ["work_package", "SYMPP-GRANT-SCOPE-BACKFILL", nil, nil] in architect_scopes.rows
       assert ["work_request", "wr-grant-scope-backfill", nil, nil] in architect_scopes.rows
+
+      foreign_scopes =
+        Repo.query!(
+          """
+          SELECT scope_type, scope_id, repo, base_branch
+          FROM sympp_access_grant_scopes
+          WHERE access_grant_id = ?
+          ORDER BY scope_type
+          """,
+          ["grant-architect-scope-foreign"]
+        )
+
+      assert ["repo", nil, "nextide/symphony-plus-plus", "main"] in foreign_scopes.rows
+      assert ["work_package", "SYMPP-GRANT-SCOPE-FOREIGN", nil, nil] in foreign_scopes.rows
+      refute Enum.any?(foreign_scopes.rows, &match?(["work_request", _, _, _], &1))
 
       operator_scopes =
         Repo.query!(
