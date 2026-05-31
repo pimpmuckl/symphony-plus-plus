@@ -797,7 +797,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
          {:ok, anchor} <- WorkPackageRepository.get(repo, access_grant.work_package_id),
          {:ok, work_request} <- WorkRequestRepository.get(repo, work_request_id) do
       handoff_anchor_matches_grant?(anchor, access_grant) and
-        handoff_work_request_matches_grant?(work_request, access_grant)
+        work_request_matches_grant_scope?(work_request, access_grant)
     else
       _reason -> false
     end
@@ -834,7 +834,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
       anchor.base_branch == access_grant.scope_base_branch
   end
 
-  defp handoff_work_request_matches_grant?(work_request, %AccessGrant{} = access_grant) do
+  defp work_request_matches_grant_scope?(work_request, %AccessGrant{} = access_grant) do
     work_request.repo == access_grant.scope_repo and
       work_request.base_branch == access_grant.scope_base_branch
   end
@@ -854,7 +854,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     |> binary_part(0, 16)
   end
 
-  defp work_request_has_anchor_slice?(repo, %AccessGrant{work_package_id: work_package_id}, work_request_id)
+  defp work_request_has_anchor_slice?(repo, %AccessGrant{work_package_id: work_package_id} = access_grant, work_request_id)
        when is_binary(work_package_id) do
     query =
       from(slice in "sympp_work_request_planned_slices",
@@ -864,12 +864,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
         limit: 1
       )
 
-    repo.one(query) == 1
+    repo.one(query) == 1 and work_request_matches_grant_scope?(repo, access_grant, work_request_id)
   end
 
   defp work_request_has_anchor_slice?(_repo, %AccessGrant{}, _work_request_id), do: false
 
-  defp validate_planned_slice_anchor(repo, %AccessGrant{work_package_id: work_package_id}, planned_slice_id, work_request_ids)
+  defp validate_planned_slice_anchor(repo, %AccessGrant{work_package_id: work_package_id} = access_grant, planned_slice_id, work_request_ids)
        when is_binary(work_package_id) do
     query =
       from(slice in "sympp_work_request_planned_slices",
@@ -881,7 +881,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
 
     case repo.one(query) do
       slice_work_request_id when is_binary(slice_work_request_id) ->
-        if work_request_ids == [] or slice_work_request_id in work_request_ids do
+        if (work_request_ids == [] or slice_work_request_id in work_request_ids) and
+             work_request_matches_grant_scope?(repo, access_grant, slice_work_request_id) do
           :ok
         else
           {:error, :invalid_scope}
@@ -893,6 +894,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
   end
 
   defp validate_planned_slice_anchor(_repo, %AccessGrant{}, _planned_slice_id, _work_request_id), do: {:error, :invalid_scope}
+
+  defp work_request_matches_grant_scope?(repo, %AccessGrant{} = access_grant, work_request_id)
+       when is_binary(work_request_id) do
+    case WorkRequestRepository.get(repo, work_request_id) do
+      {:ok, work_request} -> work_request_matches_grant_scope?(work_request, access_grant)
+      {:error, _reason} -> false
+    end
+  end
+
+  defp work_request_matches_grant_scope?(_repo, %AccessGrant{}, _work_request_id), do: false
 
   defp default_grant_scopes(_repo, %AccessGrant{grant_role: "worker", work_package_id: work_package_id}, _attrs)
        when is_binary(work_package_id) do

@@ -236,6 +236,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
              )
   end
 
+  test "architect grants reject slice-derived work request scopes outside the anchor repository", %{repo: repo} do
+    assert {:ok, phase} =
+             PhaseRepository.create(repo, %{
+               id: "phase-cross-repo-planned-slice-scope",
+               title: "Cross-repo planned slice scope"
+             })
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(kind: "phase_child", phase_id: phase.id)
+             )
+
+    insert_work_request!(repo, "wr-cross-repo-slice-scope", "other/repo", work_package.base_branch)
+
+    insert_planned_slice!(
+      repo,
+      "wrs-cross-repo-slice-scope",
+      "wr-cross-repo-slice-scope",
+      work_package.id,
+      work_package.base_branch
+    )
+
+    assert {:error, :invalid_scope} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               work_request_id: "wr-cross-repo-slice-scope",
+               planned_slice_id: "wrs-cross-repo-slice-scope",
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+  end
+
   test "architect grants resolve work request scope from a dispatched planned slice", %{repo: repo} do
     assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-resolved-work-request-scope", title: "Resolved WorkRequest scope"})
 

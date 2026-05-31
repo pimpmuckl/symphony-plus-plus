@@ -43,7 +43,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ResolverTest do
            )
   end
 
-  test "prefers persisted grant scopes over capability-era fallback inputs" do
+  test "prefers persisted work request scope while preserving fallback phase scope" do
     actor =
       assignment("architect",
         work_package_id: "wp-anchor",
@@ -52,7 +52,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ResolverTest do
       )
       |> ActorResolver.from_assignment(work_request_id: "wr-fallback", repo: "nextide/symphony-plus-plus", base_branch: "main")
 
-    assert actor.scopes == [Scope.work_request("wr-persisted")]
+    assert Scope.work_request("wr-persisted") in actor.scopes
+    refute Scope.work_request("wr-fallback") in actor.scopes
+    assert Enum.any?(actor.scopes, &match?(%Scope{type: :work_package, id: "wp-anchor"}, &1))
+    assert Scope.repo("nextide/symphony-plus-plus", "main") in actor.scopes
+
+    assert Enum.any?(
+             actor.scopes,
+             &match?(
+               %Scope{
+                 type: :phase,
+                 id: "phase-1",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main",
+                 metadata: %{migration_only: true}
+               },
+               &1
+             )
+           )
   end
 
   test "preserves fallback work request scope when persisted legacy scopes are incomplete" do
@@ -67,6 +84,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ResolverTest do
     assert Enum.any?(actor.scopes, &match?(%Scope{type: :work_request, id: "wr-fallback"}, &1))
     assert Enum.any?(actor.scopes, &match?(%Scope{type: :repo, repo: "nextide/symphony-plus-plus", base_branch: "main"}, &1))
     assert Enum.count(actor.scopes, &match?(%Scope{type: :work_package, id: "wp-anchor"}, &1)) == 1
+  end
+
+  test "worker assignments ignore persisted scopes outside their package" do
+    actor =
+      assignment("worker",
+        work_package_id: "wp-worker",
+        scopes: [
+          Scope.ledger(),
+          Scope.repo("nextide/symphony-plus-plus", "main"),
+          Scope.work_request("wr-overbroad"),
+          Scope.work_package("wp-other"),
+          Scope.work_package("wp-worker")
+        ]
+      )
+      |> ActorResolver.from_assignment()
+
+    assert actor.scopes == [Scope.work_package("wp-worker")]
   end
 
   test "resolves local operator to trusted ledger scope" do

@@ -38,7 +38,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver do
   defp actor_from_assignment(:worker, %Assignment{} = assignment, opts) do
     Actor.new(:worker,
       id: assignment.claimed_by,
-      scopes: assignment_scopes(assignment) || worker_scopes(assignment, opts),
+      scopes: worker_assignment_scopes(assignment, opts),
       capabilities: assignment.capabilities || [],
       source: :mcp_assignment,
       metadata: assignment_metadata(assignment)
@@ -84,6 +84,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver do
 
   defp worker_scopes(%Assignment{}, _opts), do: []
 
+  defp worker_assignment_scopes(%Assignment{} = assignment, opts) do
+    fallback_scopes = worker_scopes(assignment, opts)
+
+    case assignment_scopes(assignment) do
+      nil ->
+        fallback_scopes
+
+      scopes ->
+        case Enum.filter(scopes, &worker_scope_matches_assignment?(&1, assignment)) do
+          [] -> fallback_scopes
+          worker_scopes -> merge_scopes(worker_scopes, fallback_scopes)
+        end
+    end
+  end
+
+  defp worker_scope_matches_assignment?(
+         %Scope{type: :work_package, id: scope_id},
+         %Assignment{work_package_id: work_package_id}
+       )
+       when is_binary(scope_id) and scope_id == work_package_id,
+       do: true
+
+  defp worker_scope_matches_assignment?(%Scope{}, %Assignment{}), do: false
+
   defp operator_scopes(%Assignment{} = assignment) do
     ledger_scopes = [Scope.ledger(metadata: %{source: :mcp_assignment})]
 
@@ -97,10 +121,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver do
     persisted_scopes = assignment_scopes(assignment)
     fallback_scopes = architect_scopes(assignment, opts)
 
-    cond do
-      is_nil(persisted_scopes) -> fallback_scopes
-      Enum.any?(persisted_scopes, &match?(%Scope{type: :work_request}, &1)) -> persisted_scopes
-      true -> merge_scopes(persisted_scopes, fallback_scopes)
+    case persisted_scopes do
+      nil -> fallback_scopes
+      scopes -> merge_scopes(scopes, architect_fallback_scopes(scopes, fallback_scopes))
+    end
+  end
+
+  defp architect_fallback_scopes(persisted_scopes, fallback_scopes) do
+    if Enum.any?(persisted_scopes, &match?(%Scope{type: :work_request}, &1)) do
+      Enum.reject(fallback_scopes, &match?(%Scope{type: :work_request}, &1))
+    else
+      fallback_scopes
     end
   end
 
