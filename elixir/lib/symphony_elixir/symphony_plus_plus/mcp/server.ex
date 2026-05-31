@@ -9,6 +9,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Decision
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.MCPError
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Policy
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Scope
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Target
   alias SymphonyElixir.SymphonyPlusPlus.BranchPattern
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service, as: ClaimLeaseService
@@ -100,13 +106,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "attach_review_suite_result",
     "mark_ready"
   ]
+  @bound_worker_tools @worker_tools -- ["claim_work_key"]
   @architect_tools [
     "create_child_work_package",
     "mint_child_worker_key",
     "revoke_child_worker_key",
     "list_work_requests",
     "read_work_request",
+    "add_comment",
     "list_comments",
+    "resolve_comment",
+    "resolve_blocker",
     "read_work_request_delivery_board",
     "reconcile_work_request",
     "record_planned_slice_delivery",
@@ -137,7 +147,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "split_work_package",
     "publish_phase_update"
   ]
-  @trusted_unbound_worker_schema_tools (@worker_tools -- ["claim_work_key"]) -- @architect_tools
+  @work_request_policy_tools [
+    "list_work_requests",
+    "read_work_request",
+    "read_work_request_delivery_board",
+    "set_work_request_status",
+    "ask_work_request_question",
+    "answer_work_request_question",
+    "answer_work_request_question_and_record_decision",
+    "close_work_request_question",
+    "record_work_request_decision",
+    "add_work_request_planned_slice",
+    "approve_work_request_planned_slice",
+    "skip_work_request_planned_slice",
+    "mark_work_request_sliced",
+    "dispatch_work_request_planned_slice"
+  ]
+  @delivery_policy_tools [
+    "reconcile_work_request",
+    "record_planned_slice_delivery",
+    "revoke_planned_slice_worker_key"
+  ]
   @phase7_stub_architect_tools [
     "request_child_replan",
     "split_work_package",
@@ -964,6 +994,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp dispatch(
+         "tools/call",
+         %{"name" => name} = params,
+         %__MODULE__{session: %Session{assignment: %{grant_role: "architect"}}} = server
+       )
+       when name in ["add_comment", "resolve_comment", "resolve_blocker"] do
+    case prepare_architect_tool_call(server, params, name) do
+      {:ok, arguments} -> architect_tool(name, arguments, server)
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:error, reason} -> architect_error(reason, name)
+    end
+  end
+
   defp dispatch("tools/call", %{"name" => name} = params, %__MODULE__{} = server) when name in @worker_tools do
     case prepare_worker_tool_call(server, params, name) do
       {:ok, arguments} -> worker_tool(name, arguments, server)
@@ -1037,13 +1080,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        }) do
     case work_package_resource_id(rest) do
       {:ok, work_package_id, file_name} ->
-        case Auth.require_work_package(session, work_package_id, config.repo) do
-          {:ok, session} ->
-            read_worker_virtual_resource(config.repo, session, work_package_id, file_name, uri)
-
-          {:error, reason} ->
-            auth_error(reason, uri)
-        end
+        read_work_package_virtual_resource(config.repo, session, work_package_id, file_name, uri)
 
       :error ->
         {:error, -32_602, "Invalid params", %{"resource" => uri, "reason" => "invalid_work_package_resource_uri"}}
@@ -1610,8 +1647,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "Read a scoped WorkRequest with clarification questions, decisions, visible planned slices, and status summaries."
   end
 
+  defp architect_tool_description("add_comment") do
+    "Add a policy-scoped comment to a claimed WorkRequest descendant package surface, or a narrow external comment to a visible WorkRequest."
+  end
+
   defp architect_tool_description("list_comments") do
     "List comments attached to a scoped WorkRequest, planned slice, or linked WorkPackage."
+  end
+
+  defp architect_tool_description("resolve_comment") do
+    "Resolve a policy-scoped comment attached to a claimed WorkRequest descendant package surface."
+  end
+
+  defp architect_tool_description("resolve_blocker") do
+    "Resolve a blocker event for a policy-scoped descendant WorkPackage."
   end
 
   defp architect_tool_description("read_work_request_delivery_board") do
@@ -2175,6 +2224,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
   end
 
+  defp architect_tool_input_schema("add_comment") do
+    worker_tool_input_schema("add_comment")
+  end
+
+  defp architect_tool_input_schema("resolve_comment") do
+    worker_tool_input_schema("resolve_comment")
+  end
+
+  defp architect_tool_input_schema("resolve_blocker") do
+    schema(
+      progress_properties()
+      |> Map.merge(%{"blocker_id" => string_schema(), "resolution" => string_schema()}),
+      ["work_package_id", "blocker_id", "resolution", "summary", "idempotency_key"]
+    )
+  end
+
   defp architect_tool_input_schema("list_guidance_requests") do
     schema(%{"status" => string_schema(), "work_package_id" => string_schema()}, [])
   end
@@ -2442,14 +2507,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "architect"}} = session}, %Config{repo: repo}) do
-    with {:ok, architect_specs} <- architect_tool_specs(repo, session) do
-      {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_specs]}
-    end
+  defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "architect"}}}, %Config{}) do
+    {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs()]}
   end
 
   defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "worker"}}}, %Config{}),
-    do: {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
+    do: {:ok, [health_tool_spec() | Enum.map(@bound_worker_tools, &worker_tool_spec/1)]}
 
   defp tool_specs_for_session_result({:ok, %Session{}}, %Config{}), do: {:error, {:unauthorized, :unsupported_grant_role}}
 
@@ -2466,31 +2529,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       [bootstrap_tool_spec("claim_private_handoff")]
   end
 
-  defp unbound_tool_specs(%Config{} = config) do
+  defp unbound_tool_specs(%Config{} = config), do: unbound_tool_specs_for_config(config)
+
+  defp unbound_tool_specs(%__MODULE__{config: config}), do: unbound_tool_specs_for_config(config)
+
+  defp unbound_tool_specs_for_config(%Config{} = config) do
     [health_tool_spec()] ++
       Enum.map(@solo_tools, &solo_tool_spec/1) ++
       [worker_tool_spec("claim_work_key")] ++
       local_assignment_claim_tool_specs(config) ++
       local_architect_assignment_claim_tool_specs(config) ++
-      Enum.map(@bootstrap_tools, &bootstrap_tool_spec/1) ++ architect_tool_specs()
-  end
-
-  defp unbound_tool_specs(%__MODULE__{config: config} = server) do
-    [health_tool_spec()] ++
-      Enum.map(@solo_tools, &solo_tool_spec/1) ++
-      [worker_tool_spec("claim_work_key")] ++
-      local_assignment_claim_tool_specs(config) ++
-      local_architect_assignment_claim_tool_specs(config) ++
-      trusted_unbound_worker_schema_tool_specs(server) ++
-      Enum.map(@bootstrap_tools, &bootstrap_tool_spec/1) ++ architect_tool_specs()
-  end
-
-  defp trusted_unbound_worker_schema_tool_specs(%__MODULE__{} = server) do
-    if trusted_local_unbound_http_session?(server) do
-      Enum.map(@trusted_unbound_worker_schema_tools, &worker_tool_spec/1)
-    else
-      []
-    end
+      Enum.map(@bootstrap_tools, &bootstrap_tool_spec/1)
   end
 
   defp trusted_local_unbound_http_session?(%__MODULE__{
@@ -2512,21 +2561,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp local_architect_assignment_claim_tool_specs(%Config{}), do: []
 
   defp architect_tool_specs, do: Enum.map(@architect_tools, &architect_tool_spec/1)
-
-  defp architect_tool_specs(repo, %Session{} = session) do
-    with {:ok, effective_assignment} <- effective_architect_assignment(repo, session.assignment) do
-      architect_tool_specs_for_assignment(effective_assignment)
-    end
-  end
-
-  defp architect_tool_specs_for_assignment(assignment) do
-    specs =
-      @architect_tools
-      |> Enum.filter(&(require_architect_capabilities(assignment, architect_tool_required_capabilities(&1)) == :ok))
-      |> Enum.map(&architect_tool_spec/1)
-
-    {:ok, specs}
-  end
 
   defp tool_specs_for_server(%__MODULE__{session_refresh_required: true, config: config} = server) do
     {:ok, claimable_tool_specs(config) ++ local_operator_tool_specs(server)}
@@ -2819,10 +2853,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp read_worker_virtual_resource(repo, %Session{} = session, work_package_id, file_name, uri) do
-    case require_worker_assignment(session.assignment) do
-      :ok -> read_virtual_resource(repo, work_package_id, file_name, uri)
-      {:error, reason} -> auth_error({:unauthorized, reason}, uri)
+  defp read_work_package_virtual_resource(repo, session, work_package_id, file_name, uri) do
+    resource_type = resource_type_for_virtual_file(file_name)
+    action = action_for_virtual_file(file_name)
+
+    with {:ok, session} <- Auth.require_session(session, repo),
+         {:ok, actor} <- actor_for_package_resource(repo, session, resource_type, work_package_id),
+         :ok <- PlanningService.authorize_package_action(repo, actor, action, work_package_id, resource_type) do
+      read_virtual_resource(repo, work_package_id, file_name, uri)
+    else
+      {:error, {:authorization_policy_denied, %Decision{} = decision}} -> MCPError.from_decision(decision, uri)
+      {:error, reason} -> auth_error(reason, uri)
     end
   end
 
@@ -3400,7 +3441,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              claimed_by: claim.claimed_by,
              now: claim_now
            ),
-         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash),
+         {:ok, session} <- Auth.session_from_grant(repo, grant, proof_hash: grant.secret_hash),
          :ok <- require_worker_assignment(session.assignment) do
       assignment = %{"assignment" => Session.public_assignment(session)}
       {:ok, assignment, session, local_assignment_grant_action(grant, existing_grant_ids)}
@@ -3823,10 +3864,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              claimed_by: claim.claimed_by,
              scope_repo: claim.repo,
              scope_base_branch: claim.base_branch,
+             work_request_id: claim.work_request_id,
              now: claim_now
            ),
          :ok <- validate_local_architect_assignment_grant(repo, grant, anchor, claim),
-         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash),
+         {:ok, session} <- Auth.session_from_grant(repo, grant, proof_hash: grant.secret_hash),
          :ok <- require_architect_assignment(session.assignment) do
       assignment = %{"assignment" => Session.public_assignment(session)}
       {:ok, assignment, session, local_assignment_grant_action(grant, existing_grant_ids)}
@@ -4337,7 +4379,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp revalidate_bound_session(repo, %Session{} = session, proof_hash) do
     with {:ok, grant} <- AccessGrantRepository.get(repo, session.assignment.grant_id),
          :ok <- AccessGrantService.require_live_package_authority(repo, grant),
-         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
+         {:ok, session} <- Auth.session_from_grant(repo, grant, proof_hash: proof_hash),
          :ok <- require_mcp_claimable_assignment(session.assignment) do
       {:ok, session}
     end
@@ -4367,7 +4409,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash),
          :ok <- require_same_claim_owner(grant, claimed_by),
          :ok <- AccessGrantService.require_live_package_authority(repo, grant),
-         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
+         {:ok, session} <- Auth.session_from_grant(repo, grant, proof_hash: proof_hash),
          :ok <- require_mcp_claimable_assignment(session.assignment) do
       {:ok, session}
     end
@@ -4498,10 +4540,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with :ok <- require_tool_arguments_object(params, name),
          :ok <- preauthorize_architect_tool_call(server, name),
          :ok <- prepare_mcp_repository_for_tool(server.config.repo, name),
-         :ok <- authorize_architect_tool_call(server, name) do
+         :ok <- maybe_authorize_architect_tool_call(server, name) do
       architect_tool_arguments(params, name)
     end
   end
+
+  defp maybe_authorize_architect_tool_call(%__MODULE__{config: config, session: session}, name) when name in @work_request_policy_tools do
+    with {:ok, session} <- Auth.require_session(session, config.repo) do
+      authorize_work_request_tool_policy_preauthorization(config.repo, session, name)
+    end
+  end
+
+  defp maybe_authorize_architect_tool_call(%__MODULE__{config: config, session: session}, name) when name in @delivery_policy_tools do
+    with {:ok, live_session} <- Auth.require_session(session, config.repo) do
+      if name == "reconcile_work_request" do
+        :ok
+      else
+        require_architect_capability(live_session.assignment, architect_tool_capability(name))
+      end
+    end
+  end
+
+  defp maybe_authorize_architect_tool_call(%__MODULE__{} = server, name), do: authorize_architect_tool_call(server, name)
 
   defp prepare_bootstrap_tool_call(%__MODULE__{} = server, params, name) do
     with :ok <- require_tool_arguments_object(params, name),
@@ -4548,6 +4608,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp preauthorize_architect_tool_call(%__MODULE__{session: nil} = server, name) do
     authorize_architect_tool_call(server, name)
+  end
+
+  defp preauthorize_architect_tool_call(%__MODULE__{session: session}, name) when name in @work_request_policy_tools do
+    with {:ok, _session} <- Auth.require_session(session) do
+      :ok
+    end
+  end
+
+  defp preauthorize_architect_tool_call(%__MODULE__{session: session}, name) when name in @delivery_policy_tools do
+    with {:ok, session} <- Auth.require_session(session) do
+      if architect_session?(session), do: :ok, else: require_architect_assignment(session.assignment)
+    end
   end
 
   defp preauthorize_architect_tool_call(%__MODULE__{session: session}, _name) do
@@ -4881,12 +4953,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("list_work_requests", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "read:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, status} <- optional_work_request_status(arguments),
          {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
+         :ok <- authorize_work_request_list_policy(session, scope, "list_work_requests"),
          filters = work_request_list_filters(filters, status),
-         {:ok, work_requests} <- WorkRequestService.list(config.repo, work_request_repository_filters(filters)) do
-      work_requests = filter_scoped_work_requests(work_requests, filters)
+         {:ok, work_requests} <- WorkRequestService.list(config.repo, work_request_repository_filters(filters)),
+         {:ok, work_requests} <- filter_scoped_work_requests(config.repo, work_requests, filters, session) do
       cards = work_request_cards(work_requests)
 
       {:ok,
@@ -4903,11 +4976,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("read_work_request", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "read:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, work_request, _filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :work_request_read, "read_work_request"),
          {:ok, payload} <- work_request_detail_payload(config.repo, work_request, include_planning_scratch?: include_planning_scratch?) do
       {:ok, tool_result(Map.put(payload, "scope", scope))}
     else
@@ -4917,30 +4990,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp architect_tool("list_comments", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "read:work_request"),
-         {:ok, target_kind} <- required_argument(arguments, "target_kind"),
-         :ok <- require_comment_target_kind(target_kind),
-         {:ok, target_id} <- required_argument(arguments, "target_id"),
-         :ok <- require_architect_comment_target_scope(config.repo, session, target_kind, target_id),
-         {:ok, comments} <- CommentService.list_for_target(config.repo, target_kind, target_id) do
-      {:ok,
-       tool_result(%{
-         "comments" => Enum.map(comments, &comment_payload/1),
-         "target" => %{"kind" => target_kind, "id" => target_id}
-       })}
+  defp architect_tool(name, arguments, %__MODULE__{config: config, session: session})
+       when name in ["add_comment", "list_comments", "resolve_comment"] do
+    with {:ok, session} <- Auth.require_session(session, config.repo),
+         {:ok, result} <- comment_tool_result(name, config.repo, session, arguments, :architect, session_claimed_by(session)) do
+      {:ok, result}
     else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "list_comments", "reason" => reason}}
-      {:error, reason} -> architect_error(reason, "list_comments")
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
+      {:error, :not_found} -> not_found_error(name)
+      {:error, reason} -> architect_error(reason, name)
+    end
+  end
+
+  defp architect_tool("resolve_blocker", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- Auth.require_session(session, config.repo),
+         {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
+         {:ok, blocker_id} <- required_argument(arguments, "blocker_id"),
+         {:ok, resolution} <- required_argument(arguments, "resolution"),
+         {:ok, summary} <- required_argument(arguments, "summary"),
+         {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
+         {:ok, caller_payload} <- optional_payload(arguments),
+         {:ok, actor} <- actor_for_package_resource(config.repo, session, :blocker, work_package_id),
+         :ok <- PlanningService.authorize_package_action(config.repo, actor, :blocker_resolve, work_package_id, :blocker),
+         attrs = %{
+           "summary" => summary,
+           "body" => optional_argument(arguments, "body", nil),
+           "status" => optional_argument(arguments, "status", "resolved"),
+           "idempotency_key" => ["resolve_blocker", work_package_id, String.trim(idempotency_key)] |> Enum.join(":"),
+           "payload" =>
+             Map.merge(caller_payload, %{
+               "type" => "blocker",
+               "source_tool" => "resolve_blocker",
+               "blocker_id" => blocker_id,
+               "resolution" => resolution,
+               "active" => false
+             })
+         },
+         {:ok, event} <- PlanningRepository.append_audit_progress_event_for_work_package(config.repo, session.assignment, work_package_id, attrs) do
+      {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "resolve_blocker", "reason" => reason}}
+      {:error, reason} -> architect_error(reason, "resolve_blocker")
     end
   end
 
   defp architect_tool("read_work_request_delivery_board", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "read:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, work_request, filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :delivery_board_read, "read_work_request_delivery_board"),
          {:ok, planned_slices} <- WorkRequestService.list_planned_slices(config.repo, work_request_id),
          {:ok, delivery_board} <-
            scoped_delivery_board(config.repo, work_request, planned_slices, filters, include_planning_scratch?: include_planning_scratch?) do
@@ -4959,11 +5058,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_tool("reconcile_work_request", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, apply?} <- optional_boolean(arguments, "apply", false),
-         {:ok, session} <- architect_session(config.repo, session, reconcile_work_request_capability(apply?)),
+         {:ok, live_session} <- Auth.require_session(session, config.repo),
+         :ok <- require_delivery_reconcile_capability(live_session, apply?),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
-         {:ok, recorded_by} <- optional_string_argument(arguments, "recorded_by", session_claimed_by(session)),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, recorded_by} <- optional_string_argument(arguments, "recorded_by", session_claimed_by(live_session)),
+         {:ok, work_request, filters, scope} <-
+           authorized_work_request_scope(config.repo, live_session, work_request_id, reconcile_work_request_action(apply?), "reconcile_work_request"),
          {:ok, planned_slices} <- WorkRequestService.list_planned_slices(config.repo, work_request_id),
          {visible_work_package_ids, work_package_contexts} <-
            visible_delivery_board_work_package_contexts(config.repo, work_request_id, planned_slices, filters),
@@ -4991,16 +5091,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("record_planned_slice_delivery", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, live_session} <- Auth.require_session(session, config.repo),
+         :ok <- require_delivery_write_capability(live_session),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
          {:ok, outcome} <- required_planned_slice_delivery_outcome(arguments),
          {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
-         {:ok, recorded_by} <- optional_string_argument(arguments, "recorded_by", session_claimed_by(session)),
+         {:ok, recorded_by} <- optional_string_argument(arguments, "recorded_by", session_claimed_by(live_session)),
          {:ok, attrs} <- planned_slice_delivery_attrs(arguments, outcome, idempotency_key, recorded_by),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
-         {:ok, planned_slice} <- scoped_work_request_planned_slice(config.repo, work_request_id, planned_slice_id),
+         {:ok, work_request, planned_slice, filters, scope} <-
+           authorized_planned_slice_scope(
+             config.repo,
+             live_session,
+             work_request_id,
+             planned_slice_id,
+             :delivery_closeout_record,
+             "record_planned_slice_delivery"
+           ),
          :ok <- require_planned_slice_delivery_scope(config.repo, work_request, planned_slice, attrs, filters),
          {:ok, delivery} <- WorkRequestService.record_planned_slice_delivery(config.repo, work_request_id, planned_slice_id, attrs),
          {:ok, planned_slices} <- WorkRequestService.list_planned_slices(config.repo, work_request_id),
@@ -5020,20 +5127,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("revoke_planned_slice_worker_key", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, live_session} <- Auth.require_session(session, config.repo),
+         :ok <- require_delivery_write_capability(live_session),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
          {:ok, grant_id} <- required_argument(arguments, "grant_id"),
          {:ok, reason} <- required_argument(arguments, "reason"),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
-         {:ok, planned_slice} <- scoped_work_request_planned_slice(config.repo, work_request.id, planned_slice_id),
+         {:ok, work_request, planned_slice, filters, scope} <-
+           authorized_planned_slice_scope(
+             config.repo,
+             live_session,
+             work_request_id,
+             planned_slice_id,
+             :work_package_repair_state,
+             "revoke_planned_slice_worker_key"
+           ),
          {:ok, work_package_id} <- planned_slice_work_package_id(planned_slice),
          {:ok, payload} <-
            run_architect_transaction(config.repo, fn ->
              revoke_planned_slice_worker_key_in_transaction(
                config.repo,
-               session,
+               live_session,
                work_request,
                planned_slice,
                work_package_id,
@@ -5044,9 +5158,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            end) do
       {:ok, tool_result(Map.put(payload, "scope", scope))}
     else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "revoke_planned_slice_worker_key", "reason" => reason}}
-      {:error, :not_found} -> not_found_error("revoke_planned_slice_worker_key")
-      {:error, reason} -> architect_error(reason, "revoke_planned_slice_worker_key")
+      {:tool_error, reason} ->
+        planned_slice_worker_revoke_tool_error(reason)
+
+      {:error, :not_found} ->
+        not_found_error("revoke_planned_slice_worker_key")
+
+      {:error, reason} ->
+        architect_error(reason, "revoke_planned_slice_worker_key")
     end
   end
 
@@ -5078,7 +5197,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, answer} <- required_argument(arguments, "answer"),
          {:ok, answered_by} <- optional_string_argument(arguments, "answered_by", session_claimed_by(session)),
          {:ok, filters, scope} <- scoped_guidance_request_filters(config.repo, session),
-         {:ok, _guidance_request} <- GuidanceRequestService.get_visible_to_architect(config.repo, guidance_request_id, filters),
+         {:ok, visible_guidance_request} <- GuidanceRequestService.get_visible_to_architect(config.repo, guidance_request_id, filters),
+         :ok <- authorize_guidance_request_for_session(config.repo, session, :guidance_request_answer, visible_guidance_request),
          {:ok, guidance_request} <-
            GuidanceRequestService.answer(config.repo, guidance_request_id, %{
              "answer" => answer,
@@ -5122,12 +5242,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("set_work_request_status", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, current_status} <- required_argument(arguments, "current_status"),
          {:ok, next_status} <- required_argument(arguments, "next_status"),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, _work_request, _filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :work_request_update, "set_work_request_status"),
          {:ok, updated_work_request} <- WorkRequestService.update_status(config.repo, work_request_id, current_status, next_status) do
       {:ok,
        tool_result(%{
@@ -5146,15 +5266,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("ask_work_request_question", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, category} <- required_argument(arguments, "category"),
          {:ok, question} <- required_argument(arguments, "question"),
          {:ok, why_needed} <- required_argument(arguments, "why_needed"),
          {:ok, decision_prompt} <- optional_decision_prompt_argument(arguments, "decision_prompt"),
          {:ok, asked_by_agent_run_id} <- optional_string_argument(arguments, "asked_by_agent_run_id"),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, _work_request, filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :question_create, "ask_work_request_question"),
          {:ok, question_record} <-
            WorkRequestService.ask_question(
              config.repo,
@@ -5192,14 +5312,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("answer_work_request_question", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, question_id} <- required_argument(arguments, "question_id"),
          {:ok, expected_question_status} <- expected_question_status_argument(arguments),
          {:ok, answer} <- required_argument(arguments, "answer"),
          {:ok, answered_by} <- optional_string_argument(arguments, "answered_by", session_claimed_by(session)),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, _work_request, filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :question_answer, "answer_work_request_question"),
          {:ok, _question} <- scoped_work_request_question(config.repo, work_request_id, question_id),
          {:ok, question_record} <-
            WorkRequestService.answer_question(config.repo, question_id, expected_question_status, %{
@@ -5226,7 +5346,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("answer_work_request_question_and_record_decision", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, question_id} <- required_argument(arguments, "question_id"),
          {:ok, expected_question_status} <- expected_question_status_argument(arguments),
@@ -5238,8 +5358,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, scope_impact} <- required_argument(arguments, "scope_impact"),
          {:ok, created_by} <- optional_string_argument(arguments, "created_by", answered_by),
          {:ok, source_id} <- optional_string_argument(arguments, "source_id", question_id),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, work_request, filters, scope} <-
+           authorized_work_request_scope(
+             config.repo,
+             session,
+             work_request_id,
+             :question_answer,
+             "answer_work_request_question_and_record_decision"
+           ),
+         :ok <-
+           authorize_work_request_policy(
+             config.repo,
+             session,
+             :decision_record,
+             work_request,
+             "answer_work_request_question_and_record_decision"
+           ),
          {:ok, _question} <- scoped_work_request_question(config.repo, work_request_id, question_id),
          {:ok, %{decision: decision_record, question: question_record}} <-
            answer_question_and_record_decision_transaction(config.repo, work_request_id, question_id, expected_question_status, %{
@@ -5273,12 +5407,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("close_work_request_question", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, question_id} <- required_argument(arguments, "question_id"),
          {:ok, expected_question_status} <- expected_question_status_argument(arguments),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, _work_request, filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :question_close, "close_work_request_question"),
          {:ok, _question} <- scoped_work_request_question(config.repo, work_request_id, question_id),
          {:ok, question_record} <- WorkRequestService.close_question(config.repo, question_id, expected_question_status),
          {:ok, updated_work_request} <- scoped_work_request(config.repo, work_request_id, filters) do
@@ -5301,7 +5435,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("record_work_request_decision", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, source_type} <- required_argument(arguments, "source_type"),
          {:ok, decision} <- required_argument(arguments, "decision"),
@@ -5309,8 +5443,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, scope_impact} <- required_argument(arguments, "scope_impact"),
          {:ok, created_by} <- required_argument(arguments, "created_by"),
          {:ok, source_id} <- optional_string_argument(arguments, "source_id"),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, _work_request, filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :decision_record, "record_work_request_decision"),
          {:ok, decision_record} <-
            WorkRequestService.record_decision(
              config.repo,
@@ -5343,7 +5477,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("add_work_request_planned_slice", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, title} <- required_argument(arguments, "title"),
          {:ok, goal} <- required_argument(arguments, "goal"),
@@ -5357,8 +5491,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, stop_conditions} <- required_string_array(arguments, "stop_conditions"),
          {:ok, branch_pattern} <- optional_string_argument(arguments, "branch_pattern"),
          :ok <- require_supported_branch_pattern(branch_pattern),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, work_request, filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :planned_slice_create, "add_work_request_planned_slice"),
          :ok <- require_planned_slice_authoring_status(work_request.status),
          :ok <- require_planned_slice_target_base_branch_scope(work_request, target_base_branch),
          :ok <- validate_planned_slice_scope_for_tool(work_request, work_package_kind, owned_file_globs),
@@ -5403,19 +5537,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("approve_work_request_planned_slice", arguments, %__MODULE__{config: config, session: session}) do
-    mutate_work_request_planned_slice_status("approve_work_request_planned_slice", arguments, config.repo, session, "approved")
+    mutate_work_request_planned_slice_status(
+      "approve_work_request_planned_slice",
+      arguments,
+      config.repo,
+      session,
+      "approved",
+      :planned_slice_approve
+    )
   end
 
   defp architect_tool("skip_work_request_planned_slice", arguments, %__MODULE__{config: config, session: session}) do
-    mutate_work_request_planned_slice_status("skip_work_request_planned_slice", arguments, config.repo, session, "skipped")
+    mutate_work_request_planned_slice_status(
+      "skip_work_request_planned_slice",
+      arguments,
+      config.repo,
+      session,
+      "skipped",
+      :planned_slice_skip
+    )
   end
 
   defp architect_tool("mark_work_request_sliced", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, current_status} <- required_argument(arguments, "current_status"),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, _work_request, _filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :work_request_update, "mark_work_request_sliced"),
          {:ok, updated_work_request} <- WorkRequestService.mark_sliced(config.repo, work_request_id, current_status) do
       {:ok,
        tool_result(%{
@@ -5434,13 +5582,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("dispatch_work_request_planned_slice", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "dispatch:work_request"),
+    with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
-         {:ok, planned_slice} <- scoped_work_request_planned_slice(config.repo, work_request_id, planned_slice_id),
+         {:ok, work_request, planned_slice, _filters, scope} <-
+           authorized_planned_slice_scope(
+             config.repo,
+             session,
+             work_request_id,
+             planned_slice_id,
+             :planned_slice_dispatch,
+             "dispatch_work_request_planned_slice"
+           ),
          :ok <- require_planned_slice_target_base_branch_scope(work_request, planned_slice.target_base_branch),
          :ok <- require_approved_dispatch_planned_slice(planned_slice),
          {:ok, handoff_opts, dispatch_opts} <- dispatch_planned_slice_bootstrap_opts(config, arguments, claimed_by),
@@ -5629,16 +5783,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp mutate_work_request_planned_slice_status(tool, arguments, repo, session, next_status) do
-    with {:ok, session} <- architect_session(repo, session, "write:work_request"),
+  defp mutate_work_request_planned_slice_status(tool, arguments, repo, session, next_status, action) do
+    with {:ok, session} <- Auth.require_session(session, repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
          {:ok, current_status} <- required_argument(arguments, "current_status"),
-         {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
-         {:ok, work_request} <- scoped_work_request(repo, work_request_id, filters),
+         {:ok, work_request, planned_slice_for_validation, filters, scope} <-
+           authorized_planned_slice_scope(repo, session, work_request_id, planned_slice_id, action, tool),
          :ok <- require_planned_slice_authoring_status(work_request.status),
-         {:ok, planned_slice_for_validation} <-
-           scoped_work_request_planned_slice(repo, work_request_id, planned_slice_id),
          :ok <-
            maybe_validate_planned_slice_scope_for_approval(next_status, work_request, planned_slice_for_validation),
          {:ok, planned_slice} <-
@@ -6034,7 +6186,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_602, "Invalid params", %{"tool" => "record_planned_slice_delivery", "reason" => Atom.to_string(reason)}}
   end
 
+  defp record_planned_slice_delivery_error(reason) when reason in [:active_runtime, :claim_not_current] do
+    delivery_closeout_precondition_error("record_planned_slice_delivery", reason)
+  end
+
   defp record_planned_slice_delivery_error(reason), do: architect_error(reason, "record_planned_slice_delivery")
+
+  defp planned_slice_worker_revoke_tool_error(reason)
+       when reason == "planned_slice_worker_revoke_conflict" do
+    delivery_closeout_precondition_error("revoke_planned_slice_worker_key", :claim_not_current)
+  end
+
+  defp planned_slice_worker_revoke_tool_error(reason) do
+    {:error, -32_602, "Invalid params", %{"tool" => "revoke_planned_slice_worker_key", "reason" => reason}}
+  end
+
+  defp delivery_closeout_precondition_error(tool, :claim_not_current) do
+    precondition_error(tool, "runtime_lease_conflict")
+  end
+
+  defp delivery_closeout_precondition_error(tool, reason) when is_atom(reason) do
+    precondition_error(tool, Atom.to_string(reason))
+  end
+
+  defp precondition_error(tool, reason) do
+    {:error, -32_009, "Precondition Failed",
+     %{
+       "tool" => tool,
+       "reason" => reason,
+       "reason_code" => reason,
+       "decision_reason" => "precondition_denied"
+     }}
+  end
 
   defp append_worktree_lifecycle_audit(repo, %Session{} = session, work_package_id, source_tool, result) do
     PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, work_package_id, %{
@@ -6179,11 +6362,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp work_request_list_filters(filters, status), do: Map.put(filters, "status", status)
 
   defp work_request_repository_filters(filters) do
-    Map.take(filters, ["repo", "base_branch", "status"])
+    Map.take(filters, ["status"])
   end
 
-  defp filter_scoped_work_requests(work_requests, filters) do
-    Enum.filter(work_requests, &work_request_matches_filters?(&1, filters))
+  defp filter_scoped_work_requests(repo, work_requests, filters, %Session{} = session) do
+    Enum.reduce_while(work_requests, {:ok, []}, fn work_request, {:ok, scoped} ->
+      case work_request_matches_filters?(repo, work_request, filters) do
+        {:ok, true} ->
+          filter_policy_allowed_work_request(repo, session, work_request, scoped)
+
+        {:ok, false} ->
+          {:cont, {:ok, scoped}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, scoped} -> {:ok, Enum.reverse(scoped)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp filter_policy_allowed_work_request(repo, %Session{} = session, %WorkRequest{} = work_request, scoped) do
+    case authorize_work_request_policy(repo, session, :work_request_read, work_request, "list_work_requests") do
+      :ok ->
+        {:cont, {:ok, [work_request | scoped]}}
+
+      {:error, {:authorization_policy_denied, _code, _message, %{"reason_code" => "scope_mismatch"}}} ->
+        {:cont, {:ok, scoped}}
+
+      {:error, reason} ->
+        {:halt, {:error, reason}}
+    end
   end
 
   defp work_request_filter_payload(nil), do: %{}
@@ -6330,9 +6541,229 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp session_claimed_by(%Session{}), do: "architect"
 
-  defp scoped_work_request(repo, work_request_id, filters) do
+  defp authorized_work_request_scope(repo, %Session{} = session, work_request_id, action, tool) do
+    if architect_session?(session) do
+      authorized_architect_work_request_scope(repo, session, work_request_id, action, tool)
+    else
+      authorized_actor_work_request_scope(repo, session, work_request_id, action, tool)
+    end
+  end
+
+  defp authorized_architect_work_request_scope(repo, %Session{} = session, work_request_id, action, tool) do
+    with {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
+         {:ok, work_request} <-
+           scoped_work_request(
+             repo,
+             work_request_id,
+             filters,
+             repo_scopes?: repo_scope_read_action?(action)
+           ),
+         :ok <-
+           authorize_work_request_policy(repo, session, action, work_request, tool)
+           |> mask_architect_scope_denial() do
+      {:ok, work_request, filters, scope}
+    end
+  end
+
+  defp authorized_actor_work_request_scope(repo, %Session{} = session, work_request_id, action, tool) do
+    with {:ok, work_request} <- WorkRequestService.get(repo, work_request_id),
+         :ok <- authorize_work_request_policy(repo, session, action, work_request, tool),
+         {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
+         :ok <-
+           require_work_request_scope(
+             repo,
+             work_request,
+             filters,
+             repo_scopes?: repo_scope_read_action?(action)
+           ) do
+      {:ok, work_request, filters, scope}
+    end
+  end
+
+  defp authorized_planned_slice_scope(repo, %Session{} = session, work_request_id, planned_slice_id, action, tool) do
+    if architect_session?(session) do
+      authorized_architect_planned_slice_scope(repo, session, work_request_id, planned_slice_id, action, tool)
+    else
+      authorized_actor_planned_slice_scope(repo, session, work_request_id, planned_slice_id, action, tool)
+    end
+  end
+
+  defp authorized_architect_planned_slice_scope(repo, %Session{} = session, work_request_id, planned_slice_id, action, tool) do
+    with {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
+         {:ok, work_request} <- scoped_work_request(repo, work_request_id, filters),
+         {:ok, planned_slice} <- scoped_work_request_planned_slice(repo, work_request_id, planned_slice_id),
+         :ok <-
+           authorize_planned_slice_policy(session, action, work_request, planned_slice, tool)
+           |> mask_architect_scope_denial() do
+      {:ok, work_request, planned_slice, filters, scope}
+    end
+  end
+
+  defp authorized_actor_planned_slice_scope(repo, %Session{} = session, work_request_id, planned_slice_id, action, tool) do
+    with {:ok, work_request} <- WorkRequestService.get(repo, work_request_id),
+         {:ok, planned_slice} <- WorkRequestService.get_planned_slice(repo, work_request_id, planned_slice_id),
+         :ok <- authorize_planned_slice_policy(session, action, work_request, planned_slice, tool),
+         {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
+         :ok <- require_work_request_scope(repo, work_request, filters) do
+      {:ok, work_request, planned_slice, filters, scope}
+    end
+  end
+
+  defp authorize_work_request_list_policy(%Session{} = session, scope, tool) do
+    case authorize_work_request_repo_policy(session, :work_request_read, scope, tool) do
+      :ok ->
+        :ok
+
+      {:error, {:authorization_policy_denied, _code, _message, %{"reason_code" => "scope_mismatch"}}} = error ->
+        if work_request_scoped_session?(session), do: :ok, else: error
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp authorize_work_request_tool_policy_preauthorization(repo, %Session{} = session, tool) do
+    target = Target.repo("policy-preauthorization", nil)
+
+    case authorize_policy(session, work_request_policy_action(tool), target, tool) do
+      :ok ->
+        :ok
+
+      {:error, {:authorization_policy_denied, _code, _message, %{"reason_code" => "scope_mismatch"}}} ->
+        with {:ok, _filters, _scope} <- scoped_work_request_filters(repo, session), do: :ok
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp work_request_policy_action("list_work_requests"), do: :work_request_read
+  defp work_request_policy_action("read_work_request"), do: :work_request_read
+  defp work_request_policy_action("read_work_request_delivery_board"), do: :delivery_board_read
+  defp work_request_policy_action("set_work_request_status"), do: :work_request_update
+  defp work_request_policy_action("ask_work_request_question"), do: :question_create
+  defp work_request_policy_action("answer_work_request_question"), do: :question_answer
+  defp work_request_policy_action("answer_work_request_question_and_record_decision"), do: :question_answer
+  defp work_request_policy_action("close_work_request_question"), do: :question_close
+  defp work_request_policy_action("record_work_request_decision"), do: :decision_record
+  defp work_request_policy_action("add_work_request_planned_slice"), do: :planned_slice_create
+  defp work_request_policy_action("approve_work_request_planned_slice"), do: :planned_slice_approve
+  defp work_request_policy_action("skip_work_request_planned_slice"), do: :planned_slice_skip
+  defp work_request_policy_action("mark_work_request_sliced"), do: :work_request_update
+  defp work_request_policy_action("dispatch_work_request_planned_slice"), do: :planned_slice_dispatch
+
+  defp repo_scope_read_action?(action), do: action in [:work_request_read, :delivery_board_read]
+
+  defp authorize_work_request_repo_policy(%Session{} = session, action, %{"repo" => repo, "base_branch" => base_branch} = scope, tool) do
+    target = Target.repo(repo, base_branch, phase_id: Map.get(scope, "phase_id"))
+
+    authorize_policy(session, action, target, tool)
+  end
+
+  defp authorize_work_request_policy(repo, %Session{} = session, action, %WorkRequest{} = work_request, tool) do
+    with {:ok, repo_scopes} <- work_request_repo_scope_payloads(repo, work_request) do
+      target =
+        Target.work_request(work_request.id,
+          repo: work_request.repo,
+          base_branch: work_request.base_branch,
+          phase_id: ArchitectHandoff.phase_id_for_work_request(work_request),
+          repo_scopes: repo_scopes
+        )
+
+      authorize_policy(session, action, target, tool)
+    end
+  end
+
+  defp authorize_planned_slice_policy(%Session{} = session, action, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, tool) do
+    target =
+      Target.planned_slice(planned_slice.id, work_request.id,
+        repo: work_request.repo,
+        base_branch: planned_slice.target_base_branch || work_request.base_branch,
+        phase_id: ArchitectHandoff.phase_id_for_work_request(work_request),
+        work_package_id: planned_slice.work_package_id
+      )
+
+    authorize_policy(session, action, target, tool)
+  end
+
+  defp authorize_policy(%Session{} = session, action, %Target{} = target, tool) do
+    with {:ok, actor} <- ActorResolver.from_session(session, actor_resolver_opts(target)) do
+      actor
+      |> Policy.decide(action, target)
+      |> MCPError.from_decision(tool)
+      |> wrap_authorization_policy_denial()
+    end
+  end
+
+  defp wrap_authorization_policy_denial(:ok), do: :ok
+
+  defp wrap_authorization_policy_denial({:error, code, message, data}) do
+    {:error, {:authorization_policy_denied, code, message, data}}
+  end
+
+  defp actor_resolver_opts(%Target{} = target) do
+    [
+      work_request_id: target.work_request_id || target_work_request_id(target),
+      repo: target.repo,
+      base_branch: target.base_branch,
+      phase_id: target.phase_id
+    ]
+  end
+
+  defp target_work_request_id(%Target{type: :work_request, id: id}) when is_binary(id), do: id
+  defp target_work_request_id(%Target{}), do: nil
+
+  defp actor_for_package_resource(repo, %Session{} = session, resource_type, work_package_id) do
+    with {:ok, target} <- PlanningService.package_resource_target(repo, work_package_id, resource_type) do
+      ActorResolver.from_session(session, PlanningService.package_surface_actor_opts(session.assignment, target))
+    end
+  end
+
+  defp authorize_current_package_policy(repo, %Session{} = session, action, resource_type, _tool) do
+    work_package_id = Session.work_package_id(session)
+
+    with {:ok, actor} <- actor_for_package_resource(repo, session, resource_type, work_package_id) do
+      case PlanningService.authorize_package_action(repo, actor, action, work_package_id, resource_type) do
+        :ok -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp progress_tool_policy("report_blocker"), do: {:blocker_report, :blocker}
+  defp progress_tool_policy("resolve_blocker"), do: {:blocker_resolve, :blocker}
+  defp progress_tool_policy("set_status"), do: {:work_package_update, :work_package}
+  defp progress_tool_policy(_tool), do: {:progress_append, :progress}
+
+  defp action_for_virtual_file("task_plan.md"), do: :task_plan_read
+  defp action_for_virtual_file(_file_name), do: :work_package_read
+
+  defp resource_type_for_virtual_file("task_plan.md"), do: :task_plan
+  defp resource_type_for_virtual_file("findings.md"), do: :finding
+  defp resource_type_for_virtual_file("progress.md"), do: :progress
+  defp resource_type_for_virtual_file("review_suite.md"), do: :review_evidence
+  defp resource_type_for_virtual_file(_file_name), do: :work_package
+
+  defp authorize_guidance_request_for_session(repo, %Session{} = session, action, %GuidanceRequest{} = guidance_request) do
+    GuidanceRequestService.authorize_for_assignment(repo, session.assignment, action, guidance_request)
+  end
+
+  defp mask_architect_scope_denial({:error, {:authorization_policy_denied, _code, _message, %{"reason_code" => "scope_mismatch"}}}) do
+    {:error, :not_found}
+  end
+
+  defp mask_architect_scope_denial(result), do: result
+
+  defp architect_session?(%Session{assignment: %{grant_role: "architect"}}), do: true
+  defp architect_session?(%Session{}), do: false
+
+  defp work_request_scoped_session?(%Session{assignment: %{scopes: scopes}}) when is_list(scopes) do
+    Enum.any?(scopes, &match?(%Scope{type: :work_request}, &1))
+  end
+
+  defp scoped_work_request(repo, work_request_id, filters, opts \\ []) do
     with {:ok, %WorkRequest{} = work_request} <- WorkRequestService.get(repo, work_request_id),
-         :ok <- require_work_request_scope(work_request, filters) do
+         :ok <- require_work_request_scope(repo, work_request, filters, opts) do
       {:ok, work_request}
     else
       {:error, :forbidden} -> {:error, :not_found}
@@ -6373,6 +6804,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       work_package_contexts: work_package_contexts,
       include_planning_scratch?: Keyword.get(opts, :include_planning_scratch?, false)
     )
+  end
+
+  defp reconcile_work_request_action(true), do: :delivery_reconcile_apply
+  defp reconcile_work_request_action(false), do: :delivery_reconcile_dry_run
+
+  defp require_delivery_reconcile_capability(%Session{} = session, apply?) do
+    if architect_session?(session) do
+      require_architect_capability(session.assignment, reconcile_work_request_capability(apply?))
+    else
+      :ok
+    end
+  end
+
+  defp require_delivery_write_capability(%Session{} = session) do
+    if architect_session?(session) do
+      require_architect_capability(session.assignment, "write:work_request")
+    else
+      :ok
+    end
   end
 
   defp reconcile_work_request_capability(true), do: "write:work_request"
@@ -6499,7 +6949,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with :ok <- require_work_package_scope(work_package, filters) do
       case linked_work_request_for_work_package(repo, work_package.id) do
         nil -> {:error, :forbidden}
-        %WorkRequest{} = work_request -> require_work_request_scope(work_request, filters)
+        %WorkRequest{} = work_request -> require_work_request_scope(repo, work_request, filters)
       end
     end
   end
@@ -6592,11 +7042,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
   end
 
-  defp require_work_request_scope(%WorkRequest{} = work_request, filters) do
-    if work_request_matches_filters?(work_request, filters) do
-      :ok
-    else
-      {:error, :forbidden}
+  defp require_work_request_scope(repo, %WorkRequest{} = work_request, filters, opts \\ []) do
+    match_fun = if Keyword.get(opts, :repo_scopes?, false), do: &work_request_matches_filters?/3, else: &work_request_matches_primary_filters?/3
+
+    with {:ok, matches?} <- match_fun.(repo, work_request, filters) do
+      if matches?, do: :ok, else: {:error, :forbidden}
     end
   end
 
@@ -6619,14 +7069,62 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_planned_slice_authoring_status(status) when status in ["ready_for_slicing", "sliced"], do: :ok
   defp require_planned_slice_authoring_status(_status), do: {:tool_error, "invalid_status"}
 
-  defp work_request_matches_filters?(%WorkRequest{} = work_request, filters) do
-    Enum.all?(filters, fn
-      {"repo", repo} when is_binary(repo) -> work_request.repo == repo
-      {"base_branch", base_branch} when is_binary(base_branch) -> work_request.base_branch == base_branch
-      {"status", status} when is_binary(status) -> work_request.status == status
-      {"phase_id", phase_id} when is_binary(phase_id) -> ArchitectHandoff.phase_id_for_work_request(work_request) == phase_id
-      _filter -> true
-    end)
+  defp work_request_matches_filters?(repo, %WorkRequest{} = work_request, filters) do
+    with {:ok, repo_scopes} <- work_request_repo_scope_payloads(repo, work_request) do
+      {:ok,
+       repo_scope_matches_filters?(repo_scopes, filters) and
+         Enum.all?(filters, fn
+           {"status", status} when is_binary(status) ->
+             work_request.status == status
+
+           {"phase_id", phase_id} when is_binary(phase_id) ->
+             ArchitectHandoff.phase_id_for_work_request(work_request) == phase_id
+
+           _filter ->
+             true
+         end)}
+    end
+  end
+
+  defp work_request_matches_primary_filters?(_repo, %WorkRequest{} = work_request, filters) do
+    {:ok,
+     Enum.all?(filters, fn
+       {"repo", repo} when is_binary(repo) -> work_request.repo == repo
+       {"base_branch", base_branch} when is_binary(base_branch) -> work_request.base_branch == base_branch
+       {"status", status} when is_binary(status) -> work_request.status == status
+       {"phase_id", phase_id} when is_binary(phase_id) -> ArchitectHandoff.phase_id_for_work_request(work_request) == phase_id
+       _filter -> true
+     end)}
+  end
+
+  defp repo_scope_matches_filters?(repo_scopes, filters) do
+    repo = Map.get(filters, "repo")
+    base_branch = Map.get(filters, "base_branch")
+
+    cond do
+      is_binary(repo) and is_binary(base_branch) ->
+        Enum.any?(repo_scopes, &match?(%{repo: ^repo, base_branch: ^base_branch}, &1))
+
+      is_binary(repo) ->
+        Enum.any?(repo_scopes, &match?(%{repo: ^repo}, &1))
+
+      is_binary(base_branch) ->
+        Enum.any?(repo_scopes, &match?(%{base_branch: ^base_branch}, &1))
+
+      true ->
+        true
+    end
+  end
+
+  defp work_request_repo_scope_payloads(repo, %WorkRequest{} = work_request) do
+    with {:ok, repo_scopes} <- WorkRequestRepository.list_repo_scopes(repo, work_request.id) do
+      scopes =
+        [%{repo: work_request.repo, base_branch: work_request.base_branch} | Enum.map(repo_scopes, &%{repo: &1.repo, base_branch: &1.base_branch})]
+        |> Enum.filter(&is_binary(&1.repo))
+        |> Enum.uniq_by(&{&1.repo, &1.base_branch})
+
+      {:ok, scopes}
+    end
   end
 
   defp work_package_matches_filters?(%WorkPackage{} = work_package, filters) do
@@ -8643,13 +9141,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp worker_tool("update_task_plan", arguments, %__MODULE__{config: config, session: session}) do
     case scoped_session(config.repo, session, arguments) do
-      {:ok, session} -> normalize_update_task_plan_result(update_task_plan(config.repo, session, arguments))
-      {:error, reason} -> worker_error(reason, "update_task_plan")
+      {:ok, session} ->
+        case authorize_current_package_policy(config.repo, session, :task_plan_update, :task_plan, "update_task_plan") do
+          :ok ->
+            normalize_update_task_plan_result(update_task_plan(config.repo, session, arguments))
+
+          {:error, reason} ->
+            worker_error(reason, "update_task_plan")
+        end
+
+      {:error, reason} ->
+        worker_error(reason, "update_task_plan")
     end
   end
 
   defp worker_tool("append_finding", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         :ok <- authorize_current_package_policy(config.repo, session, :finding_append, :finding, "append_finding"),
          {:ok, title} <- required_argument(arguments, "title"),
          {:ok, body} <- required_argument(arguments, "body"),
          {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
@@ -8722,60 +9230,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp worker_tool("add_comment", arguments, %__MODULE__{config: config, session: session}) do
+  defp worker_tool(name, arguments, %__MODULE__{config: config, session: session})
+       when name in ["add_comment", "list_comments", "resolve_comment"] do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
-         {:ok, target_kind} <- required_argument(arguments, "target_kind"),
-         :ok <- require_comment_target_kind(target_kind),
-         {:ok, target_id} <- required_argument(arguments, "target_id"),
-         :ok <- require_worker_comment_target_scope(config.repo, session, target_kind, target_id),
-         {:ok, body} <- required_argument(arguments, "body"),
-         {:ok, comment} <-
-           CommentService.create(config.repo, %{
-             "target_kind" => target_kind,
-             "target_id" => target_id,
-             "body" => body,
-             "source_type" => "worker",
-             "author_name" => worker_comment_actor(session)
-           }) do
-      {:ok, tool_result(%{"comment" => comment_payload(comment)})}
+         {:ok, result} <- comment_tool_result(name, config.repo, session, arguments, :worker, worker_comment_actor(session)) do
+      {:ok, result}
     else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "add_comment", "reason" => reason}}
-      {:error, reason} -> worker_error(reason, "add_comment")
-    end
-  end
-
-  defp worker_tool("list_comments", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- scoped_session(config.repo, session, arguments),
-         {:ok, target_kind} <- required_argument(arguments, "target_kind"),
-         :ok <- require_comment_target_kind(target_kind),
-         {:ok, target_id} <- required_argument(arguments, "target_id"),
-         :ok <- require_worker_comment_target_scope(config.repo, session, target_kind, target_id),
-         {:ok, comments} <- CommentService.list_for_target(config.repo, target_kind, target_id) do
-      {:ok,
-       tool_result(%{
-         "comments" => Enum.map(comments, &comment_payload/1),
-         "target" => %{"kind" => target_kind, "id" => target_id}
-       })}
-    else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "list_comments", "reason" => reason}}
-      {:error, reason} -> worker_error(reason, "list_comments")
-    end
-  end
-
-  defp worker_tool("resolve_comment", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- scoped_session(config.repo, session, arguments),
-         {:ok, comment_id} <- required_argument(arguments, "comment_id"),
-         {:ok, _comment} <- scoped_worker_comment(config.repo, session, comment_id),
-         {:ok, resolved} <-
-           CommentService.resolve(config.repo, comment_id, %{
-             "resolved_by" => worker_comment_actor(session),
-             "resolved_source_type" => "worker",
-             "resolution_note" => optional_argument(arguments, "resolution_note", nil)
-           }) do
-      {:ok, tool_result(%{"comment" => comment_payload(resolved)})}
-    else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "resolve_comment", "reason" => reason}}
-      {:error, reason} -> worker_error(reason, "resolve_comment")
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
+      {:error, :not_found} -> not_found_error(name)
+      {:error, reason} -> worker_error(reason, name)
     end
   end
 
@@ -8786,7 +9249,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, context} <- required_argument(arguments, "context"),
          {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
          {:ok, guidance_request} <-
-           GuidanceRequestService.create_for_worker(config.repo, session.assignment, %{
+           GuidanceRequestService.create_for_assignment(config.repo, session.assignment, %{
              "summary" => summary,
              "question" => question,
              "context" => context,
@@ -8811,6 +9274,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp worker_tool("attach_branch", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         :ok <- authorize_current_package_policy(config.repo, session, :work_package_update, :work_package, "attach_branch"),
          {:ok, branch} <- required_argument(arguments, "branch"),
          {:ok, head_sha} <- required_argument(arguments, "head_sha") do
       append_metadata_event(config.repo, session, arguments, "attach_branch", "branch_attached", %{"type" => "branch", "branch" => branch, "head_sha" => head_sha})
@@ -8825,6 +9289,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp worker_tool("attach_pr", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         :ok <- authorize_current_package_policy(config.repo, session, :review_evidence_append, :review_evidence, "attach_pr"),
          {:ok, payload} <- pr_metadata_payload(config.repo, session, arguments, "attach_pr") do
       append_pr_metadata(config.repo, session, arguments, "attach_pr", "pr_attached", payload)
       |> metadata_tool_response("attach_pr")
@@ -8836,6 +9301,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp worker_tool("sync_pr", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         :ok <- authorize_current_package_policy(config.repo, session, :review_evidence_append, :review_evidence, "sync_pr"),
          {:ok, payload} <- pr_metadata_payload(config.repo, session, arguments, "sync_pr") do
       append_pr_metadata(config.repo, session, arguments, "sync_pr", "pr_synced", payload)
       |> metadata_tool_response("sync_pr")
@@ -8847,6 +9313,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp worker_tool("submit_review_package", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         :ok <- authorize_current_package_policy(config.repo, session, :review_evidence_append, :review_evidence, "submit_review_package"),
          {:ok, summary} <- required_argument(arguments, "summary"),
          {:ok, tests} <- required_string_list(arguments, "tests"),
          {:ok, artifacts} <- required_string_list(arguments, "artifacts"),
@@ -8872,6 +9339,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp worker_tool("attach_review_suite_result", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         :ok <- authorize_current_package_policy(config.repo, session, :review_evidence_append, :review_evidence, "attach_review_suite_result"),
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
          {:ok, requested_head_sha} <- required_argument(arguments, "head_sha"),
          {:ok, suite} <- required_argument(arguments, "suite"),
@@ -8935,10 +9403,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        ) do
     with {:ok, session} <- scoped_session(repo, session, arguments),
          {:ok, guidance_request} <-
-           GuidanceRequestService.get_for_worker(repo, session.assignment, guidance_request_id) do
+           GuidanceRequestService.get_for_assignment(repo, session.assignment, guidance_request_id) do
       {:ok, tool_result(%{"guidance_request" => guidance_request_payload(guidance_request)})}
     else
       {:error, :not_found} -> not_found_error("read_guidance_request")
+      {:error, {:authorization_policy_denied, %Decision{reason_code: "scope_mismatch"}}} -> not_found_error("read_guidance_request")
       {:error, reason} -> worker_error(reason, "read_guidance_request")
     end
   end
@@ -8954,6 +9423,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, filters, scope} <- scoped_guidance_request_filters(repo, session),
          {:ok, guidance_request} <-
            GuidanceRequestService.get_visible_to_architect(repo, guidance_request_id, filters),
+         :ok <- authorize_guidance_request_for_session(repo, session, :guidance_request_read, guidance_request),
          :ok <- require_guidance_request_work_package(guidance_request, work_package_id) do
       {:ok, tool_result(%{"guidance_request" => guidance_request_payload(guidance_request), "scope" => scope})}
     else
@@ -9290,6 +9760,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       with {:ok, filters, scope} <- scoped_guidance_request_filters(repo, session),
            {:ok, guidance_request} <-
              GuidanceRequestService.get_visible_to_architect(repo, guidance_request_id, filters),
+           :ok <- authorize_guidance_request_for_session(repo, session, :guidance_request_escalate, guidance_request),
            :ok <- lock_work_package(repo, guidance_request.work_package_id),
            blocker_id = guidance_request_blocker_id(guidance_request.id),
            {:ok, escalated} <-
@@ -9836,7 +10307,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_capability("revoke_child_worker_key"), do: "revoke:child_worker_key"
   defp architect_tool_capability("list_work_requests"), do: "read:work_request"
   defp architect_tool_capability("read_work_request"), do: "read:work_request"
+  defp architect_tool_capability("add_comment"), do: "write:work_request"
   defp architect_tool_capability("list_comments"), do: "read:work_request"
+  defp architect_tool_capability("resolve_comment"), do: "write:work_request"
+  defp architect_tool_capability("resolve_blocker"), do: "write:work_request"
   defp architect_tool_capability("read_work_request_delivery_board"), do: "read:work_request"
   defp architect_tool_capability("reconcile_work_request"), do: "read:work_request"
   defp architect_tool_capability("record_planned_slice_delivery"), do: "write:work_request"
@@ -10272,6 +10746,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp append_scoped_progress(repo, session, arguments, tool, payload) do
     with {:ok, session} <- scoped_session(repo, session, arguments),
+         {action, resource_type} <- progress_tool_policy(tool),
+         :ok <- authorize_current_package_policy(repo, session, action, resource_type, tool),
          {:ok, summary} <- required_argument(arguments, "summary"),
          {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
          {:ok, caller_payload} <- optional_payload(arguments) do
@@ -10811,8 +11287,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case review_package_head_sha(requested_head_sha, progress_events, work_package) do
       {:ok, head_sha} ->
         case append_metadata_event(repo, session, arguments, "submit_review_package", "review_package_submitted", payload) do
-          {:ok, result} -> persist_review_artifacts_and_promote_or_rollback(repo, session, artifacts, head_sha, result, work_package)
-          {:error, code, message, data} -> repo.rollback({:mcp_error, code, message, data})
+          {:ok, result} ->
+            persist_review_artifacts_and_promote_or_rollback(repo, session, artifacts, head_sha, result, work_package)
+
+          {:error, code, message, data} ->
+            repo.rollback({:mcp_error, code, message, data})
         end
 
       {:tool_error, reason} ->
@@ -11070,7 +11549,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if review_suite_status_passed?(status) and review_suite_verdict_passed?(verdict) do
       :ok
     else
-      {:tool_error, {:non_passing_review_suite_result, normalized_review_suite_status(status), normalized_review_suite_verdict(verdict)}}
+      normalized_status = normalized_review_suite_status(status)
+      normalized_verdict = normalized_review_suite_verdict(verdict)
+
+      {:tool_error, {:non_passing_review_suite_result, normalized_status, normalized_verdict}}
     end
   end
 
@@ -11891,6 +12373,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_error(:assignment_revoked, resource), do: auth_error({:unauthorized, :revoked}, resource)
   defp worker_error(:assignment_mismatch, resource), do: auth_error({:unauthorized, :assignment_mismatch}, resource)
   defp worker_error(:worker_grant_required, resource), do: auth_error({:unauthorized, :worker_grant_required}, resource)
+  defp worker_error({:authorization_policy_denied, %Decision{} = decision}, resource), do: MCPError.from_decision(decision, resource)
   defp worker_error(:forbidden, resource), do: auth_error(:forbidden, resource)
   defp worker_error({:service_unavailable, _reason} = reason, resource), do: auth_error(reason, resource)
   defp worker_error(:database_busy, tool), do: service_error(:database_busy, tool)
@@ -11909,6 +12392,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_error(:assignment_revoked, resource), do: auth_error({:unauthorized, :revoked}, resource)
   defp architect_error(:architect_grant_required, resource), do: auth_error({:unauthorized, :architect_grant_required}, resource)
   defp architect_error(:insufficient_capability, resource), do: auth_error({:unauthorized, :insufficient_capability}, resource)
+  defp architect_error({:authorization_policy_denied, %Decision{} = decision}, resource), do: MCPError.from_decision(decision, resource)
+  defp architect_error({:authorization_policy_denied, code, message, data}, _resource), do: {:error, code, message, data}
   defp architect_error(:phase_scope_not_available, resource), do: auth_error(:forbidden, resource)
   defp architect_error(:forbidden, resource), do: auth_error(:forbidden, resource)
   defp architect_error({:service_unavailable, _reason} = reason, resource), do: auth_error(reason, resource)
@@ -12096,100 +12581,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if target_kind in Comment.target_kinds(), do: :ok, else: {:tool_error, "invalid_target_kind"}
   end
 
-  defp scoped_worker_comment(repo, %Session{} = session, comment_id) do
-    case CommentService.get(repo, comment_id) do
-      {:ok, %Comment{} = comment} ->
-        case require_worker_comment_target_scope(repo, session, comment.target_kind, comment.target_id) do
-          :ok -> {:ok, comment}
-          {:tool_error, _reason} -> {:tool_error, "comment_target_out_of_scope"}
-        end
-
-      {:error, :not_found} ->
-        {:tool_error, "comment_target_out_of_scope"}
-
-      {:error, reason} ->
-        {:error, reason}
+  defp comment_tool_result("add_comment", repo, %Session{} = session, arguments, source_type, author_name) do
+    with {:ok, target_kind} <- required_argument(arguments, "target_kind"),
+         :ok <- require_comment_target_kind(target_kind),
+         {:ok, target_id} <- required_argument(arguments, "target_id"),
+         {:ok, body} <- required_argument(arguments, "body"),
+         {:ok, comment} <-
+           CommentService.create_for_assignment(
+             repo,
+             session.assignment,
+             %{
+               "target_kind" => target_kind,
+               "target_id" => target_id,
+               "body" => body,
+               "source_type" => Atom.to_string(source_type),
+               "author_name" => author_name
+             },
+             comment_create_opts(source_type, target_kind)
+           ) do
+      {:ok, tool_result(%{"comment" => comment_payload(comment)})}
     end
   end
+
+  defp comment_tool_result("list_comments", repo, %Session{} = session, arguments, _source_type, _author_name) do
+    with {:ok, target_kind} <- required_argument(arguments, "target_kind"),
+         :ok <- require_comment_target_kind(target_kind),
+         {:ok, target_id} <- required_argument(arguments, "target_id"),
+         {:ok, comments} <- CommentService.list_for_assignment(repo, session.assignment, target_kind, target_id) do
+      {:ok,
+       tool_result(%{
+         "comments" => Enum.map(comments, &comment_payload/1),
+         "target" => %{"kind" => target_kind, "id" => target_id}
+       })}
+    end
+  end
+
+  defp comment_tool_result("resolve_comment", repo, %Session{} = session, arguments, source_type, author_name) do
+    with {:ok, comment_id} <- required_argument(arguments, "comment_id"),
+         {:ok, resolved} <-
+           CommentService.resolve_for_assignment(repo, session.assignment, comment_id, %{
+             "resolved_by" => author_name,
+             "resolved_source_type" => Atom.to_string(source_type),
+             "resolution_note" => optional_argument(arguments, "resolution_note", nil)
+           }) do
+      {:ok, tool_result(%{"comment" => comment_payload(resolved)})}
+    end
+  end
+
+  defp comment_create_opts(:architect, target_kind), do: [action: architect_comment_add_action(target_kind)]
+  defp comment_create_opts(_source_type, _target_kind), do: []
+
+  defp architect_comment_add_action("work_request"), do: :external_comment_add
+  defp architect_comment_add_action(_target_kind), do: :comment_add
 
   defp worker_comment_actor(%Session{} = session) do
     assignment = Session.public_assignment(session)
     assignment["claimed_by"] || assignment["grant_id"] || "worker"
   end
-
-  defp require_worker_comment_target_scope(_repo, %Session{} = session, "work_package", target_id) do
-    if target_id == Session.work_package_id(session), do: :ok, else: {:tool_error, "comment_target_out_of_scope"}
-  end
-
-  defp require_worker_comment_target_scope(repo, %Session{} = session, "planned_slice", target_id) do
-    scoped? =
-      repo.exists?(
-        from(slice in PlannedSlice,
-          where: slice.id == ^target_id and slice.work_package_id == ^Session.work_package_id(session)
-        )
-      )
-
-    if scoped?, do: :ok, else: {:tool_error, "comment_target_out_of_scope"}
-  end
-
-  defp require_worker_comment_target_scope(repo, %Session{} = session, "work_request", target_id) do
-    scoped? =
-      repo.exists?(
-        from(slice in PlannedSlice,
-          where: slice.work_request_id == ^target_id and slice.work_package_id == ^Session.work_package_id(session)
-        )
-      )
-
-    if scoped?, do: :ok, else: {:tool_error, "comment_target_out_of_scope"}
-  end
-
-  defp require_worker_comment_target_scope(_repo, %Session{}, _target_kind, _target_id) do
-    {:tool_error, "invalid_target_kind"}
-  end
-
-  defp require_architect_comment_target_scope(repo, %Session{} = session, target_kind, target_id) do
-    with {:ok, filters, _scope} <- scoped_work_request_filters(repo, session) do
-      require_architect_comment_target_scope(repo, filters, target_kind, target_id)
-    end
-  end
-
-  defp require_architect_comment_target_scope(repo, filters, "work_request", target_id) do
-    repo
-    |> scoped_work_request(target_id, filters)
-    |> comment_target_scope_result()
-  end
-
-  defp require_architect_comment_target_scope(repo, filters, "planned_slice", target_id) do
-    case repo.one(
-           from(planned_slice in PlannedSlice,
-             join: work_request in WorkRequest,
-             on: work_request.id == planned_slice.work_request_id,
-             where: planned_slice.id == ^target_id,
-             select: work_request,
-             limit: 1
-           )
-         ) do
-      %WorkRequest{} = work_request -> comment_target_scope_result(require_work_request_scope(work_request, filters))
-      nil -> {:tool_error, "comment_target_out_of_scope"}
-    end
-  end
-
-  defp require_architect_comment_target_scope(repo, filters, "work_package", target_id) do
-    case linked_work_request_for_work_package(repo, target_id) do
-      %WorkRequest{} = work_request -> comment_target_scope_result(require_work_request_scope(work_request, filters))
-      nil -> {:tool_error, "comment_target_out_of_scope"}
-    end
-  end
-
-  defp require_architect_comment_target_scope(_repo, _filters, _target_kind, _target_id) do
-    {:tool_error, "invalid_target_kind"}
-  end
-
-  defp comment_target_scope_result({:ok, %WorkRequest{}}), do: :ok
-  defp comment_target_scope_result(:ok), do: :ok
-  defp comment_target_scope_result({:error, :not_found}), do: {:tool_error, "comment_target_out_of_scope"}
-  defp comment_target_scope_result({:error, :forbidden}), do: {:tool_error, "comment_target_out_of_scope"}
-  defp comment_target_scope_result({:error, reason}), do: {:error, reason}
 
   defp authorize_solo_tool_call(%__MODULE__{session_refresh_required: true}, tool) do
     {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "claim_required", "action" => "claim_work_key"}}
@@ -13054,8 +13502,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
     |> put_optional_recovery_value("cleanup", safe_recovery_value(recovery_value(recovery, :cleanup)))
   end
-
-  defp dispatch_link_recovery_payload(_recovery), do: %{}
 
   defp recovery_value(recovery, key) do
     Map.get(recovery, key) || Map.get(recovery, to_string(key))

@@ -124,41 +124,44 @@ ledger identity for operator diagnosis:
 
 Architect tools require a live architect grant session and the matching
 architect capability from the permission model. Worker grants and architect
-grants without the required capability are denied. Worker grants cannot be
-minted with architect-only MCP capabilities such as `read:phase`,
-`read:child_progress`, or `mint:child_worker_key`. `tools/list` uses static
-architect schema discovery: healthy unbound generic sessions advertise health,
-Solo Session tools, `claim_work_key`, `claim_private_handoff`,
-`create_work_request`, and architect tool schemas so fresh Codex sessions can
-discover WorkRequest and architect flows before claim. Unbound HTTP sessions
-also advertise `claim_local_assignment` and
-`claim_local_architect_assignment`; trusted local HTTP sessions with explicit
-state-key continuity additionally advertise worker-only bound WorkPackage
-schemas except `claim_work_key` for first-claim/reclaim schema discovery.
-Shared names such as `read_guidance_request` remain covered by static architect
-schemas. Schema visibility is not authorization. Claim calls still require
-trusted local HTTP state-key continuity and scope validation, and worker
-WorkPackage calls before a valid worker claim return a claim-required denial
-without mutating state. For trusted local HTTP sessions that denial points
-callers at
-`claim_local_assignment`; generic unbound sessions still point at
-`claim_work_key`. Trusted unbound local HTTP sessions with explicit state-key
-continuity may additionally advertise the local operator note tools described
-above.
+grants without the required capability are denied at call time. Worker grants
+cannot be minted with architect-only MCP capabilities such as `read:phase`,
+`read:child_progress`, or `mint:child_worker_key`. `tools/list` is predictable
+session-shape discovery, not authorization:
+
+- Healthy unbound generic sessions advertise health, Solo Session bootstrap
+  tools, `claim_work_key`, `claim_private_handoff`, and
+  `create_work_request`. They do not advertise architect schemas or bound
+  worker WorkPackage schemas.
+- Unbound HTTP sessions additionally advertise `claim_local_assignment` and
+  `claim_local_architect_assignment` so local worker and architect sessions can
+  claim or reconnect without private handoff files.
+- Trusted unbound local HTTP sessions with explicit state-key continuity may
+  additionally advertise the local operator note tools described above.
+- Bound worker sessions advertise health, `get_current_assignment`, and bound
+  worker WorkPackage tools. They do not advertise Solo tools, architect-only
+  tool schemas, or claim/bootstrap tools.
+- Bound architect sessions advertise health, `get_current_assignment`, and the
+  static architect schema set. Target, capability, phase, and scope
+  authorization still runs when an architect tool is called.
+
+Claim calls still require trusted local HTTP state-key continuity and scope
+validation, and worker WorkPackage calls before a valid worker claim return a
+claim-required denial without mutating state. For trusted local HTTP sessions
+that denial points callers at `claim_local_assignment`; generic unbound
+sessions still point at `claim_work_key`.
 Architect calls still require a live claimed architect grant with the required
 capability and scope, and unclaimed architect calls return a claim-required
 denial. Stale bound sessions expose only health, `claim_work_key`,
 `claim_private_handoff`, and, on HTTP sessions, `claim_local_assignment` and
 `claim_local_architect_assignment` for refresh; duplicate
 `initialize` on that same stale explicit MCP session
-does not downgrade it into generic unbound discovery. Worker sessions see the
-bound worker-facing discovery surface without Solo tools or architect-only tool
-schemas. Bound architect sessions
-advertise the static architect schema set and may call
-`get_current_assignment` and read `sympp://assignment/current` to recover their
-scoped `work_package_id` after reconnect, but architect sessions still cannot
-use worker package read/write tools. Phase-board readers are limited to the
-session's phase scope; explicit phase grants with a frozen repo/base snapshot
+does not downgrade it into generic unbound discovery. Bound architect sessions
+may call `get_current_assignment` and read `sympp://assignment/current` to
+recover their scoped `work_package_id` after reconnect, but architect sessions
+still cannot use worker package read/write tools. Phase-board readers are
+limited to the session's phase scope; explicit phase grants with a frozen
+repo/base snapshot
 materialize only matching package cards across MCP, API, and browser board
 surfaces, and explicit phase grants missing that snapshot fail closed rather
 than being treated as phase-wide. Existing lifecycle
@@ -478,6 +481,14 @@ creation fails after the
 WorkRequest is created, the tool returns a partial-success shape with the
 WorkRequest id and a non-duplicating manual architect-handoff replay hint while
 still withholding raw secret material.
+
+WorkRequest repo scopes are persisted as explicit ledger rows for future
+multi-repo requests. The existing `repo` and `base_branch` fields remain the
+primary compatibility scope used by current MCP intake, list, read, dispatch,
+and worker-claim flows. P8 does not add caller-facing multi-repo dashboard or
+per-slice repo selection; future tools may expose repo-scope input only after
+their policy checks and denial tests cover service A/service B allow and
+service C deny behavior.
 
 Explicit `state_key` values retain initialized handshake continuity for
 stateless transports, but they do not restore claimed worker sessions. A

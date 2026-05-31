@@ -7,6 +7,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.RepoScope
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
   @completion_blocking_statuses ["human_info_needed"]
@@ -82,10 +83,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
 
   @spec create(repo(), map()) :: {:ok, WorkRequest.t()} | {:error, error()}
   def create(repo, attrs) when is_atom(repo) and is_map(attrs) do
-    attrs
-    |> WorkRequest.create_changeset()
-    |> repo.insert()
-    |> normalize_insert_result()
+    attrs = normalize_keys(attrs)
+
+    repo.transaction(fn ->
+      with {:ok, work_request} <-
+             attrs
+             |> WorkRequest.create_changeset()
+             |> repo.insert()
+             |> normalize_insert_result(),
+           :ok <- replace_repo_scopes(repo, work_request, repo_scope_attrs(attrs, work_request)) do
+        work_request
+      else
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+    |> normalize_transaction_result()
   rescue
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
     error in Exqlite.Error -> normalize_exqlite_error(error)
@@ -116,6 +128,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
+  @spec list_repo_scopes(repo(), String.t()) :: {:ok, [RepoScope.t()]} | {:error, error()}
+  def list_repo_scopes(repo, work_request_id) when is_atom(repo) and is_binary(work_request_id) do
+    repo_scopes =
+      repo.all(
+        from(scope in RepoScope,
+          where: scope.work_request_id == ^work_request_id,
+          order_by: [asc: scope.scope_key, asc: scope.id]
+        )
+      )
+
+    {:ok, repo_scopes}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
   @spec clear_completion_for_work_package(repo(), String.t()) :: :ok | {:error, error()}
   def clear_completion_for_work_package(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
     now = DateTime.utc_now(:microsecond)
@@ -138,10 +165,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
 
   @spec update(repo(), String.t(), map()) :: {:ok, WorkRequest.t()} | {:error, error()}
   def update(repo, id, attrs) when is_atom(repo) and is_binary(id) and is_map(attrs) do
-    with {:ok, work_request} <- get(repo, id) do
-      work_request
-      |> WorkRequest.update_changeset(attrs)
-      |> repo.update()
+    attrs = normalize_keys(attrs)
+
+    case get(repo, id) do
+      {:ok, work_request} -> update_existing_work_request(repo, work_request, attrs)
+      {:error, reason} -> {:error, reason}
     end
   rescue
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
@@ -1093,6 +1121,109 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
       )
     )
   end
+
+  defp update_existing_work_request(repo, %WorkRequest{} = work_request, attrs) do
+    repo.transaction(fn ->
+      with {:ok, updated} <-
+             work_request
+             |> WorkRequest.update_changeset(attrs)
+             |> repo.update(),
+           :ok <- sync_repo_scopes_after_update(repo, work_request, updated, attrs) do
+        updated
+      else
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+    |> normalize_transaction_result()
+  end
+
+  defp sync_repo_scopes_after_update(repo, %WorkRequest{} = previous, %WorkRequest{} = updated, attrs) do
+    cond do
+      Map.has_key?(attrs, "repo_scopes") ->
+        replace_repo_scopes(repo, updated, repo_scope_attrs(attrs, updated))
+
+      primary_repo_scope_sync_required?(attrs) ->
+        replace_primary_repo_scope(repo, previous, updated)
+
+      true ->
+        :ok
+    end
+  end
+
+  defp primary_repo_scope_sync_required?(attrs) do
+    Enum.any?(["repo", "base_branch"], &Map.has_key?(attrs, &1))
+  end
+
+  defp replace_repo_scopes(repo, %WorkRequest{} = work_request, repo_scope_attrs) do
+    repo.delete_all(from(scope in RepoScope, where: scope.work_request_id == ^work_request.id))
+
+    insert_repo_scopes(repo, repo_scope_attrs)
+  end
+
+  defp replace_primary_repo_scope(repo, %WorkRequest{} = previous, %WorkRequest{} = updated) do
+    scope_keys =
+      [primary_repo_scope_attrs(previous), primary_repo_scope_attrs(updated)]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(&RepoScope.scope_key/1)
+      |> Enum.uniq()
+
+    repo.delete_all(
+      from(scope in RepoScope,
+        where: scope.work_request_id == ^updated.id,
+        where: scope.scope_key in ^scope_keys
+      )
+    )
+
+    case primary_repo_scope_attrs(updated) do
+      nil -> :ok
+      attrs -> insert_repo_scopes(repo, [attrs])
+    end
+  end
+
+  defp insert_repo_scopes(repo, repo_scope_attrs) do
+    Enum.reduce_while(repo_scope_attrs, :ok, fn attrs, :ok ->
+      case insert_repo_scope(repo, attrs) do
+        {:ok, %RepoScope{}} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp insert_repo_scope(repo, attrs) do
+    attrs
+    |> RepoScope.create_changeset()
+    |> repo.insert()
+  end
+
+  defp repo_scope_attrs(attrs, %WorkRequest{} = work_request) do
+    ([primary_repo_scope_attrs(work_request)] ++ explicit_repo_scopes(attrs, work_request.id))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&Map.put(&1, "work_request_id", work_request.id))
+    |> Enum.uniq_by(&RepoScope.scope_key/1)
+  end
+
+  defp primary_repo_scope_attrs(%WorkRequest{id: id, repo: repo, base_branch: base_branch})
+       when is_binary(id) and is_binary(repo) do
+    RepoScope.primary_attrs(id, repo, base_branch)
+  end
+
+  defp primary_repo_scope_attrs(%WorkRequest{}), do: nil
+
+  defp explicit_repo_scopes(%{"repo_scopes" => scopes}, work_request_id) when is_list(scopes) do
+    Enum.map(scopes, fn
+      %{} = scope ->
+        scope
+        |> normalize_keys()
+        |> Map.take(["repo", "base_branch"])
+        |> Map.put("work_request_id", work_request_id)
+
+      _scope ->
+        %{"work_request_id" => work_request_id}
+    end)
+  end
+
+  defp explicit_repo_scopes(%{"repo_scopes" => _scopes}, work_request_id), do: [%{"work_request_id" => work_request_id}]
+  defp explicit_repo_scopes(_attrs, _work_request_id), do: []
 
   defp normalize_insert_result({:ok, work_request}), do: {:ok, work_request}
 

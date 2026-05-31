@@ -11,12 +11,17 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Decision
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Policy
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Target
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.{DefaultClient, MergeReconciler}
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
+  alias SymphonyElixir.SymphonyPlusPlus.OperatorAudit
   alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Service, as: OperatorSettingsService
   alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings, as: OperatorSettings
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
@@ -39,6 +44,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @package_session_key "sympp_package_grant_ids"
   @package_session_order_key "sympp_package_grant_order"
   @operator_session_key "sympp_local_operator"
+  @operator_bootstrap_param "operator_bootstrap"
+  @operator_bootstrap_config_key :sympp_local_operator_bootstrap_token
   @max_package_sessions 8
   @access_grant_lazy_migration_columns ["phase_id", "scope_repo", "scope_base_branch", "provenance"]
   @local_operator_actor "local-operator"
@@ -172,7 +179,9 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @spec local_operator_browser?(Conn.t()) :: boolean()
   def local_operator_browser?(%Conn{} = conn) do
-    local_operator_session_browser?(conn) and same_origin_browser_request?(conn)
+    local_operator_session_browser?(conn) and
+      same_origin_browser_request?(conn) and
+      local_operator_session_bootstrapped?(conn)
   end
 
   @spec local_operator_live_connect_info?(map()) :: boolean()
@@ -257,22 +266,118 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp same_origin_browser_request?(conn) do
     fetch_site = conn |> Conn.get_req_header("sec-fetch-site") |> List.first()
-    fetch_site_allowed? = is_nil(fetch_site) or fetch_site in ["none", "same-origin"]
 
-    fetch_site_allowed? and local_origin_header?(conn)
+    case conn |> Conn.get_req_header("origin") |> List.first() do
+      origin when is_binary(origin) ->
+        trusted_origin_header?(conn, origin, fetch_site)
+
+      nil ->
+        browser_same_origin_metadata?(conn, fetch_site)
+    end
   end
 
-  defp local_origin_header?(conn) do
-    case conn |> Conn.get_req_header("origin") |> List.first() do
-      nil ->
-        true
+  defp trusted_origin_header?(conn, origin, fetch_site) do
+    case URI.parse(origin) do
+      %URI{scheme: scheme, host: host, port: port} when is_binary(scheme) and is_binary(host) ->
+        origin = %URI{scheme: scheme, host: host, port: port}
 
-      origin ->
-        case URI.parse(origin) do
-          %URI{host: host} when is_binary(host) -> local_host?(host)
-          _parsed -> false
+        cond do
+          same_request_origin?(conn, origin) -> fetch_site in [nil, "none", "same-origin"]
+          configured_dashboard_origin?(origin) -> fetch_site in [nil, "none", "same-origin", "same-site"]
+          true -> false
         end
+
+      _parsed ->
+        false
     end
+  end
+
+  defp same_request_origin?(conn, %URI{scheme: scheme, host: host, port: port}) do
+    local_host?(host) and String.downcase(host) == String.downcase(conn.host) and scheme == Atom.to_string(conn.scheme) and
+      normalize_origin_port(scheme, port) == conn.port
+  end
+
+  defp configured_dashboard_origin?(%URI{} = origin) do
+    endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
+
+    endpoint_config
+    |> Keyword.get(:sympp_dashboard_origin)
+    |> configured_dashboard_origin()
+    |> origin_matches?(origin)
+  end
+
+  defp configured_dashboard_origin(origin) when is_binary(origin) do
+    case URI.parse(String.trim_trailing(origin, "/")) do
+      %URI{scheme: scheme, host: host, port: port} when is_binary(scheme) and is_binary(host) ->
+        %URI{scheme: scheme, host: host, port: port}
+
+      _parsed ->
+        nil
+    end
+  end
+
+  defp configured_dashboard_origin(_origin), do: nil
+
+  defp origin_matches?(%URI{scheme: expected_scheme, host: expected_host, port: expected_port}, %URI{
+         scheme: actual_scheme,
+         host: actual_host,
+         port: actual_port
+       })
+       when is_binary(actual_scheme) and is_binary(actual_host) do
+    String.downcase(actual_scheme) == String.downcase(expected_scheme) and
+      String.downcase(actual_host) == String.downcase(expected_host) and
+      normalize_origin_port(actual_scheme, actual_port) == normalize_origin_port(expected_scheme, expected_port)
+  end
+
+  defp origin_matches?(_expected_origin, _actual_origin), do: false
+
+  defp browser_navigation_request?(conn) do
+    mode = conn |> Conn.get_req_header("sec-fetch-mode") |> List.first()
+    is_nil(mode) or mode == "navigate"
+  end
+
+  defp browser_same_origin_metadata?(conn, "none"), do: browser_navigation_request?(conn)
+
+  defp browser_same_origin_metadata?(conn, "same-origin") do
+    mode = conn |> Conn.get_req_header("sec-fetch-mode") |> List.first()
+    destination = conn |> Conn.get_req_header("sec-fetch-dest") |> List.first()
+
+    mode in ["cors", "same-origin"] and destination in [nil, "empty"]
+  end
+
+  defp browser_same_origin_metadata?(_conn, _fetch_site), do: false
+
+  defp normalize_origin_port("http", nil), do: 80
+  defp normalize_origin_port("https", nil), do: 443
+  defp normalize_origin_port(_scheme, port), do: port
+
+  defp local_operator_session_bootstrapped?(conn) do
+    fetched_active_local_operator_session?(conn) or valid_local_operator_bootstrap?(conn)
+  end
+
+  defp valid_local_operator_bootstrap?(conn) do
+    with expected when is_binary(expected) <- configured_operator_bootstrap_token(),
+         supplied when is_binary(supplied) <- request_param(conn, @operator_bootstrap_param),
+         true <- byte_size(supplied) == byte_size(expected) do
+      Plug.Crypto.secure_compare(supplied, expected)
+    else
+      _value -> false
+    end
+  end
+
+  defp configured_operator_bootstrap_token do
+    endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
+
+    case Keyword.get(endpoint_config, @operator_bootstrap_config_key) do
+      token when is_binary(token) and token != "" -> token
+      _token -> nil
+    end
+  end
+
+  defp request_param(conn, key) do
+    conn
+    |> Conn.fetch_query_params()
+    |> then(&(Map.get(&1.params, key) || Map.get(&1.query_params, key)))
   end
 
   defp active_local_operator_session?(conn), do: Conn.get_session(conn, @operator_session_key) == true
@@ -512,7 +617,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @spec operator_dashboard(Conn.t(), map()) :: Conn.t()
   def operator_dashboard(conn, _params) do
-    send_local_operator_response(conn, fn repo ->
+    send_local_operator_response(conn, :dashboard_read, Target.new(:dashboard), :operator_dashboard, fn repo ->
       with {:ok, payload} <- operator_dashboard_payload(repo) do
         json(conn, payload)
       end
@@ -521,28 +626,34 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @spec operator_config(Conn.t(), map()) :: Conn.t()
   def operator_config(conn, _params) do
-    conn = maybe_refresh_local_operator_session(conn)
-
-    if local_operator_api_request?(conn) do
+    with {:ok, conn} <- ensure_local_operator_api_session(conn),
+         {:ok, %Decision{}} <- authorize_local_operator_policy(conn, :dashboard_read, Target.new(:dashboard)) do
       json(conn, operator_runtime_config(conn))
     else
-      error_response(conn, :unauthorized)
+      {:error, reason} -> error_response(conn, reason)
     end
   end
 
   @spec operator_package_detail(Conn.t(), map()) :: Conn.t()
   def operator_package_detail(conn, %{"work_package_id" => work_package_id}) do
-    send_local_operator_response(conn, fn repo ->
-      with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo),
-           {:ok, payload} <- Dashboard.detail(repo, normalize_package_route_id(work_package_id), repo_identity_catalog: repo_identity_catalog) do
-        json(conn, payload)
+    send_local_operator_response(
+      conn,
+      :work_package_read,
+      work_package_target(work_package_id),
+      :operator_package_detail,
+      fn repo ->
+        with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo),
+             {:ok, payload} <-
+               Dashboard.detail(repo, normalize_package_route_id(work_package_id), repo_identity_catalog: repo_identity_catalog) do
+          json(conn, payload)
+        end
       end
-    end)
+    )
   end
 
   @spec operator_sync_github_prs(Conn.t(), map()) :: Conn.t()
   def operator_sync_github_prs(conn, params) do
-    send_local_operator_response(conn, fn repo ->
+    send_local_operator_response(conn, :delivery_reconcile_apply, Target.new(:dashboard), :operator_sync_github_prs, fn repo ->
       with {:ok, sync} <- MergeReconciler.reconcile(repo, github_sync_opts(params)),
            {:ok, dashboard} <- operator_dashboard_payload(repo) do
         json(conn, %{sync: sync, dashboard: dashboard})
@@ -552,7 +663,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @spec operator_solo_session_detail(Conn.t(), map()) :: Conn.t()
   def operator_solo_session_detail(conn, %{"solo_session_id" => solo_session_id}) do
-    send_local_operator_response(conn, fn repo ->
+    send_local_operator_response(conn, :dashboard_read, Target.new(:dashboard), :operator_solo_session_detail, fn repo ->
       with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo),
            {:ok, payload} <-
              Dashboard.solo_session_detail(repo, solo_session_id, repo_identity_catalog: repo_identity_catalog) do
@@ -563,7 +674,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @spec operator_create_work_request(Conn.t(), map()) :: Conn.t()
   def operator_create_work_request(conn, params) do
-    send_local_operator_response(conn, fn repo ->
+    send_local_operator_response(conn, :work_request_update, Target.ledger(), :operator_create_work_request, fn repo ->
       attrs = work_request_attrs(params)
 
       with {:ok, work_request} <- WorkRequestService.create(repo, attrs),
@@ -578,7 +689,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @spec operator_update_settings(Conn.t(), map()) :: Conn.t()
   def operator_update_settings(conn, params) do
-    send_local_operator_response(conn, fn repo ->
+    send_local_operator_response(conn, :dangerous_override, Target.ledger(), :operator_update_settings, fn repo ->
       with {:ok, settings} <- OperatorSettingsService.update(repo, operator_settings_attrs(params)),
            {:ok, _summary} <-
              WorkRequestService.retention_pass(repo,
@@ -592,64 +703,99 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @spec operator_archive_work_request(Conn.t(), map()) :: Conn.t()
   def operator_archive_work_request(conn, %{"work_request_id" => work_request_id}) do
-    send_local_operator_response(conn, fn repo ->
-      with {:ok, work_request} <- WorkRequestService.archive(repo, work_request_id),
-           {:ok, dashboard} <- operator_dashboard_payload(repo) do
-        json(conn, %{work_request: archived_work_request_payload(work_request), dashboard: dashboard})
+    send_local_operator_response(
+      conn,
+      :dangerous_delete,
+      work_request_target(work_request_id),
+      :operator_archive_work_request,
+      fn repo ->
+        with {:ok, work_request} <- WorkRequestService.archive(repo, work_request_id),
+             {:ok, dashboard} <- operator_dashboard_payload(repo) do
+          json(conn, %{work_request: archived_work_request_payload(work_request), dashboard: dashboard})
+        end
       end
-    end)
+    )
   end
 
   @spec operator_restore_work_request(Conn.t(), map()) :: Conn.t()
   def operator_restore_work_request(conn, %{"work_request_id" => work_request_id}) do
-    send_local_operator_response(conn, fn repo ->
-      with {:ok, work_request} <- WorkRequestService.restore(repo, work_request_id),
-           {:ok, dashboard} <- operator_dashboard_payload(repo),
-           {:ok, detail} <- dashboard_work_request_detail(dashboard, work_request.id) do
-        json(conn, %{work_request: detail, dashboard: dashboard})
+    send_local_operator_response(
+      conn,
+      :dangerous_override,
+      work_request_target(work_request_id),
+      :operator_restore_work_request,
+      fn repo ->
+        with {:ok, work_request} <- WorkRequestService.restore(repo, work_request_id),
+             {:ok, dashboard} <- operator_dashboard_payload(repo),
+             {:ok, detail} <- dashboard_work_request_detail(dashboard, work_request.id) do
+          json(conn, %{work_request: detail, dashboard: dashboard})
+        end
       end
-    end)
+    )
   end
 
   @spec operator_update_work_request_state(Conn.t(), map()) :: Conn.t()
   def operator_update_work_request_state(conn, %{"work_request_id" => work_request_id} = params) do
-    send_local_operator_response(conn, fn repo ->
-      with {:ok, "completed"} <- local_operator_work_request_state(params),
-           {:ok, work_request} <- WorkRequestService.force_complete(repo, work_request_id),
-           {:ok, dashboard} <- operator_dashboard_payload(repo),
-           {:ok, detail} <- dashboard_work_request_detail(dashboard, work_request.id) do
-        json(conn, %{work_request: detail, dashboard: dashboard})
+    send_local_operator_response(
+      conn,
+      :dangerous_override,
+      work_request_target(work_request_id),
+      :operator_update_work_request_state,
+      fn repo ->
+        with {:ok, "completed"} <- local_operator_work_request_state(params),
+             {:ok, work_request} <- WorkRequestService.force_complete(repo, work_request_id),
+             {:ok, dashboard} <- operator_dashboard_payload(repo),
+             {:ok, detail} <- dashboard_work_request_detail(dashboard, work_request.id) do
+          json(conn, %{work_request: detail, dashboard: dashboard})
+        end
       end
-    end)
+    )
   end
 
   @spec operator_update_work_package_state(Conn.t(), map()) :: Conn.t()
   def operator_update_work_package_state(conn, %{"work_package_id" => work_package_id} = params) do
-    send_local_operator_response(conn, fn repo ->
-      with {:ok, action} <- local_operator_work_package_status(params),
-           {:ok, work_package} <-
-             change_work_package_for_local_operator(repo, normalize_package_route_id(work_package_id), action, params),
-           {:ok, dashboard} <- operator_dashboard_payload(repo) do
-        json(conn, %{work_package_id: work_package.id, dashboard: dashboard})
+    send_local_operator_response(
+      conn,
+      :dangerous_override,
+      work_package_target(work_package_id),
+      :operator_update_work_package_state,
+      fn repo ->
+        with {:ok, action} <- local_operator_work_package_status(params),
+             {:ok, work_package} <-
+               change_work_package_for_local_operator(
+                 repo,
+                 normalize_package_route_id(work_package_id),
+                 action,
+                 params
+               ),
+             {:ok, dashboard} <- operator_dashboard_payload(repo) do
+          json(conn, %{work_package_id: work_package.id, dashboard: dashboard})
+        end
       end
-    end)
+    )
   end
 
   @spec operator_archive_work_package(Conn.t(), map()) :: Conn.t()
   def operator_archive_work_package(conn, %{"work_package_id" => work_package_id}) do
-    send_local_operator_response(conn, fn repo ->
-      work_package_id = normalize_package_route_id(work_package_id)
+    send_local_operator_response(
+      conn,
+      :dangerous_delete,
+      work_package_target(work_package_id),
+      :operator_archive_work_package,
+      fn repo ->
+        work_package_id = normalize_package_route_id(work_package_id)
 
-      with {:ok, work_package} <- hide_work_package_for_local_operator(repo, work_package_id),
-           {:ok, dashboard} <- operator_dashboard_payload(repo) do
-        json(conn, %{work_package_id: work_package.id, dashboard: dashboard})
+        with {:ok, work_package} <- hide_work_package_for_local_operator(repo, work_package_id),
+             {:ok, dashboard} <- operator_dashboard_payload(repo) do
+          json(conn, %{work_package_id: work_package.id, dashboard: dashboard})
+        end
       end
-    end)
+    )
   end
 
   @spec operator_create_comment(Conn.t(), map()) :: Conn.t()
   def operator_create_comment(conn, params) do
-    send_local_operator_response(conn, fn repo ->
+    send_local_operator_response(conn, :comment_add, comment_target(params), :operator_create_comment, fn repo ->
       with {:ok, comment} <- CommentService.create(repo, local_operator_comment_attrs(params)),
            {:ok, dashboard} <- operator_dashboard_payload(repo) do
         conn
@@ -661,7 +807,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @spec operator_resolve_comment(Conn.t(), map()) :: Conn.t()
   def operator_resolve_comment(conn, %{"comment_id" => comment_id} = params) do
-    send_local_operator_response(conn, fn repo ->
+    send_local_operator_response(conn, :comment_resolve, Target.new(:comment, comment_id), :operator_resolve_comment, fn repo ->
       with {:ok, comment} <- CommentService.resolve(repo, comment_id, local_operator_comment_resolution_attrs(params)),
            {:ok, dashboard} <- operator_dashboard_payload(repo) do
         json(conn, %{comment: comment_payload(comment), dashboard: dashboard})
@@ -671,59 +817,83 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @spec operator_answer_question(Conn.t(), map()) :: Conn.t()
   def operator_answer_question(conn, %{"work_request_id" => work_request_id, "question_id" => question_id} = params) do
-    send_local_operator_response(conn, fn repo ->
-      with {:ok, question} <- scoped_question(repo, work_request_id, question_id),
-           :ok <- require_open_question(question),
-           {:ok, attrs} <- local_operator_question_answer_attrs(question, params),
-           {:ok, _answered} <- WorkRequestService.answer_question(repo, question.id, question.status, attrs),
-           {:ok, dashboard} <- operator_dashboard_payload(repo),
-           {:ok, detail} <- dashboard_work_request_detail(dashboard, work_request_id) do
-        json(conn, %{work_request: detail, dashboard: dashboard})
+    send_local_operator_response(
+      conn,
+      :question_answer,
+      work_request_target(work_request_id),
+      :operator_answer_question,
+      fn repo ->
+        with {:ok, question} <- scoped_question(repo, work_request_id, question_id),
+             :ok <- require_open_question(question),
+             {:ok, attrs} <- local_operator_question_answer_attrs(question, params),
+             {:ok, _answered} <- WorkRequestService.answer_question(repo, question.id, question.status, attrs),
+             {:ok, dashboard} <- operator_dashboard_payload(repo),
+             {:ok, detail} <- dashboard_work_request_detail(dashboard, work_request_id) do
+          json(conn, %{work_request: detail, dashboard: dashboard})
+        end
       end
-    end)
+    )
   end
 
   @spec operator_answer_guidance(Conn.t(), map()) :: Conn.t()
   def operator_answer_guidance(conn, %{"work_package_id" => work_package_id, "guidance_request_id" => guidance_request_id} = params) do
-    send_local_operator_response(conn, fn repo ->
-      attrs = Map.put(params, "work_package_id", work_package_id)
+    send_local_operator_response(
+      conn,
+      :guidance_request_answer,
+      guidance_request_target(work_package_id, guidance_request_id),
+      :operator_answer_guidance,
+      fn repo ->
+        attrs = Map.put(params, "work_package_id", work_package_id)
 
-      with {:ok, result} <-
-             GuidanceRequestService.answer_human_info_needed_for_local_operator(
-               repo,
-               :local_operator,
-               guidance_request_id,
-               attrs
-             ),
-           {:ok, dashboard} <- operator_dashboard_payload(repo) do
-        json(conn, %{guidance_request_id: result.guidance_request.id, dashboard: dashboard})
+        with {:ok, result} <-
+               GuidanceRequestService.answer_human_info_needed_for_local_operator(
+                 repo,
+                 :local_operator,
+                 guidance_request_id,
+                 attrs
+               ),
+             {:ok, dashboard} <- operator_dashboard_payload(repo) do
+          json(conn, %{guidance_request_id: result.guidance_request.id, dashboard: dashboard})
+        end
       end
-    end)
+    )
   end
 
   @spec operator_create_architect_handoff(Conn.t(), map()) :: Conn.t()
   def operator_create_architect_handoff(conn, %{"work_request_id" => work_request_id}) do
-    send_local_operator_response(conn, fn repo ->
-      with {:ok, handoff} <-
-             ArchitectHandoff.create_or_replay(repo, work_request_id,
-               local_operator?: true,
-               secret_handoff_opts: architect_handoff_opts(repo)
-             ),
-           {:ok, dashboard} <- operator_dashboard_payload(repo) do
-        json(conn, %{architect_handoff: handoff, dashboard: dashboard})
+    send_local_operator_response(
+      conn,
+      :dangerous_rekey,
+      work_request_target(work_request_id),
+      :operator_create_architect_handoff,
+      fn repo ->
+        with {:ok, handoff} <-
+               ArchitectHandoff.create_or_replay(repo, work_request_id,
+                 local_operator?: true,
+                 secret_handoff_opts: architect_handoff_opts(repo)
+               ),
+             {:ok, dashboard} <- operator_dashboard_payload(repo) do
+          json(conn, %{architect_handoff: handoff, dashboard: dashboard})
+        end
       end
-    end)
+    )
   end
 
   @spec operator_dispatch_planned_slice(Conn.t(), map()) :: Conn.t()
   def operator_dispatch_planned_slice(conn, %{"work_request_id" => work_request_id, "planned_slice_id" => planned_slice_id}) do
-    send_local_operator_response(conn, fn repo ->
-      with {:ok, dispatch} <-
-             PlannedSliceDispatch.dispatch(repo, work_request_id, planned_slice_id, dispatch_handoff_opts(repo)),
-           {:ok, dashboard} <- operator_dashboard_payload(repo) do
-        json(conn, %{dispatch: PlannedSliceDispatch.response_payload(dispatch), dashboard: dashboard})
+    send_local_operator_response(
+      conn,
+      :planned_slice_dispatch,
+      planned_slice_target(work_request_id, planned_slice_id),
+      :operator_dispatch_planned_slice,
+      fn repo ->
+        with {:ok, dispatch} <-
+               PlannedSliceDispatch.dispatch(repo, work_request_id, planned_slice_id, dispatch_handoff_opts(repo)),
+             {:ok, dashboard} <- operator_dashboard_payload(repo) do
+          json(conn, %{dispatch: PlannedSliceDispatch.response_payload(dispatch), dashboard: dashboard})
+        end
       end
-    end)
+    )
   end
 
   defp send_package_response(conn, work_package_id, fetch_fun) do
@@ -747,11 +917,12 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
-  defp send_local_operator_response(conn, fun) when is_function(fun, 1) do
-    conn = maybe_refresh_local_operator_session(conn)
-
+  defp send_local_operator_response(conn, action, %Target{} = target, tool_name, fun)
+       when is_atom(action) and is_atom(tool_name) and is_function(fun, 1) do
     if local_operator_api_request?(conn) do
-      with_dashboard_repo(fun)
+      with_dashboard_repo(fn repo ->
+        local_operator_response(repo, conn, action, target, tool_name, fun)
+      end)
       |> case do
         {:error, reason} -> error_response(conn, reason)
         %Conn{} = conn -> conn
@@ -761,18 +932,112 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
-  defp maybe_refresh_local_operator_session(conn) do
-    if local_operator_browser?(conn) do
-      conn
-      |> Conn.fetch_session()
-      |> put_local_operator_session()
-    else
-      conn
+  defp local_operator_response(repo, conn, action, %Target{} = target, tool_name, fun) do
+    decision = local_operator_actor(conn) |> Policy.decide(action, target)
+
+    with :ok <- maybe_append_operator_audit(repo, conn, decision, tool_name),
+         :ok <- require_allowed_local_operator_decision(decision) do
+      fun.(repo)
     end
   end
 
+  defp authorize_local_operator_policy(conn, action, %Target{} = target) when is_atom(action) do
+    conn
+    |> local_operator_actor()
+    |> Policy.decide(action, target)
+    |> case do
+      %Decision{allowed?: true} = decision -> {:ok, decision}
+      %Decision{} = decision -> {:error, {:authorization_policy_denied, decision}}
+    end
+  end
+
+  defp require_allowed_local_operator_decision(%Decision{allowed?: true}), do: :ok
+  defp require_allowed_local_operator_decision(%Decision{} = decision), do: {:error, {:authorization_policy_denied, decision}}
+
+  defp maybe_append_operator_audit(repo, conn, %Decision{} = decision, tool_name) do
+    if dangerous_audit_decision?(decision) do
+      case OperatorAudit.append(repo, decision, operator_request_metadata(conn), operator_tool_metadata(tool_name)) do
+        {:ok, %OperatorAudit{}} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp dangerous_audit_decision?(%Decision{} = decision) do
+    case Map.get(decision, :audit) do
+      audit when is_map(audit) ->
+        Map.get(audit, :dangerous_action) == true or Map.get(audit, "dangerous_action") == true
+
+      _audit ->
+        false
+    end
+  end
+
+  defp local_operator_actor(%Conn{} = conn) do
+    ActorResolver.local_operator(@local_operator_actor,
+      metadata: %{
+        source: :dashboard,
+        request_path: conn.request_path
+      }
+    )
+  end
+
+  defp operator_request_metadata(%Conn{} = conn) do
+    %{
+      method: conn.method,
+      path: conn.request_path,
+      host: conn.host,
+      remote_ip: conn |> Map.get(:remote_ip) |> remote_ip_string()
+    }
+  end
+
+  defp operator_tool_metadata(tool_name) when is_atom(tool_name) do
+    %{name: Atom.to_string(tool_name)}
+  end
+
+  defp remote_ip_string(remote_ip) when is_tuple(remote_ip) do
+    remote_ip
+    |> :inet.ntoa()
+    |> to_string()
+  rescue
+    _error -> nil
+  end
+
+  defp remote_ip_string(_remote_ip), do: nil
+
+  defp work_request_target(work_request_id), do: Target.work_request(work_request_id)
+
+  defp work_package_target(work_package_id) do
+    work_package_id
+    |> normalize_package_route_id()
+    |> Target.work_package()
+  end
+
+  defp planned_slice_target(work_request_id, planned_slice_id), do: Target.planned_slice(planned_slice_id, work_request_id)
+
+  defp guidance_request_target(work_package_id, guidance_request_id) do
+    work_package_id
+    |> normalize_package_route_id()
+    |> then(&Target.package_resource(:guidance_request, &1, id: guidance_request_id))
+  end
+
+  defp comment_target(params) do
+    target_id = text_param(params, "target_id")
+    Target.new(:comment, target_id)
+  end
+
   defp local_operator_api_request?(conn) do
-    local_operator_browser?(conn) or fetched_active_local_operator_session?(conn)
+    local_operator_browser?(conn) and fetched_active_local_operator_session?(conn)
+  end
+
+  defp ensure_local_operator_api_session(conn) do
+    cond do
+      local_operator_api_request?(conn) -> {:ok, conn}
+      local_operator_browser?(conn) -> {:ok, put_local_operator_session(conn)}
+      true -> {:error, :unauthorized}
+    end
   end
 
   defp operator_runtime_config(conn) do
@@ -2180,6 +2445,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp error_response(conn, :missing_custom_redirect_note) do
     error_response(conn, 422, "missing_custom_redirect_note", "A note is required for the custom answer")
+  end
+
+  defp error_response(conn, {:authorization_policy_denied, %Decision{} = decision}) do
+    error_response(conn, 403, decision.reason_code, "Forbidden")
   end
 
   defp error_response(conn, :invalid_status), do: error_response(conn, 422, "invalid_status", "Action is not valid for the current status")

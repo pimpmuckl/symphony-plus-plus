@@ -2,7 +2,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment do
   @moduledoc false
 
   @enforce_keys [:grant_id, :work_package_id, :display_key, :grant_role, :capabilities, :claimed_at, :claimed_by]
-  defstruct [:grant_id, :work_package_id, :phase_id, :display_key, :grant_role, :capabilities, :claimed_at, :claimed_by]
+  defstruct [
+    :grant_id,
+    :work_package_id,
+    :phase_id,
+    :display_key,
+    :grant_role,
+    :capabilities,
+    :claimed_at,
+    :claimed_by,
+    scopes: []
+  ]
 
   @type t :: %__MODULE__{
           grant_id: String.t(),
@@ -12,6 +22,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment do
           grant_role: String.t(),
           capabilities: [String.t()] | nil,
           claimed_at: DateTime.t(),
-          claimed_by: String.t()
+          claimed_by: String.t(),
+          scopes: [SymphonyElixir.SymphonyPlusPlus.Authorization.Scope.t()]
         }
 end

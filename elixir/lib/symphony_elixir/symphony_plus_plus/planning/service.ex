@@ -6,6 +6,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Actor
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Decision
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Policy
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Scope
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Target
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
@@ -14,6 +19,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Timeline
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
   @type error ::
           Repository.error()
@@ -27,6 +37,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
           | :missing_idempotency_key
           | :unauthenticated
           | :work_package_scope_mismatch
+          | {:authorization_policy_denied, Decision.t()}
 
   @spec append_plan_node(Repository.repo(), map()) :: {:ok, PlanNode.t()} | {:error, error()}
   def append_plan_node(repo, attrs), do: Repository.append_plan_node(repo, attrs)
@@ -36,6 +47,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
 
   @spec append_progress_event(Repository.repo(), map()) :: {:ok, ProgressEvent.t()} | {:error, error()}
   def append_progress_event(repo, attrs), do: Repository.append_progress_event(repo, attrs)
+
+  @spec package_surface_actor_opts(Assignment.t(), Target.t()) :: keyword()
+  def package_surface_actor_opts(%Assignment{} = assignment, %Target{} = target) do
+    [
+      repo: target.repo,
+      base_branch: target.base_branch,
+      phase_id: target.phase_id
+    ]
+    |> maybe_put_claimed_work_request_scope(assignment, target)
+  end
+
+  @spec authorize_package_action(Repository.repo(), Actor.t(), atom(), String.t(), Target.type()) ::
+          :ok | {:error, error()}
+  def authorize_package_action(repo, %Actor{} = actor, action, work_package_id, resource_type)
+      when is_atom(repo) and is_atom(action) and is_binary(work_package_id) do
+    with {:ok, target} <- package_resource_target(repo, work_package_id, resource_type) do
+      case Policy.decide(actor, action, target) do
+        %Decision{allowed?: true} -> :ok
+        %Decision{} = decision -> {:error, {:authorization_policy_denied, decision}}
+      end
+    end
+  end
+
+  @spec package_resource_target(Repository.repo(), String.t(), Target.type()) :: {:ok, Target.t()} | {:error, error()}
+  def package_resource_target(repo, work_package_id, resource_type)
+      when is_atom(repo) and is_binary(work_package_id) and
+             resource_type in [
+               :work_package,
+               :task_plan,
+               :progress,
+               :finding,
+               :validation_note,
+               :review_evidence,
+               :blocker,
+               :comment,
+               :guidance_request
+             ] do
+    with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, work_package_id) do
+      opts = package_target_opts(repo, work_package)
+
+      {:ok, build_package_target(resource_type, work_package.id, opts)}
+    end
+  end
 
   @spec append_authenticated_progress_event(Repository.repo(), Assignment.t(), map(), keyword()) ::
           {:ok, ProgressEvent.t()} | {:error, error()}
@@ -162,6 +216,67 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
 
   defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)
   defp normalize_key(key), do: to_string(key)
+
+  defp build_package_target(:work_package, work_package_id, opts), do: Target.work_package(work_package_id, opts)
+  defp build_package_target(resource_type, work_package_id, opts), do: Target.package_resource(resource_type, work_package_id, opts)
+
+  defp maybe_put_claimed_work_request_scope(opts, %Assignment{} = assignment, %Target{} = target) do
+    if claimed_work_request_target?(assignment, target) do
+      Keyword.put(opts, :work_request_id, target.work_request_id)
+    else
+      opts
+    end
+  end
+
+  defp claimed_work_request_target?(%Assignment{} = assignment, %Target{work_request_id: work_request_id})
+       when is_binary(work_request_id) do
+    assignment_has_work_request_scope?(assignment, work_request_id)
+  end
+
+  defp claimed_work_request_target?(%Assignment{}, %Target{}), do: false
+
+  defp assignment_has_work_request_scope?(%Assignment{scopes: scopes}, work_request_id) when is_list(scopes) do
+    Enum.any?(scopes, &match?(%Scope{type: :work_request, id: ^work_request_id}, &1))
+  end
+
+  defp assignment_has_work_request_scope?(%Assignment{}, _work_request_id), do: false
+
+  defp package_target_opts(repo, %WorkPackage{} = work_package) do
+    [
+      repo: work_package.repo,
+      base_branch: work_package.base_branch,
+      phase_id: work_package.phase_id
+    ]
+    |> maybe_put_linked_work_request(repo, work_package.id)
+  end
+
+  defp maybe_put_linked_work_request(opts, repo, work_package_id) do
+    case linked_work_request(repo, work_package_id) do
+      %WorkRequest{} = work_request ->
+        phase_id = work_package_phase_id(opts) || ArchitectHandoff.phase_id_for_work_request(work_request)
+
+        opts
+        |> Keyword.put(:work_request_id, work_request.id)
+        |> Keyword.put(:phase_id, phase_id)
+
+      nil ->
+        opts
+    end
+  end
+
+  defp work_package_phase_id(opts), do: Keyword.get(opts, :phase_id)
+
+  defp linked_work_request(repo, work_package_id) do
+    repo.one(
+      from(planned_slice in PlannedSlice,
+        join: work_request in WorkRequest,
+        on: work_request.id == planned_slice.work_request_id,
+        where: planned_slice.work_package_id == ^work_package_id,
+        select: work_request,
+        limit: 1
+      )
+    )
+  end
 
   defp fetch_timeline_transaction(repo, %Assignment{} = assignment) do
     with :ok <- lock_valid_assignment(repo, assignment),

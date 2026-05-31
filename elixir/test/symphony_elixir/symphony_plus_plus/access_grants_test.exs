@@ -5,14 +5,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.GrantScope
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Scope
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.Auth
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.Session
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixir.WorkPackageFactory
 
   defmodule LockedAccessGrantRepo do
@@ -71,7 +77,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
   end
 
   setup %{repo: repo} do
+    repo.delete_all(GrantScope)
     repo.delete_all(AccessGrant)
+    repo.query!("DELETE FROM sympp_work_request_planned_slices")
+    repo.query!("DELETE FROM sympp_work_requests")
     repo.delete_all(WorkPackage)
     repo.delete_all(Phase)
     :ok
@@ -109,6 +118,290 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     refute Map.has_key?(Map.from_struct(persisted), :raw_secret)
     refute inspect(persisted) =~ persisted.secret_hash
     refute inspect(work_key) =~ work_key.secret
+  end
+
+  test "grant scope persistence supports all explicit scope row types", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SCOPE-SCHEMA"))
+    assert {:ok, %{grant: grant}} = Service.mint_worker_grant(repo, work_package.id)
+    repo.delete_all(GrantScope)
+
+    for scope <- [
+          Scope.ledger(),
+          Scope.repo("nextide/symphony-plus-plus", "main"),
+          Scope.work_request("wr-scope-schema"),
+          Scope.planned_slice("wrs-scope-schema"),
+          Scope.work_package(work_package.id)
+        ] do
+      assert {:ok, %GrantScope{}} =
+               scope
+               |> then(&GrantScope.attrs_from_scope(grant.id, &1))
+               |> GrantScope.create_changeset()
+               |> repo.insert()
+    end
+
+    assert {:ok, scope_rows} = Repository.list_scopes(repo, grant.id)
+    assert MapSet.new(Enum.map(scope_rows, & &1.scope_type)) == MapSet.new(["ledger", "repo", "work_request", "planned_slice", "work_package"])
+  end
+
+  test "worker grants persist exactly one work package scope", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-SCOPE"))
+
+    assert {:ok, %{grant: grant}} =
+             Service.mint_worker_grant(repo, work_package.id, capabilities: ["worker:claim"])
+
+    assert {:ok, [%GrantScope{} = scope]} = Repository.list_scopes(repo, grant.id)
+    assert scope.scope_type == "work_package"
+    assert scope.scope_id == work_package.id
+    assert scope.scope_key == "work_package:#{work_package.id}"
+    assert scope.repo == nil
+    assert scope.base_branch == nil
+  end
+
+  test "architect handoff grants persist one work request scope", %{repo: repo} do
+    {phase, work_package, _work_request} = create_handoff_anchor!(repo, "wr-architect-scope")
+
+    assert {:ok, %{grant: grant}} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               work_request_id: "wr-architect-scope",
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+
+    assert {:ok, scope_rows} = Repository.list_scopes(repo, grant.id)
+    assert [%GrantScope{scope_type: "work_request", scope_id: "wr-architect-scope"}] = Enum.filter(scope_rows, &(&1.scope_type == "work_request"))
+  end
+
+  test "architect grants reject requested work request scopes outside the anchor repository", %{repo: repo} do
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-invalid-work-request-scope", title: "Invalid WorkRequest scope"})
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(kind: "phase_child", phase_id: phase.id)
+             )
+
+    insert_work_request!(repo, "wr-outside-repo", "other/repo", work_package.base_branch)
+
+    assert {:error, :invalid_scope} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               work_request_id: "wr-outside-repo",
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+  end
+
+  test "architect grants reject unattached work request scopes in the anchor repository", %{repo: repo} do
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-unattached-work-request-scope", title: "Unattached WorkRequest scope"})
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(kind: "phase_child", phase_id: phase.id)
+             )
+
+    insert_work_request!(repo, "wr-unattached-scope", work_package.repo, work_package.base_branch)
+
+    assert {:error, :invalid_scope} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               work_request_id: "wr-unattached-scope",
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+  end
+
+  test "architect grants reject planned slice scopes outside the anchor package", %{repo: repo} do
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-invalid-planned-slice-scope", title: "Invalid planned slice scope"})
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(kind: "phase_child", phase_id: phase.id)
+             )
+
+    assert {:ok, other_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-OTHER-SCOPE", kind: "phase_child", phase_id: phase.id)
+             )
+
+    insert_work_request!(repo, "wr-planned-slice-scope", work_package.repo, work_package.base_branch)
+    insert_planned_slice!(repo, "wrs-outside-anchor", "wr-planned-slice-scope", other_package.id, work_package.base_branch)
+
+    assert {:error, :invalid_scope} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               work_request_id: "wr-planned-slice-scope",
+               planned_slice_id: "wrs-outside-anchor",
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+  end
+
+  test "architect grants reject slice-derived work request scopes outside the anchor repository", %{repo: repo} do
+    assert {:ok, phase} =
+             PhaseRepository.create(repo, %{
+               id: "phase-cross-repo-planned-slice-scope",
+               title: "Cross-repo planned slice scope"
+             })
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(kind: "phase_child", phase_id: phase.id)
+             )
+
+    insert_work_request!(repo, "wr-cross-repo-slice-scope", "other/repo", work_package.base_branch)
+
+    insert_planned_slice!(
+      repo,
+      "wrs-cross-repo-slice-scope",
+      "wr-cross-repo-slice-scope",
+      work_package.id,
+      work_package.base_branch
+    )
+
+    assert {:error, :invalid_scope} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               work_request_id: "wr-cross-repo-slice-scope",
+               planned_slice_id: "wrs-cross-repo-slice-scope",
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+  end
+
+  test "architect grants reject explicit scopes outside the anchor authority", %{repo: repo} do
+    assert {:ok, phase} =
+             PhaseRepository.create(repo, %{
+               id: "phase-invalid-explicit-scopes",
+               title: "Invalid explicit scopes"
+             })
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(kind: "phase_child", phase_id: phase.id)
+             )
+
+    invalid_scopes = [
+      Scope.ledger(),
+      Scope.repo("other/repo", work_package.base_branch),
+      Scope.repo(work_package.repo, "other/base"),
+      Scope.work_package("wp-outside-anchor")
+    ]
+
+    for scope <- invalid_scopes do
+      work_key = WorkKey.generate()
+
+      assert {:error, :invalid_scope} =
+               Repository.create(repo, %{
+                 work_package_id: work_package.id,
+                 phase_id: phase.id,
+                 display_key: work_key.display_key,
+                 secret_hash: WorkKey.secret_hash(work_key.secret),
+                 grant_role: "architect",
+                 scopes: [scope],
+                 capabilities: ["read:work_request", "write:work_request"]
+               })
+    end
+  end
+
+  test "architect grants resolve work request scope from a dispatched planned slice", %{repo: repo} do
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-resolved-work-request-scope", title: "Resolved WorkRequest scope"})
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(kind: "phase_child", phase_id: phase.id)
+             )
+
+    insert_work_request!(repo, "wr-resolved-scope", work_package.repo, work_package.base_branch)
+    insert_planned_slice!(repo, "wrs-resolved-scope", "wr-resolved-scope", work_package.id, work_package.base_branch)
+
+    assert {:ok, %{grant: grant}} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+
+    assert {:ok, scope_rows} = Repository.list_scopes(repo, grant.id)
+    assert [%GrantScope{scope_type: "work_request", scope_id: "wr-resolved-scope"}] = Enum.filter(scope_rows, &(&1.scope_type == "work_request"))
+  end
+
+  test "architect grants constrain planned slices to persisted work request scope", %{repo: repo} do
+    {phase, work_package, _work_request} = create_handoff_anchor!(repo, "wr-planned-slice-allowed")
+    insert_work_request!(repo, "wr-planned-slice-other", work_package.repo, work_package.base_branch)
+    insert_planned_slice!(repo, "wrs-planned-slice-other", "wr-planned-slice-other", work_package.id, work_package.base_branch)
+
+    assert {:ok, %{grant: grant}} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               work_request_id: "wr-planned-slice-allowed",
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+
+    assert {:error, :invalid_scope} =
+             Repository.ensure_grant_scopes(repo, grant, %{
+               planned_slice_id: "wrs-planned-slice-other"
+             })
+
+    assert {:ok, scope_rows} = Repository.list_scopes(repo, grant.id)
+    assert [%GrantScope{scope_type: "work_request", scope_id: "wr-planned-slice-allowed"}] = Enum.filter(scope_rows, &(&1.scope_type == "work_request"))
+    assert [] = Enum.filter(scope_rows, &(&1.scope_type == "planned_slice"))
+  end
+
+  test "architect grants derive work request scope from requested planned slice", %{repo: repo} do
+    assert {:ok, phase} =
+             PhaseRepository.create(repo, %{
+               id: "phase-requested-planned-slice-work-request",
+               title: "Requested planned slice WorkRequest"
+             })
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(kind: "phase_child", phase_id: phase.id)
+             )
+
+    insert_work_request!(repo, "wr-requested-planned-slice", work_package.repo, work_package.base_branch)
+    insert_planned_slice!(repo, "wrs-requested-planned-slice", "wr-requested-planned-slice", work_package.id, work_package.base_branch)
+
+    assert {:ok, %{grant: grant}} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               planned_slice_id: "wrs-requested-planned-slice",
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+
+    assert {:ok, scope_rows} = Repository.list_scopes(repo, grant.id)
+    assert [%GrantScope{scope_type: "work_request", scope_id: "wr-requested-planned-slice"}] = Enum.filter(scope_rows, &(&1.scope_type == "work_request"))
+    assert [%GrantScope{scope_type: "planned_slice", scope_id: "wrs-requested-planned-slice"}] = Enum.filter(scope_rows, &(&1.scope_type == "planned_slice"))
+  end
+
+  test "architect grants reject default slice-derived work request scope outside anchor repo", %{repo: repo} do
+    assert {:ok, phase} =
+             PhaseRepository.create(repo, %{
+               id: "phase-invalid-default-work-request-scope",
+               title: "Invalid default WorkRequest scope"
+             })
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 kind: "phase_child",
+                 phase_id: phase.id,
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main"
+               )
+             )
+
+    insert_work_request!(repo, "wr-default-cross-repo", "nextide/other", work_package.base_branch)
+    insert_planned_slice!(repo, "wrs-default-cross-repo", "wr-default-cross-repo", work_package.id, work_package.base_branch)
+
+    assert {:error, :invalid_scope} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               capabilities: ["read:work_request", "write:work_request"]
+             )
   end
 
   test "default worker grants are non-expiring and remain claimable", %{repo: repo} do
@@ -193,7 +486,129 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     assert assignment.grant_role == "worker"
     assert assignment.capabilities == ["worker:claim", "worker:lifecycle.transition"]
     assert assignment.claimed_by == "worker-1"
+    assert assignment.scopes == [Scope.work_package(work_package.id)]
     refute inspect(assignment) =~ minted.work_key.secret
+  end
+
+  test "claim reconnect restores missing worker scope rows for existing grants", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
+    assert {:ok, minted} = Service.mint_worker_grant(repo, work_package.id)
+    repo.delete_all(GrantScope)
+
+    assert {:ok, %AccessGrant{} = first_claim} =
+             Service.claim_local_worker_grant(repo, work_package.id, claimed_by: "worker-1")
+
+    assert first_claim.id == minted.grant.id
+    assert {:ok, [%GrantScope{scope_type: "work_package", scope_id: work_package_id}]} = Repository.list_scopes(repo, minted.grant.id)
+    assert work_package_id == work_package.id
+
+    repo.delete_all(GrantScope)
+
+    assert {:ok, %AccessGrant{} = reconnect} =
+             Service.claim_local_worker_grant(repo, work_package.id, claimed_by: "worker-1")
+
+    assert reconnect.id == minted.grant.id
+    assert {:ok, [%GrantScope{scope_type: "work_package", scope_id: work_package_id}]} = Repository.list_scopes(repo, minted.grant.id)
+    assert work_package_id == work_package.id
+  end
+
+  test "auth revalidation reloads persisted worker work package scopes", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
+    assert {:ok, minted} = Service.mint_worker_grant(repo, work_package.id)
+
+    assert {:ok, %Assignment{} = assignment} =
+             Service.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+
+    stale_session = Session.new(%{assignment | scopes: []}, proof_hash: minted.grant.secret_hash)
+
+    assert {:ok, %Session{} = live_session} = Auth.require_session(stale_session, repo)
+    assert live_session.assignment.scopes == [Scope.work_package(work_package.id)]
+  end
+
+  test "local architect reconnect restores explicit work request scope rows", %{repo: repo} do
+    {phase, work_package, _work_request} = create_handoff_anchor!(repo, "wr-local-architect-scope")
+
+    assert {:ok, minted} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               work_request_id: "wr-local-architect-scope",
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+
+    repo.delete_all(GrantScope)
+
+    assert {:ok, %AccessGrant{} = first_claim} =
+             Service.claim_local_architect_grant(repo, work_package.id, phase.id,
+               claimed_by: "architect-1",
+               scope_repo: work_package.repo,
+               scope_base_branch: work_package.base_branch,
+               work_request_id: "wr-local-architect-scope"
+             )
+
+    assert first_claim.id == minted.grant.id
+    assert {:ok, scope_rows} = Repository.list_scopes(repo, minted.grant.id)
+    assert [%GrantScope{scope_type: "work_request", scope_id: "wr-local-architect-scope"}] = Enum.filter(scope_rows, &(&1.scope_type == "work_request"))
+
+    repo.delete_all(GrantScope)
+
+    assert {:ok, %AccessGrant{} = reconnect} =
+             Service.claim_local_architect_grant(repo, work_package.id, phase.id,
+               claimed_by: "architect-1",
+               scope_repo: work_package.repo,
+               scope_base_branch: work_package.base_branch,
+               work_request_id: "wr-local-architect-scope"
+             )
+
+    assert reconnect.id == minted.grant.id
+    assert {:ok, scope_rows} = Repository.list_scopes(repo, minted.grant.id)
+    assert [%GrantScope{scope_type: "work_request", scope_id: "wr-local-architect-scope"}] = Enum.filter(scope_rows, &(&1.scope_type == "work_request"))
+  end
+
+  test "local architect reconnect rejects work request scope drift", %{repo: repo} do
+    {phase, work_package, _work_request} = create_handoff_anchor!(repo, "wr-architect-scope-original")
+    insert_work_request!(repo, "wr-architect-scope-drift", work_package.repo, work_package.base_branch)
+
+    assert {:ok, _minted} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               work_request_id: "wr-architect-scope-original",
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+
+    assert {:ok, %AccessGrant{}} =
+             Service.claim_local_architect_grant(repo, work_package.id, phase.id,
+               claimed_by: "architect-1",
+               scope_repo: work_package.repo,
+               scope_base_branch: work_package.base_branch,
+               work_request_id: "wr-architect-scope-original"
+             )
+
+    assert {:error, :invalid_scope} =
+             Service.claim_local_architect_grant(repo, work_package.id, phase.id,
+               claimed_by: "architect-1",
+               scope_repo: work_package.repo,
+               scope_base_branch: work_package.base_branch,
+               work_request_id: "wr-architect-scope-drift"
+             )
+  end
+
+  test "auth revalidation reloads persisted architect work request scopes", %{repo: repo} do
+    {phase, work_package, _work_request} = create_handoff_anchor!(repo, "wr-auth-architect-scope")
+
+    assert {:ok, minted} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               work_request_id: "wr-auth-architect-scope",
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+
+    assert {:ok, %Assignment{} = assignment} =
+             Service.claim(repo, minted.work_key.secret, claimed_by: "architect-1")
+
+    stale_session = Session.new(%{assignment | scopes: []}, proof_hash: minted.grant.secret_hash)
+
+    assert {:ok, %Session{} = live_session} = Auth.require_session(stale_session, repo)
+    assert Scope.work_request("wr-auth-architect-scope") in live_session.assignment.scopes
   end
 
   test "repository claims require a nonblank worker identity", %{repo: repo} do
@@ -659,6 +1074,235 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     end
   end
 
+  test "grant scope migration backfills legacy worker and architect rows" do
+    database_path = WorkPackageFactory.database_path()
+    {:ok, pid} = Repo.start_link(database: database_path, name: nil, pool_size: 1, log: false)
+    original_repo = Repo.put_dynamic_repo(pid)
+
+    try do
+      pre_grant_scope_migration = 20_260_527_120_000
+
+      migrated_versions =
+        Ecto.Migrator.run(Repo, WorkPackageRepository.migrations_path(), :up,
+          to: pre_grant_scope_migration,
+          log: false
+        )
+
+      assert pre_grant_scope_migration in migrated_versions
+
+      now = DateTime.utc_now(:microsecond)
+      worker_key = WorkKey.generate()
+      architect_key = WorkKey.generate()
+      foreign_architect_key = WorkKey.generate()
+      operator_key = WorkKey.generate()
+
+      assert {:ok, phase} = PhaseRepository.create(Repo, %{id: "phase-grant-scope-backfill", title: "Grant scope backfill"})
+
+      assert {:ok, work_package} =
+               WorkPackageRepository.create(
+                 Repo,
+                 WorkPackageFactory.attrs(
+                   id: "SYMPP-GRANT-SCOPE-BACKFILL",
+                   kind: "phase_child",
+                   phase_id: phase.id,
+                   repo: "nextide/symphony-plus-plus",
+                   base_branch: "main"
+                 )
+               )
+
+      insert_work_request!(Repo, "wr-grant-scope-backfill", work_package.repo, work_package.base_branch)
+      insert_planned_slice!(Repo, "wrs-grant-scope-backfill", "wr-grant-scope-backfill", work_package.id, work_package.base_branch)
+
+      assert {:ok, foreign_work_package} =
+               WorkPackageRepository.create(
+                 Repo,
+                 WorkPackageFactory.attrs(
+                   id: "SYMPP-GRANT-SCOPE-FOREIGN",
+                   kind: "phase_child",
+                   phase_id: phase.id,
+                   repo: work_package.repo,
+                   base_branch: work_package.base_branch
+                 )
+               )
+
+      insert_work_request!(Repo, "wr-grant-scope-foreign-branch", work_package.repo, "feature/other")
+      insert_planned_slice!(Repo, "wrs-grant-scope-foreign-branch", "wr-grant-scope-foreign-branch", foreign_work_package.id, "feature/other")
+
+      Repo.query!(
+        """
+        INSERT INTO sympp_access_grants
+          (id, work_package_id, phase_id, scope_repo, scope_base_branch, display_key,
+           secret_hash, grant_role, provenance, capabilities, expires_at, revoked_at,
+           claimed_at, claimed_by, inserted_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+          "grant-worker-scope-backfill",
+          work_package.id,
+          nil,
+          nil,
+          nil,
+          worker_key.display_key,
+          WorkKey.secret_hash(worker_key.secret),
+          "worker",
+          nil,
+          Jason.encode!(["worker:claim"]),
+          nil,
+          nil,
+          nil,
+          nil,
+          now,
+          now
+        ]
+      )
+
+      Repo.query!(
+        """
+        INSERT INTO sympp_access_grants
+          (id, work_package_id, phase_id, scope_repo, scope_base_branch, display_key,
+           secret_hash, grant_role, provenance, capabilities, expires_at, revoked_at,
+           claimed_at, claimed_by, inserted_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+          "grant-architect-scope-foreign",
+          foreign_work_package.id,
+          phase.id,
+          foreign_work_package.repo,
+          foreign_work_package.base_branch,
+          foreign_architect_key.display_key,
+          WorkKey.secret_hash(foreign_architect_key.secret),
+          "architect",
+          nil,
+          Jason.encode!(["read:work_request", "write:work_request"]),
+          nil,
+          nil,
+          nil,
+          nil,
+          now,
+          now
+        ]
+      )
+
+      Repo.query!(
+        """
+        INSERT INTO sympp_access_grants
+          (id, work_package_id, phase_id, scope_repo, scope_base_branch, display_key,
+           secret_hash, grant_role, provenance, capabilities, expires_at, revoked_at,
+           claimed_at, claimed_by, inserted_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+          "grant-architect-scope-backfill",
+          work_package.id,
+          phase.id,
+          work_package.repo,
+          work_package.base_branch,
+          architect_key.display_key,
+          WorkKey.secret_hash(architect_key.secret),
+          "architect",
+          nil,
+          Jason.encode!(["read:work_request", "write:work_request"]),
+          nil,
+          nil,
+          nil,
+          nil,
+          now,
+          now
+        ]
+      )
+
+      Repo.query!(
+        """
+        INSERT INTO sympp_access_grants
+          (id, work_package_id, phase_id, scope_repo, scope_base_branch, display_key,
+           secret_hash, grant_role, provenance, capabilities, expires_at, revoked_at,
+           claimed_at, claimed_by, inserted_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+          "grant-operator-scope-backfill",
+          work_package.id,
+          nil,
+          work_package.repo,
+          work_package.base_branch,
+          operator_key.display_key,
+          WorkKey.secret_hash(operator_key.secret),
+          "operator",
+          nil,
+          Jason.encode!(["operator:ledger"]),
+          nil,
+          nil,
+          nil,
+          nil,
+          now,
+          now
+        ]
+      )
+
+      Ecto.Migrator.run(Repo, WorkPackageRepository.migrations_path(), :up, all: true, log: false)
+
+      worker_scopes =
+        Repo.query!(
+          """
+          SELECT scope_type, scope_id, repo, base_branch
+          FROM sympp_access_grant_scopes
+          WHERE access_grant_id = ?
+          ORDER BY scope_type
+          """,
+          ["grant-worker-scope-backfill"]
+        )
+
+      assert [["work_package", "SYMPP-GRANT-SCOPE-BACKFILL", nil, nil]] = worker_scopes.rows
+
+      architect_scopes =
+        Repo.query!(
+          """
+          SELECT scope_type, scope_id, repo, base_branch
+          FROM sympp_access_grant_scopes
+          WHERE access_grant_id = ?
+          ORDER BY scope_type
+          """,
+          ["grant-architect-scope-backfill"]
+        )
+
+      assert ["repo", nil, "nextide/symphony-plus-plus", "main"] in architect_scopes.rows
+      assert ["work_package", "SYMPP-GRANT-SCOPE-BACKFILL", nil, nil] in architect_scopes.rows
+      assert ["work_request", "wr-grant-scope-backfill", nil, nil] in architect_scopes.rows
+
+      foreign_scopes =
+        Repo.query!(
+          """
+          SELECT scope_type, scope_id, repo, base_branch
+          FROM sympp_access_grant_scopes
+          WHERE access_grant_id = ?
+          ORDER BY scope_type
+          """,
+          ["grant-architect-scope-foreign"]
+        )
+
+      assert ["repo", nil, "nextide/symphony-plus-plus", "main"] in foreign_scopes.rows
+      assert ["work_package", "SYMPP-GRANT-SCOPE-FOREIGN", nil, nil] in foreign_scopes.rows
+      refute Enum.any?(foreign_scopes.rows, &match?(["work_request", _, _, _], &1))
+
+      operator_scopes =
+        Repo.query!(
+          """
+          SELECT scope_type, scope_id, repo, base_branch
+          FROM sympp_access_grant_scopes
+          WHERE access_grant_id = ?
+          """,
+          ["grant-operator-scope-backfill"]
+        )
+
+      assert [] = operator_scopes.rows
+    after
+      Repo.put_dynamic_repo(original_repo)
+      GenServer.stop(pid)
+      File.rm(database_path)
+    end
+  end
+
   test "non-id constraint failures are not reported as duplicate ids", %{repo: repo} do
     work_key = WorkKey.generate()
 
@@ -685,6 +1329,93 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
       end)
 
     refute log =~ minted.work_key.secret
+  end
+
+  defp insert_work_request!(repo, id, repo_name, base_branch) do
+    now = DateTime.utc_now(:microsecond)
+
+    repo.query!(
+      """
+      INSERT INTO sympp_work_requests
+        (id, title, repo, base_branch, work_type, human_description, constraints,
+         desired_dispatch_shape, status, inserted_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      """,
+      [
+        id,
+        "Scoped WorkRequest",
+        repo_name,
+        base_branch,
+        "implementation",
+        "Scope test",
+        Jason.encode!(%{}),
+        "one_package",
+        "ready_for_slicing",
+        now,
+        now
+      ]
+    )
+
+    repo.get!(WorkRequest, id)
+  end
+
+  defp create_handoff_anchor!(repo, work_request_id) do
+    work_request = insert_work_request!(repo, work_request_id, "nextide/example", "main")
+    phase_id = ArchitectHandoff.phase_id_for_work_request(work_request)
+    anchor_id = ArchitectHandoff.anchor_id_for_work_request(work_request)
+
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: phase_id, title: "Architect handoff scope"})
+
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: anchor_id,
+                 kind: "delegation",
+                 phase_id: phase.id,
+                 repo: work_request.repo,
+                 base_branch: work_request.base_branch,
+                 allowed_file_globs: []
+               )
+             )
+
+    {phase, anchor, work_request}
+  end
+
+  defp insert_planned_slice!(repo, id, work_request_id, work_package_id, base_branch) do
+    now = DateTime.utc_now(:microsecond)
+
+    repo.query!(
+      """
+      INSERT INTO sympp_work_request_planned_slices
+        (id, work_request_id, sequence, title, goal, work_package_kind,
+         target_base_branch, branch_pattern, owned_file_globs, forbidden_file_globs,
+         acceptance_criteria, validation_steps, review_lanes, stop_conditions, status,
+         work_package_id, dispatched_at, inserted_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      """,
+      [
+        id,
+        work_request_id,
+        1,
+        "Scoped slice",
+        "Persist scope",
+        "mcp",
+        base_branch,
+        nil,
+        "[]",
+        "[]",
+        "[]",
+        "[]",
+        "[]",
+        "[]",
+        "dispatched",
+        work_package_id,
+        now,
+        now,
+        now
+      ]
+    )
   end
 
   defp capture_secret_log(fun) do

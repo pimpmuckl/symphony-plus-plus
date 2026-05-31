@@ -4,6 +4,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service do
   import Ecto.Query, only: [from: 2]
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Decision
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Policy
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
@@ -31,12 +34,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service do
           | :unauthenticated
           | :work_package_scope_mismatch
           | :work_package_not_worker_active
+          | {:authorization_policy_denied, Decision.t()}
   @type local_operator_context :: :local_operator
+
+  @spec create_for_assignment(Repository.repo(), Assignment.t(), map()) ::
+          {:ok, GuidanceRequest.t()} | {:error, error()}
+  def create_for_assignment(repo, %Assignment{grant_role: "worker"} = assignment, attrs)
+      when is_atom(repo) and is_map(attrs) do
+    create_for_worker(repo, assignment, attrs)
+  end
+
+  def create_for_assignment(repo, _assignment, attrs) when is_atom(repo) and is_map(attrs), do: {:error, :unauthenticated}
 
   @spec create_for_worker(Repository.repo(), Assignment.t(), map()) :: {:ok, GuidanceRequest.t()} | {:error, error()}
   def create_for_worker(repo, %Assignment{grant_role: "worker"} = assignment, attrs)
       when is_atom(repo) and is_map(attrs) do
-    with :ok <- PlanningService.require_valid_assignment(repo, assignment),
+    with :ok <-
+           authorize_assignment_package_action(repo, assignment, :guidance_request_create, assignment.work_package_id),
+         :ok <- PlanningService.require_valid_assignment(repo, assignment),
          attrs <- normalize_keys(attrs),
          {:ok, idempotency_key} <- required_trimmed(attrs, "idempotency_key"),
          request_attrs <- request_attrs(assignment, attrs, idempotency_key) do
@@ -60,6 +75,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service do
   end
 
   def get_for_worker(repo, _assignment, id) when is_atom(repo) and is_binary(id), do: {:error, :unauthenticated}
+
+  @spec get_for_assignment(Repository.repo(), Assignment.t(), String.t()) :: {:ok, GuidanceRequest.t()} | {:error, error()}
+  def get_for_assignment(repo, %Assignment{grant_role: "worker"} = assignment, id)
+      when is_atom(repo) and is_binary(id) do
+    get_for_worker(repo, assignment, id)
+  end
+
+  def get_for_assignment(repo, %Assignment{} = assignment, id) when is_atom(repo) and is_binary(id) do
+    with :ok <- PlanningService.require_valid_assignment(repo, assignment),
+         {:ok, guidance_request} <- Repository.get(repo, id),
+         :ok <- authorize_for_assignment(repo, assignment, :guidance_request_read, guidance_request) do
+      {:ok, guidance_request}
+    end
+  end
+
+  def get_for_assignment(repo, _assignment, id) when is_atom(repo) and is_binary(id), do: {:error, :unauthenticated}
+
+  @spec authorize_for_assignment(Repository.repo(), Assignment.t(), atom(), GuidanceRequest.t()) ::
+          :ok | {:error, error()}
+  def authorize_for_assignment(repo, %Assignment{} = assignment, action, %GuidanceRequest{} = guidance_request)
+      when is_atom(repo) and is_atom(action) do
+    authorize_assignment_package_action(repo, assignment, action, guidance_request.work_package_id)
+  end
 
   @spec list_visible_to_architect(Repository.repo(), map()) :: {:ok, [GuidanceRequest.t()]} | {:error, error()}
   def list_visible_to_architect(repo, filters), do: Repository.list_visible_to_architect(repo, filters)
@@ -335,6 +373,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service do
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  defp authorize_assignment_package_action(repo, %Assignment{} = assignment, action, work_package_id) do
+    case PlanningService.package_resource_target(repo, work_package_id, :guidance_request) do
+      {:ok, target} ->
+        actor =
+          ActorResolver.from_assignment(assignment, PlanningService.package_surface_actor_opts(assignment, target))
+
+        case Policy.decide(actor, action, target) do
+          %Decision{allowed?: true} -> :ok
+          %Decision{} = decision -> {:error, {:authorization_policy_denied, decision}}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

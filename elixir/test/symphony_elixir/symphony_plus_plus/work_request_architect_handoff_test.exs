@@ -2,6 +2,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
   use ExUnit.Case, async: false
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.GrantScope
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
@@ -15,6 +16,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixir.WorkPackageFactory
+
+  defmodule ScopeLookupFailingRepo do
+    def database_path, do: Repo.database_path()
+    def get(schema, id), do: Repo.get(schema, id)
+
+    def all(%Ecto.Query{from: %{source: {"sympp_access_grant_scopes", _schema}}}) do
+      raise %Exqlite.Error{message: "scope lookup failed"}
+    end
+
+    def all(query), do: Repo.all(query)
+  end
 
   setup_all do
     database_path = WorkPackageFactory.database_path()
@@ -33,6 +45,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
   end
 
   setup %{repo: repo} do
+    repo.delete_all(GrantScope)
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkPackage)
     repo.delete_all(Phase)
@@ -79,6 +92,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
     assert handoff.secret_handoff.mode in ["local-private-file", "windows-credential-manager"]
     assert handoff.secret_handoff.secret_in_stdout == false
     assert handoff.secret_handoff.database == Application.fetch_env!(:symphony_elixir, :sympp_repo_database)
+
+    assert {:ok, scope_rows} = AccessGrantRepository.list_scopes(repo, handoff.grant.id)
+
+    assert [%GrantScope{scope_type: "work_request", scope_id: work_request_id}] =
+             Enum.filter(scope_rows, &(&1.scope_type == "work_request"))
+
+    assert work_request_id == work_request.id
     refute Map.has_key?(handoff.secret_handoff, :secret)
     refute Map.has_key?(handoff.secret_handoff, "secret")
     assert handoff.local_architect_claim["tool"] == "claim_local_architect_assignment"
@@ -457,6 +477,100 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
     cleanup_handoff(anchor, grant, handoff_opts)
   end
 
+  test "replay uses persisted work request scope instead of exact capability equality", %{repo: repo, handoff_opts: handoff_opts} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+
+    assert {:ok, first} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert {:ok, anchor} = WorkPackageRepository.get(repo, first.anchor_package.id)
+    assert {:ok, [first_grant]} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+
+    first_grant
+    |> Ecto.Changeset.change(capabilities: ["read:phase" | ArchitectHandoff.capabilities()])
+    |> repo.update!()
+
+    assert {:ok, replayed} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert replayed.status == :replayed
+    assert replayed.grant.id == first.grant.id
+
+    assert {:ok, [grant]} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+    cleanup_handoff(anchor, grant, handoff_opts)
+  end
+
+  test "persisted work request scope does not replay under-capable handoff grants", %{repo: repo, handoff_opts: handoff_opts} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+
+    assert {:ok, first} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert {:ok, anchor} = WorkPackageRepository.get(repo, first.anchor_package.id)
+    assert {:ok, [first_grant]} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+
+    first_grant
+    |> Ecto.Changeset.change(capabilities: ["read:phase"])
+    |> repo.update!()
+
+    assert {:ok, renewed} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert renewed.status == :renewed
+    assert renewed.grant.id != first.grant.id
+
+    assert {:ok, revoked} = AccessGrantRepository.get(repo, first.grant.id)
+    assert %DateTime{} = revoked.revoked_at
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+    Enum.each(grants, &cleanup_handoff(anchor, &1, handoff_opts))
+  end
+
+  test "scope-less legacy handoff grants renew instead of inferring current work request", %{
+    repo: repo,
+    handoff_opts: handoff_opts
+  } do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+
+    assert {:ok, first} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert {:ok, anchor} = WorkPackageRepository.get(repo, first.anchor_package.id)
+    assert {:ok, [first_grant]} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+    assert {:ok, scope_rows} = AccessGrantRepository.list_scopes(repo, first_grant.id)
+    Enum.each(scope_rows, &repo.delete!/1)
+
+    assert {:ok, renewed} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert renewed.status == :renewed
+    assert renewed.grant.id != first.grant.id
+
+    assert {:ok, revoked} = AccessGrantRepository.get(repo, first.grant.id)
+    assert %DateTime{} = revoked.revoked_at
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+    Enum.each(grants, &cleanup_handoff(anchor, &1, handoff_opts))
+  end
+
   test "existing display reads active unclaimed handoff without lifecycle changes", %{repo: repo, handoff_opts: handoff_opts} do
     work_request = create_work_request!(repo, status: "ready_for_slicing")
 
@@ -769,6 +883,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
     assert {:ok, minted} =
              AccessGrantService.mint_architect_grant(repo, anchor.phase_id,
                work_package_id: anchor.id,
+               work_request_id: work_request.id,
                capabilities: ArchitectHandoff.capabilities()
              )
 
@@ -927,7 +1042,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
     assert :ok = File.rm(invalid_metadata_path)
   end
 
-  test "non-replayable active handoff grant is cleaned up before renewing", %{repo: repo, handoff_opts: handoff_opts} do
+  test "active handoff grant scoped to another work request is cleaned up before renewing", %{repo: repo, handoff_opts: handoff_opts} do
     work_request = create_work_request!(repo, status: "ready_for_slicing")
 
     assert {:ok, first} =
@@ -938,9 +1053,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
 
     assert {:ok, anchor} = WorkPackageRepository.get(repo, first.anchor_package.id)
     assert {:ok, [first_grant]} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+    assert {:ok, scope_rows} = AccessGrantRepository.list_scopes(repo, first_grant.id)
 
-    first_grant
-    |> Ecto.Changeset.change(capabilities: ["read:phase"])
+    scope_rows
+    |> Enum.find(&(&1.scope_type == "work_request"))
+    |> Ecto.Changeset.change(scope_id: "wr-other-scope", scope_key: "work_request:wr-other-scope")
     |> repo.update!()
 
     assert {:ok, renewed} =
@@ -964,6 +1081,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
     assert Enum.map(active_unclaimed_grants, & &1.id) == [renewed.grant.id]
 
     Enum.each(grants, &cleanup_handoff(anchor, &1, handoff_opts))
+  end
+
+  test "scope lookup failure aborts replay before retiring active handoff grants", %{repo: repo, handoff_opts: handoff_opts} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+
+    assert {:ok, first} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert {:ok, anchor} = WorkPackageRepository.get(repo, first.anchor_package.id)
+    assert {:ok, [first_grant]} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+
+    assert {:error, {:storage_failed, "scope lookup failed"}} =
+             ArchitectHandoff.create_or_replay(ScopeLookupFailingRepo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert {:ok, preserved} = AccessGrantRepository.get(repo, first.grant.id)
+    assert is_nil(preserved.revoked_at)
+    assert is_nil(preserved.claimed_at)
+    assert SecretHandoff.worker_secret_available?(first.secret_handoff, handoff_opts)
+
+    cleanup_handoff(anchor, first_grant, handoff_opts)
   end
 
   test "stale grant cleanup failure aborts renewal instead of reporting success", %{repo: repo, handoff_opts: handoff_opts} do
