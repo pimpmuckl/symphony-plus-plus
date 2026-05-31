@@ -10,7 +10,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.CreateWork
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Server, Session}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Server}
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
@@ -329,7 +329,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
              )
 
     assert {:ok, grant} = AccessGrantRepository.get(repo, grant_id)
-    assert {:ok, session} = Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash)
+    assert {:ok, session} = Auth.session_from_grant(repo, grant, proof_hash: grant.secret_hash)
     session
   end
 

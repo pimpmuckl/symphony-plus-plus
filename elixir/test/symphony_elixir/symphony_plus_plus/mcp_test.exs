@@ -452,12 +452,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert session.assignment.work_package_id == "SYMPP-SESSION-GRANT"
     assert session.assignment.scopes == scopes
 
-    assert Session.from_grant(%{grant | revoked_at: now}, now) == {:error, :revoked}
-    assert Session.from_grant(%{grant | expires_at: now}, now) == {:error, :expired}
-    assert {:ok, nil_expiry_session} = Session.from_grant(%{grant | expires_at: nil}, now)
+    assert Session.from_grant(grant, now, proof_hash: "proof") == {:error, :missing_grant_scopes}
+    assert Session.from_grant(%{grant | revoked_at: now}, now, scopes: scopes) == {:error, :revoked}
+    assert Session.from_grant(%{grant | expires_at: now}, now, scopes: scopes) == {:error, :expired}
+    assert {:ok, nil_expiry_session} = Session.from_grant(%{grant | expires_at: nil}, now, scopes: scopes)
     assert nil_expiry_session.assignment.grant_id == grant.id
-    assert Session.from_grant(%{grant | claimed_at: nil}, now) == {:error, :unclaimed}
-    assert Session.from_grant(%{grant | claimed_by: " "}, now) == {:error, :missing_claim_identity}
+    assert Session.from_grant(%{grant | claimed_at: nil}, now, scopes: scopes) == {:error, :unclaimed}
+    assert Session.from_grant(%{grant | claimed_by: " "}, now, scopes: scopes) == {:error, :missing_claim_identity}
   end
 
   test "auth helpers reject missing invalid and mismatched sessions" do
@@ -995,6 +996,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       assert assignment["claimed_by"] == "worker-env-1"
       assert {:ok, claimed_grant} = AccessGrantRepository.get(Repo, minted.grant.id)
       assert claimed_grant.claimed_by == "worker-env-1"
+
+      reconnect_output =
+        capture_io(input, fn ->
+          McpTask.run(["--work-key-secret-env", env_var, "--claimed-by", "worker-env-1"])
+        end)
+
+      refute reconnect_output =~ minted.work_key.secret
+      [_reconnect_init_response, reconnect_response] = decode_json_lines(reconnect_output)
+      reconnect_assignment = Jason.decode!(get_in(reconnect_response, ["result", "contents", Access.at(0), "text"]))
+
+      assert reconnect_assignment["work_package_id"] == "SYMPP-P10-003"
+      assert reconnect_assignment["claimed_by"] == "worker-env-1"
     after
       System.delete_env(env_var)
       Repo.put_dynamic_repo(original_repo)
@@ -18115,7 +18128,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              )
 
     assert {:ok, grant} = AccessGrantRepository.get(repo, grant_id)
-    assert {:ok, session} = Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash)
+    assert {:ok, session} = Auth.session_from_grant(repo, grant, proof_hash: grant.secret_hash)
     session
   end
 

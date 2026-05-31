@@ -15,7 +15,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
   @spec from_grant(AccessGrant.t(), DateTime.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def from_grant(%AccessGrant{} = grant, %DateTime{} = now, opts \\ []) do
     with :ok <- active_grant?(grant, now),
-         :ok <- claimed_grant?(grant) do
+         :ok <- claimed_grant?(grant),
+         {:ok, scopes} <- required_scopes(opts) do
       {:ok,
        new(
          %Assignment{
@@ -27,7 +28,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
            capabilities: grant.capabilities,
            claimed_at: grant.claimed_at,
            claimed_by: grant.claimed_by,
-           scopes: Keyword.get(opts, :scopes, [])
+           scopes: scopes
          },
          proof_hash: Keyword.get(opts, :proof_hash)
        )}
@@ -106,6 +107,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
   end
 
   defp claimed_grant?(_grant), do: {:error, :unclaimed}
+
+  defp required_scopes(opts) do
+    case Keyword.fetch(opts, :scopes) do
+      {:ok, scopes} when is_list(scopes) -> {:ok, scopes}
+      {:ok, _scopes} -> {:error, :invalid_grant_scopes}
+      :error -> {:error, :missing_grant_scopes}
+    end
+  end
 
   defp required_string(attrs, key) do
     case Map.get(attrs, key) || Map.get(attrs, String.to_atom(key)) do
