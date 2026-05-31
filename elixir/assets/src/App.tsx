@@ -166,6 +166,8 @@ const CARD_DETAIL_HEIGHT_MS = 620;
 const LOCAL_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
 const DEFAULT_DASHBOARD_API_BASE = "/api/v1/sympp/operator";
+const OPERATOR_BOOTSTRAP_PARAM = "operator_bootstrap";
+const LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE = "Local operator session required. Refresh the local dashboard or restart Symphony++ cockpit.";
 const PR_SYNC_INTERVAL_MS = 60_000;
 const COMMENT_BODY_MAX_LENGTH = 4000;
 
@@ -255,6 +257,42 @@ function operatorApiUrl(path: string) {
   return `${base}${suffix}`;
 }
 
+function operatorConfigUrl() {
+  const url = operatorApiUrl("/config");
+  const token = currentOperatorBootstrapToken();
+
+  if (!token) return url;
+
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}${encodeURIComponent(OPERATOR_BOOTSTRAP_PARAM)}=${encodeURIComponent(token)}`;
+}
+
+function currentOperatorBootstrapToken() {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const value = new URLSearchParams(window.location.search).get(OPERATOR_BOOTSTRAP_PARAM);
+    return value?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function scrubOperatorBootstrapFromUrl() {
+  if (typeof window === "undefined") return;
+
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has(OPERATOR_BOOTSTRAP_PARAM)) return;
+
+    url.searchParams.delete(OPERATOR_BOOTSTRAP_PARAM);
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState(window.history.state, document.title, nextUrl);
+  } catch {
+    // URL cleanup is best-effort; auth state must not depend on browser history mutation.
+  }
+}
+
 function jsonHeaders({ csrf = false, content = false }: { csrf?: boolean; content?: boolean } = {}) {
   const headers: Record<string, string> = { accept: "application/json" };
 
@@ -269,9 +307,30 @@ function jsonHeaders({ csrf = false, content = false }: { csrf?: boolean; conten
   return headers;
 }
 
+function operatorFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  return fetch(input, { ...init, credentials: "include" });
+}
+
 function dashboardErrorMessage(payload: DashboardApiResponse) {
   if (!isRecord(payload) || !isRecord(payload.error)) return null;
   return typeof payload.error.message === "string" ? payload.error.message : null;
+}
+
+function dashboardResponseErrorMessage(response: Response, payload: DashboardApiResponse, fallbackMessage: string) {
+  if (isLocalOperatorAuthResponse(response, payload)) return LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE;
+  return dashboardErrorMessage(payload) || fallbackMessage;
+}
+
+function isLocalOperatorAuthResponse(response: Response, payload: DashboardApiResponse) {
+  if (response.status === 401) return true;
+
+  if (!isRecord(payload) || !isRecord(payload.error)) return false;
+  const code = typeof payload.error.code === "string" ? payload.error.code : "";
+  return code === "unauthorized" || code === "forbidden";
+}
+
+function isLocalOperatorAuthRequiredMessage(message?: string | null) {
+  return message === LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE;
 }
 
 function dashboardFromEnvelope(payload: DashboardApiResponse) {
@@ -280,15 +339,19 @@ function dashboardFromEnvelope(payload: DashboardApiResponse) {
 }
 
 async function ensureDashboardRuntimeConfig() {
-  if (dashboardRuntimeConfig?.csrfToken) return dashboardRuntimeConfig;
+  if (dashboardRuntimeConfig?.csrfToken) {
+    scrubOperatorBootstrapFromUrl();
+    return dashboardRuntimeConfig;
+  }
 
-  dashboardRuntimeConfigPromise ??= fetch(operatorApiUrl("/config"), { headers: jsonHeaders() })
+  dashboardRuntimeConfigPromise ??= operatorFetch(operatorConfigUrl(), { headers: jsonHeaders() })
     .then(async (response) => {
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload?.error?.message || "Dashboard runtime config unavailable");
+        throw new Error(dashboardResponseErrorMessage(response, payload, "Dashboard runtime config unavailable"));
       }
-      dashboardRuntimeConfig = payload;
+      dashboardRuntimeConfig = payload as DashboardRuntimeConfig;
+      scrubOperatorBootstrapFromUrl();
       return dashboardRuntimeConfig;
     })
     .finally(() => {
@@ -578,7 +641,7 @@ export default function App() {
       const payload = (await response.json()) as DashboardApiResponse;
 
       if (!response.ok) {
-        throw new Error(dashboardErrorMessage(payload) || fallbackMessage);
+        throw new Error(dashboardResponseErrorMessage(response, payload, fallbackMessage));
       }
 
       const nextDashboard = selectDashboard(payload);
@@ -595,7 +658,7 @@ export default function App() {
   );
 
   const submitGuidanceAnswer = useCallback(async (item: GuidanceItem, submission: GuidanceAnswerSubmission) => {
-    const response = await fetch(guidanceAnswerUrl(item), {
+    const response = await operatorFetch(guidanceAnswerUrl(item), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify(submission),
@@ -605,7 +668,7 @@ export default function App() {
   }, [applyDashboardResponse, setSelectedGuidance]);
 
   const createWorkRequest = useCallback(async (form: NewRequestForm) => {
-    const response = await fetch(operatorApiUrl("/work-requests"), {
+    const response = await operatorFetch(operatorApiUrl("/work-requests"), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify(form),
@@ -613,7 +676,7 @@ export default function App() {
     const payload = (await response.json()) as CreateWorkRequestPayload & { error?: { message?: string } };
 
     if (!response.ok) {
-      throw new Error(payload?.error?.message || "Request was not created");
+      throw new Error(dashboardResponseErrorMessage(response, payload, "Request was not created"));
     }
     if (!payload.dashboard || !payload.work_request) {
       throw new Error("Request was created, but the dashboard response was incomplete");
@@ -626,7 +689,7 @@ export default function App() {
   }, [setDashboard, setError]);
 
   const submitComment = useCallback<SubmitContextComment>(async (target, body) => {
-    const response = await fetch(operatorApiUrl("/comments"), {
+    const response = await operatorFetch(operatorApiUrl("/comments"), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify({
@@ -638,7 +701,7 @@ export default function App() {
     const payload = (await response.json()) as { comment?: ContextComment; dashboard?: DashboardPayload; error?: { message?: string } };
 
     if (!response.ok) {
-      throw new Error(payload?.error?.message || "Comment was not recorded");
+      throw new Error(dashboardResponseErrorMessage(response, payload, "Comment was not recorded"));
     }
     if (!payload.dashboard || !payload.comment) {
       throw new Error("Comment was recorded, but the dashboard response was incomplete");
@@ -651,7 +714,7 @@ export default function App() {
   }, [setDashboard, setError]);
 
   const resolveComment = useCallback<ResolveContextComment>(async (commentId, resolutionNote) => {
-    const response = await fetch(operatorApiUrl(`/comments/${encodeURIComponent(commentId)}/resolve`), {
+    const response = await operatorFetch(operatorApiUrl(`/comments/${encodeURIComponent(commentId)}/resolve`), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify({
@@ -661,7 +724,7 @@ export default function App() {
     const payload = (await response.json()) as { comment?: ContextComment; dashboard?: DashboardPayload; error?: { message?: string } };
 
     if (!response.ok) {
-      throw new Error(payload?.error?.message || "Comment was not resolved");
+      throw new Error(dashboardResponseErrorMessage(response, payload, "Comment was not resolved"));
     }
     if (!payload.dashboard || !payload.comment) {
       throw new Error("Comment was resolved, but the dashboard response was incomplete");
@@ -684,7 +747,8 @@ export default function App() {
     }
 
     try {
-      const response = await fetch(operatorApiUrl("/dashboard"), { headers: jsonHeaders() });
+      await ensureDashboardRuntimeConfig();
+      const response = await operatorFetch(operatorApiUrl("/dashboard"), { headers: jsonHeaders() });
       await applyDashboardResponse(response, "Dashboard API unavailable");
     } catch (caught) {
       recordConnectionFailure(caught instanceof Error ? caught.message : "Dashboard API unavailable", mode === "initial");
@@ -701,7 +765,7 @@ export default function App() {
 
     try {
       const headers = await mutationHeaders();
-      const response = await fetch(operatorApiUrl("/github/sync-prs"), {
+      const response = await operatorFetch(operatorApiUrl("/github/sync-prs"), {
         method: "POST",
         headers,
         body: JSON.stringify({ mode: "auto" }),
@@ -718,7 +782,7 @@ export default function App() {
     let handoff = cachedHandoff || null;
 
     if (!handoff) {
-      const response = await fetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/architect-handoff`), {
+      const response = await operatorFetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/architect-handoff`), {
         method: "POST",
         headers: await mutationHeaders(),
         body: JSON.stringify({}),
@@ -726,7 +790,7 @@ export default function App() {
       const payload: ArchitectHandoffPayload & { error?: { message?: string } } = await response.json();
 
       if (!response.ok) {
-        throw new Error(payload?.error?.message || "Architect handoff unavailable");
+        throw new Error(dashboardResponseErrorMessage(response, payload, "Architect handoff unavailable"));
       }
 
       handoff = payload.architect_handoff || null;
@@ -754,7 +818,7 @@ export default function App() {
   }, [setDashboard]);
 
   const updateArchiveAfterDays = useCallback(async (archiveAfterDays: number) => {
-    const response = await fetch(operatorApiUrl("/settings"), {
+    const response = await operatorFetch(operatorApiUrl("/settings"), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify({ work_request_archive_after_days: archiveAfterDays }),
@@ -763,7 +827,7 @@ export default function App() {
   }, [applyDashboardResponse]);
 
   const archiveWorkRequest = useCallback<WorkRequestMutation>(async (workRequestId) => {
-    const response = await fetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/archive`), {
+    const response = await operatorFetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/archive`), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify({}),
@@ -773,7 +837,7 @@ export default function App() {
   }, [applyDashboardResponse, setSelectedCardDetail]);
 
   const restoreWorkRequest = useCallback<WorkRequestMutation>(async (workRequestId) => {
-    const response = await fetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/restore`), {
+    const response = await operatorFetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/restore`), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify({}),
@@ -782,7 +846,7 @@ export default function App() {
   }, [applyDashboardResponse]);
 
   const changeWorkRequestState = useCallback<WorkRequestStateMutation>(async (workRequestId, nextState) => {
-    const response = await fetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/state`), {
+    const response = await operatorFetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/state`), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify({ state: nextState }),
@@ -792,7 +856,7 @@ export default function App() {
   }, [applyDashboardResponse, setSelectedCardDetail]);
 
   const changeWorkPackageState = useCallback<WorkPackageStateMutation>(async (workPackageId, action, options) => {
-    const response = await fetch(operatorApiUrl(`/work-packages/${encodeURIComponent(workPackageId)}/state`), {
+    const response = await operatorFetch(operatorApiUrl(`/work-packages/${encodeURIComponent(workPackageId)}/state`), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify({ status: action, no_pr_evidence: options?.noPrEvidence }),
@@ -802,7 +866,7 @@ export default function App() {
   }, [applyDashboardResponse, setSelectedCardDetail]);
 
   const archiveWorkPackage = useCallback<WorkPackageArchiveMutation>(async (workPackageId) => {
-    const response = await fetch(operatorApiUrl(`/work-packages/${encodeURIComponent(workPackageId)}/archive`), {
+    const response = await operatorFetch(operatorApiUrl(`/work-packages/${encodeURIComponent(workPackageId)}/archive`), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify({}),
@@ -978,9 +1042,14 @@ export default function App() {
         <div className="mx-auto grid max-w-[1500px] gap-5 px-4 py-5 sm:px-6 lg:px-8">
           {error ? (
             <Card className="dashboard-glass-surface border-rose-200 bg-rose-50 motion-card dark:border-rose-700/70 dark:bg-rose-950/45">
-              <CardContent className="flex items-center gap-3 p-4 text-sm text-rose-800 dark:text-rose-200">
-                <AlertCircle className="size-4" />
-                {error}
+              <CardContent className="flex items-start gap-3 p-4 text-sm text-rose-800 dark:text-rose-200">
+                <AlertCircle className="mt-0.5 size-4 shrink-0" />
+                <div className="grid gap-1">
+                  <span className="font-medium">
+                    {isLocalOperatorAuthRequiredMessage(error) ? "Local operator session required" : "Dashboard error"}
+                  </span>
+                  <span>{error}</span>
+                </div>
               </CardContent>
             </Card>
           ) : null}
@@ -2098,9 +2167,10 @@ function LiveLedgerBadge({
   databasePath?: string | null;
 }) {
   const reconnecting = Boolean(connectionIssue && !error);
-  const label = error ? "API unavailable" : reconnecting ? "Reconnecting..." : "Live ledger";
+  const authRequired = isLocalOperatorAuthRequiredMessage(error);
+  const label = authRequired ? "Auth required" : error ? "API unavailable" : reconnecting ? "Reconnecting..." : "Live ledger";
   const variant = error ? "danger" : reconnecting ? "warning" : "success";
-  const heading = error || reconnecting ? "Status" : "Database";
+  const heading = authRequired ? "Local operator" : error || reconnecting ? "Status" : "Database";
   const tooltip = error
     ? error
     : reconnecting
@@ -4180,13 +4250,13 @@ function cardDetailDialogReducer(state: CardDetailDialogState, action: CardDetai
 }
 
 async function loadOperatorPayload<T>(path: string, signal: AbortSignal, fallbackMessage: string): Promise<T> {
-  const response = await fetch(operatorApiUrl(path), {
+  const response = await operatorFetch(operatorApiUrl(path), {
     headers: jsonHeaders(),
     signal,
   });
   const payload = await response.json();
   if (!response.ok) {
-    throw new Error(payload?.error?.message || fallbackMessage);
+    throw new Error(dashboardResponseErrorMessage(response, payload, fallbackMessage));
   }
   return payload;
 }

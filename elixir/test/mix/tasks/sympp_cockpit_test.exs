@@ -14,14 +14,17 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
     previous_shell = Mix.shell()
     previous_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
     previous_endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
+    previous_dashboard_origin = System.get_env("SYMPP_DASHBOARD_ORIGIN")
 
     Mix.shell(Mix.Shell.Process)
+    System.delete_env("SYMPP_DASHBOARD_ORIGIN")
     ensure_cockpit_dashboard_asset!()
 
     on_exit(fn ->
       Mix.shell(previous_shell)
       restore_env(:sympp_repo_database, previous_database)
       Application.put_env(:symphony_elixir, Endpoint, previous_endpoint_config)
+      restore_system_env("SYMPP_DASHBOARD_ORIGIN", previous_dashboard_origin)
       stop_endpoint()
     end)
 
@@ -108,8 +111,26 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
     assert {:error, dashboard_origin_usage} = CockpitTask.parse_args_for_test(["--dashboard-origin", " "])
     assert dashboard_origin_usage =~ "mix sympp.cockpit"
 
+    assert {:error, remote_dashboard_origin_error} = CockpitTask.parse_args_for_test(["--dashboard-origin", "http://example.com:5174"])
+    assert remote_dashboard_origin_error =~ "dashboard origin must be a loopback http origin"
+
+    assert {:ok, spp_dashboard_origin_opts} = CockpitTask.parse_args_for_test(["--dashboard-origin", "http://spp.localhost:5174"])
+    assert Keyword.fetch!(spp_dashboard_origin_opts, :dashboard_origin) == "http://spp.localhost:5174"
+
     assert {:error, port_error} = CockpitTask.parse_args_for_test(["--port", "65536"])
     assert port_error =~ "port must be an integer"
+  end
+
+  test "validates dashboard origin from environment fallback" do
+    System.put_env("SYMPP_DASHBOARD_ORIGIN", "http://example.com:5174")
+
+    assert {:error, remote_dashboard_origin_error} = CockpitTask.parse_args_for_test([])
+    assert remote_dashboard_origin_error =~ "dashboard origin must be a loopback http origin"
+
+    System.put_env("SYMPP_DASHBOARD_ORIGIN", "http://spp.localhost:5174")
+
+    assert {:ok, opts} = CockpitTask.parse_args_for_test([])
+    assert Keyword.fetch!(opts, :dashboard_origin) == "http://spp.localhost:5174"
   end
 
   test "starts a local operator cockpit, prints bridge URLs, and serves an empty ledger API" do
@@ -409,6 +430,8 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
 
   defp restore_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
   defp restore_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
+  defp restore_system_env(key, nil), do: System.delete_env(key)
+  defp restore_system_env(key, value), do: System.put_env(key, value)
 
   defp stop_endpoint do
     case Process.whereis(Endpoint) do

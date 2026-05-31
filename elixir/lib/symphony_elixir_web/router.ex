@@ -12,6 +12,7 @@ defmodule SymphonyElixirWeb.Router do
   end
 
   pipeline :operator_dashboard_api do
+    plug(:put_local_operator_cors_headers)
     plug(:fetch_session)
     plug(:protect_from_forgery)
     plug(:require_operator_csrf_header)
@@ -32,6 +33,7 @@ defmodule SymphonyElixirWeb.Router do
   scope "/", SymphonyElixirWeb do
     pipe_through(:operator_dashboard_api)
 
+    options("/api/v1/sympp/operator/*path", SymppDashboardApiController, :operator_options)
     get("/api/v1/sympp/operator/config", SymppDashboardApiController, :operator_config)
     get("/api/v1/sympp/operator/dashboard", SymppDashboardApiController, :operator_dashboard)
     post("/api/v1/sympp/operator/settings", SymppDashboardApiController, :operator_update_settings)
@@ -127,4 +129,101 @@ defmodule SymphonyElixirWeb.Router do
   end
 
   defp require_operator_csrf_header(conn, _opts), do: conn
+
+  defp put_local_operator_cors_headers(conn, _opts) do
+    case Plug.Conn.get_req_header(conn, "origin") do
+      [origin | _rest] when is_binary(origin) ->
+        if local_operator_cors_origin?(conn, origin) do
+          conn
+          |> Plug.Conn.put_resp_header("access-control-allow-origin", origin)
+          |> Plug.Conn.put_resp_header("access-control-allow-credentials", "true")
+          |> Plug.Conn.put_resp_header("access-control-allow-methods", "GET, POST, OPTIONS")
+          |> Plug.Conn.put_resp_header("access-control-allow-headers", "accept, content-type, x-csrf-token")
+          |> Plug.Conn.put_resp_header("vary", "origin")
+        else
+          conn
+        end
+
+      _origin ->
+        conn
+    end
+  end
+
+  defp local_operator_cors_origin?(conn, origin) do
+    local_operator_enabled?() and
+      loopback_request?(conn.remote_ip) and
+      local_host?(conn.host) and
+      direct_local_request?(conn) and
+      configured_dashboard_origin_matches?(origin)
+  end
+
+  defp local_operator_enabled? do
+    endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
+
+    truthy_config?(Keyword.get(endpoint_config, :sympp_local_operator)) or
+      truthy_config?(Application.get_env(:symphony_elixir, :sympp_local_operator))
+  end
+
+  defp truthy_config?(value), do: value in [true, :enabled, "enabled", "true", "1", 1]
+
+  defp loopback_request?({127, _second, _third, _fourth}), do: true
+  defp loopback_request?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  defp loopback_request?(_remote_ip), do: false
+
+  defp local_host?(host) when is_binary(host) do
+    host = String.downcase(host)
+    host in ["localhost", "127.0.0.1", "::1", "[::1]"] or String.ends_with?(host, ".localhost")
+  end
+
+  defp direct_local_request?(conn) do
+    Enum.all?(["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip"], fn header ->
+      Plug.Conn.get_req_header(conn, header) == []
+    end)
+  end
+
+  defp configured_dashboard_origin_matches?(origin) do
+    endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
+
+    with %URI{} = expected <- configured_dashboard_origin(Keyword.get(endpoint_config, :sympp_dashboard_origin)),
+         %URI{} = actual <- configured_dashboard_origin(origin) do
+      origin_matches?(expected, actual)
+    else
+      _value -> false
+    end
+  end
+
+  defp configured_dashboard_origin(origin) when is_binary(origin) do
+    case URI.parse(String.trim_trailing(origin, "/")) do
+      %URI{scheme: "http", host: host} = parsed when is_binary(host) ->
+        if local_host?(host), do: parsed
+
+      _parsed ->
+        nil
+    end
+  end
+
+  defp configured_dashboard_origin(_origin), do: nil
+
+  defp origin_matches?(%URI{scheme: expected_scheme, host: expected_host, port: expected_port}, %URI{
+         scheme: actual_scheme,
+         host: actual_host,
+         port: actual_port
+       })
+       when is_binary(actual_scheme) and is_binary(actual_host) do
+    String.downcase(actual_scheme) == String.downcase(expected_scheme) and
+      local_hosts_match?(actual_host, expected_host) and
+      normalize_origin_port(actual_scheme, actual_port) == normalize_origin_port(expected_scheme, expected_port)
+  end
+
+  defp origin_matches?(_expected_origin, _actual_origin), do: false
+
+  defp local_hosts_match?(actual_host, expected_host) do
+    actual_host = String.downcase(actual_host)
+    expected_host = String.downcase(expected_host)
+
+    actual_host == expected_host or (local_host?(actual_host) and local_host?(expected_host))
+  end
+
+  defp normalize_origin_port("http", nil), do: 80
+  defp normalize_origin_port(_scheme, port), do: port
 end
