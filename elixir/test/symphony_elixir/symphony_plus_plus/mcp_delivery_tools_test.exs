@@ -6,10 +6,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
   alias SymphonyElixir.MCPHarness
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Session}
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -29,7 +31,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
   end
 
   setup %{repo: repo} do
-    for schema <- [ProgressEvent, PlannedSliceDelivery, PlannedSlice, AccessGrant, WorkRequest, WorkPackage, Phase] do
+    schemas = [
+      ProgressEvent,
+      PlannedSliceDelivery,
+      PlannedSlice,
+      ClaimLease,
+      AccessGrant,
+      WorkRequest,
+      WorkPackage,
+      Phase
+    ]
+
+    for schema <- schemas do
       repo.delete_all(schema)
     end
 
@@ -86,6 +99,175 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 1
   end
 
+  test "WR architect reconciles merged PR evidence over stale package grant state", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(repo,
+        work_request_id: "WR-MCP-DELIVERY-RECONCILE-MERGED-STALE",
+        work_package_status: "ready_for_human_merge"
+      )
+
+    session = create_work_request_architect_session(repo, work_request, ["read:work_request", "write:work_request"])
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-stale-after-merge")
+
+    assert {:ok, _pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: linked_package.id,
+               summary: "Merged PR attached",
+               status: "pr_attached",
+               payload: %{
+                 type: "pr",
+                 source_tool: "attach_pr",
+                 url: "https://github.com/#{linked_package.repo}/pull/91",
+                 repository: linked_package.repo,
+                 number: 91,
+                 base_branch: linked_package.base_branch,
+                 head_sha: "head-dogfood",
+                 merged: true,
+                 merged_at: "2026-05-28T12:00:00Z",
+                 merge_commit_sha: "merge-91"
+               }
+             })
+
+    dry_run_response = reconcile_request(repo, session, %{"work_request_id" => work_request.id})
+    dry_run_payload = get_in(dry_run_response, ["result", "structuredContent", "reconciliation"])
+
+    assert dry_run_payload["mode"] == "dry_run"
+    assert dry_run_payload["proposed_count"] == 1
+    assert [%{"planned_slice_id" => proposed_slice_id, "status" => "proposed", "reason" => "github_pr_merged"}] = dry_run_payload["results"]
+    assert proposed_slice_id == planned_slice.id
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+    refute repo.get!(AccessGrant, minted.grant.id).revoked_at
+
+    apply_response = reconcile_request(repo, session, %{"work_request_id" => work_request.id, "apply" => true})
+    apply_payload = get_in(apply_response, ["result", "structuredContent"])
+
+    assert get_in(apply_payload, ["reconciliation", "mode"]) == "apply"
+    assert get_in(apply_payload, ["reconciliation", "applied_count"]) == 1
+    assert get_in(apply_payload, ["delivery_board", "counts", "delivered"]) == 1
+    assert repo.get!(WorkPackage, linked_package.id).status == "merged"
+    assert repo.get!(AccessGrant, minted.grant.id).revoked_at
+  end
+
+  test "WR architect read-only grants cannot mutate delivery closeout state", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(repo,
+        work_request_id: "WR-MCP-DELIVERY-READONLY",
+        work_package_status: "ready_for_human_merge"
+      )
+
+    session = create_work_request_architect_session(repo, work_request, ["read:work_request"])
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+
+    dry_run_response = reconcile_request(repo, session, %{"work_request_id" => work_request.id})
+    assert get_in(dry_run_response, ["result", "structuredContent", "reconciliation", "mode"]) == "dry_run"
+
+    apply_response = reconcile_request(repo, session, %{"work_request_id" => work_request.id, "apply" => true})
+    assert insufficient_capability?(apply_response)
+
+    invalid_closeout_response = record_delivery(repo, session, %{})
+    assert insufficient_capability?(invalid_closeout_response)
+
+    closeout_response =
+      record_delivery(
+        repo,
+        session,
+        no_pr_args(work_request, planned_slice, "delivery-mcp-readonly-closeout", "Read-only architects cannot close delivery.")
+      )
+
+    assert insufficient_capability?(closeout_response)
+
+    revoke_response =
+      revoke_worker_key(
+        repo,
+        session,
+        revoke_args(work_request, planned_slice, minted.grant.id, "Read-only architects cannot revoke worker grants.")
+      )
+
+    assert insufficient_capability?(revoke_response)
+    refute repo.get!(AccessGrant, minted.grant.id).revoked_at
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+  end
+
+  test "WR architect live grant narrowing overrides stale session write capabilities", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(repo,
+        work_request_id: "WR-MCP-DELIVERY-LIVE-NARROWED",
+        work_package_status: "ready_for_human_merge"
+      )
+
+    session = create_work_request_architect_session(repo, work_request, ["read:work_request", "write:work_request"])
+    assert :ok = update_grant_capabilities(repo, session.assignment.grant_id, ["read:work_request"])
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+
+    dry_run_response = reconcile_request(repo, session, %{"work_request_id" => work_request.id})
+    assert get_in(dry_run_response, ["result", "structuredContent", "reconciliation", "mode"]) == "dry_run"
+
+    apply_response = reconcile_request(repo, session, %{"work_request_id" => work_request.id, "apply" => true})
+    assert insufficient_capability?(apply_response)
+
+    closeout_response =
+      record_delivery(
+        repo,
+        session,
+        no_pr_args(work_request, planned_slice, "delivery-mcp-live-narrowed-closeout", "Live grant narrowing blocks stale write sessions.")
+      )
+
+    assert insufficient_capability?(closeout_response)
+
+    revoke_response =
+      revoke_worker_key(
+        repo,
+        session,
+        revoke_args(work_request, planned_slice, minted.grant.id, "Live grant narrowing blocks stale write sessions.")
+      )
+
+    assert insufficient_capability?(revoke_response)
+
+    invalid_revoke_response = revoke_worker_key(repo, session, %{})
+    assert insufficient_capability?(invalid_revoke_response)
+
+    refute repo.get!(AccessGrant, minted.grant.id).revoked_at
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+  end
+
+  test "WR architect write-only grants can apply reconciliation without dry-run read", %{repo: repo} do
+    {work_request, _planned_slice, linked_package} =
+      linked_slice!(repo,
+        work_request_id: "WR-MCP-DELIVERY-RECONCILE-WRITEONLY",
+        work_package_status: "ready_for_human_merge"
+      )
+
+    session = create_work_request_architect_session(repo, work_request, ["write:work_request"])
+
+    assert {:ok, _pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: linked_package.id,
+               summary: "Merged PR attached",
+               status: "pr_attached",
+               payload: %{
+                 type: "pr",
+                 source_tool: "attach_pr",
+                 url: "https://github.com/#{linked_package.repo}/pull/92",
+                 repository: linked_package.repo,
+                 number: 92,
+                 base_branch: linked_package.base_branch,
+                 head_sha: "head-writeonly",
+                 merged: true,
+                 merged_at: "2026-05-28T12:00:00Z",
+                 merge_commit_sha: "merge-92"
+               }
+             })
+
+    dry_run_response = reconcile_request(repo, session, %{"work_request_id" => work_request.id})
+    assert insufficient_capability?(dry_run_response)
+
+    apply_response = reconcile_request(repo, session, %{"work_request_id" => work_request.id, "apply" => true})
+
+    assert get_in(apply_response, ["result", "structuredContent", "reconciliation", "applied_count"]) == 1
+    assert repo.get!(WorkPackage, linked_package.id).status == "merged"
+  end
+
   test "WR architect read_child_status falls back for dispatched package scope tool errors", %{repo: repo} do
     {work_request, _planned_slice, linked_package} = linked_slice!(repo, work_request_id: "WR-MCP-DELIVERY-STATUS-FALLBACK")
     session = create_work_request_architect_session(repo, work_request, ArchitectHandoff.capabilities())
@@ -104,7 +286,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     assert get_in(response, ["result", "structuredContent", "work_package", "status"]) == linked_package.status
   end
 
-  test "WR architect narrowed capabilities do not regain child status reads", %{repo: repo} do
+  test "WR architect narrowed capabilities do not regain child status calls", %{repo: repo} do
     {work_request, _planned_slice, linked_package} = linked_slice!(repo, work_request_id: "WR-MCP-DELIVERY-NARROWED")
     narrowed_capabilities = legacy_work_request_architect_capabilities()
 
@@ -123,7 +305,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
 
     tools_by_name = tools_response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
 
-    refute Map.has_key?(tools_by_name, "read_child_status")
+    assert Map.has_key?(tools_by_name, "read_child_status")
 
     read_child_response = mcp_tool(repo, session, "read_child_status", %{"work_package_id" => linked_package.id})
     assert get_in(read_child_response, ["error", "code"]) == -32_001
@@ -143,6 +325,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     closeout_args = no_pr_args(work_request, planned_slice, "delivery-mcp-after-revoke", "Worker reported completion; architect is closing the stale grant first.")
 
     active_response = record_delivery(repo, session, closeout_args)
+    assert get_in(active_response, ["error", "code"]) == -32_009
     assert get_in(active_response, ["error", "data", "reason"]) == "active_runtime"
 
     revoke_response =
@@ -250,6 +433,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
 
     worker_response = record_delivery(repo, worker_session, args)
     assert get_in(worker_response, ["error", "data", "reason"]) == "architect_grant_required"
+
+    invalid_worker_response = record_delivery(repo, worker_session, %{})
+    assert get_in(invalid_worker_response, ["error", "data", "reason"]) == "architect_grant_required"
 
     worker_revoke_response =
       revoke_worker_key(repo, worker_session, revoke_args(work_request, planned_slice, "grant-denied", "Denied"))
@@ -540,7 +726,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
   end
 
   defp record_delivery(repo, session, arguments), do: mcp_tool(repo, session, "record_planned_slice_delivery", arguments)
+  defp reconcile_request(repo, session, arguments), do: mcp_tool(repo, session, "reconcile_work_request", arguments)
   defp revoke_worker_key(repo, session, arguments), do: mcp_tool(repo, session, "revoke_planned_slice_worker_key", arguments)
+
+  defp insufficient_capability?(response) do
+    get_in(response, ["error", "code"]) in [-32_001, -32_003] and get_in(response, ["error", "data", "reason"]) == "insufficient_capability" and
+      get_in(response, ["error", "data", "reason_code"]) in [nil, "insufficient_capability"]
+  end
 
   defp mcp_tool(repo, %Session{} = session, name, arguments) do
     MCPHarness.request(

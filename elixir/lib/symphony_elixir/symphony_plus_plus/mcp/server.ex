@@ -159,6 +159,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "mark_work_request_sliced",
     "dispatch_work_request_planned_slice"
   ]
+  @delivery_policy_tools [
+    "reconcile_work_request",
+    "record_planned_slice_delivery",
+    "revoke_planned_slice_worker_key"
+  ]
   @phase7_stub_architect_tools [
     "request_child_replan",
     "split_work_package",
@@ -4500,6 +4505,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp maybe_authorize_architect_tool_call(%__MODULE__{config: config, session: session}, name) when name in @delivery_policy_tools do
+    with {:ok, live_session} <- Auth.require_session(session, config.repo) do
+      if name == "reconcile_work_request" do
+        :ok
+      else
+        require_architect_capability(live_session.assignment, architect_tool_capability(name))
+      end
+    end
+  end
+
   defp maybe_authorize_architect_tool_call(%__MODULE__{} = server, name), do: authorize_architect_tool_call(server, name)
 
   defp prepare_bootstrap_tool_call(%__MODULE__{} = server, params, name) do
@@ -4552,6 +4567,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp preauthorize_architect_tool_call(%__MODULE__{session: session}, name) when name in @work_request_policy_tools do
     with {:ok, _session} <- Auth.require_session(session) do
       :ok
+    end
+  end
+
+  defp preauthorize_architect_tool_call(%__MODULE__{session: session}, name) when name in @delivery_policy_tools do
+    with {:ok, session} <- Auth.require_session(session) do
+      if architect_session?(session), do: :ok, else: require_architect_assignment(session.assignment)
     end
   end
 
@@ -4965,11 +4986,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_tool("reconcile_work_request", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, apply?} <- optional_boolean(arguments, "apply", false),
-         {:ok, session} <- architect_session(config.repo, session, reconcile_work_request_capability(apply?)),
+         {:ok, live_session} <- Auth.require_session(session, config.repo),
+         :ok <- require_delivery_reconcile_capability(live_session, apply?),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
-         {:ok, recorded_by} <- optional_string_argument(arguments, "recorded_by", session_claimed_by(session)),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, recorded_by} <- optional_string_argument(arguments, "recorded_by", session_claimed_by(live_session)),
+         {:ok, work_request, filters, scope} <-
+           authorized_work_request_scope(config.repo, live_session, work_request_id, reconcile_work_request_action(apply?), "reconcile_work_request"),
          {:ok, planned_slices} <- WorkRequestService.list_planned_slices(config.repo, work_request_id),
          {visible_work_package_ids, work_package_contexts} <-
            visible_delivery_board_work_package_contexts(config.repo, work_request_id, planned_slices, filters),
@@ -4997,16 +5019,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("record_planned_slice_delivery", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, live_session} <- Auth.require_session(session, config.repo),
+         :ok <- require_delivery_write_capability(live_session),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
          {:ok, outcome} <- required_planned_slice_delivery_outcome(arguments),
          {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
-         {:ok, recorded_by} <- optional_string_argument(arguments, "recorded_by", session_claimed_by(session)),
+         {:ok, recorded_by} <- optional_string_argument(arguments, "recorded_by", session_claimed_by(live_session)),
          {:ok, attrs} <- planned_slice_delivery_attrs(arguments, outcome, idempotency_key, recorded_by),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
-         {:ok, planned_slice} <- scoped_work_request_planned_slice(config.repo, work_request_id, planned_slice_id),
+         {:ok, work_request, planned_slice, filters, scope} <-
+           authorized_planned_slice_scope(
+             config.repo,
+             live_session,
+             work_request_id,
+             planned_slice_id,
+             :delivery_closeout_record,
+             "record_planned_slice_delivery"
+           ),
          :ok <- require_planned_slice_delivery_scope(config.repo, work_request, planned_slice, attrs, filters),
          {:ok, delivery} <- WorkRequestService.record_planned_slice_delivery(config.repo, work_request_id, planned_slice_id, attrs),
          {:ok, planned_slices} <- WorkRequestService.list_planned_slices(config.repo, work_request_id),
@@ -5026,20 +5055,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("revoke_planned_slice_worker_key", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+    with {:ok, live_session} <- Auth.require_session(session, config.repo),
+         :ok <- require_delivery_write_capability(live_session),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
          {:ok, grant_id} <- required_argument(arguments, "grant_id"),
          {:ok, reason} <- required_argument(arguments, "reason"),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
-         {:ok, planned_slice} <- scoped_work_request_planned_slice(config.repo, work_request.id, planned_slice_id),
+         {:ok, work_request, planned_slice, filters, scope} <-
+           authorized_planned_slice_scope(
+             config.repo,
+             live_session,
+             work_request_id,
+             planned_slice_id,
+             :work_package_repair_state,
+             "revoke_planned_slice_worker_key"
+           ),
          {:ok, work_package_id} <- planned_slice_work_package_id(planned_slice),
          {:ok, payload} <-
            run_architect_transaction(config.repo, fn ->
              revoke_planned_slice_worker_key_in_transaction(
                config.repo,
-               session,
+               live_session,
                work_request,
                planned_slice,
                work_package_id,
@@ -5050,9 +5086,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            end) do
       {:ok, tool_result(Map.put(payload, "scope", scope))}
     else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "revoke_planned_slice_worker_key", "reason" => reason}}
-      {:error, :not_found} -> not_found_error("revoke_planned_slice_worker_key")
-      {:error, reason} -> architect_error(reason, "revoke_planned_slice_worker_key")
+      {:tool_error, reason} ->
+        planned_slice_worker_revoke_tool_error(reason)
+
+      {:error, :not_found} ->
+        not_found_error("revoke_planned_slice_worker_key")
+
+      {:error, reason} ->
+        architect_error(reason, "revoke_planned_slice_worker_key")
     end
   end
 
@@ -6071,7 +6112,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_602, "Invalid params", %{"tool" => "record_planned_slice_delivery", "reason" => Atom.to_string(reason)}}
   end
 
+  defp record_planned_slice_delivery_error(reason) when reason in [:active_runtime, :claim_not_current] do
+    delivery_closeout_precondition_error("record_planned_slice_delivery", reason)
+  end
+
   defp record_planned_slice_delivery_error(reason), do: architect_error(reason, "record_planned_slice_delivery")
+
+  defp planned_slice_worker_revoke_tool_error(reason)
+       when reason == "planned_slice_worker_revoke_conflict" do
+    delivery_closeout_precondition_error("revoke_planned_slice_worker_key", :claim_not_current)
+  end
+
+  defp planned_slice_worker_revoke_tool_error(reason) do
+    {:error, -32_602, "Invalid params", %{"tool" => "revoke_planned_slice_worker_key", "reason" => reason}}
+  end
+
+  defp delivery_closeout_precondition_error(tool, :claim_not_current) do
+    precondition_error(tool, "runtime_lease_conflict")
+  end
+
+  defp delivery_closeout_precondition_error(tool, reason) when is_atom(reason) do
+    precondition_error(tool, Atom.to_string(reason))
+  end
+
+  defp precondition_error(tool, reason) do
+    {:error, -32_009, "Precondition Failed",
+     %{
+       "tool" => tool,
+       "reason" => reason,
+       "reason_code" => reason,
+       "decision_reason" => "precondition_denied"
+     }}
+  end
 
   defp append_worktree_lifecycle_audit(repo, %Session{} = session, work_package_id, source_tool, result) do
     PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, work_package_id, %{
@@ -6501,7 +6573,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp authorize_policy(%Session{} = session, action, %Target{} = target, tool) do
-    with {:ok, actor} <- ActorResolver.from_session(session) do
+    with {:ok, actor} <- ActorResolver.from_session(session, actor_resolver_opts(target)) do
       actor
       |> Policy.decide(action, target)
       |> MCPError.from_decision(tool)
@@ -6514,6 +6586,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp wrap_authorization_policy_denial({:error, code, message, data}) do
     {:error, {:authorization_policy_denied, code, message, data}}
   end
+
+  defp actor_resolver_opts(%Target{} = target) do
+    [
+      work_request_id: target.work_request_id || target_work_request_id(target),
+      repo: target.repo,
+      base_branch: target.base_branch,
+      phase_id: target.phase_id
+    ]
+  end
+
+  defp target_work_request_id(%Target{type: :work_request, id: id}) when is_binary(id), do: id
+  defp target_work_request_id(%Target{}), do: nil
 
   defp mask_architect_scope_denial({:error, {:authorization_policy_denied, _code, _message, %{"reason_code" => "scope_mismatch"}}}) do
     {:error, :not_found}
@@ -6573,6 +6657,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       work_package_contexts: work_package_contexts,
       include_planning_scratch?: Keyword.get(opts, :include_planning_scratch?, false)
     )
+  end
+
+  defp reconcile_work_request_action(true), do: :delivery_reconcile_apply
+  defp reconcile_work_request_action(false), do: :delivery_reconcile_dry_run
+
+  defp require_delivery_reconcile_capability(%Session{} = session, apply?) do
+    if architect_session?(session) do
+      require_architect_capability(session.assignment, reconcile_work_request_capability(apply?))
+    else
+      :ok
+    end
+  end
+
+  defp require_delivery_write_capability(%Session{} = session) do
+    if architect_session?(session) do
+      require_architect_capability(session.assignment, "write:work_request")
+    else
+      :ok
+    end
   end
 
   defp reconcile_work_request_capability(true), do: "write:work_request"
@@ -11011,8 +11114,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case review_package_head_sha(requested_head_sha, progress_events, work_package) do
       {:ok, head_sha} ->
         case append_metadata_event(repo, session, arguments, "submit_review_package", "review_package_submitted", payload) do
-          {:ok, result} -> persist_review_artifacts_and_promote_or_rollback(repo, session, artifacts, head_sha, result, work_package)
-          {:error, code, message, data} -> repo.rollback({:mcp_error, code, message, data})
+          {:ok, result} ->
+            persist_review_artifacts_and_promote_or_rollback(repo, session, artifacts, head_sha, result, work_package)
+
+          {:error, code, message, data} ->
+            repo.rollback({:mcp_error, code, message, data})
         end
 
       {:tool_error, reason} ->
@@ -11270,7 +11376,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if review_suite_status_passed?(status) and review_suite_verdict_passed?(verdict) do
       :ok
     else
-      {:tool_error, {:non_passing_review_suite_result, normalized_review_suite_status(status), normalized_review_suite_verdict(verdict)}}
+      normalized_status = normalized_review_suite_status(status)
+      normalized_verdict = normalized_review_suite_verdict(verdict)
+
+      {:tool_error, {:non_passing_review_suite_result, normalized_status, normalized_verdict}}
     end
   end
 

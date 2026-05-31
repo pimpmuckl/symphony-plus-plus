@@ -87,6 +87,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseoutPausedLea
 
     response = record_delivery(repo, session, args)
 
+    assert get_in(response, ["error", "code"]) == -32_009
     assert get_in(response, ["error", "data", "reason"]) == "active_runtime"
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
 
