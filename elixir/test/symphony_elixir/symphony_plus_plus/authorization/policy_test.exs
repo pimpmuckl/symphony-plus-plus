@@ -128,17 +128,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.PolicyTest do
              Policy.decide(dispatch_actor, :planned_slice_dispatch, Target.planned_slice("wrs-1", "wr-1"))
   end
 
-  test "phase scope authorizes migration-era architect targets with phase identity" do
+  test "phase scope authorizes read discovery but not WorkRequest writes" do
     actor = architect([Scope.phase("phase-1", repo: "nextide/symphony-plus-plus", base_branch: "main")])
 
     assert %Decision{allowed?: true, matched_scope: %Scope{type: :phase, id: "phase-1"}} =
              Policy.decide(
                actor,
-               :work_request_update,
+               :work_request_read,
                Target.work_request("wr-1", phase_id: "phase-1", repo: "nextide/symphony-plus-plus", base_branch: "main")
              )
 
-    assert %Decision{allowed?: true, matched_scope: %Scope{type: :phase, id: "phase-1"}} =
+    assert %Decision{allowed?: false, reason_code: "scope_mismatch", legacy_reason: "outside_session_scope"} =
              Policy.decide(
                actor,
                :planned_slice_dispatch,

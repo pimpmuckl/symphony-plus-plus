@@ -149,9 +149,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Policy do
 
   defp architect_scope_types(action) when action in @read_actions, do: [:work_request, :work_package, :repo, :phase]
   defp architect_scope_types(:external_comment_add), do: [:work_request, :repo, :phase]
-  defp architect_scope_types(action) when action in @planned_slice_actions, do: [:work_request, :planned_slice, :phase]
-  defp architect_scope_types(action) when action in @worker_package_actions, do: [:work_request, :work_package, :phase]
-  defp architect_scope_types(_action), do: [:work_request, :phase]
+  defp architect_scope_types(action) when action in @planned_slice_actions, do: [:work_request, :planned_slice]
+  defp architect_scope_types(action) when action in @worker_package_actions, do: [:work_request, :work_package]
+  defp architect_scope_types(_action), do: [:work_request]
 
   defp required_architect_capability(%Actor{capabilities: capabilities}, action) do
     capability = architect_capability(action)

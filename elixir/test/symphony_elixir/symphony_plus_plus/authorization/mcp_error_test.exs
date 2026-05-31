@@ -25,6 +25,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.MCPErrorTest do
 
     assert {:error, -32_003, "Forbidden", data} = MCPError.from_decision(decision, "update_task_plan")
     assert data["reason"] == "outside_session_scope"
+    assert data["legacy_reason"] == "outside_session_scope"
     assert data["reason_code"] == "scope_mismatch"
     assert data["decision_reason"] == "authorization_denied"
     assert data["target"]["work_package_id"] == "wp-2"
