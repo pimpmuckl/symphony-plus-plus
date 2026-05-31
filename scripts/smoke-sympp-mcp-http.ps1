@@ -579,6 +579,30 @@ function Get-ResourceUris($ResourcesPayload) {
   return @($resources | ForEach-Object { [string]$_.uri } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object)
 }
 
+function Get-ResourceContentByMimeType($Payload, [string]$MimeType) {
+  if ($null -eq $Payload -or -not $Payload.PSObject.Properties["result"]) {
+    return $null
+  }
+
+  $normalizedMimeType = Normalize-MimeType $MimeType
+  $contents = @($Payload.result.contents)
+  foreach ($content in $contents) {
+    if ($null -ne $content -and $content.PSObject.Properties["mimeType"] -and (Normalize-MimeType ([string]$content.mimeType)) -eq $normalizedMimeType) {
+      return $content
+    }
+  }
+
+  return $null
+}
+
+function Normalize-MimeType([string]$MimeType) {
+  if ([string]::IsNullOrWhiteSpace($MimeType)) {
+    return ""
+  }
+
+  return (($MimeType -split ";", 2)[0]).Trim().ToLowerInvariant()
+}
+
 function Get-AssignmentWorkPackageId($Payload) {
   if ($null -eq $Payload -or -not $Payload.PSObject.Properties["result"]) {
     return $null
@@ -773,12 +797,14 @@ function Get-ResourceJsonPayload($Payload, [string]$Stage) {
   }
 
   $contents = @($Payload.result.contents)
-  if ($contents.Count -eq 0 -or $null -eq $contents[0].text) {
+  $jsonContent = Get-ResourceContentByMimeType $Payload "application/json"
+  $content = if ($null -ne $jsonContent) { $jsonContent } elseif ($contents.Count -gt 0) { $contents[0] } else { $null }
+  if ($null -eq $content -or $null -eq $content.text) {
     throw "$Stage returned no text content."
   }
 
   try {
-    $text = [string]$contents[0].text
+    $text = [string]$content.text
     return ($text | ConvertFrom-Json)
   }
   catch {
@@ -1296,6 +1322,27 @@ function Invoke-SelfTest {
   $missingSourcePayload = @{ result = @{ structuredContent = @{} } } | ConvertTo-Json -Depth 8 | ConvertFrom-Json
   if ($null -ne (Get-HealthSourceRevision $missingSourcePayload)) {
     throw "Expected missing health source revision to normalize to null."
+  }
+
+  $resourcePayload = @{
+    result = @{
+      contents = @(
+        @{
+          uri = "sympp://assignment/current"
+          mimeType = "text/vnd.toon"
+          text = "work_package_id: wp_toon"
+        },
+        @{
+          uri = "sympp://assignment/current"
+          mimeType = "Application/JSON; charset=utf-8"
+          text = '{"work_package_id":"wp_json"}'
+        }
+      )
+    }
+  } | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+  $resourceJson = Get-ResourceJsonPayload $resourcePayload "resources/read self-test"
+  if ([string]$resourceJson.work_package_id -ne "wp_json") {
+    throw "Expected resource JSON parsing to prefer application/json over TOON presentation text."
   }
 
   if ((Normalize-SourceRevision "0123456789ABCDEF0123456789ABCDEF01234567") -ne "0123456789abcdef0123456789abcdef01234567") {
