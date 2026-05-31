@@ -9,7 +9,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Session}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config}
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
@@ -520,7 +520,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
     assert {:ok, updated_grant} = grant |> Ecto.Changeset.change(claimed_by: "worker-renamed") |> repo.update()
 
     assert {:ok, renamed_worker_session} =
-             Session.from_grant(updated_grant, DateTime.utc_now(:microsecond), proof_hash: worker_session.proof_hash)
+             Auth.session_from_grant(repo, updated_grant, proof_hash: worker_session.proof_hash)
 
     renamed_replay_response = mcp_tool(repo, renamed_worker_session, "create_guidance_request", create_args)
 

@@ -12,9 +12,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.MCPHarness
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.GrantScope
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Scope
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service, as: ClaimLeaseService
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
@@ -444,15 +446,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       claimed_by: "worker-1"
     }
 
-    assert {:ok, session} = Session.from_grant(grant, now, proof_hash: "proof")
-    assert session.assignment.work_package_id == "SYMPP-SESSION-GRANT"
+    scopes = [Scope.work_package(grant.work_package_id)]
 
-    assert Session.from_grant(%{grant | revoked_at: now}, now) == {:error, :revoked}
-    assert Session.from_grant(%{grant | expires_at: now}, now) == {:error, :expired}
-    assert {:ok, nil_expiry_session} = Session.from_grant(%{grant | expires_at: nil}, now)
+    assert {:ok, session} = Session.from_grant(grant, now, proof_hash: "proof", scopes: scopes)
+    assert session.assignment.work_package_id == "SYMPP-SESSION-GRANT"
+    assert session.assignment.scopes == scopes
+
+    assert Session.from_grant(grant, now, proof_hash: "proof") == {:error, :missing_grant_scopes}
+    assert Session.from_grant(%{grant | revoked_at: now}, now, scopes: scopes) == {:error, :revoked}
+    assert Session.from_grant(%{grant | expires_at: now}, now, scopes: scopes) == {:error, :expired}
+    assert {:ok, nil_expiry_session} = Session.from_grant(%{grant | expires_at: nil}, now, scopes: scopes)
     assert nil_expiry_session.assignment.grant_id == grant.id
-    assert Session.from_grant(%{grant | claimed_at: nil}, now) == {:error, :unclaimed}
-    assert Session.from_grant(%{grant | claimed_by: " "}, now) == {:error, :missing_claim_identity}
+    assert Session.from_grant(%{grant | claimed_at: nil}, now, scopes: scopes) == {:error, :unclaimed}
+    assert Session.from_grant(%{grant | claimed_by: " "}, now, scopes: scopes) == {:error, :missing_claim_identity}
   end
 
   test "auth helpers reject missing invalid and mismatched sessions" do
@@ -495,6 +501,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert live_session.assignment.grant_role == "architect"
     assert live_session.assignment.work_package_id == package.id
     assert live_session.assignment.phase_id == package.phase_id
+    assert Scope.work_package(package.id) in live_session.assignment.scopes
+    assert Scope.repo(package.repo, package.base_branch) in live_session.assignment.scopes
 
     assert {:ok, _terminal_package} = WorkPackageRepository.update(repo, package.id, %{status: "merged"})
 
@@ -988,6 +996,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       assert assignment["claimed_by"] == "worker-env-1"
       assert {:ok, claimed_grant} = AccessGrantRepository.get(Repo, minted.grant.id)
       assert claimed_grant.claimed_by == "worker-env-1"
+
+      reconnect_output =
+        capture_io(input, fn ->
+          McpTask.run(["--work-key-secret-env", env_var, "--claimed-by", "worker-env-1"])
+        end)
+
+      refute reconnect_output =~ minted.work_key.secret
+      [_reconnect_init_response, reconnect_response] = decode_json_lines(reconnect_output)
+      reconnect_assignment = Jason.decode!(get_in(reconnect_response, ["result", "contents", Access.at(0), "text"]))
+
+      assert reconnect_assignment["work_package_id"] == "SYMPP-P10-003"
+      assert reconnect_assignment["claimed_by"] == "worker-env-1"
     after
       System.delete_env(env_var)
       Repo.put_dynamic_repo(original_repo)
@@ -4475,6 +4495,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, handoff.grant.id)
     assert is_nil(unclaimed_grant.claimed_at)
+    repo.delete_all(from(scope in GrantScope, where: scope.access_grant_id == ^handoff.grant.id))
+    assert {:ok, []} = AccessGrantRepository.list_scopes(repo, handoff.grant.id)
 
     arguments = %{
       "work_request_id" => work_request.id,
@@ -4500,11 +4522,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == handoff.anchor_package.id
     assert get_in(claim_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "created"
     assert claimed_server.session.assignment.grant_role == "architect"
+    assert Scope.work_request(work_request.id) in claimed_server.session.assignment.scopes
     assert claimed_server.session.proof_hash == unclaimed_grant.secret_hash
     refute inspect(claim_response) =~ unclaimed_grant.secret_hash
 
     assert {:ok, claimed_grant} = AccessGrantRepository.get(repo, handoff.grant.id)
     assert claimed_grant.claimed_by == "local-architect-1"
+    assert {:ok, scope_rows} = AccessGrantRepository.list_scopes(repo, handoff.grant.id)
+    assert Enum.any?(scope_rows, &(&1.scope_type == "work_request" and &1.scope_id == work_request.id))
 
     read_response =
       Server.handle(
@@ -4613,6 +4638,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(reconnect_response, ["result", "structuredContent", "assignment", "grant_id"]) == handoff.grant.id
     assert get_in(reconnect_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "heartbeat"
     assert reconnected_server.session.assignment.grant_role == "architect"
+    assert Scope.work_request(work_request.id) in reconnected_server.session.assignment.scopes
   end
 
   test "claim_local_architect_assignment releases heartbeat leases when grant owner changes", %{repo: repo} do
@@ -18102,7 +18128,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              )
 
     assert {:ok, grant} = AccessGrantRepository.get(repo, grant_id)
-    assert {:ok, session} = Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash)
+    assert {:ok, session} = Auth.session_from_grant(repo, grant, proof_hash: grant.secret_hash)
     session
   end
 

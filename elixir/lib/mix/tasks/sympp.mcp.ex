@@ -7,7 +7,7 @@ defmodule Mix.Tasks.Sympp.Mcp do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Repository, Session, Stdio}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Repository, Session, Stdio}
   alias SymphonyElixir.SymphonyPlusPlus.Repo
 
   @shortdoc "Starts the Symphony++ MCP server"
@@ -231,7 +231,7 @@ defmodule Mix.Tasks.Sympp.Mcp do
   defp reconnect_from_claimed_secret(proof_hash, claimed_by) do
     with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(Repo, proof_hash),
          :ok <- require_same_claimed_by(grant.claimed_by, claimed_by) do
-      Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash)
+      Auth.session_from_grant(Repo, grant, proof_hash: proof_hash)
     end
   end
 

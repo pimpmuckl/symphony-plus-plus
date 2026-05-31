@@ -3369,7 +3369,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              claimed_by: claim.claimed_by,
              now: claim_now
            ),
-         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash),
+         {:ok, session} <- Auth.session_from_grant(repo, grant, proof_hash: grant.secret_hash),
          :ok <- require_worker_assignment(session.assignment) do
       assignment = %{"assignment" => Session.public_assignment(session)}
       {:ok, assignment, session, local_assignment_grant_action(grant, existing_grant_ids)}
@@ -3792,10 +3792,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              claimed_by: claim.claimed_by,
              scope_repo: claim.repo,
              scope_base_branch: claim.base_branch,
+             work_request_id: claim.work_request_id,
              now: claim_now
            ),
          :ok <- validate_local_architect_assignment_grant(repo, grant, anchor, claim),
-         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash),
+         {:ok, session} <- Auth.session_from_grant(repo, grant, proof_hash: grant.secret_hash),
          :ok <- require_architect_assignment(session.assignment) do
       assignment = %{"assignment" => Session.public_assignment(session)}
       {:ok, assignment, session, local_assignment_grant_action(grant, existing_grant_ids)}
@@ -4306,7 +4307,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp revalidate_bound_session(repo, %Session{} = session, proof_hash) do
     with {:ok, grant} <- AccessGrantRepository.get(repo, session.assignment.grant_id),
          :ok <- AccessGrantService.require_live_package_authority(repo, grant),
-         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
+         {:ok, session} <- Auth.session_from_grant(repo, grant, proof_hash: proof_hash),
          :ok <- require_mcp_claimable_assignment(session.assignment) do
       {:ok, session}
     end
@@ -4336,7 +4337,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash),
          :ok <- require_same_claim_owner(grant, claimed_by),
          :ok <- AccessGrantService.require_live_package_authority(repo, grant),
-         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
+         {:ok, session} <- Auth.session_from_grant(repo, grant, proof_hash: proof_hash),
          :ok <- require_mcp_claimable_assignment(session.assignment) do
       {:ok, session}
     end
