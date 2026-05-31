@@ -122,22 +122,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     assert [^session_id] = get_resp_header(conn, "mcp-session-id")
 
     names = tool_names(json_response(conn, 200))
+    assert length(names) == length(Enum.uniq(names))
 
     for tool <- [
           "claim_work_key",
           "claim_local_assignment",
           "claim_local_architect_assignment",
-          "solo_append",
-          "solo_attach",
-          "solo_list",
-          "solo_show",
-          "solo_update_status",
-          "sympp.health"
-        ] do
-      assert tool in names
-    end
-
-    for tool <- [
           "get_current_assignment",
           "read_context",
           "read_task_plan",
@@ -162,9 +152,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
           "read_work_request",
           "list_guidance_requests",
           "record_work_request_decision",
-          "add_work_request_planned_slice"
+          "add_work_request_planned_slice",
+          "solo_append",
+          "solo_attach",
+          "solo_list",
+          "solo_show",
+          "solo_update_status",
+          "sympp.health"
         ] do
-      refute tool in names
+      assert tool in names
     end
   end
 

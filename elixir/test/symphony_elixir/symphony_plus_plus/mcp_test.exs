@@ -90,6 +90,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     "split_work_package",
     "publish_phase_update"
   ]
+  @worker_tool_names [
+    "get_current_assignment",
+    "read_context",
+    "read_task_plan",
+    "update_task_plan",
+    "append_finding",
+    "append_progress",
+    "set_status",
+    "report_blocker",
+    "resolve_blocker",
+    "add_comment",
+    "list_comments",
+    "resolve_comment",
+    "create_guidance_request",
+    "read_guidance_request",
+    "request_scope_expansion",
+    "attach_branch",
+    "attach_pr",
+    "sync_pr",
+    "submit_review_package",
+    "attach_review_suite_result",
+    "mark_ready"
+  ]
   @codex_forbidden_top_level_schema_keys ["oneOf", "anyOf", "allOf", "enum", "not"]
 
   defmodule FailingAuthRepo do
@@ -1287,29 +1310,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert is_list(get_in(post_init_response, ["result", "tools"]))
   end
 
-  test "tools list keeps unbound discovery bootstrap-only before binding", %{repo: repo} do
+  test "tools list exposes scoped schemas before binding while calls stay claim-gated", %{repo: repo} do
     unbound_server = Server.new(Config.default(repo: repo), initialized: true)
 
     unbound_response =
       Server.handle(%{"jsonrpc" => "2.0", "id" => "unbound-tools", "method" => "tools/list", "params" => %{}}, unbound_server)
 
-    unbound_tools_by_name =
-      unbound_response
-      |> get_in(["result", "tools"])
-      |> Map.new(&{&1["name"], &1})
+    unbound_tools = get_in(unbound_response, ["result", "tools"])
+    unbound_tool_names = Enum.map(unbound_tools, & &1["name"])
+    unbound_tools_by_name = Map.new(unbound_tools, &{&1["name"], &1})
 
-    assert Map.keys(unbound_tools_by_name) |> Enum.sort() ==
-             Enum.sort([
-               "claim_private_handoff",
-               "claim_work_key",
-               "create_work_request",
-               "solo_append",
-               "solo_attach",
-               "solo_list",
-               "solo_show",
-               "solo_update_status",
-               "sympp.health"
-             ])
+    assert length(unbound_tool_names) == length(Enum.uniq(unbound_tool_names))
+
+    for tool <- [
+          "claim_private_handoff",
+          "claim_work_key",
+          "create_work_request",
+          "solo_append",
+          "solo_attach",
+          "solo_list",
+          "solo_show",
+          "solo_update_status",
+          "sympp.health"
+        ] do
+      assert Map.has_key?(unbound_tools_by_name, tool)
+    end
+
+    for tool <- @architect_tool_names do
+      assert Map.has_key?(unbound_tools_by_name, tool)
+    end
+
+    for tool <- @worker_tool_names do
+      assert Map.has_key?(unbound_tools_by_name, tool)
+    end
 
     assert get_in(unbound_tools_by_name, ["claim_work_key", "inputSchema", "required"]) == ["secret", "claimed_by"]
     assert get_in(unbound_tools_by_name, ["claim_work_key", "inputSchema", "properties", "secret", "type"]) == "string"
@@ -1333,13 +1366,53 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              %{"required" => ["human_description"]}
            ]
 
-    refute Map.has_key?(unbound_tools_by_name, "get_current_assignment")
-    refute Map.has_key?(unbound_tools_by_name, "append_progress")
-    refute Map.has_key?(unbound_tools_by_name, "set_status")
+    assert get_in(unbound_tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
+    assert get_in(unbound_tools_by_name, ["append_progress", "inputSchema", "required"]) == ["summary", "idempotency_key"]
 
-    for tool <- @architect_tool_names do
-      refute Map.has_key?(unbound_tools_by_name, tool)
-    end
+    assert get_in(unbound_tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == [
+             "blocker_id",
+             "resolution",
+             "summary",
+             "idempotency_key"
+           ]
+
+    assert get_in(unbound_tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "required"]) == [
+             "work_request_id",
+             "planned_slice_id",
+             "claimed_by"
+           ]
+
+    unclaimed_read_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "unclaimed-read-work-request",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_work_request", "arguments" => %{"unexpected" => "value"}}
+        },
+        unbound_server
+      )
+
+    assert get_in(unclaimed_read_response, ["error", "code"]) == -32_001
+    assert get_in(unclaimed_read_response, ["error", "data", "resource"]) == "read_work_request"
+    assert get_in(unclaimed_read_response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(unclaimed_read_response, ["error", "data", "action"]) == "claim_work_key"
+
+    unclaimed_progress_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "unclaimed-append-progress",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_progress", "arguments" => %{"unexpected" => "value"}}
+        },
+        unbound_server
+      )
+
+    assert get_in(unclaimed_progress_response, ["error", "code"]) == -32_001
+    assert get_in(unclaimed_progress_response, ["error", "data", "resource"]) == "append_progress"
+    assert get_in(unclaimed_progress_response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(unclaimed_progress_response, ["error", "data", "action"]) == "claim_work_key"
 
     assert {:ok, claim_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-UNBOUND-CLAIM-CALL", kind: "mcp"))
     assert {:ok, claim_minted} = AccessGrantService.mint_worker_grant(repo, claim_package.id)
@@ -1700,6 +1773,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       })
 
     assert get_in(resolve_blocker_response, ["result", "structuredContent", "progress_event", "payload", "active"]) == false
+
+    anchor_blocker_id = "arch-policy-anchor-blocker"
+
+    assert {:ok, _anchor_blocker_event} =
+             PlanningRepository.append_audit_progress_event_for_work_package(
+               repo,
+               handoff_session.assignment,
+               handoff_session.assignment.work_package_id,
+               %{
+                 "summary" => "Waiting for anchor decision",
+                 "idempotency_key" => anchor_blocker_id,
+                 "payload" => %{
+                   "type" => "blocker",
+                   "source_tool" => "report_blocker",
+                   "blocker_id" => anchor_blocker_id,
+                   "active" => true
+                 }
+               }
+             )
+
+    default_scope_response =
+      mcp_tool(repo, handoff_session, "resolve_blocker", %{
+        "blocker_id" => anchor_blocker_id,
+        "resolution" => "Architect supplied the anchor decision.",
+        "summary" => "Cleared anchor blocker",
+        "idempotency_key" => "arch-policy-anchor-blocker-resolved"
+      })
+
+    assert get_in(default_scope_response, ["result", "structuredContent", "progress_event", "idempotency_key"]) ==
+             ["resolve_blocker", handoff_session.assignment.work_package_id, "arch-policy-anchor-blocker-resolved"] |> Enum.join(":")
+
+    assert get_in(default_scope_response, ["result", "structuredContent", "progress_event", "payload", "active"]) == false
   end
 
   test "local operator WorkRequest note tools append comments and decisions with redacted provenance", %{repo: repo} do
@@ -2070,7 +2175,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(null_source_response, ["error", "data", "reason"]) == "invalid_source_id"
   end
 
-  test "tools list advertises Solo tools only for unbound sessions", %{repo: repo} do
+  test "tools list advertises Solo tools for unbound sessions only", %{repo: repo} do
     unbound_server = Server.new(Config.default(repo: repo), initialized: true)
 
     unbound_response =
@@ -2514,7 +2619,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["add_comment", "inputSchema", "required"]) == ["target_kind", "target_id", "body"]
     assert get_in(tools_by_name, ["list_comments", "inputSchema", "required"]) == ["target_kind", "target_id"]
     assert get_in(tools_by_name, ["resolve_comment", "inputSchema", "required"]) == ["comment_id"]
-    assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["work_package_id", "blocker_id", "resolution", "summary", "idempotency_key"]
+    assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
     assert get_in(tools_by_name, ["read_work_request_delivery_board", "inputSchema", "required"]) == ["work_request_id"]
     assert get_in(tools_by_name, ["read_work_request_delivery_board", "inputSchema", "properties", "include_planning_scratch", "type"]) == "boolean"
     assert get_in(tools_by_name, ["reconcile_work_request", "inputSchema", "required"]) == ["work_request_id"]
@@ -5722,9 +5827,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(stateless_solo_response, ["error", "data", "action"]) == "claim_work_key"
     assert get_in(fresh_init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
     refute Map.has_key?(reused_tools_by_name, "get_current_assignment")
-    refute Map.has_key?(fresh_tools_by_name, "read_work_request")
+    assert Map.has_key?(fresh_tools_by_name, "read_work_request")
     assert Map.has_key?(fresh_tools_by_name, "solo_attach")
-    refute Map.has_key?(fresh_tools_by_name, "get_current_assignment")
+    assert Map.has_key?(fresh_tools_by_name, "get_current_assignment")
     assert get_in(assignment_response, ["error", "data", "reason"]) == "claim_required"
   end
 
