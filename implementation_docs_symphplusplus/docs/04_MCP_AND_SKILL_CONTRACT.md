@@ -256,6 +256,12 @@ existing planning redactor. `solo_show` intentionally returns only the latest
 pause, resume, complete, and archive transitions, including optimistic
 `current_status` checking.
 
+Agent-facing resource reads may include compact `text/vnd.toon` content. That
+TOON text is presentation context for agents only: MCP tool inputs remain
+JSON/schema-native, and tool `structuredContent` remains the canonical
+machine-readable response. Human-facing Markdown UI rendering is a separate
+follow-up slice, not part of this contract.
+
 Solo MCP tools are deliberately not advertised to bound worker or architect
 WorkPackage sessions. Direct calls from a bound session fail with
 `solo_tools_require_unbound_session` before mutation so Solo planning cannot be

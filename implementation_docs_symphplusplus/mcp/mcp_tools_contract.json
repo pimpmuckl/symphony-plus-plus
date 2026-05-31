@@ -446,5 +446,6 @@
     "sympp://work-packages/{id}/acceptance.md",
     "sympp://work-packages/{id}/review_suite.md",
     "sympp://work-packages/{id}/handoff.md"
-  ]
+  ],
+  "resource_presentation_policy": "Resources may include compact text/vnd.toon content for agent-facing context presentation. TOON is never the MCP input contract and is not the canonical machine-readable response. MCP tool arguments stay JSON/schema-native, and tool results keep structuredContent as the schema-native source of truth."
 }

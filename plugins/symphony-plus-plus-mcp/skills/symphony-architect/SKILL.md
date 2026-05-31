@@ -25,6 +25,12 @@ delivery closeout. Do not implement worker packages yourself.
 4. Never expose raw work keys, bearer/API/GitHub/Linear/MCP tokens, grant
    verifiers, private handoff payloads, or secret-bearing commands.
 
+## Context Format
+
+S++ MCP may include compact TOON resource text for agent-readable context. Treat
+that as presentation only: tool arguments remain JSON/schema-native, and
+`structuredContent` is the canonical machine-readable response shape.
+
 ## Clarify
 
 - Ask focused product/architecture questions before slicing when intent,

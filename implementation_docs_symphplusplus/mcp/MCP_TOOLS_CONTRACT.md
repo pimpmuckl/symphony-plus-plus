@@ -414,6 +414,11 @@ sympp://work-packages/{id}/review_suite.md
 sympp://work-packages/{id}/handoff.md
 ```
 
+Resources may include compact `text/vnd.toon` content for agent-facing context
+presentation. TOON is never the MCP input contract and is not the canonical
+machine-readable response. MCP tool arguments stay JSON/schema-native, and tool
+results keep `structuredContent` as the schema-native source of truth.
+
 `claim_local_assignment` requires `repo`, `base_branch`, `work_package_id`,
 `branch`, `worktree_path`, `caller_id`, and `claimed_by`; `work_request_id` is
 accepted for planned-slice dispatch. It is the normal V2.1 local worker claim.

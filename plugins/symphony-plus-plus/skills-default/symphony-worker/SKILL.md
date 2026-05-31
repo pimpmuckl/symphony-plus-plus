@@ -33,6 +33,10 @@ PR-sized assignment.
 ## Scope
 
 - Stay inside the assignment boundary.
+- If an MCP WorkPackage presents compact TOON context, treat it as
+  agent-readable presentation only. Continue sending tool inputs as
+  JSON/schema-native arguments and read tool `structuredContent` as the
+  canonical machine-readable result.
 - Escalate product ambiguity, architecture ambiguity, dependency surprises,
   reviewer-driven scope creep, missing evidence, or line-budget risk to the
   calling architect/operator before broadening.
