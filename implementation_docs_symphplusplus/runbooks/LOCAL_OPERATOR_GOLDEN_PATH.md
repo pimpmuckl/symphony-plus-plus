@@ -139,12 +139,12 @@ The smoke sends `initialize`, normalizes the returned `Mcp-Session-Id` to a
 single header value, follows with `tools/list`, and verifies the script's
 current generic unbound expectations: `sympp.health`, the `solo_*` tools,
 `claim_work_key`, and statically discoverable architect schemas such as
-`read_work_request` and `list_guidance_requests`. `claim_private_handoff` is
-part of the generic recovery surface, and `claim_local_assignment` plus
-`claim_local_architect_assignment` are part of the trusted local HTTP refresh
-surface, but the current smoke script
-does not yet assert them directly. Worker-only mutation tools remain absent
-until claim. The health smoke also verifies that
+`read_work_request` and `list_guidance_requests`, plus worker schemas such as
+`read_context`. `claim_private_handoff` is part of the generic recovery surface,
+and `claim_local_assignment` plus `claim_local_architect_assignment` are part of
+the trusted local HTTP refresh surface. Schema visibility is not authorization:
+representative architect and worker calls must still fail pre-claim with a
+claim or permission gate. The health smoke also verifies that
 `ledger.identity` is present and complete enough to identify default or
 explicit SQLite ledgers without exposing credential-bearing configuration. For a
 non-default or dynamic cockpit port, pass the printed MCP URL:

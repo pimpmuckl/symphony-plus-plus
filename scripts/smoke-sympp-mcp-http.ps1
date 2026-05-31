@@ -73,6 +73,14 @@ $ArchitectTools = @(
   "revoke_child_worker_key",
   "list_work_requests",
   "read_work_request",
+  "add_comment",
+  "list_comments",
+  "resolve_comment",
+  "resolve_blocker",
+  "read_work_request_delivery_board",
+  "reconcile_work_request",
+  "record_planned_slice_delivery",
+  "revoke_planned_slice_worker_key",
   "list_guidance_requests",
   "read_guidance_request",
   "answer_guidance_request",
@@ -80,6 +88,7 @@ $ArchitectTools = @(
   "set_work_request_status",
   "ask_work_request_question",
   "answer_work_request_question",
+  "answer_work_request_question_and_record_decision",
   "close_work_request_question",
   "record_work_request_decision",
   "add_work_request_planned_slice",
@@ -87,6 +96,8 @@ $ArchitectTools = @(
   "skip_work_request_planned_slice",
   "mark_work_request_sliced",
   "dispatch_work_request_planned_slice",
+  "prepare_work_package_worktree",
+  "cleanup_work_package_worktree",
   "read_child_status",
   "approve_scope_expansion",
   "read_phase_board",
@@ -98,17 +109,41 @@ $ArchitectTools = @(
 )
 
 $ArchitectOnlyTools = @($ArchitectTools | Where-Object { $ExpectedBoundWorkerTools -notcontains $_ })
-$ExpectedUnboundTools = $ExpectedGenericUnboundTools + $ExpectedHttpUnboundTools
+$ExpectedUnboundTools = @($ExpectedGenericUnboundTools + $ExpectedHttpUnboundTools + $ExpectedBoundWorkerTools + $ArchitectTools | Sort-Object -Unique)
 $AllowedUnboundTools = $ExpectedUnboundTools + $OptionalTrustedLocalHttpUnboundTools
 $UnboundOnlyTools = @($AllowedUnboundTools | Where-Object { $ExpectedBoundWorkerTools -notcontains $_ })
-$ForbiddenUnboundTools =
-  @($ExpectedBoundWorkerTools + $ArchitectTools |
-    Where-Object { $AllowedUnboundTools -notcontains $_ } |
-    Sort-Object -Unique)
+$ForbiddenUnboundTools = @()
 $ForbiddenBoundWorkerTools =
   @($SoloTools + $ArchitectOnlyTools + $UnboundOnlyTools |
     Where-Object { $_ -ne "sympp.health" } |
     Sort-Object -Unique)
+
+$ExpectedPreClaimGatedCalls = @(
+  @{
+    name = "read_work_request"
+    arguments = @{
+      work_request_id = "WR-SMOKE-PRECLAIM"
+    }
+  },
+  @{
+    name = "dispatch_work_request_planned_slice"
+    arguments = @{
+      work_request_id = "WR-SMOKE-PRECLAIM"
+      planned_slice_id = "SLICE-SMOKE-PRECLAIM"
+      claimed_by = "sympp-http-smoke"
+    }
+  },
+  @{
+    name = "read_context"
+    arguments = @{}
+  }
+)
+
+$ExpectedPreClaimGateReasons = @(
+  "claim_required",
+  "insufficient_capability",
+  "insufficient_role"
+)
 
 $ExpectedWorkerResourceFiles = @(
   "context.md",
@@ -494,6 +529,19 @@ function Get-JsonRpcErrorMessage($Payload) {
   }
 
   return [string]$errorObject.message
+}
+
+function Get-JsonRpcErrorReason($Payload) {
+  if ($null -eq $Payload -or -not $Payload.PSObject.Properties["error"]) {
+    return $null
+  }
+
+  $errorObject = $Payload.error
+  if ($errorObject.PSObject.Properties["data"] -and $errorObject.data.PSObject.Properties["reason"]) {
+    return [string]$errorObject.data.reason
+  }
+
+  return $null
 }
 
 function Get-ResponseErrorDetail($Response, [string]$Fallback) {
@@ -895,6 +943,51 @@ function Invoke-ToolsListSmoke([string]$SessionId, [string[]]$Expected, [string]
   }
 }
 
+function Invoke-PreClaimGateSmoke([string]$SessionId) {
+  $gatedTools = @()
+  foreach ($call in $ExpectedPreClaimGatedCalls) {
+    $toolName = [string]$call.name
+    $gateResponse = Invoke-McpPost $Url (New-ToolCallRequest "sympp-http-smoke-preclaim-$toolName" $toolName $call.arguments) $SessionId
+    if (-not $gateResponse.ok) {
+      $reason = if ($gateResponse.statusCode) { "HTTP $($gateResponse.statusCode)" } else { "request failed" }
+      $detail = Get-ResponseErrorDetail $gateResponse $gateResponse.error
+      return [pscustomobject]@{
+        ok = $false
+        result = New-SmokeResult "preclaim_gate_failed" "MCP pre-claim $toolName failed transport validation ($reason): $detail"
+      }
+    }
+
+    $sessionCheck = Test-ResponseSessionHeader $gateResponse $SessionId "pre-claim $toolName"
+    if (-not $sessionCheck.ok) {
+      return $sessionCheck
+    }
+
+    $gatePayload = ConvertFrom-JsonResponse $gateResponse.content "pre-claim $toolName"
+    $gateReason = Get-JsonRpcErrorReason $gatePayload
+    if ($ExpectedPreClaimGateReasons -notcontains $gateReason) {
+      $detail = Get-JsonRpcErrorMessage $gatePayload
+      if ([string]::IsNullOrWhiteSpace($detail)) {
+        $detail = "call unexpectedly succeeded"
+      }
+
+      return [pscustomobject]@{
+        ok = $false
+        result = New-SmokeResult "preclaim_gate_failed" "MCP pre-claim $toolName was not claim/permission gated: $detail" @{
+          tool = $toolName
+          reason = $gateReason
+        }
+      }
+    }
+
+    $gatedTools += $toolName
+  }
+
+  return [pscustomobject]@{
+    ok = $true
+    gatedTools = $gatedTools
+  }
+}
+
 function Invoke-McpSmoke {
   $session = Initialize-HealthyMcpSession $false
   if (-not $session.ok) {
@@ -915,11 +1008,17 @@ function Invoke-McpSmoke {
     return $toolsCheck.result
   }
 
+  $preClaimGate = Invoke-PreClaimGateSmoke $session.sessionId
+  if (-not $preClaimGate.ok) {
+    return $preClaimGate.result
+  }
+
   return New-SmokeResult "ok" "Local Symphony++ HTTP MCP daemon is initialized and exposes the expected unbound tools." @{
     sessionId = $session.sessionId
     daemonSourceRevision = $session.sourceRevision
     expectedSourceRevision = $session.expectedRevision
     tools = $toolsCheck.tools
+    preClaimGatedTools = $preClaimGate.gatedTools
   }
 }
 
@@ -930,6 +1029,7 @@ function Invoke-BoundMcpSmoke($Config) {
   }
 
   $unboundTools = @()
+  $preClaimGatedTools = @()
   if (-not $SkipUnboundTools) {
     $unbound = Invoke-ToolsListSmoke $session.sessionId $ExpectedUnboundTools "unbound pre-claim" $ForbiddenUnboundTools
     if (-not $unbound.ok) {
@@ -937,6 +1037,13 @@ function Invoke-BoundMcpSmoke($Config) {
     }
 
     $unboundTools = $unbound.tools
+
+    $preClaimGate = Invoke-PreClaimGateSmoke $session.sessionId
+    if (-not $preClaimGate.ok) {
+      return $preClaimGate.result
+    }
+
+    $preClaimGatedTools = $preClaimGate.gatedTools
   }
 
   $claimResponse = Invoke-McpPost $Url (New-ToolCallRequest "sympp-http-smoke-claim" "claim_work_key" @{
@@ -1069,6 +1176,7 @@ function Invoke-BoundMcpSmoke($Config) {
 
   if (-not $SkipUnboundTools) {
     $data["unboundTools"] = $unboundTools
+    $data["preClaimGatedTools"] = $preClaimGatedTools
   }
 
   return New-SmokeResult "ok" "Local Symphony++ HTTP MCP daemon claimed the work key and exposes the expected bound worker tools/resources." $data
@@ -1135,16 +1243,25 @@ function Invoke-SelfTest {
     throw "Expected unbound forbidden tools to allow optional trusted local operator note tools."
   }
 
-  if ($ForbiddenUnboundTools -notcontains "append_progress" -or $ForbiddenUnboundTools -notcontains "get_current_assignment") {
-    throw "Expected unbound forbidden tools to include worker-only tools."
+  if ($ExpectedUnboundTools -notcontains "append_progress" -or $ExpectedUnboundTools -notcontains "get_current_assignment") {
+    throw "Expected unbound discovery to include worker scoped schemas."
   }
 
-  if ($ForbiddenUnboundTools -notcontains "read_work_request" -or $ForbiddenUnboundTools -notcontains "dispatch_work_request_planned_slice") {
-    throw "Expected unbound forbidden tools to include architect-only tools."
+  if ($ExpectedUnboundTools -notcontains "read_work_request" -or $ExpectedUnboundTools -notcontains "dispatch_work_request_planned_slice" -or $ExpectedUnboundTools -notcontains "read_work_request_delivery_board") {
+    throw "Expected unbound discovery to include architect scoped schemas."
+  }
+
+  if ($ForbiddenUnboundTools.Count -ne 0) {
+    throw "Expected unbound discovery to treat schema visibility as authorization-neutral."
   }
 
   if ($ForbiddenUnboundTools -contains "claim_work_key" -or $ForbiddenUnboundTools -contains "sympp.health") {
     throw "Expected unbound forbidden tools to keep health and claim_work_key allowed."
+  }
+
+  $preClaimGateNames = @($ExpectedPreClaimGatedCalls | ForEach-Object { [string]$_.name })
+  if ($preClaimGateNames -notcontains "read_work_request" -or $preClaimGateNames -notcontains "dispatch_work_request_planned_slice" -or $preClaimGateNames -notcontains "read_context") {
+    throw "Expected pre-claim smoke to verify architect and worker calls remain gated."
   }
 
   if ($ForbiddenBoundWorkerTools -notcontains "list_work_requests" -or $ForbiddenBoundWorkerTools -notcontains "dispatch_work_request_planned_slice") {
