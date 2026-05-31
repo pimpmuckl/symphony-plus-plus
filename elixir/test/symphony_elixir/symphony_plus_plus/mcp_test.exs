@@ -12,6 +12,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.MCPHarness
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.GrantScope
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
@@ -4481,6 +4482,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, handoff.grant.id)
     assert is_nil(unclaimed_grant.claimed_at)
+    repo.delete_all(from(scope in GrantScope, where: scope.access_grant_id == ^handoff.grant.id))
+    assert {:ok, []} = AccessGrantRepository.list_scopes(repo, handoff.grant.id)
 
     arguments = %{
       "work_request_id" => work_request.id,
@@ -4512,6 +4515,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert {:ok, claimed_grant} = AccessGrantRepository.get(repo, handoff.grant.id)
     assert claimed_grant.claimed_by == "local-architect-1"
+    assert {:ok, scope_rows} = AccessGrantRepository.list_scopes(repo, handoff.grant.id)
+    assert Enum.any?(scope_rows, &(&1.scope_type == "work_request" and &1.scope_id == work_request.id))
 
     read_response =
       Server.handle(

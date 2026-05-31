@@ -3792,6 +3792,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              claimed_by: claim.claimed_by,
              scope_repo: claim.repo,
              scope_base_branch: claim.base_branch,
+             work_request_id: claim.work_request_id,
              now: claim_now
            ),
          :ok <- validate_local_architect_assignment_grant(repo, grant, anchor, claim),
