@@ -102,7 +102,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
     end
   end
 
-  test "trusted local HTTP advertises scoped schemas before local claim and enforces claim at call time", %{config: config} do
+  test "trusted local HTTP advertises scoped schemas before local claim and enforces claim on writes", %{config: config} do
     trusted_config = %{config | local_daemon_trusted: true}
     package_id = "SYMPP-HTTP-TRUSTED-LOCAL-CLAIM"
 
@@ -175,8 +175,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
              )
 
     assert preclaim_work_request_read.status == :error
-    assert get_in(preclaim_work_request_read.response, ["error", "data", "resource"]) == "read_work_request"
-    assert get_in(preclaim_work_request_read.response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(preclaim_work_request_read.response, ["error", "data", "tool"]) == "read_work_request"
+    assert get_in(preclaim_work_request_read.response, ["error", "data", "reason"]) == "not_found"
 
     assert {:ok, claim} =
              HTTPTransport.handle(

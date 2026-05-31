@@ -69,6 +69,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @solo_tools ["solo_attach", "solo_append", "solo_show", "solo_list", "solo_update_status"]
   @bootstrap_tools ["claim_private_handoff", "create_work_request"]
   @local_operator_tools ["add_work_request_comment", "record_work_request_operator_decision"]
+  @local_trusted_work_request_read_tools ["read_work_request", "read_work_request_delivery_board"]
   @local_operator_text_max_length Comment.max_body_length()
   @local_operator_provenance_max_length 512
   @local_assignment_claim_tool "claim_local_assignment"
@@ -4568,6 +4569,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp maybe_authorize_architect_tool_call(%__MODULE__{session: nil} = server, name) when name in @local_trusted_work_request_read_tools do
+    authorize_local_trusted_work_request_read_tool_call(server, name)
+  end
+
   defp maybe_authorize_architect_tool_call(%__MODULE__{config: config, session: session}, name) when name in @work_request_policy_tools do
     with {:ok, session} <- Auth.require_session(session, config.repo) do
       authorize_work_request_tool_policy_preauthorization(config.repo, session, name)
@@ -4629,6 +4634,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if trusted_local_unbound_http_session?(server), do: @local_assignment_claim_tool, else: "claim_work_key"
   end
 
+  defp preauthorize_architect_tool_call(%__MODULE__{session: nil} = server, name) when name in @local_trusted_work_request_read_tools do
+    authorize_local_trusted_work_request_read_tool_call(server, name)
+  end
+
   defp preauthorize_architect_tool_call(%__MODULE__{session: nil} = server, name) do
     authorize_architect_tool_call(server, name)
   end
@@ -4659,6 +4668,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp authorize_bootstrap_tool_call(%__MODULE__{}, tool) do
     {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "bootstrap_tools_require_unbound_session"}}
+  end
+
+  defp authorize_local_trusted_work_request_read_tool_call(%__MODULE__{} = server, tool) do
+    authorize_local_operator_tool_call(server, tool)
   end
 
   defp authorize_local_operator_tool_call(
@@ -4979,7 +4992,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool("list_work_requests", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, status} <- optional_work_request_status(arguments),
-         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
+         {:ok, filters, scope} <-
+           scoped_work_request_filters(config.repo, session, handoff_phase_scope?: false),
          :ok <- authorize_work_request_list_policy(session, scope, "list_work_requests"),
          filters = work_request_list_filters(filters, status),
          {:ok, work_requests} <- WorkRequestService.list(config.repo, work_request_repository_filters(filters)),
@@ -4999,7 +5013,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp architect_tool("read_work_request", arguments, %__MODULE__{config: config, session: session}) do
+  defp architect_tool("read_work_request", arguments, %__MODULE__{config: config, session: nil} = server) do
+    with :ok <- authorize_local_trusted_work_request_read_tool_call(server, "read_work_request"),
+         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false),
+         {:ok, work_request, scope} <- local_trusted_work_request_read_scope(config.repo, work_request_id),
+         {:ok, payload} <- work_request_detail_payload(config.repo, work_request, include_planning_scratch?: include_planning_scratch?) do
+      payload = Map.put(payload, "scope", scope)
+      {:ok, architect_agent_tool_result(payload, :work_request_read)}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_work_request", "reason" => reason}}
+      {:error, :not_found} -> not_found_error("read_work_request")
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:error, reason} -> architect_error(reason, "read_work_request")
+    end
+  end
+
+  defp architect_tool("read_work_request", arguments, %__MODULE__{config: config, session: %Session{} = session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false),
@@ -5059,7 +5089,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp architect_tool("read_work_request_delivery_board", arguments, %__MODULE__{config: config, session: session}) do
+  defp architect_tool("read_work_request_delivery_board", arguments, %__MODULE__{config: config, session: %Session{} = session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false),
@@ -5078,6 +5108,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_work_request_delivery_board", "reason" => reason}}
       {:error, :not_found} -> not_found_error("read_work_request_delivery_board")
+      {:error, reason} -> architect_error(reason, "read_work_request_delivery_board")
+    end
+  end
+
+  defp architect_tool("read_work_request_delivery_board", arguments, %__MODULE__{config: config, session: nil} = server) do
+    with :ok <- authorize_local_trusted_work_request_read_tool_call(server, "read_work_request_delivery_board"),
+         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false),
+         {:ok, work_request, scope} <- local_trusted_work_request_read_scope(config.repo, work_request_id),
+         {:ok, planned_slices} <- WorkRequestService.list_planned_slices(config.repo, work_request_id),
+         {:ok, delivery_board} <-
+           scoped_delivery_board(config.repo, work_request, planned_slices, scope, include_planning_scratch?: include_planning_scratch?) do
+      payload = %{
+        "work_request" => work_request_mutation_payload(work_request),
+        "delivery_board" => delivery_board_payload(delivery_board),
+        "scope" => scope
+      }
+
+      {:ok, architect_agent_tool_result(payload, :work_request_delivery_board)}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_work_request_delivery_board", "reason" => reason}}
+      {:error, :not_found} -> not_found_error("read_work_request_delivery_board")
+      {:error, code, message, data} -> {:error, code, message, data}
       {:error, reason} -> architect_error(reason, "read_work_request_delivery_board")
     end
   end
@@ -6299,12 +6352,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp scoped_work_request_filters(repo, %Session{} = session) do
+  defp scoped_work_request_filters(repo, %Session{} = session, opts \\ []) do
     with {:ok, grant} <- require_live_architect_grant(repo, session),
          :ok <- require_work_request_anchor_scope(repo, session, grant),
          {:ok, filters} <- Dashboard.phase_board_filters_for_grant(grant),
          {:ok, scope} <- work_request_scope_payload(filters),
-         {:ok, scope} <- maybe_put_handoff_phase_scope(repo, scope, grant) do
+         {:ok, scope} <- maybe_put_handoff_phase_scope(repo, scope, grant, opts) do
       {:ok, work_request_filters_from_scope(scope), scope}
     else
       {:error, :forbidden} -> {:error, :phase_scope_not_available}
@@ -6382,6 +6435,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, true} -> {:ok, Map.put(scope, "phase_id", grant.phase_id)}
       {:ok, false} -> {:ok, scope}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_put_handoff_phase_scope(repo, scope, %AccessGrant{} = grant, opts) do
+    if Keyword.get(opts, :handoff_phase_scope?, true) do
+      maybe_put_handoff_phase_scope(repo, scope, grant)
+    else
+      {:ok, scope}
     end
   end
 
@@ -6577,7 +6638,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp authorized_architect_work_request_scope(repo, %Session{} = session, work_request_id, action, tool) do
-    with {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
+    with {:ok, filters, scope} <-
+           scoped_work_request_filters(repo, session, handoff_phase_scope?: not repo_scope_read_action?(action)),
          {:ok, work_request} <-
            scoped_work_request(
              repo,
@@ -6795,6 +6857,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     else
       {:error, :forbidden} -> {:error, :not_found}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp local_trusted_work_request_read_scope(repo, work_request_id) do
+    with {:ok, %WorkRequest{} = work_request} <- WorkRequestService.get(repo, work_request_id) do
+      {:ok, work_request, %{"repo" => work_request.repo, "base_branch" => work_request.base_branch}}
     end
   end
 

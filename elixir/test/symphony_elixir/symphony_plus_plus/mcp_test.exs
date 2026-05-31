@@ -1314,7 +1314,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert is_list(get_in(post_init_response, ["result", "tools"]))
   end
 
-  test "tools list exposes scoped schemas before binding while calls stay claim-gated", %{repo: repo} do
+  test "tools list exposes scoped schemas before binding while write calls stay claim-gated", %{repo: repo} do
     unbound_server = Server.new(Config.default(repo: repo), initialized: true)
 
     unbound_response =
@@ -1398,9 +1398,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(unclaimed_read_response, ["error", "code"]) == -32_001
-    assert get_in(unclaimed_read_response, ["error", "data", "resource"]) == "read_work_request"
-    assert get_in(unclaimed_read_response, ["error", "data", "reason"]) == "claim_required"
-    assert get_in(unclaimed_read_response, ["error", "data", "action"]) == "claim_work_key"
+    assert get_in(unclaimed_read_response, ["error", "data", "tool"]) == "read_work_request"
+    assert get_in(unclaimed_read_response, ["error", "data", "reason"]) == "local_mcp_required"
 
     unclaimed_progress_response =
       Server.handle(
@@ -1929,6 +1928,150 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(status_response, ["error", "data", "reason"]) == "claim_required"
+  end
+
+  test "trusted local unbound HTTP can read WorkRequest slices and delivery boards without claim", %{repo: repo} do
+    work_request =
+      create_work_request!(
+        repo,
+        id: "WR-MCP-LOCAL-READ",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "feature/sympp-v21-ledger-claims",
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-LOCAL-READ",
+                 target_base_branch: work_request.base_branch
+               )
+             )
+
+    local_server = local_mcp_server(local_mcp_config(repo), "local-work-request-read-state")
+    tools_by_name = tools_for_server(local_server) |> Map.new(&{&1["name"], &1})
+
+    assert Map.has_key?(tools_by_name, "read_work_request")
+    assert Map.has_key?(tools_by_name, "read_work_request_delivery_board")
+
+    {read_response, read_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-read-work-request",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_work_request", "arguments" => %{"work_request_id" => work_request.id}}
+        },
+        local_server
+      )
+
+    assert read_server.session == nil
+    assert get_in(read_response, ["result", "structuredContent", "work_request", "id"]) == work_request.id
+    assert get_in(read_response, ["result", "structuredContent", "planned_slices", Access.at(0), "id"]) == planned_slice.id
+
+    assert get_in(read_response, ["result", "structuredContent", "scope"]) == %{
+             "repo" => work_request.repo,
+             "base_branch" => work_request.base_branch
+           }
+
+    board_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-read-delivery-board",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "read_work_request_delivery_board",
+            "arguments" => %{"work_request_id" => work_request.id}
+          }
+        },
+        read_server
+      )
+
+    assert get_in(board_response, ["result", "structuredContent", "work_request", "id"]) == work_request.id
+    assert get_in(board_response, ["result", "structuredContent", "delivery_board", "slices", Access.at(0), "id"]) == planned_slice.id
+
+    mutation_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-read-mutation-denied",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "add_work_request_planned_slice",
+            "arguments" => %{
+              "work_request_id" => work_request.id,
+              "title" => "Denied local mutation",
+              "goal" => "Unclaimed local read must not write.",
+              "work_package_kind" => "mcp",
+              "target_base_branch" => work_request.base_branch,
+              "owned_file_globs" => ["elixir/lib/symphony_elixir/symphony_plus_plus/mcp/server.ex"],
+              "forbidden_file_globs" => [],
+              "acceptance_criteria" => ["Mutation remains claim-gated."],
+              "validation_steps" => ["mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs"],
+              "review_lanes" => ["normal"],
+              "stop_conditions" => ["Stop before unclaimed mutation."]
+            }
+          }
+        },
+        read_server
+      )
+
+    assert get_in(mutation_response, ["error", "data", "reason"]) == "claim_required"
+    assert {:ok, [persisted_slice]} = WorkRequestRepository.list_planned_slices(repo, work_request.id)
+    assert persisted_slice.id == planned_slice.id
+  end
+
+  test "unclaimed WorkRequest reads require trusted local HTTP with explicit state", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-MCP-LOCAL-READ-DENIED")
+    arguments = %{"work_request_id" => work_request.id}
+
+    stdio_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "stdio-work-request-read-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_work_request", "arguments" => arguments}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(stdio_response, ["error", "code"]) == -32_001
+    assert get_in(stdio_response, ["error", "data", "reason"]) == "local_mcp_required"
+
+    implicit_state_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "implicit-state-work-request-read-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_work_request", "arguments" => arguments}
+        },
+        Server.new(local_mcp_config(repo), initialized: true, local_daemon_trusted: true)
+      )
+
+    assert get_in(implicit_state_response, ["error", "code"]) == -32_001
+    assert get_in(implicit_state_response, ["error", "data", "reason"]) == "local_mcp_session_required"
+
+    remote_config = %{local_mcp_config(repo) | database: "https://ledger.example.test/mcp?token=ghp_localreadsecret"}
+
+    remote_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "remote-work-request-read-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_work_request_delivery_board", "arguments" => arguments}
+        },
+        local_mcp_server(remote_config, "remote-work-request-read-state")
+      )
+
+    assert get_in(remote_response, ["error", "code"]) == -32_001
+    assert get_in(remote_response, ["error", "data", "reason"]) == "local_database_required"
+    refute inspect(remote_response) =~ "ghp_localreadsecret"
   end
 
   test "local operator WorkRequest note tools reject nonlocal and remote database modes", %{repo: repo} do
@@ -7703,7 +7846,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(missing_read_response, ["error", "data", "reason"]) == "outside_session_scope"
   end
 
-  test "WorkRequest MCP tools for handoff phases are pinned to the handoff WorkRequest", %{repo: repo} do
+  test "WorkRequest MCP read tools for handoff phases include same repo/base siblings", %{repo: repo} do
     handoff_work_request =
       create_work_request!(repo,
         id: "WR-MCP-WR-HANDOFF",
@@ -7720,10 +7863,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         status: "ready_for_slicing"
       )
 
+    _other_repo =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-HANDOFF-OTHER-REPO",
+        repo: "nextide/other",
+        base_branch: handoff_work_request.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    other_base =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-HANDOFF-OTHER-BASE",
+        repo: handoff_work_request.repo,
+        base_branch: "release/handoff-sibling",
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, sibling_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               sibling.id,
+               work_request_planned_slice_attrs(id: "WRS-MCP-WR-HANDOFF-SIBLING", target_base_branch: sibling.base_branch)
+             )
+
     {anchor, session, _grant} =
       create_work_request_handoff_architect_session(repo, handoff_work_request, [
         "read:work_request",
-        "write:work_request"
+        "write:work_request",
+        "dispatch:work_request"
       ])
 
     list_response = mcp_tool(repo, session, "list_work_requests", %{"status" => "ready_for_slicing"})
@@ -7731,16 +7898,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert list_payload["scope"] == %{
              "repo" => anchor.repo,
-             "base_branch" => anchor.base_branch,
-             "phase_id" => anchor.phase_id
+             "base_branch" => anchor.base_branch
            }
 
-    assert Enum.map(list_payload["work_requests"], & &1["id"]) == [handoff_work_request.id]
+    assert Enum.map(list_payload["work_requests"], & &1["id"]) == [handoff_work_request.id, sibling.id]
+    refute inspect(list_response) =~ "WR-MCP-WR-HANDOFF-OTHER-REPO"
+    refute inspect(list_response) =~ other_base.id
 
     sibling_read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => sibling.id})
-    assert get_in(sibling_read_response, ["error", "code"]) == -32_004
-    assert get_in(sibling_read_response, ["error", "data", "reason"]) == "not_found"
-    refute inspect(sibling_read_response) =~ sibling.id
+    assert get_in(sibling_read_response, ["result", "structuredContent", "work_request", "id"]) == sibling.id
+
+    sibling_board_response = mcp_tool(repo, session, "read_work_request_delivery_board", %{"work_request_id" => sibling.id})
+    assert get_in(sibling_board_response, ["result", "structuredContent", "work_request", "id"]) == sibling.id
+
+    other_base_read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => other_base.id})
+    assert get_in(other_base_read_response, ["error", "code"]) == -32_004
+    assert get_in(other_base_read_response, ["error", "data", "reason"]) == "not_found"
+    refute inspect(other_base_read_response) =~ other_base.id
 
     sibling_status_response =
       mcp_tool(repo, session, "set_work_request_status", %{
@@ -7753,8 +7927,98 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(sibling_status_response, ["error", "data", "reason"]) == "not_found"
     refute inspect(sibling_status_response) =~ sibling.id
 
+    sibling_question_response =
+      mcp_tool(repo, session, "ask_work_request_question", %{
+        "work_request_id" => sibling.id,
+        "category" => "scope",
+        "question" => "Can the sibling be mutated?",
+        "why_needed" => "Mutation must stay pinned to the claimed WorkRequest."
+      })
+
+    assert get_in(sibling_question_response, ["error", "code"]) == -32_004
+    assert get_in(sibling_question_response, ["error", "data", "reason"]) == "not_found"
+
+    sibling_decision_response =
+      mcp_tool(repo, session, "record_work_request_decision", %{
+        "work_request_id" => sibling.id,
+        "source_type" => "architect",
+        "decision" => "Mutate sibling",
+        "rationale" => "This should be denied.",
+        "scope_impact" => "No sibling state should change.",
+        "created_by" => "architect-1"
+      })
+
+    assert get_in(sibling_decision_response, ["error", "code"]) == -32_004
+    assert get_in(sibling_decision_response, ["error", "data", "reason"]) == "not_found"
+
+    sibling_add_slice_response =
+      mcp_tool(repo, session, "add_work_request_planned_slice", %{
+        "work_request_id" => sibling.id,
+        "title" => "Sibling mutation",
+        "goal" => "This should be denied.",
+        "work_package_kind" => "mcp",
+        "target_base_branch" => sibling.base_branch,
+        "owned_file_globs" => ["elixir/lib/symphony_elixir/symphony_plus_plus/mcp/server.ex"],
+        "forbidden_file_globs" => [],
+        "acceptance_criteria" => ["Sibling mutation remains denied."],
+        "validation_steps" => ["mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs"],
+        "review_lanes" => ["normal"],
+        "stop_conditions" => ["Stop before mutating siblings."]
+      })
+
+    assert get_in(sibling_add_slice_response, ["error", "code"]) == -32_004
+    assert get_in(sibling_add_slice_response, ["error", "data", "reason"]) == "not_found"
+
+    sibling_approve_response =
+      mcp_tool(repo, session, "approve_work_request_planned_slice", %{
+        "work_request_id" => sibling.id,
+        "planned_slice_id" => sibling_slice.id,
+        "current_status" => "planned"
+      })
+
+    assert get_in(sibling_approve_response, ["error", "code"]) == -32_004
+    assert get_in(sibling_approve_response, ["error", "data", "reason"]) == "not_found"
+
+    sibling_skip_response =
+      mcp_tool(repo, session, "skip_work_request_planned_slice", %{
+        "work_request_id" => sibling.id,
+        "planned_slice_id" => sibling_slice.id,
+        "current_status" => "planned"
+      })
+
+    assert get_in(sibling_skip_response, ["error", "code"]) == -32_004
+    assert get_in(sibling_skip_response, ["error", "data", "reason"]) == "not_found"
+
+    sibling_dispatch_response =
+      mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
+        "work_request_id" => sibling.id,
+        "planned_slice_id" => sibling_slice.id,
+        "claimed_by" => "sibling-worker"
+      })
+
+    assert get_in(sibling_dispatch_response, ["error", "code"]) == -32_004
+    assert get_in(sibling_dispatch_response, ["error", "data", "reason"]) == "not_found"
+
+    sibling_delivery_response =
+      mcp_tool(repo, session, "record_planned_slice_delivery", %{
+        "work_request_id" => sibling.id,
+        "planned_slice_id" => sibling_slice.id,
+        "outcome" => "completed_no_pr",
+        "no_pr_evidence" => "Sibling delivery mutation should be denied.",
+        "idempotency_key" => "sibling-delivery-denied"
+      })
+
+    assert get_in(sibling_delivery_response, ["error", "code"]) == -32_004
+    assert get_in(sibling_delivery_response, ["error", "data", "reason"]) == "not_found"
+
     assert {:ok, persisted_sibling} = WorkRequestRepository.get(repo, sibling.id)
     assert persisted_sibling.status == "ready_for_slicing"
+    assert {:ok, []} = WorkRequestRepository.list_questions(repo, sibling.id)
+    assert {:ok, []} = WorkRequestRepository.list_decisions(repo, sibling.id)
+    assert {:ok, [persisted_sibling_slice]} = WorkRequestRepository.list_planned_slices(repo, sibling.id)
+    assert persisted_sibling_slice.id == sibling_slice.id
+    assert persisted_sibling_slice.status == "planned"
+    assert is_nil(persisted_sibling_slice.work_package_id)
 
     target_read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => handoff_work_request.id})
     assert get_in(target_read_response, ["result", "structuredContent", "work_request", "id"]) == handoff_work_request.id
