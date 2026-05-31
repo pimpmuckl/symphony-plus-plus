@@ -46,6 +46,7 @@ defmodule SymphonyElixir.MixProject do
       test_ignore_filters: [
         "test/support/github_test_support.exs",
         "test/support/mcp_harness.exs",
+        "test/support/symphony_plus_plus/agent_format_fixtures.exs",
         "test/support/snapshot_support.exs",
         "test/support/test_support.exs",
         "test/support/work_package_factory.exs"
