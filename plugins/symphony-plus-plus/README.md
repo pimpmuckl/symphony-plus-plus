@@ -294,12 +294,14 @@ cd elixir
 mix sympp.cockpit --dashboard-origin http://127.0.0.1:19999
 ```
 
-By default it prints `http://127.0.0.1:19999/sympp/board` and serves MCP at
-`http://127.0.0.1:19998/mcp`, backed by the shared local Symphony++ default
-ledger, preferring `$HOME/.agents/splusplus/symphony_plus_plus.sqlite3`
+By default it prints `http://127.0.0.1:19999/sympp/board` without opening a
+browser and serves MCP at `http://127.0.0.1:19998/mcp`, backed by the shared
+local Symphony++ default ledger, preferring
+`$HOME/.agents/splusplus/symphony_plus_plus.sqlite3`
 (`%USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3` on Windows) and
 falling back under a temp/relative `.agents/splusplus` root if home is
-unavailable. Pass `--database <ledger.sqlite3>` only for isolation. Codex must load an MCP server
+unavailable. Pass `--open-dashboard` only for a deliberate browser launch, and
+pass `--database <ledger.sqlite3>` only for isolation. Codex must load an MCP server
 configuration before the model session starts for the tools to be registered in
 that session. The
 sibling `plugins/symphony-plus-plus-mcp` plugin is the bundled opt-in package
