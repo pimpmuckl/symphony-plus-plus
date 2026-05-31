@@ -348,6 +348,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     assert [] = Enum.filter(scope_rows, &(&1.scope_type == "planned_slice"))
   end
 
+  test "architect grants derive work request scope from requested planned slice", %{repo: repo} do
+    assert {:ok, phase} =
+             PhaseRepository.create(repo, %{
+               id: "phase-requested-planned-slice-work-request",
+               title: "Requested planned slice WorkRequest"
+             })
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(kind: "phase_child", phase_id: phase.id)
+             )
+
+    insert_work_request!(repo, "wr-requested-planned-slice", work_package.repo, work_package.base_branch)
+    insert_planned_slice!(repo, "wrs-requested-planned-slice", "wr-requested-planned-slice", work_package.id, work_package.base_branch)
+
+    assert {:ok, %{grant: grant}} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               planned_slice_id: "wrs-requested-planned-slice",
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+
+    assert {:ok, scope_rows} = Repository.list_scopes(repo, grant.id)
+    assert [%GrantScope{scope_type: "work_request", scope_id: "wr-requested-planned-slice"}] = Enum.filter(scope_rows, &(&1.scope_type == "work_request"))
+    assert [%GrantScope{scope_type: "planned_slice", scope_id: "wrs-requested-planned-slice"}] = Enum.filter(scope_rows, &(&1.scope_type == "planned_slice"))
+  end
+
   test "default worker grants are non-expiring and remain claimable", %{repo: repo} do
     assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
     assert {:ok, minted} = Service.mint_worker_grant(repo, work_package.id)

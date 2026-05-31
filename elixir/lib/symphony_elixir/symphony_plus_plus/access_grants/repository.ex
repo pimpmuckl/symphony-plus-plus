@@ -974,10 +974,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
         AuthScope.work_request(work_request_id)
 
       nil ->
-        case work_request_id_for_work_package(repo, work_package_id) do
+        case requested_planned_slice_work_request_id_from_attrs(repo, work_package_id, attrs) do
           {:ok, work_request_id} -> AuthScope.work_request(work_request_id)
-          {:error, :not_found} -> nil
+          {:error, :not_found} -> work_package_work_request_scope(repo, work_package_id)
         end
+    end
+  end
+
+  defp work_package_work_request_scope(repo, work_package_id) do
+    case work_request_id_for_work_package(repo, work_package_id) do
+      {:ok, work_request_id} -> AuthScope.work_request(work_request_id)
+      {:error, :not_found} -> nil
+    end
+  end
+
+  defp requested_planned_slice_work_request_id_from_attrs(repo, work_package_id, attrs) do
+    case string_attr(attrs, "planned_slice_id") do
+      planned_slice_id when is_binary(planned_slice_id) ->
+        requested_planned_slice_work_request_id(repo, work_package_id, planned_slice_id)
+
+      nil ->
+        {:error, :not_found}
+    end
+  end
+
+  defp requested_planned_slice_work_request_id(_repo, work_package_id, _planned_slice_id)
+       when not is_binary(work_package_id),
+       do: {:error, :not_found}
+
+  defp requested_planned_slice_work_request_id(repo, work_package_id, planned_slice_id) do
+    query =
+      from(slice in "sympp_work_request_planned_slices",
+        where: field(slice, :id) == ^planned_slice_id,
+        where: field(slice, :work_package_id) == ^work_package_id,
+        select: field(slice, :work_request_id),
+        limit: 1
+      )
+
+    case repo.one(query) do
+      work_request_id when is_binary(work_request_id) -> {:ok, work_request_id}
+      _work_request_id -> {:error, :not_found}
     end
   end
 
