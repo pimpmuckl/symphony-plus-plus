@@ -56,7 +56,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     "revoke_child_worker_key",
     "list_work_requests",
     "read_work_request",
+    "add_comment",
     "list_comments",
+    "resolve_comment",
+    "resolve_blocker",
     "read_work_request_delivery_board",
     "reconcile_work_request",
     "record_planned_slice_delivery",
@@ -271,7 +274,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     def get(schema, id), do: Repo.get(schema, id)
     def insert(changeset), do: Repo.insert(changeset)
+    def all(query), do: Repo.all(query)
     def one(query), do: Repo.one(query)
+    def update(changeset), do: Repo.update(changeset)
 
     def update_all(query, updates) do
       case Process.get(@race_key) do
@@ -1451,7 +1456,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     end
   end
 
-  test "worker comment tools create list and resolve scoped comments", %{repo: repo} do
+  test "worker comment tools create list and resolve exact package comments only", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-MCP-COMMENTS", kind: "mcp", repo: "nextide/symphony-plus-plus", base_branch: "main"))
 
@@ -1476,11 +1481,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     repo.update!(Ecto.Changeset.change(planned_slice, status: "dispatched", work_package_id: work_package.id))
 
-    overlong_response =
+    work_request_comment_response =
       mcp_tool(repo, session, "add_comment", %{
         "work_package_id" => work_package.id,
         "target_kind" => "work_request",
         "target_id" => work_request.id,
+        "body" => "This must stay architect-owned"
+      })
+
+    assert get_in(work_request_comment_response, ["error", "code"]) == -32_003
+    assert get_in(work_request_comment_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    planned_slice_comment_response =
+      mcp_tool(repo, session, "add_comment", %{
+        "work_package_id" => work_package.id,
+        "target_kind" => "planned_slice",
+        "target_id" => planned_slice.id,
+        "body" => "This must stay architect-owned"
+      })
+
+    assert get_in(planned_slice_comment_response, ["error", "code"]) == -32_003
+    assert get_in(planned_slice_comment_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    overlong_response =
+      mcp_tool(repo, session, "add_comment", %{
+        "work_package_id" => work_package.id,
+        "target_kind" => "work_package",
+        "target_id" => work_package.id,
         "body" => String.duplicate("x", Comment.max_body_length() + 1)
       })
 
@@ -1489,8 +1516,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     add_response =
       mcp_tool(repo, session, "add_comment", %{
         "work_package_id" => work_package.id,
-        "target_kind" => "work_request",
-        "target_id" => work_request.id,
+        "target_kind" => "work_package",
+        "target_id" => work_package.id,
         "body" => "Check sk-secret123 before merge"
       })
 
@@ -1500,8 +1527,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     list_response =
       mcp_tool(repo, session, "list_comments", %{
         "work_package_id" => work_package.id,
-        "target_kind" => "work_request",
-        "target_id" => work_request.id
+        "target_kind" => "work_package",
+        "target_id" => work_package.id
       })
 
     assert [%{"id" => ^comment_id, "status" => "open"}] = get_in(list_response, ["result", "structuredContent", "comments"])
@@ -1533,7 +1560,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "target_id" => other_package.id
       })
 
-    assert get_in(out_of_scope_response, ["error", "data", "reason"]) == "comment_target_out_of_scope"
+    assert get_in(out_of_scope_response, ["error", "data", "reason"]) == "outside_session_scope"
 
     out_of_scope_resolve_response =
       mcp_tool(repo, session, "resolve_comment", %{
@@ -1541,15 +1568,138 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "comment_id" => foreign_comment.id
       })
 
-    assert get_in(out_of_scope_resolve_response, ["error", "data", "reason"]) == "comment_target_out_of_scope"
+    assert get_in(out_of_scope_resolve_response, ["error", "data", "reason"]) == "not_found"
+  end
 
-    missing_resolve_response =
-      mcp_tool(repo, session, "resolve_comment", %{
-        "work_package_id" => work_package.id,
-        "comment_id" => "comment_missing"
+  test "architect comment and blocker tools distinguish external WR notes from claimed descendants", %{repo: repo} do
+    work_request =
+      create_work_request!(
+        repo,
+        id: "WR-MCP-ARCH-PACKAGE-SURFACES",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "main",
+        status: "ready_for_slicing"
+      )
+
+    sibling =
+      create_work_request!(
+        repo,
+        id: "WR-MCP-ARCH-PACKAGE-SURFACES-SIBLING",
+        repo: work_request.repo,
+        base_branch: work_request.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(id: "WRS-MCP-ARCH-PACKAGE-SURFACES", target_base_branch: work_request.base_branch)
+             )
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-MCP-ARCH-PACKAGE-SURFACES",
+                 kind: "mcp",
+                 repo: work_request.repo,
+                 base_branch: work_request.base_branch,
+                 status: "implementing"
+               )
+             )
+
+    repo.update!(Ecto.Changeset.change(planned_slice, status: "dispatched", work_package_id: work_package.id))
+
+    {_phase_anchor, phase_session, _phase_grant} =
+      create_phase_architect_session(
+        repo,
+        "SYMPP-MCP-ARCH-PHASE-COMMENTS",
+        [
+          "read:work_request",
+          "write:work_request"
+        ],
+        repo: work_request.repo,
+        base_branch: work_request.base_branch
+      )
+
+    work_package =
+      repo.update!(Ecto.Changeset.change(work_package, phase_id: phase_session.assignment.phase_id))
+
+    external_response =
+      mcp_tool(repo, phase_session, "add_comment", %{
+        "target_kind" => "work_request",
+        "target_id" => sibling.id,
+        "body" => "External note without claiming lifecycle authority"
       })
 
-    assert get_in(missing_resolve_response, ["error", "data", "reason"]) == "comment_target_out_of_scope"
+    assert external_comment_id = get_in(external_response, ["result", "structuredContent", "comment", "id"])
+    assert get_in(external_response, ["result", "structuredContent", "comment", "source_type"]) == "architect"
+
+    external_resolve_response =
+      mcp_tool(repo, phase_session, "resolve_comment", %{
+        "comment_id" => external_comment_id,
+        "resolution_note" => "Trying to close an external note"
+      })
+
+    assert get_in(external_resolve_response, ["error", "data", "reason"]) == "not_found"
+
+    descendant_write_denied =
+      mcp_tool(repo, phase_session, "add_comment", %{
+        "target_kind" => "work_package",
+        "target_id" => work_package.id,
+        "body" => "Phase read scope is not descendant write authority"
+      })
+
+    assert get_in(descendant_write_denied, ["error", "code"]) == -32_003
+    assert get_in(descendant_write_denied, ["error", "data", "reason"]) == "outside_session_scope"
+
+    {_handoff_anchor, handoff_session, _handoff_grant} =
+      create_work_request_handoff_architect_session(repo, work_request, [
+        "read:work_request",
+        "write:work_request"
+      ])
+
+    descendant_comment_response =
+      mcp_tool(repo, handoff_session, "add_comment", %{
+        "target_kind" => "work_package",
+        "target_id" => work_package.id,
+        "body" => "Descendant package guidance"
+      })
+
+    assert get_in(descendant_comment_response, ["result", "structuredContent", "comment", "target_id"]) == work_package.id
+
+    phase_read_response =
+      mcp_tool(repo, phase_session, "list_comments", %{
+        "target_kind" => "work_package",
+        "target_id" => work_package.id
+      })
+
+    assert get_in(phase_read_response, ["result", "structuredContent", "comments"])
+           |> Enum.any?(&(&1["target_id"] == work_package.id))
+
+    assert {:ok, _blocker_event} =
+             PlanningRepository.append_audit_progress_event_for_work_package(repo, handoff_session.assignment, work_package.id, %{
+               "summary" => "Waiting for architect",
+               "idempotency_key" => "arch-policy-blocker",
+               "payload" => %{
+                 "type" => "blocker",
+                 "source_tool" => "report_blocker",
+                 "blocker_id" => "arch-policy-blocker",
+                 "active" => true
+               }
+             })
+
+    resolve_blocker_response =
+      mcp_tool(repo, handoff_session, "resolve_blocker", %{
+        "work_package_id" => work_package.id,
+        "blocker_id" => "arch-policy-blocker",
+        "resolution" => "Architect supplied the missing decision.",
+        "summary" => "Cleared architect blocker",
+        "idempotency_key" => "arch-policy-blocker-resolved"
+      })
+
+    assert get_in(resolve_blocker_response, ["result", "structuredContent", "progress_event", "payload", "active"]) == false
   end
 
   test "local operator WorkRequest note tools append comments and decisions with redacted provenance", %{repo: repo} do
@@ -2361,6 +2511,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "properties", "work_request_id", "type"]) == "string"
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "properties", "include_planning_scratch", "type"]) == "boolean"
+    assert get_in(tools_by_name, ["add_comment", "inputSchema", "required"]) == ["target_kind", "target_id", "body"]
+    assert get_in(tools_by_name, ["list_comments", "inputSchema", "required"]) == ["target_kind", "target_id"]
+    assert get_in(tools_by_name, ["resolve_comment", "inputSchema", "required"]) == ["comment_id"]
+    assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["work_package_id", "blocker_id", "resolution", "summary", "idempotency_key"]
     assert get_in(tools_by_name, ["read_work_request_delivery_board", "inputSchema", "required"]) == ["work_request_id"]
     assert get_in(tools_by_name, ["read_work_request_delivery_board", "inputSchema", "properties", "include_planning_scratch", "type"]) == "boolean"
     assert get_in(tools_by_name, ["reconcile_work_request", "inputSchema", "required"]) == ["work_request_id"]
@@ -6601,7 +6755,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert get_in(resource_response, ["error", "data", "reason"]) == "worker_grant_required"
+    assert get_in(resource_response, ["error", "data", "reason"]) == "insufficient_capability"
 
     assignment_resource_response =
       MCPHarness.request(
@@ -17722,6 +17876,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, minted} =
              AccessGrantService.mint_architect_grant(repo, phase_id,
                work_package_id: anchor.id,
+               work_request_id: work_request.id,
                capabilities: capabilities
              )
 
