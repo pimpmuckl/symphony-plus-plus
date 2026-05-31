@@ -16,11 +16,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.AgentFormat.ArchitectContext
   alias SymphonyElixir.SymphonyPlusPlus.Authorization.Scope
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service, as: ClaimLeaseService
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
+  alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Server, Session, Stdio}
   alias SymphonyElixir.SymphonyPlusPlus.MCP.Repository, as: MCPRepository
@@ -416,6 +418,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     repo.delete_all(SoloSession)
     repo.delete_all(Comment)
     repo.delete_all(ClaimLease)
+    repo.delete_all(GrantScope)
+    repo.delete_all(GuidanceRequest)
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkRequest)
     repo.delete_all(WorkPackage)
@@ -5202,6 +5206,75 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert handoff_secret_absent?(private_handoff, inspect(database_response))
   end
 
+  test "architect handoff TOON preserves runtime identifiers losslessly" do
+    long_path = "C:/sympp/" <> String.duplicate("deep-directory/", 25) <> "architect-handoff.secret"
+    long_database = "sqlite:///" <> String.duplicate("ledger-segment-", 25) <> "sympp.sqlite3"
+    long_claimed_by = String.duplicate("architect-claim-owner-", 20)
+
+    toon =
+      ArchitectContext.encode_handoff_reference(%{
+        "work_request_id" => "WR-MCP-LONG-HANDOFF",
+        "repo" => "nextide/symphony-plus-plus",
+        "base_branch" => "main",
+        "phase_id" => "phase-long-handoff",
+        "architect_anchor_work_package_id" => "SYMPP-LONG-HANDOFF",
+        "ledger_database" => long_database,
+        "local_architect_claim" => %{
+          "tool" => "claim_local_architect_assignment",
+          "required_runtime_arguments" => ["caller_id", "claimed_by"],
+          "arguments" => %{
+            "caller_id" => "codex-local-architect-long-handoff",
+            "claimed_by" => long_claimed_by,
+            "worktree_path" => long_path
+          }
+        },
+        "private_handoff" => %{
+          "mode" => "local-private-file",
+          "target" => "SymphonyPlusPlus:architect:SYMPP-LONG-HANDOFF:ABCD:grant-long",
+          "path" => long_path,
+          "grant_id" => "grant-long",
+          "display_key" => "ABCD",
+          "work_package_id" => "SYMPP-LONG-HANDOFF"
+        }
+      })
+
+    assert toon =~ "agent_context: architect_handoff_reference"
+    assert toon =~ long_path
+    assert toon =~ long_database
+    assert toon =~ long_claimed_by
+    refute toon =~ "..."
+  end
+
+  test "architect TOON redacts sensitive text before shortening display fields" do
+    secret_near_limit = String.duplicate("a", 276) <> "sk-1234567890"
+
+    toon =
+      ArchitectContext.encode_tool_payload(
+        %{
+          "work_request" => %{
+            "id" => "WR-MCP-TOON-REDACT",
+            "title" => "Redact before compacting",
+            "repo" => "symphony-plus-plus",
+            "base_branch" => "main",
+            "status" => "sliced"
+          },
+          "decision_log_entries" => [
+            %{
+              "id" => "decision-redact",
+              "decision" => secret_near_limit,
+              "rationale" => "Display text stays compact after redaction."
+            }
+          ]
+        },
+        :work_request_read
+      )
+
+    assert toon =~ "agent_context: work_request_read"
+    assert toon =~ "RED"
+    refute toon =~ "sk-"
+    refute toon =~ "sk-1234567890"
+  end
+
   test "create_work_request creates provenance and a claimable redacted architect handoff", %{repo: repo} do
     store_dir = Path.join(test_handoff_store_dir(), "create-work-request")
     previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
@@ -5234,6 +5307,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert payload["work_request"]["status"] == "ready_for_clarification"
     assert is_binary(payload["launch_prompt"])
     assert payload["launch_prompt"] =~ "claim_private_handoff"
+    assert payload["launch_prompt"] =~ "Reference identifiers (TOON)"
+    assert payload["launch_prompt"] =~ "agent_context: architect_handoff_reference"
+    assert get_in(payload, ["architect_handoff", "agent_context"]) =~ "agent_context: architect_handoff_reference"
+
+    content_text = get_in(response, ["result", "content", Access.at(0), "text"])
+    assert content_text =~ "agent_context: create_work_request_handoff"
+    assert content_text =~ "launch_prompt:"
+    assert content_text =~ "claim_private_handoff"
+    assert content_text =~ "Reference identifiers (TOON)"
 
     private_handoff = get_in(payload, ["architect_handoff", "secret_handoff"])
     assert private_handoff["mode"] == "local-private-file"
@@ -7229,6 +7311,182 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              repo.aggregate(ProgressEvent, :count),
              repo.aggregate(Artifact, :count)
            } == counts_before
+  end
+
+  test "architect-facing MCP reads emit TOON text without changing structured WorkRequest truth", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-TOON", [
+        "read:work_request",
+        "read:guidance_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-TOON",
+        title: "Emit TOON architect context",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "sliced"
+      )
+
+    assert {:ok, answered_question} =
+             WorkRequestRepository.ask_question(repo, work_request.id, work_request_question_attrs(id: "WRQ-MCP-WR-TOON"))
+
+    assert {:ok, _answered} =
+             WorkRequestRepository.answer_question(repo, answered_question.id, "open", %{
+               answer: "Keep the WorkRequest backend-only.",
+               answered_by: "operator-1"
+             })
+
+    assert {:ok, _decision} =
+             WorkRequestRepository.record_decision(
+               repo,
+               work_request.id,
+               work_request_decision_attrs(
+                 id: "WRD-MCP-WR-TOON",
+                 decision: "Use one worker package.",
+                 rationale: "Delivery sequencing stays in the planned slices.",
+                 scope_impact: "No lifecycle state is inferred from this decision."
+               )
+             )
+
+    assert {:ok, dispatched_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-WR-TOON-DISPATCHED",
+                 title: "Implement TOON MCP text",
+                 target_base_branch: anchor.base_branch,
+                 branch_pattern: "feat/toon-architect-context"
+               )
+             )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-WR-TOON-PLANNED",
+                 title: "Follow-up dashboard markdown",
+                 target_base_branch: anchor.base_branch,
+                 branch_pattern: "feat/toon-dashboard-followup"
+               )
+             )
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, dispatched_slice.id, "planned")
+
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-TOON-DELIVERY",
+                 kind: approved_slice.work_package_kind,
+                 title: approved_slice.title,
+                 repo: work_request.repo,
+                 base_branch: approved_slice.target_base_branch,
+                 branch_pattern: approved_slice.branch_pattern,
+                 phase_id: anchor.phase_id,
+                 product_description: work_request.human_description,
+                 engineering_scope: approved_slice.goal,
+                 allowed_file_globs: approved_slice.owned_file_globs,
+                 acceptance_criteria: approved_slice.acceptance_criteria,
+                 status: "ci_waiting"
+               )
+             )
+
+    assert {:ok, _linked_slice} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", package.id)
+
+    assert {:ok, _comment} =
+             CommentService.create(repo, %{
+               target_kind: "planned_slice",
+               target_id: approved_slice.id,
+               body: "Comment before merge",
+               source_type: "architect",
+               author_name: "architect-1"
+             })
+
+    assert {:ok, _blocker} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: package.id,
+               summary: "Waiting on guidance",
+               status: "blocked",
+               payload: %{"type" => "blocker", "source_tool" => "report_blocker", "blocker_id" => "toon-guidance", "active" => true}
+             })
+
+    assert {:ok, _pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: package.id,
+               summary: "Draft PR attached",
+               status: "pr_attached",
+               payload: %{
+                 "type" => "pr",
+                 "source_tool" => "attach_pr",
+                 "url" => "https://github.com/#{package.repo}/pull/44",
+                 "repository" => package.repo,
+                 "number" => 44,
+                 "head_sha" => "toon-head",
+                 "state" => "open"
+               }
+             })
+
+    assert {:ok, minted_worker} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, minted_worker.work_key.secret, claimed_by: "toon-worker")
+    worker_session = MCPHarness.session(worker_assignment, proof_hash: minted_worker.grant.secret_hash)
+
+    guidance_response =
+      mcp_tool(repo, worker_session, "create_guidance_request", %{
+        "summary" => "Need architect guidance",
+        "question" => "Should the worker keep TOON text only in MCP content?",
+        "context" => "Structured delivery data must remain the source of truth.",
+        "idempotency_key" => "toon-architect-guidance"
+      })
+
+    guidance_id = get_in(guidance_response, ["result", "structuredContent", "guidance_request", "id"])
+
+    read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => work_request.id})
+    read_text = get_in(read_response, ["result", "content", Access.at(0), "text"])
+
+    assert get_in(read_response, ["result", "structuredContent", "planned_slices", Access.at(0), "id"]) == approved_slice.id
+    assert get_in(read_response, ["result", "structuredContent", "planned_slices", Access.at(1), "id"]) == planned_slice.id
+    assert read_text =~ "agent_context: work_request_read"
+    assert read_text =~ "decision_log_semantics: rationale_not_lifecycle_truth"
+    assert read_text =~ "Record the human outcome before slicing."
+    assert read_text =~ "allowed_paths"
+    assert read_text =~ "elixir/lib"
+    assert read_text =~ "decisions_as_rationale[1]"
+    assert read_text =~ "planned_slices[2]"
+    assert read_text =~ "WRS-MCP-WR-TOON-DISPATCHED"
+    assert read_text =~ "Expose scoped read-only WorkRequest MCP payloads."
+    assert read_text =~ "elixir/lib/symphony_elixir/symphony_plus_plus/mcp/server.ex"
+    assert read_text =~ "WorkRequest MCP reads are scoped and redacted."
+    assert read_text =~ "mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs"
+
+    board_response = mcp_tool(repo, session, "read_work_request_delivery_board", %{"work_request_id" => work_request.id})
+    board_text = get_in(board_response, ["result", "content", Access.at(0), "text"])
+
+    assert get_in(board_response, ["result", "structuredContent", "delivery_board", "slices", Access.at(0), "work_package", "blocker_state", "active?"]) == true
+    assert board_text =~ "agent_context: work_request_delivery_board"
+    assert board_text =~ "slices[2]"
+    assert board_text =~ "toon-guidance"
+    assert board_text =~ "active_blocker"
+    assert board_text =~ "https://github.com/#{package.repo}/pull/44"
+
+    list_guidance_response = mcp_tool(repo, session, "list_guidance_requests", %{"status" => "open"})
+    guidance_text = get_in(list_guidance_response, ["result", "content", Access.at(0), "text"])
+
+    assert get_in(list_guidance_response, ["result", "structuredContent", "guidance_requests", Access.at(0), "id"]) == guidance_id
+    assert guidance_text =~ "agent_context: guidance_request_list"
+    assert guidance_text =~ "guidance_requests[1]"
+    assert guidance_text =~ "Need architect guidance"
+
+    list_comments_response =
+      mcp_tool(repo, session, "list_comments", %{
+        "target_kind" => "planned_slice",
+        "target_id" => approved_slice.id
+      })
+
+    assert [%{"body" => "Comment before merge"}] = get_in(list_comments_response, ["result", "structuredContent", "comments"])
   end
 
   test "WorkRequest MCP reads require dedicated capability and fixed scope arguments", %{repo: repo} do

@@ -9,6 +9,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.AgentFormat.ArchitectContext
   alias SymphonyElixir.SymphonyPlusPlus.AgentFormat.WorkerContext
   alias SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver
   alias SymphonyElixir.SymphonyPlusPlus.Authorization.Decision
@@ -4738,8 +4739,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, attrs} <- create_work_request_attrs(arguments, requested_claimed_by),
          {:ok, work_request} <- WorkRequestService.create(config.repo, attrs) do
       effective_claimed_by = requested_claimed_by || ArchitectHandoff.claimed_by()
+      payload = create_work_request_handoff_payload(server, work_request, effective_claimed_by)
 
-      {:ok, tool_result(create_work_request_handoff_payload(server, work_request, effective_claimed_by))}
+      {:ok, architect_agent_tool_result(payload, :create_work_request_handoff)}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "create_work_request", "reason" => reason}}
       {:error, reason} -> create_work_request_error(reason)
@@ -5004,7 +5006,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, work_request, _filters, scope} <-
            authorized_work_request_scope(config.repo, session, work_request_id, :work_request_read, "read_work_request"),
          {:ok, payload} <- work_request_detail_payload(config.repo, work_request, include_planning_scratch?: include_planning_scratch?) do
-      {:ok, tool_result(Map.put(payload, "scope", scope))}
+      payload = Map.put(payload, "scope", scope)
+      {:ok, architect_agent_tool_result(payload, :work_request_read)}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_work_request", "reason" => reason}}
       {:error, :not_found} -> not_found_error("read_work_request")
@@ -5065,12 +5068,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, planned_slices} <- WorkRequestService.list_planned_slices(config.repo, work_request_id),
          {:ok, delivery_board} <-
            scoped_delivery_board(config.repo, work_request, planned_slices, filters, include_planning_scratch?: include_planning_scratch?) do
-      {:ok,
-       tool_result(%{
-         "work_request" => work_request_mutation_payload(work_request),
-         "delivery_board" => delivery_board_payload(delivery_board),
-         "scope" => scope
-       })}
+      payload = %{
+        "work_request" => work_request_mutation_payload(work_request),
+        "delivery_board" => delivery_board_payload(delivery_board),
+        "scope" => scope
+      }
+
+      {:ok, architect_agent_tool_result(payload, :work_request_delivery_board)}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_work_request_delivery_board", "reason" => reason}}
       {:error, :not_found} -> not_found_error("read_work_request_delivery_board")
@@ -5200,13 +5204,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, guidance_requests} <- GuidanceRequestService.list_visible_to_architect(config.repo, filters) do
       cards = guidance_request_cards(guidance_requests)
 
-      {:ok,
-       tool_result(%{
-         "guidance_requests" => cards,
-         "total_count" => length(cards),
-         "scope" => scope,
-         "filters" => guidance_request_filter_payload(status, work_package_id)
-       })}
+      payload = %{
+        "guidance_requests" => cards,
+        "total_count" => length(cards),
+        "scope" => scope,
+        "filters" => guidance_request_filter_payload(status, work_package_id)
+      }
+
+      {:ok, architect_agent_tool_result(payload, :guidance_request_list)}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "list_guidance_requests", "reason" => reason}}
       {:error, reason} -> architect_error(reason, "list_guidance_requests")
@@ -13602,6 +13607,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "structuredContent" => payload,
       "isError" => false
     }
+  end
+
+  defp architect_agent_tool_result(payload, kind) do
+    agent_tool_result(payload, ArchitectContext.encode_tool_payload(payload, kind))
   end
 
   defp json_safe_payload(payload) do
