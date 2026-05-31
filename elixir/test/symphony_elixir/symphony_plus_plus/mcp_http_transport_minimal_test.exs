@@ -206,6 +206,59 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
     assert get_in(progress.response, ["result", "structuredContent", "progress_event", "summary"]) == "Post-claim progress"
   end
 
+  test "batched local claim persists rehydration metadata", %{config: config} do
+    trusted_config = %{config | local_daemon_trusted: true}
+    package_id = "SYMPP-HTTP-BATCH-LOCAL"
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               trusted_config.repo,
+               WorkPackageFactory.attrs(
+                 id: package_id,
+                 kind: "mcp",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main",
+                 branch_pattern: "agent/#{package_id}/worker",
+                 worktree_path: local_claim_worktree_path(package_id),
+                 status: "ready_for_worker"
+               )
+             )
+
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(trusted_config.repo, work_package.id)
+    {:ok, init} = HTTPTransport.handle(trusted_config, initialize_request("batch-local-init"), client_key: "batch-local-client")
+
+    assert {:ok, batch} =
+             HTTPTransport.handle(
+               trusted_config,
+               [
+                 tool_call_request("batch-local-claim", "claim_local_assignment", local_assignment_claim_args(work_package)),
+                 tools_list_request("batch-local-tools")
+               ],
+               client_key: "batch-local-client",
+               state_key: init.state_key
+             )
+
+    assert batch.state_key == init.state_key
+    assert is_list(batch.response)
+
+    assert Enum.any?(batch.response, fn response ->
+             get_in(response, ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
+           end)
+
+    HTTPStateStore.reset!()
+    reset_server_response_state()
+
+    assert {:ok, assignment} =
+             HTTPTransport.handle(
+               trusted_config,
+               get_current_assignment_request(),
+               client_key: "batch-local-client",
+               state_key: init.state_key
+             )
+
+    assert get_in(assignment.response, ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
+  end
+
   test "sympp.health works after initialize", %{config: config} do
     {:ok, init} = HTTPTransport.handle(config, initialize_request("init"), client_key: "client-a")
 

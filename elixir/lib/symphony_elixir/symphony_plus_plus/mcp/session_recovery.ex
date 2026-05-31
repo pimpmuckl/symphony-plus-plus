@@ -69,7 +69,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
   end
 
   defp remember_action(config, client_key, state_key, payload, %Server{initialized: true, session: %Session{} = session}, response) do
-    tool_name = tool_call_name(payload)
+    tool_name = claim_tool_name(payload, response)
 
     cond do
       tool_name in @local_claim_tools ->
@@ -359,8 +359,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
   defp initialize_request?(%{"method" => "initialize"}), do: true
   defp initialize_request?(_payload), do: false
 
-  defp tool_call_name(%{"method" => "tools/call", "params" => %{"name" => name}}) when is_binary(name), do: name
-  defp tool_call_name(_payload), do: nil
+  defp claim_tool_name(payloads, responses) when is_list(payloads) do
+    Enum.find_value(payloads, fn payload ->
+      claim_tool_name(payload, response_for_payload(payload, responses))
+    end)
+  end
+
+  defp claim_tool_name(%{"method" => "tools/call", "params" => %{"name" => name}}, response)
+       when name in @session_claim_tools do
+    if successful_claim_response?(response), do: name
+  end
+
+  defp claim_tool_name(_payload, _response), do: nil
+
+  defp response_for_payload(%{"id" => id}, responses) when is_list(responses) do
+    Enum.find(responses, :missing, &(Map.get(&1, "id") == id))
+  end
+
+  defp response_for_payload(%{"id" => id}, %{"id" => id} = response), do: response
+  defp response_for_payload(%{"id" => _id}, _response), do: :missing
+  defp response_for_payload(_notification, _response), do: nil
+
+  defp successful_claim_response?(%{"result" => %{"structuredContent" => %{"assignment" => _assignment}}}), do: true
+  defp successful_claim_response?(nil), do: true
+  defp successful_claim_response?(_response), do: false
 
   defp normalize_datetimes(attrs) do
     Map.new(attrs, fn

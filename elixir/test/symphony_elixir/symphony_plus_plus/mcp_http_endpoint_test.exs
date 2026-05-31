@@ -462,7 +462,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
       session_id,
       tool_call_request("stale-binding-unverified-claim", "claim_local_assignment", %{}),
       Server.new(config, initialized: true, local_daemon_trusted: true, session: stale_session, state_key: session_id),
-      %{"result" => %{"structuredContent" => %{"local_claim" => %{"claim_lease_id" => claim_lease_id}}}}
+      %{
+        "result" => %{
+          "structuredContent" => %{
+            "assignment" => %{"work_package_id" => work_package.id},
+            "local_claim" => %{"claim_lease_id" => claim_lease_id}
+          }
+        }
+      }
     )
 
     binding = Repo.get!(SessionBinding, SessionBinding.binding_id(@client_key, session_id))
