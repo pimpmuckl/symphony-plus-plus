@@ -86,19 +86,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     attrs = normalize_keys(attrs)
 
     repo.transaction(fn ->
-      attrs
-      |> WorkRequest.create_changeset()
-      |> repo.insert()
-      |> normalize_insert_result()
-      |> case do
-        {:ok, work_request} ->
-          case replace_repo_scopes(repo, work_request, repo_scope_attrs(attrs, work_request)) do
-            :ok -> work_request
-            {:error, reason} -> repo.rollback(reason)
-          end
-
-        {:error, reason} ->
-          repo.rollback(reason)
+      with {:ok, work_request} <-
+             attrs
+             |> WorkRequest.create_changeset()
+             |> repo.insert()
+             |> normalize_insert_result(),
+           :ok <- replace_repo_scopes(repo, work_request, repo_scope_attrs(attrs, work_request)) do
+        work_request
+      else
+        {:error, reason} -> repo.rollback(reason)
       end
     end)
     |> normalize_transaction_result()
@@ -171,23 +167,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   def update(repo, id, attrs) when is_atom(repo) and is_binary(id) and is_map(attrs) do
     attrs = normalize_keys(attrs)
 
-    with {:ok, work_request} <- get(repo, id) do
-      repo.transaction(fn ->
-        work_request
-        |> WorkRequest.update_changeset(attrs)
-        |> repo.update()
-        |> case do
-          {:ok, updated} ->
-            case sync_repo_scopes_after_update(repo, work_request, updated, attrs) do
-              :ok -> updated
-              {:error, reason} -> repo.rollback(reason)
-            end
-
-          {:error, reason} ->
-            repo.rollback(reason)
-        end
-      end)
-      |> normalize_transaction_result()
+    case get(repo, id) do
+      {:ok, work_request} -> update_existing_work_request(repo, work_request, attrs)
+      {:error, reason} -> {:error, reason}
     end
   rescue
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
@@ -1138,6 +1120,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
         where: planned_slice.work_package_id == ^work_package_id
       )
     )
+  end
+
+  defp update_existing_work_request(repo, %WorkRequest{} = work_request, attrs) do
+    repo.transaction(fn ->
+      with {:ok, updated} <-
+             work_request
+             |> WorkRequest.update_changeset(attrs)
+             |> repo.update(),
+           :ok <- sync_repo_scopes_after_update(repo, work_request, updated, attrs) do
+        updated
+      else
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+    |> normalize_transaction_result()
   end
 
   defp sync_repo_scopes_after_update(repo, %WorkRequest{} = previous, %WorkRequest{} = updated, attrs) do

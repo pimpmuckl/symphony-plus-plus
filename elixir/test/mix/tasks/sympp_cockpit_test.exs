@@ -350,8 +350,7 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
     response.headers
     |> Map.get("set-cookie", [])
     |> List.wrap()
-    |> Enum.map(&(&1 |> String.split(";", parts: 2) |> hd()))
-    |> Enum.join("; ")
+    |> Enum.map_join("; ", &(&1 |> String.split(";", parts: 2) |> hd()))
   end
 
   defp ensure_cockpit_dashboard_asset! do
