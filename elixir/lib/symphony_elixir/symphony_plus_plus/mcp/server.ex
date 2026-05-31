@@ -107,6 +107,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "mark_ready"
   ]
   @bound_worker_tools @worker_tools -- ["claim_work_key"]
+  @shared_worker_architect_tools ["add_comment", "list_comments", "resolve_comment", "resolve_blocker", "read_guidance_request"]
   @architect_tools [
     "create_child_work_package",
     "mint_child_worker_key",
@@ -2233,11 +2234,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_input_schema("resolve_blocker") do
-    schema(
-      progress_properties()
-      |> Map.merge(%{"blocker_id" => string_schema(), "resolution" => string_schema()}),
-      ["work_package_id", "blocker_id", "resolution", "summary", "idempotency_key"]
-    )
+    worker_tool_input_schema("resolve_blocker")
   end
 
   defp architect_tool_input_schema("list_guidance_requests") do
@@ -2536,6 +2533,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp unbound_tool_specs_for_config(%Config{} = config) do
     [health_tool_spec()] ++
       Enum.map(@solo_tools, &solo_tool_spec/1) ++
+      unbound_scoped_tool_specs() ++
       [worker_tool_spec("claim_work_key")] ++
       local_assignment_claim_tool_specs(config) ++
       local_architect_assignment_claim_tool_specs(config) ++
@@ -2561,6 +2559,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp local_architect_assignment_claim_tool_specs(%Config{}), do: []
 
   defp architect_tool_specs, do: Enum.map(@architect_tools, &architect_tool_spec/1)
+
+  defp unbound_scoped_tool_specs do
+    Enum.map(@architect_tools -- @shared_worker_architect_tools, &architect_tool_spec/1) ++
+      Enum.map(@bound_worker_tools -- @shared_worker_architect_tools, &worker_tool_spec/1) ++
+      Enum.map(@shared_worker_architect_tools, &shared_worker_architect_tool_spec/1)
+  end
+
+  defp shared_worker_architect_tool_spec(name), do: worker_tool_spec(name)
 
   defp tool_specs_for_server(%__MODULE__{session_refresh_required: true, config: config} = server) do
     {:ok, claimable_tool_specs(config) ++ local_operator_tool_specs(server)}
@@ -5004,7 +5010,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_tool("resolve_blocker", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
-         {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
+         {:ok, work_package_id} <- optional_string_argument(arguments, "work_package_id", Session.work_package_id(session)),
          {:ok, blocker_id} <- required_argument(arguments, "blocker_id"),
          {:ok, resolution} <- required_argument(arguments, "resolution"),
          {:ok, summary} <- required_argument(arguments, "summary"),
