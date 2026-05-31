@@ -120,12 +120,6 @@ $ForbiddenBoundWorkerTools =
 
 $ExpectedPreClaimGatedCalls = @(
   @{
-    name = "read_work_request"
-    arguments = @{
-      work_request_id = "WR-SMOKE-PRECLAIM"
-    }
-  },
-  @{
     name = "dispatch_work_request_planned_slice"
     arguments = @{
       work_request_id = "WR-SMOKE-PRECLAIM"
@@ -136,6 +130,23 @@ $ExpectedPreClaimGatedCalls = @(
   @{
     name = "read_context"
     arguments = @{}
+  }
+)
+
+$ExpectedTrustedLocalPreClaimReadCalls = @(
+  @{
+    name = "read_work_request"
+    arguments = @{
+      work_request_id = "WR-SMOKE-PRECLAIM-READ"
+    }
+    allowedReasons = @("not_found")
+  },
+  @{
+    name = "read_work_request_delivery_board"
+    arguments = @{
+      work_request_id = "WR-SMOKE-PRECLAIM-READ"
+    }
+    allowedReasons = @("not_found")
   }
 )
 
@@ -561,6 +572,114 @@ function Get-ResponseErrorDetail($Response, [string]$Fallback) {
   return $Fallback
 }
 
+function New-PortOwner([int]$ProcessId, [string]$LocalAddress) {
+  $processName = "<unknown>"
+  try {
+    $process = Get-Process -Id $ProcessId -ErrorAction Stop
+    if (-not [string]::IsNullOrWhiteSpace($process.ProcessName)) {
+      $processName = [string]$process.ProcessName
+    }
+  }
+  catch {
+  }
+
+  return [pscustomobject]@{
+    pid = $ProcessId
+    process = $processName
+    localAddress = $LocalAddress
+  }
+}
+
+function Add-PortOwner($Owners, $Seen, [int]$ProcessId, [string]$LocalAddress) {
+  $key = "$ProcessId|$LocalAddress"
+  if ($Seen.Contains($key)) {
+    return
+  }
+
+  [void]$Seen.Add($key)
+  [void]$Owners.Add((New-PortOwner $ProcessId $LocalAddress))
+}
+
+function Get-TcpPortOwners([int]$Port) {
+  $owners = [System.Collections.Generic.List[object]]::new()
+  $seen = [System.Collections.Generic.HashSet[string]]::new()
+
+  if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+    try {
+      $connections = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop)
+      foreach ($connection in $connections) {
+        $processId = [int]$connection.OwningProcess
+        if ($processId -gt 0) {
+          Add-PortOwner $owners $seen $processId ([string]$connection.LocalAddress)
+        }
+      }
+    }
+    catch {
+    }
+  }
+
+  if ($owners.Count -eq 0 -and (Get-Command netstat -ErrorAction SilentlyContinue)) {
+    try {
+      $escapedPort = [regex]::Escape([string]$Port)
+      foreach ($line in @(& netstat -ano -p tcp 2>$null)) {
+        if ($line -match "^\s*TCP\s+(.+):$escapedPort\s+\S+\s+LISTENING\s+(\d+)\s*$") {
+          Add-PortOwner $owners $seen ([int]$matches[2]) $matches[1].Trim()
+        }
+      }
+    }
+    catch {
+    }
+  }
+
+  return @($owners)
+}
+
+function Format-PortOwners([object[]]$Owners) {
+  return (@($Owners) | ForEach-Object {
+      "pid=$($_.pid) process=$($_.process) localAddress=$($_.localAddress)"
+    }) -join "; "
+}
+
+function Get-EndpointPortOwnership([string]$TargetUrl) {
+  try {
+    $uri = [System.Uri]::new($TargetUrl)
+  }
+  catch {
+    return $null
+  }
+
+  if (-not $uri.IsLoopback) {
+    return $null
+  }
+
+  $port = [int]$uri.Port
+  $owners = @(Get-TcpPortOwners $port)
+  if ($owners.Count -eq 0) {
+    return $null
+  }
+
+  return [pscustomobject]@{
+    port = $port
+    owners = $owners
+    summary = Format-PortOwners $owners
+  }
+}
+
+function Test-ConnectionRefusedError([string]$Message) {
+  if ([string]::IsNullOrWhiteSpace($Message)) {
+    return $false
+  }
+
+  $normalized = $Message.ToLowerInvariant()
+  return (
+    $normalized.Contains("actively refused") -or
+    $normalized.Contains("connection refused") -or
+    $normalized.Contains("no connection could be made") -or
+    $normalized.Contains("unable to connect") -or
+    $normalized.Contains("failed to connect")
+  )
+}
+
 function Get-ToolNames($ToolsPayload) {
   $tools = $ToolsPayload.result.tools
   if ($null -eq $tools) {
@@ -880,6 +999,18 @@ function Invoke-InitializeSession([bool]$RedactSessionId) {
       }
     }
 
+    $ownership = Get-EndpointPortOwnership $Url
+    if ($ownership) {
+      $status = if (Test-ConnectionRefusedError $initResponse.error) { "endpoint_unreachable_port_occupied" } else { "endpoint_unreachable_listener_unresponsive" }
+      return [pscustomobject]@{
+        ok = $false
+        result = New-SmokeResult $status "Could not initialize local MCP endpoint at $Url; a loopback listener is present on port $($ownership.port) ($($ownership.summary)), but initialize failed: $($initResponse.error)" @{
+          port = $ownership.port
+          portOwners = $ownership.owners
+        }
+      }
+    }
+
     return [pscustomobject]@{
       ok = $false
       result = New-SmokeResult "endpoint_unreachable" "Could not reach local MCP endpoint at $Url`: $($initResponse.error)"
@@ -1014,6 +1145,74 @@ function Invoke-PreClaimGateSmoke([string]$SessionId) {
   }
 }
 
+function Invoke-PreClaimReadSmoke([string]$SessionId) {
+  $readTools = @()
+  foreach ($call in $ExpectedTrustedLocalPreClaimReadCalls) {
+    $toolName = [string]$call.name
+    $readResponse = Invoke-McpPost $Url (New-ToolCallRequest "sympp-http-smoke-preclaim-read-$toolName" $toolName $call.arguments) $SessionId
+    if (-not $readResponse.ok) {
+      $reason = if ($readResponse.statusCode) { "HTTP $($readResponse.statusCode)" } else { "request failed" }
+      $detail = Get-ResponseErrorDetail $readResponse $readResponse.error
+      return [pscustomobject]@{
+        ok = $false
+        result = New-SmokeResult "preclaim_read_failed" "MCP trusted-local pre-claim read $toolName failed transport validation ($reason): $detail"
+      }
+    }
+
+    $sessionCheck = Test-ResponseSessionHeader $readResponse $SessionId "trusted-local pre-claim read $toolName"
+    if (-not $sessionCheck.ok) {
+      return $sessionCheck
+    }
+
+    $readPayload = ConvertFrom-JsonResponse $readResponse.content "trusted-local pre-claim read $toolName"
+    $readReason = Get-JsonRpcErrorReason $readPayload
+    $readError = Get-JsonRpcErrorMessage $readPayload
+    if ([string]::IsNullOrWhiteSpace($readReason)) {
+      if (-not [string]::IsNullOrWhiteSpace($readError)) {
+        return [pscustomobject]@{
+          ok = $false
+          result = New-SmokeResult "preclaim_read_failed" "MCP trusted-local pre-claim read $toolName returned a JSON-RPC error without a reason: $readError" @{
+            tool = $toolName
+            reason = $null
+          }
+        }
+      }
+
+      $readTools += "${toolName}:ok"
+      continue
+    }
+
+    if ($ExpectedPreClaimGateReasons -contains $readReason) {
+      return [pscustomobject]@{
+        ok = $false
+        result = New-SmokeResult "preclaim_read_claim_gated" "MCP trusted-local pre-claim read $toolName was still claim/permission gated: $readError" @{
+          tool = $toolName
+          reason = $readReason
+        }
+      }
+    }
+
+    $allowedReasons = @($call.allowedReasons)
+    if ($allowedReasons -contains $readReason) {
+      $readTools += "${toolName}:$readReason"
+      continue
+    }
+
+    return [pscustomobject]@{
+      ok = $false
+      result = New-SmokeResult "preclaim_read_failed" "MCP trusted-local pre-claim read $toolName returned an unexpected error: $readError" @{
+        tool = $toolName
+        reason = $readReason
+      }
+    }
+  }
+
+  return [pscustomobject]@{
+    ok = $true
+    readTools = $readTools
+  }
+}
+
 function Invoke-McpSmoke {
   $session = Initialize-HealthyMcpSession $false
   if (-not $session.ok) {
@@ -1034,6 +1233,11 @@ function Invoke-McpSmoke {
     return $toolsCheck.result
   }
 
+  $preClaimRead = Invoke-PreClaimReadSmoke $session.sessionId
+  if (-not $preClaimRead.ok) {
+    return $preClaimRead.result
+  }
+
   $preClaimGate = Invoke-PreClaimGateSmoke $session.sessionId
   if (-not $preClaimGate.ok) {
     return $preClaimGate.result
@@ -1044,6 +1248,7 @@ function Invoke-McpSmoke {
     daemonSourceRevision = $session.sourceRevision
     expectedSourceRevision = $session.expectedRevision
     tools = $toolsCheck.tools
+    preClaimReadTools = $preClaimRead.readTools
     preClaimGatedTools = $preClaimGate.gatedTools
   }
 }
@@ -1055,6 +1260,7 @@ function Invoke-BoundMcpSmoke($Config) {
   }
 
   $unboundTools = @()
+  $preClaimReadTools = @()
   $preClaimGatedTools = @()
   if (-not $SkipUnboundTools) {
     $unbound = Invoke-ToolsListSmoke $session.sessionId $ExpectedUnboundTools "unbound pre-claim" $ForbiddenUnboundTools
@@ -1064,11 +1270,17 @@ function Invoke-BoundMcpSmoke($Config) {
 
     $unboundTools = $unbound.tools
 
+    $preClaimRead = Invoke-PreClaimReadSmoke $session.sessionId
+    if (-not $preClaimRead.ok) {
+      return $preClaimRead.result
+    }
+
     $preClaimGate = Invoke-PreClaimGateSmoke $session.sessionId
     if (-not $preClaimGate.ok) {
       return $preClaimGate.result
     }
 
+    $preClaimReadTools = $preClaimRead.readTools
     $preClaimGatedTools = $preClaimGate.gatedTools
   }
 
@@ -1202,6 +1414,7 @@ function Invoke-BoundMcpSmoke($Config) {
 
   if (-not $SkipUnboundTools) {
     $data["unboundTools"] = $unboundTools
+    $data["preClaimReadTools"] = $preClaimReadTools
     $data["preClaimGatedTools"] = $preClaimGatedTools
   }
 
@@ -1285,9 +1498,18 @@ function Invoke-SelfTest {
     throw "Expected unbound forbidden tools to keep health and claim_work_key allowed."
   }
 
+  $preClaimReadNames = @($ExpectedTrustedLocalPreClaimReadCalls | ForEach-Object { [string]$_.name })
+  if ($preClaimReadNames -notcontains "read_work_request" -or $preClaimReadNames -notcontains "read_work_request_delivery_board") {
+    throw "Expected trusted-local pre-claim smoke to verify read-only WorkRequest calls."
+  }
+
   $preClaimGateNames = @($ExpectedPreClaimGatedCalls | ForEach-Object { [string]$_.name })
-  if ($preClaimGateNames -notcontains "read_work_request" -or $preClaimGateNames -notcontains "dispatch_work_request_planned_slice" -or $preClaimGateNames -notcontains "read_context") {
-    throw "Expected pre-claim smoke to verify architect and worker calls remain gated."
+  if ($preClaimGateNames -contains "read_work_request") {
+    throw "Expected pre-claim smoke to treat read_work_request as trusted-local read validation, not a claim-gated call."
+  }
+
+  if ($preClaimGateNames -notcontains "dispatch_work_request_planned_slice" -or $preClaimGateNames -notcontains "read_context") {
+    throw "Expected pre-claim smoke to verify mutation and worker context calls remain gated."
   }
 
   if ($ForbiddenBoundWorkerTools -notcontains "list_work_requests" -or $ForbiddenBoundWorkerTools -notcontains "dispatch_work_request_planned_slice") {
@@ -1322,6 +1544,18 @@ function Invoke-SelfTest {
   $missingSourcePayload = @{ result = @{ structuredContent = @{} } } | ConvertTo-Json -Depth 8 | ConvertFrom-Json
   if ($null -ne (Get-HealthSourceRevision $missingSourcePayload)) {
     throw "Expected missing health source revision to normalize to null."
+  }
+
+  $jsonRpcErrorWithoutReason = @{
+    error = @{
+      message = "synthetic bridge error"
+    }
+  } | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+  if ($null -ne (Get-JsonRpcErrorReason $jsonRpcErrorWithoutReason)) {
+    throw "Expected JSON-RPC errors without data.reason to normalize to a null reason."
+  }
+  if ((Get-JsonRpcErrorMessage $jsonRpcErrorWithoutReason) -ne "synthetic bridge error") {
+    throw "Expected JSON-RPC errors without data.reason to preserve their message."
   }
 
   $resourcePayload = @{
