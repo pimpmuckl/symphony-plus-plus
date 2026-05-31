@@ -94,6 +94,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Policy do
   @known_actions Enum.uniq(@operator_actions ++ @worker_package_actions)
   @architect_actions Enum.uniq(@architect_work_request_actions ++ @read_actions)
   @dangerous_actions [:dangerous_override, :dangerous_rekey, :dangerous_delete, :dangerous_raw_repair]
+  @operator_roles [:human_operator, :operator]
 
   @spec actions() :: [atom()]
   def actions, do: @known_actions
@@ -115,9 +116,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Policy do
     end
   end
 
-  defp decide_resolved(%Actor{role: :operator} = actor, action, %Target{} = target) do
+  defp decide_resolved(%Actor{role: role} = actor, action, %Target{} = target) when role in @operator_roles do
     allow_with_scope(actor, action, target, [:ledger],
-      audit: operator_audit(action),
+      audit: operator_audit(action, :operator),
       denied_reason: :operator_ledger_scope_required
     )
   end
@@ -140,7 +141,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Policy do
   end
 
   defp decide_resolved(%Actor{} = actor, action, %Target{} = target) when action in @dangerous_actions do
-    Decision.authorization_denied(actor, action, target, :dangerous_action_requires_operator)
+    if explicit_human_granted_dangerous_authority?(actor) do
+      allow_with_scope(actor, action, target, [:ledger],
+        audit: operator_audit(action, :explicit_human_grant),
+        denied_reason: :human_granted_ledger_scope_required
+      )
+    else
+      Decision.authorization_denied(actor, action, target, :dangerous_action_requires_operator)
+    end
   end
 
   defp decide_resolved(%Actor{} = actor, action, %Target{} = target) do
@@ -220,6 +228,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Policy do
   defp target_resolution_reason(%Target{resolution: :ambiguous}), do: :target_ambiguous
   defp target_resolution_reason(%Target{resolution: :runtime_lease_conflict}), do: :runtime_lease_conflict
 
-  defp operator_audit(action) when action in @dangerous_actions, do: %{dangerous_action: true}
-  defp operator_audit(_action), do: %{}
+  defp explicit_human_granted_dangerous_authority?(%Actor{scopes: scopes}) do
+    Enum.any?(scopes, fn
+      %Scope{type: :ledger, metadata: metadata} -> truthy_metadata?(metadata, :human_granted)
+      %Scope{} -> false
+    end)
+  end
+
+  defp truthy_metadata?(metadata, key) when is_map(metadata) do
+    Map.get(metadata, key) == true or Map.get(metadata, Atom.to_string(key)) == true
+  end
+
+  defp truthy_metadata?(_metadata, _key), do: false
+
+  defp operator_audit(action, authority) when action in @dangerous_actions do
+    %{dangerous_action: true, authority: Atom.to_string(authority)}
+  end
+
+  defp operator_audit(_action, _authority), do: %{}
 end

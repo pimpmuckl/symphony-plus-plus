@@ -62,13 +62,16 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
       assert Keyword.fetch!(opts, :dashboard_origin) == "http://127.0.0.1:5174"
       assert Repo.same_database_path?(Keyword.fetch!(opts, :database), Path.expand(relative_database))
 
-      endpoint_config = CockpitTask.endpoint_config_for_test(opts)
+      token_opts = Keyword.put(opts, :operator_bootstrap_token, "test-bootstrap-token")
+      endpoint_config = CockpitTask.endpoint_config_for_test(token_opts)
       assert endpoint_config[:sympp_local_operator] == true
+      assert endpoint_config[:sympp_local_operator_bootstrap_token] == "test-bootstrap-token"
       assert endpoint_config[:sympp_repo] == Repo
       assert endpoint_config[:server] == false
       assert endpoint_config[:sympp_dashboard_origin] == "http://127.0.0.1:5174"
 
-      assert CockpitTask.cockpit_url_for_test(opts, 4567) == "http://127.0.0.1:5174/sympp/board"
+      assert CockpitTask.cockpit_url_for_test(token_opts, 4567) ==
+               "http://127.0.0.1:5174/sympp/board?operator_bootstrap=test-bootstrap-token"
 
       assert {:ok, ipv6_opts} = CockpitTask.parse_args_for_test(["--host", "[::1]"])
       assert CockpitTask.cockpit_url_for_test(ipv6_opts, 4567) == "http://[::1]:4567/sympp/board"
@@ -115,29 +118,47 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
     try do
       assert {:ok, opts} = CockpitTask.parse_args_for_test(["--database", database_path, "--port", "0"])
 
+      opts =
+        Keyword.put(opts, :operator_dashboard_opener, fn url ->
+          send(self(), {:operator_dashboard_opened, url})
+          :ok
+        end)
+
       CockpitTask.run_cockpit_for_test(opts, fn ->
         port = wait_for_bound_port()
 
         response =
-          Req.get!("http://127.0.0.1:#{port}/sympp/board",
-            headers: [{"sec-fetch-site", "none"}],
+          Req.get!(operator_shell_url(port),
+            headers: browser_navigation_headers(),
             redirect: false
+          )
+
+        direct_api_response =
+          Req.get!("http://127.0.0.1:#{port}/api/v1/sympp/operator/dashboard",
+            headers: browser_api_headers()
           )
 
         api_response =
           Req.get!("http://127.0.0.1:#{port}/api/v1/sympp/operator/dashboard",
-            headers: [{"sec-fetch-site", "none"}]
+            headers: browser_api_headers(local_operator_session_cookie(response))
           )
 
-        send(self(), {:cockpit_response, response.status, response.headers["location"], api_response.status, api_response.body})
+        send(
+          self(),
+          {:cockpit_response, response.status, response.headers["location"], direct_api_response.status, api_response.status, api_response.body}
+        )
       end)
 
       assert_received {:mix_shell, :info, [url]}
-      assert url =~ ~r{Symphony\+\+ local operator dashboard: http://127\.0\.0\.1:\d+/sympp/board}
+      assert url =~ ~r{Symphony\+\+ local operator dashboard: http://127\.0\.0\.1:\d+/sympp/board\?operator_bootstrap=\[REDACTED\]}
+      assert_received {:operator_dashboard_opened, opened_url}
+      assert opened_url =~ ~r{http://127\.0\.0\.1:\d+/sympp/board\?operator_bootstrap=[^&]+}
+      refute opened_url =~ "[REDACTED]"
       assert_received {:mix_shell, :info, [bridge]}
       assert bridge =~ ~r{Symphony\+\+ API bridge: http://127\.0\.0\.1:\d+}
+      assert_received {:mix_shell, :info, ["Bootstrap URL browser open attempted; token redacted from logs."]}
       assert_received {:mix_shell, :info, ["Press Ctrl+C to stop."]}
-      assert_received {:cockpit_response, 200, nil, 200, payload}
+      assert_received {:cockpit_response, 200, nil, 401, 200, payload}
       assert payload["board"]["total_count"] == 0
       assert File.exists?(database_path)
     after
@@ -165,18 +186,33 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
                  "http://127.0.0.1:5174"
                ])
 
+      opts =
+        Keyword.put(opts, :operator_dashboard_opener, fn url ->
+          send(self(), {:operator_dashboard_opened, url})
+          :ok
+        end)
+
       CockpitTask.run_cockpit_for_test(opts, fn ->
         port = wait_for_bound_port()
 
-        api_response =
-          Req.get!("http://127.0.0.1:#{port}/api/v1/sympp/operator/dashboard",
-            headers: [{"sec-fetch-site", "none"}]
+        config_response =
+          Req.get!(operator_config_url(port),
+            headers: configured_dashboard_api_headers(nil, "http://127.0.0.1:5174")
           )
 
-        send(self(), {:retention_payload, api_response.status, api_response.body})
+        api_response =
+          Req.get!("http://127.0.0.1:#{port}/api/v1/sympp/operator/dashboard",
+            headers: configured_dashboard_api_headers(local_operator_session_cookie(config_response), "http://127.0.0.1:5174")
+          )
+
+        send(self(), {:retention_payload, config_response.status, api_response.status, api_response.body})
       end)
 
-      assert_received {:retention_payload, 200, payload}
+      assert_received {:operator_dashboard_opened, bootstrap_url}
+      assert bootstrap_url =~ ~r{http://127\.0\.0\.1:5174/api/v1/sympp/operator/config\?operator_bootstrap=[^&]+}
+      assert_received {:operator_dashboard_opened, dashboard_url}
+      assert dashboard_url =~ ~r{http://127\.0\.0\.1:5174/sympp/board\?operator_bootstrap=[^&]+}
+      assert_received {:retention_payload, 200, 200, payload}
       assert payload["work_requests"]["work_requests"] == []
 
       assert %WorkRequest{archived_at: %DateTime{}} = Repo.get!(WorkRequest, request.id)
@@ -262,6 +298,60 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
           {:cont, nil}
       end
     end)
+  end
+
+  defp operator_shell_url(port) do
+    "http://127.0.0.1:#{port}/sympp/board?operator_bootstrap=#{URI.encode_www_form(operator_bootstrap_token())}"
+  end
+
+  defp operator_config_url(port) do
+    "http://127.0.0.1:#{port}/api/v1/sympp/operator/config?operator_bootstrap=#{URI.encode_www_form(operator_bootstrap_token())}"
+  end
+
+  defp operator_bootstrap_token do
+    token =
+      :symphony_elixir
+      |> Application.get_env(Endpoint, [])
+      |> Keyword.fetch!(:sympp_local_operator_bootstrap_token)
+
+    token
+  end
+
+  defp browser_navigation_headers do
+    [{"sec-fetch-site", "none"}, {"sec-fetch-mode", "navigate"}]
+  end
+
+  defp browser_api_headers(cookie_header \\ nil) do
+    [
+      {"sec-fetch-site", "same-origin"},
+      {"sec-fetch-mode", "cors"},
+      {"sec-fetch-dest", "empty"}
+    ]
+    |> maybe_put_cookie_header(cookie_header)
+  end
+
+  defp configured_dashboard_api_headers(cookie_header, origin) do
+    [
+      {"origin", origin},
+      {"sec-fetch-site", "same-site"},
+      {"sec-fetch-mode", "cors"},
+      {"sec-fetch-dest", "empty"}
+    ]
+    |> maybe_put_cookie_header(cookie_header)
+  end
+
+  defp maybe_put_cookie_header(headers, cookie_header) when is_binary(cookie_header) and cookie_header != "" do
+    [{"cookie", cookie_header} | headers]
+  end
+
+  defp maybe_put_cookie_header(headers, _cookie_header), do: headers
+
+  defp local_operator_session_cookie(response) do
+    response.headers
+    |> Map.get("set-cookie", [])
+    |> List.wrap()
+    |> Enum.map(&(&1 |> String.split(";", parts: 2) |> hd()))
+    |> Enum.join("; ")
   end
 
   defp ensure_cockpit_dashboard_asset! do

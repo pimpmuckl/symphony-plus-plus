@@ -166,14 +166,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.PolicyTest do
              )
   end
 
-  test "operator ledger scope allows dangerous actions with audit marker" do
-    actor = Actor.new(:operator, scopes: [Scope.ledger()])
+  test "human operator ledger scope allows dangerous actions with audit marker" do
+    actor = Actor.new(:human_operator, scopes: [Scope.ledger()])
 
     assert %Decision{
              allowed?: true,
              matched_scope: %Scope{type: :ledger},
-             audit: %{dangerous_action: true}
+             audit: %{dangerous_action: true, authority: "operator"}
            } = Policy.decide(actor, :dangerous_rekey, Target.ledger())
+  end
+
+  test "explicit human-granted ledger authority allows dangerous actions without changing role" do
+    actor = architect([Scope.ledger(metadata: %{human_granted: true})])
+
+    assert %Decision{
+             allowed?: true,
+             matched_scope: %Scope{type: :ledger},
+             audit: %{dangerous_action: true, authority: "explicit_human_grant"}
+           } = Policy.decide(actor, :dangerous_raw_repair, Target.ledger())
+  end
+
+  test "ledger scope alone does not grant dangerous action authority to ordinary actors" do
+    actor = architect([Scope.ledger()])
+
+    assert %Decision{allowed?: false, reason_code: "dangerous_action_requires_operator"} =
+             Policy.decide(actor, :dangerous_override, Target.ledger())
   end
 
   test "policy represents precondition and lifecycle denials with stable reason codes" do

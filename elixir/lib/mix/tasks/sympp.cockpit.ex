@@ -15,6 +15,8 @@ defmodule Mix.Tasks.Sympp.Cockpit do
   @default_host "127.0.0.1"
   @default_port 19_998
   @board_path "/sympp/board"
+  @operator_bootstrap_param "operator_bootstrap"
+  @operator_bootstrap_config_key :sympp_local_operator_bootstrap_token
   @switches [
     database: :string,
     host: :string,
@@ -62,6 +64,8 @@ defmodule Mix.Tasks.Sympp.Cockpit do
   @doc false
   @spec run_cockpit_for_test(keyword(), (-> term())) :: term()
   def run_cockpit_for_test(opts, wait_fun) when is_function(wait_fun, 0) do
+    opts = Keyword.put_new(opts, :operator_dashboard_opener, fn _url -> :ok end)
+
     run_cockpit(opts, wait_fun)
   end
 
@@ -131,6 +135,7 @@ defmodule Mix.Tasks.Sympp.Cockpit do
   defp run_cockpit(opts), do: run_cockpit(opts, &wait_forever/0)
 
   defp run_cockpit(opts, wait_fun) when is_function(wait_fun, 0) do
+    opts = put_operator_bootstrap_token(opts)
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
     original_endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
     original_dynamic_repo = Repo.get_dynamic_repo()
@@ -144,9 +149,11 @@ defmodule Mix.Tasks.Sympp.Cockpit do
       :ok = run_work_request_retention()
       :ok = start_http_server_or_raise(opts)
       port = wait_for_bound_port()
+      :ok = open_operator_dashboard(opts, port)
 
-      Mix.shell().info("Symphony++ local operator dashboard: #{cockpit_url(opts, port)}")
+      Mix.shell().info("Symphony++ local operator dashboard: #{redacted_cockpit_url(opts, port)}")
       Mix.shell().info("Symphony++ API bridge: #{api_url(opts, port)}")
+      Mix.shell().info("Bootstrap URL browser open attempted; token redacted from logs.")
       Mix.shell().info("Press Ctrl+C to stop.")
 
       wait_fun.()
@@ -274,8 +281,16 @@ defmodule Mix.Tasks.Sympp.Cockpit do
       sympp_local_operator: true
     )
     |> Keyword.delete(:sympp_dashboard_origin)
+    |> maybe_put_operator_bootstrap_token(opts)
     |> maybe_put_dashboard_origin(opts)
     |> maybe_force_default_repo(opts)
+  end
+
+  defp maybe_put_operator_bootstrap_token(endpoint_config, opts) do
+    case Keyword.get(opts, :operator_bootstrap_token) do
+      token when is_binary(token) and token != "" -> Keyword.put(endpoint_config, @operator_bootstrap_config_key, token)
+      _token -> endpoint_config
+    end
   end
 
   defp maybe_put_dashboard_origin(endpoint_config, opts) do
@@ -394,7 +409,106 @@ defmodule Mix.Tasks.Sympp.Cockpit do
       |> Keyword.get(:dashboard_origin, api_url(opts, port))
       |> String.trim_trailing("/")
 
-    "#{dashboard_origin}#{@board_path}"
+    dashboard_origin
+    |> then(&"#{&1}#{@board_path}")
+    |> maybe_put_operator_bootstrap_param(opts)
+  end
+
+  defp maybe_put_operator_bootstrap_param(url, opts) do
+    case Keyword.get(opts, :operator_bootstrap_token) do
+      token when is_binary(token) and token != "" -> URI.append_query(URI.parse(url), URI.encode_query([{@operator_bootstrap_param, token}])) |> URI.to_string()
+      _token -> url
+    end
+  end
+
+  defp redacted_cockpit_url(opts, port) do
+    opts
+    |> cockpit_url(port)
+    |> String.replace(~r/([?&]#{@operator_bootstrap_param}=)[^&]+/, "\\1[REDACTED]")
+  end
+
+  defp put_operator_bootstrap_token(opts) do
+    Keyword.put_new_lazy(opts, :operator_bootstrap_token, &operator_bootstrap_token/0)
+  end
+
+  defp operator_bootstrap_token do
+    32
+    |> :crypto.strong_rand_bytes()
+    |> Base.url_encode64(padding: false)
+  end
+
+  defp open_operator_dashboard(opts, port) do
+    opener = Keyword.get(opts, :operator_dashboard_opener, &default_open_operator_dashboard/1)
+
+    opts
+    |> operator_dashboard_open_urls(port)
+    |> Enum.reduce(:ok, fn url, first_result ->
+      result = url |> opener.() |> normalize_open_result()
+
+      case first_result do
+        :ok -> result
+        other -> other
+      end
+    end)
+  end
+
+  defp operator_dashboard_open_urls(opts, port) do
+    dashboard_url = cockpit_url(opts, port)
+
+    if Keyword.has_key?(opts, :dashboard_origin) do
+      [operator_config_bootstrap_url(opts, port), dashboard_url]
+    else
+      [dashboard_url]
+    end
+  end
+
+  defp operator_config_bootstrap_url(opts, port) do
+    dashboard_origin =
+      opts
+      |> Keyword.get(:dashboard_origin, api_url(opts, port))
+      |> String.trim_trailing("/")
+
+    dashboard_origin
+    |> then(&"#{&1}/api/v1/sympp/operator/config")
+    |> maybe_put_operator_bootstrap_param(opts)
+  end
+
+  defp normalize_open_result(:ok), do: :ok
+
+  defp normalize_open_result({:error, reason}) do
+    Mix.shell().info("Symphony++ dashboard browser open skipped: #{inspect(reason)}")
+    :ok
+  end
+
+  defp normalize_open_result(_result), do: :ok
+
+  defp default_open_operator_dashboard(url) do
+    case browser_open_command(url) do
+      {executable, args} -> run_browser_open_command(executable, args)
+      :error -> {:error, :no_browser_open_command}
+    end
+  end
+
+  defp browser_open_command(url) do
+    case :os.type() do
+      {:win32, _name} -> browser_open_command("rundll32.exe", ["url.dll,FileProtocolHandler", url])
+      {:unix, :darwin} -> browser_open_command("open", [url])
+      {:unix, _name} -> browser_open_command("xdg-open", [url])
+    end
+  end
+
+  defp browser_open_command(executable, args) do
+    case System.find_executable(executable) do
+      nil -> :error
+      path -> {path, args}
+    end
+  end
+
+  defp run_browser_open_command(executable, args) do
+    case System.cmd(executable, args, stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      {_output, status} -> {:error, {:exit_status, status}}
+    end
   end
 
   defp api_url(opts, port) do

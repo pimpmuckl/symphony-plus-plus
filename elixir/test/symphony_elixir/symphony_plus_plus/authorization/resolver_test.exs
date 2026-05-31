@@ -93,7 +93,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ResolverTest do
   test "resolves local operator to trusted ledger scope" do
     assert %Actor{
              id: "operator-1",
-             role: :operator,
+             role: :human_operator,
              source: :local_operator,
              scopes: [%Scope{type: :ledger, metadata: %{trusted_local: true}}]
            } = ActorResolver.local_operator("operator-1")

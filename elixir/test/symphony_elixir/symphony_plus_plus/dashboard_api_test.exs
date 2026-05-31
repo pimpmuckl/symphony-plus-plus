@@ -20,6 +20,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository, as: GuidanceRequestRepository
+  alias SymphonyElixir.SymphonyPlusPlus.OperatorAudit
   alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Service, as: OperatorSettingsService
   alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings, as: OperatorSettings
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
@@ -199,6 +200,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   end
 
   setup %{repo: repo} do
+    repo.delete_all(OperatorAudit)
     repo.delete_all(AgentRun)
     repo.delete_all(Artifact)
     repo.delete_all(ProgressEvent)
@@ -4699,6 +4701,155 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "unbound localhost agent requests do not become local operator" do
+    with_local_operator_endpoint(fn ->
+      conn =
+        build_conn()
+        |> Map.put(:host, "localhost")
+        |> Map.put(:remote_ip, {127, 0, 0, 1})
+
+      assert %{"error" => %{"code" => "unauthorized"}} =
+               json_response(get(conn, "/api/v1/sympp/operator/config"), 401)
+    end)
+  end
+
+  test "local operator dashboard shell grants same-origin API access without origin" do
+    with_local_operator_endpoint(fn ->
+      with_local_operator_bootstrap_token("test-bootstrap-token", fn ->
+        index = "<!doctype html><html><head></head><body><div id=\"root\"></div></body></html>"
+
+        with_static_dashboard_file("index.html", index, fn ->
+          shell_conn =
+            build_conn(:get, "/sympp/board?operator_bootstrap=test-bootstrap-token")
+            |> Map.put(:host, "localhost")
+            |> Map.put(:remote_ip, {127, 0, 0, 1})
+            |> put_req_header("sec-fetch-site", "none")
+            |> put_req_header("sec-fetch-mode", "navigate")
+            |> Plug.Test.init_test_session(%{})
+            |> ReactDashboardController.index(%{})
+
+          assert html_response(shell_conn, 200) =~ "operatorMode"
+          assert SymppDashboardApiController.local_operator_session?(shell_conn.private.plug_session)
+
+          payload =
+            build_conn()
+            |> Map.put(:host, "localhost")
+            |> Map.put(:remote_ip, {127, 0, 0, 1})
+            |> put_req_header("sec-fetch-site", "same-origin")
+            |> put_req_header("sec-fetch-mode", "cors")
+            |> put_req_header("sec-fetch-dest", "empty")
+            |> Plug.Test.init_test_session(shell_conn.private.plug_session)
+            |> get("/api/v1/sympp/operator/config")
+            |> json_response(200)
+
+          assert %{"operatorMode" => true} = payload
+        end)
+      end)
+    end)
+  end
+
+  test "unbound localhost agent requests cannot forge shell bootstrap metadata" do
+    with_local_operator_endpoint(fn ->
+      index = "<!doctype html><html><head></head><body><div id=\"root\"></div></body></html>"
+
+      with_static_dashboard_file("index.html", index, fn ->
+        shell_conn =
+          build_conn(:get, "/sympp/board")
+          |> Map.put(:host, "localhost")
+          |> Map.put(:remote_ip, {127, 0, 0, 1})
+          |> put_req_header("sec-fetch-site", "none")
+          |> put_req_header("sec-fetch-mode", "navigate")
+          |> Plug.Test.init_test_session(%{})
+          |> ReactDashboardController.index(%{})
+
+        assert html_response(shell_conn, 200) =~ "operatorMode"
+        refute SymppDashboardApiController.local_operator_session?(shell_conn.private.plug_session)
+
+        conn =
+          build_conn()
+          |> Map.put(:host, "localhost")
+          |> Map.put(:remote_ip, {127, 0, 0, 1})
+          |> put_req_header("sec-fetch-site", "same-origin")
+          |> put_req_header("sec-fetch-mode", "cors")
+          |> put_req_header("sec-fetch-dest", "empty")
+          |> Plug.Test.init_test_session(shell_conn.private.plug_session)
+
+        assert %{"error" => %{"code" => "unauthorized"}} =
+                 json_response(get(conn, "/api/v1/sympp/operator/config"), 401)
+      end)
+    end)
+  end
+
+  test "unbound localhost agent requests cannot forge browser API metadata" do
+    with_local_operator_endpoint(fn ->
+      conn =
+        build_conn()
+        |> Map.put(:host, "localhost")
+        |> Map.put(:remote_ip, {127, 0, 0, 1})
+        |> put_req_header("sec-fetch-site", "same-origin")
+        |> put_req_header("sec-fetch-mode", "cors")
+        |> put_req_header("sec-fetch-dest", "empty")
+
+      assert %{"error" => %{"code" => "unauthorized"}} =
+               json_response(get(conn, "/api/v1/sympp/operator/config"), 401)
+    end)
+  end
+
+  test "local-looking cross-origin requests do not become local operator" do
+    with_local_operator_endpoint(fn ->
+      conn =
+        build_conn()
+        |> Map.put(:host, "localhost")
+        |> Map.put(:remote_ip, {127, 0, 0, 1})
+        |> put_req_header("origin", "http://localhost:3000")
+        |> put_req_header("sec-fetch-site", "cross-site")
+
+      assert %{"error" => %{"code" => "unauthorized"}} =
+               json_response(get(conn, "/api/v1/sympp/operator/config"), 401)
+    end)
+  end
+
+  test "configured dashboard origin bootstrap establishes local operator API session" do
+    with_local_operator_endpoint(fn ->
+      with_local_operator_bootstrap_token("test-bootstrap-token", fn ->
+        with_local_operator_dashboard_origin("http://127.0.0.1:5174", fn ->
+          conn =
+            build_conn()
+            |> Map.put(:host, "127.0.0.1")
+            |> Map.put(:remote_ip, {127, 0, 0, 1})
+            |> put_req_header("origin", "http://127.0.0.1:5174")
+            |> put_req_header("sec-fetch-site", "same-site")
+            |> put_req_header("sec-fetch-mode", "cors")
+            |> put_req_header("sec-fetch-dest", "empty")
+            |> Plug.Test.init_test_session(%{})
+            |> get("/api/v1/sympp/operator/config?operator_bootstrap=test-bootstrap-token")
+
+          assert %{"operatorMode" => true} = json_response(conn, 200)
+          assert SymppDashboardApiController.local_operator_session?(conn.private.plug_session)
+        end)
+      end)
+    end)
+  end
+
+  test "local operator accepts configured dashboard origin for API calls with active session" do
+    with_local_operator_endpoint(fn ->
+      with_local_operator_dashboard_origin("http://127.0.0.1:5174", fn ->
+        conn =
+          build_conn()
+          |> Map.put(:host, "127.0.0.1")
+          |> Map.put(:remote_ip, {127, 0, 0, 1})
+          |> put_req_header("origin", "http://127.0.0.1:5174")
+          |> put_req_header("sec-fetch-site", "same-site")
+          |> put_req_header("sec-fetch-mode", "cors")
+          |> put_req_header("sec-fetch-dest", "empty")
+          |> Plug.Test.init_test_session(%{})
+          |> SymppDashboardApiController.put_local_operator_session()
+
+        assert %{"operatorMode" => true} = json_response(get(conn, "/api/v1/sympp/operator/config"), 200)
+      end)
+    end)
+  end
+
   test "local operator can fetch package detail through the dashboard API", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       %{work_package: work_package} = create_dashboard_fixture(repo, id: "SYMPP-LOCAL-OPERATOR-DETAIL")
@@ -5298,6 +5449,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       assert {:ok, refreshed_request} = WorkRequestService.refresh_completion(repo, work_request.id)
       assert refreshed_request.completed_at == persisted_request.completed_at
       assert refreshed_request.completion_source == "operator"
+
+      assert [%OperatorAudit{} = audit] = repo.all(OperatorAudit)
+      assert audit.actor_id == "local-operator"
+      assert audit.actor_role == "human_operator"
+      assert audit.actor_source == "local_operator"
+      assert audit.action == "dangerous_override"
+      assert audit.target_type == "work_request"
+      assert audit.target_id == work_request.id
+      assert audit.target_work_request_id == work_request.id
+      assert audit.decision == "allowed"
+      assert audit.reason == "allowed"
+      assert audit.request_metadata["method"] == "POST"
+      assert audit.request_metadata["path"] == "/api/v1/sympp/operator/work-requests/#{work_request.id}/state"
+      assert audit.tool_metadata["name"] == "operator_update_work_request_state"
     end)
   end
 
@@ -5362,7 +5527,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       with_static_dashboard_file("index.html", index, fn ->
         shell_conn =
           local_operator_conn()
-          |> Plug.Test.init_test_session(%{})
           |> ReactDashboardController.index(%{})
 
         assert html_response(shell_conn, 200) =~ "csrfToken"
@@ -6464,13 +6628,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     |> Map.put(:host, "localhost")
     |> Map.put(:remote_ip, {127, 0, 0, 1})
     |> put_req_header("origin", "http://localhost")
+    |> Plug.Test.init_test_session(%{})
+    |> SymppDashboardApiController.put_local_operator_session()
   end
 
   defp local_operator_csrf_conn do
     csrf_token = Plug.CSRFProtection.get_csrf_token()
 
     local_operator_conn()
-    |> Plug.Test.init_test_session(%{})
     |> put_req_header("x-csrf-token", csrf_token)
   end
 
@@ -6578,6 +6743,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       :symphony_elixir,
       SymphonyElixirWeb.Endpoint,
       Keyword.put(endpoint_config, :sympp_local_operator, true)
+    )
+
+    try do
+      fun.()
+    after
+      Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
+    end
+  end
+
+  defp with_local_operator_bootstrap_token(token, fun) when is_binary(token) and is_function(fun, 0) do
+    endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
+
+    Application.put_env(
+      :symphony_elixir,
+      SymphonyElixirWeb.Endpoint,
+      Keyword.put(endpoint_config, :sympp_local_operator_bootstrap_token, token)
+    )
+
+    try do
+      fun.()
+    after
+      Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
+    end
+  end
+
+  defp with_local_operator_dashboard_origin(origin, fun) when is_binary(origin) and is_function(fun, 0) do
+    endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
+
+    Application.put_env(
+      :symphony_elixir,
+      SymphonyElixirWeb.Endpoint,
+      Keyword.put(endpoint_config, :sympp_dashboard_origin, origin)
     )
 
     try do

@@ -26,7 +26,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver do
 
   @spec local_operator(String.t(), keyword()) :: Actor.t()
   def local_operator(id \\ "local_operator", opts \\ []) when is_binary(id) do
-    Actor.new(:operator,
+    Actor.new(:human_operator,
       id: id,
       scopes: [Scope.ledger(metadata: %{trusted_local: true})],
       capabilities: Keyword.get(opts, :capabilities, []),

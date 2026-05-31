@@ -4,7 +4,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Actor do
   @enforce_keys [:role]
   defstruct [:id, :role, scopes: [], capabilities: [], source: nil, metadata: %{}]
 
-  @type role :: :worker | :architect | :operator | :unknown
+  @type role :: :worker | :architect | :operator | :human_operator | :unknown
 
   @type t :: %__MODULE__{
           id: String.t() | nil,
@@ -33,8 +33,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Actor do
   def normalize_role(:architect), do: :architect
   def normalize_role("architect"), do: :architect
   def normalize_role(:operator), do: :operator
-  def normalize_role(:human), do: :operator
+  def normalize_role(:human_operator), do: :human_operator
+  def normalize_role(:human), do: :human_operator
   def normalize_role("operator"), do: :operator
-  def normalize_role("human"), do: :operator
+  def normalize_role("human_operator"), do: :human_operator
+  def normalize_role("human"), do: :human_operator
   def normalize_role(_role), do: :unknown
 end
