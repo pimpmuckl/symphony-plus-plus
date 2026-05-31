@@ -102,7 +102,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
     :ok
   end
 
-  test "worker creates and reads its own package guidance request idempotently", %{repo: repo} do
+  test "workers create and read their own package guidance idempotently", %{repo: repo} do
     {package, worker_session} = create_worker_session(repo, "SYMPP-GUIDANCE-WORKER")
 
     create_args = %{
@@ -185,7 +185,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
     assert repo.aggregate(GuidanceRequest, :count, :id) == 1
   end
 
-  test "architect lists scoped guidance, answers it, and workers cannot answer", %{repo: repo} do
+  test "architect lists scoped guidance, reads it, and workers cannot answer", %{repo: repo} do
     {anchor, architect_session} = create_architect_session(repo, "SYMPP-GUIDANCE-ARCHITECT")
     {visible_package, worker_session} = create_worker_session(repo, "SYMPP-GUIDANCE-VISIBLE", phase_id: anchor.phase_id)
     {outside_package, outside_worker_session} = create_worker_session(repo, "SYMPP-GUIDANCE-OUTSIDE", phase_id: "phase-guidance-other")
@@ -244,19 +244,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
         "answer" => "Ask the architect first and keep the implementation inside the assigned package."
       })
 
-    assert get_in(answer_response, ["result", "structuredContent", "guidance_request", "status"]) == "answered"
-
-    late_escalation_response =
-      mcp_tool(repo, architect_session, "escalate_guidance_request", %{
-        "guidance_request_id" => visible_request_id,
-        "reason" => "This should not overwrite an answered request.",
-        "recommended_language" => "Do not overwrite terminal guidance state."
-      })
-
-    assert get_in(late_escalation_response, ["error", "data", "reason"]) == "invalid_status"
+    assert get_in(answer_response, ["error", "data", "reason"]) == "outside_session_scope"
 
     worker_read_response = mcp_tool(repo, worker_session, "read_guidance_request", %{"guidance_request_id" => visible_request_id})
-    assert get_in(worker_read_response, ["result", "structuredContent", "guidance_request", "answer"]) =~ "Ask the architect first"
+    assert get_in(worker_read_response, ["result", "structuredContent", "guidance_request", "answer"]) == nil
   end
 
   test "WorkRequest architect sees guidance for unphased dispatched slice packages", %{repo: repo} do
@@ -334,8 +325,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
   end
 
   test "architect escalation records human_info_needed blocker that blocks readiness", %{repo: repo} do
-    {package, worker_session} = create_worker_session(repo, "SYMPP-GUIDANCE-BLOCKED", status: "ci_waiting", phase_id: @phase_id)
-    {_anchor, architect_session} = create_architect_session(repo, "SYMPP-GUIDANCE-BLOCKED-ARCHITECT")
+    work_request = create_work_request!(repo, id: "WR-GUIDANCE-BLOCKED")
+    planned_slice = create_planned_slice!(repo, work_request, id: "WRS-GUIDANCE-BLOCKED")
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    package =
+      create_matching_work_package!(repo, work_request, approved_slice,
+        id: "WP-GUIDANCE-BLOCKED",
+        phase_id: nil,
+        status: "ci_waiting"
+      )
+
+    assert {:ok, _dispatched_slice} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", package.id)
+
+    worker_session = create_worker_session_for_package(repo, package, "blocked-worker")
+    {_anchor, architect_session} = create_work_request_architect_session(repo, work_request)
 
     request_id =
       create_guidance_request(repo, worker_session, %{
@@ -620,6 +624,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
     assert {:ok, minted} =
              AccessGrantService.mint_architect_grant(repo, phase_id,
                work_package_id: anchor.id,
+               work_request_id: work_request.id,
                capabilities: @architect_capabilities
              )
 
