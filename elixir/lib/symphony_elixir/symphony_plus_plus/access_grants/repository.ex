@@ -710,11 +710,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     work_request_ids = requested_scope_ids(attrs, "work_request_id", :work_request)
     planned_slice_ids = requested_scope_ids(attrs, "planned_slice_id", :planned_slice)
 
-    case validate_requested_work_request_scopes(repo, access_grant, work_request_ids) do
-      :ok -> validate_requested_planned_slice_scopes(repo, access_grant, planned_slice_ids, work_request_ids)
-      {:error, _reason} = error -> error
+    case validate_explicit_architect_scopes(access_grant, explicit_grant_scopes(attrs)) do
+      :ok ->
+        case validate_requested_work_request_scopes(repo, access_grant, work_request_ids) do
+          :ok -> validate_requested_planned_slice_scopes(repo, access_grant, planned_slice_ids, work_request_ids)
+          {:error, _reason} = error -> error
+        end
+
+      {:error, _reason} = error ->
+        error
     end
   end
+
+  defp validate_explicit_architect_scopes(%AccessGrant{} = access_grant, scopes) do
+    Enum.reduce_while(scopes, :ok, fn scope, :ok ->
+      case validate_explicit_architect_scope(access_grant, scope) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_explicit_architect_scope(%AccessGrant{}, %AuthScope{type: type})
+       when type in [:work_request, :planned_slice],
+       do: :ok
+
+  defp validate_explicit_architect_scope(%AccessGrant{} = access_grant, %AuthScope{type: :repo} = scope) do
+    if scope.repo == access_grant.scope_repo and scope.base_branch == access_grant.scope_base_branch do
+      :ok
+    else
+      {:error, :invalid_scope}
+    end
+  end
+
+  defp validate_explicit_architect_scope(%AccessGrant{} = access_grant, %AuthScope{type: :work_package, id: work_package_id}) do
+    if is_binary(work_package_id) and work_package_id == access_grant.work_package_id do
+      :ok
+    else
+      {:error, :invalid_scope}
+    end
+  end
+
+  defp validate_explicit_architect_scope(%AccessGrant{}, %AuthScope{}), do: {:error, :invalid_scope}
 
   defp requested_scope_ids(attrs, attr_key, scope_type) do
     attr_ids = attrs |> string_attr(attr_key) |> List.wrap()

@@ -268,6 +268,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
              )
   end
 
+  test "architect grants reject explicit scopes outside the anchor authority", %{repo: repo} do
+    assert {:ok, phase} =
+             PhaseRepository.create(repo, %{
+               id: "phase-invalid-explicit-scopes",
+               title: "Invalid explicit scopes"
+             })
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(kind: "phase_child", phase_id: phase.id)
+             )
+
+    invalid_scopes = [
+      Scope.ledger(),
+      Scope.repo("other/repo", work_package.base_branch),
+      Scope.repo(work_package.repo, "other/base"),
+      Scope.work_package("wp-outside-anchor")
+    ]
+
+    for scope <- invalid_scopes do
+      work_key = WorkKey.generate()
+
+      assert {:error, :invalid_scope} =
+               Repository.create(repo, %{
+                 work_package_id: work_package.id,
+                 phase_id: phase.id,
+                 display_key: work_key.display_key,
+                 secret_hash: WorkKey.secret_hash(work_key.secret),
+                 grant_role: "architect",
+                 scopes: [scope],
+                 capabilities: ["read:work_request", "write:work_request"]
+               })
+    end
+  end
+
   test "architect grants resolve work request scope from a dispatched planned slice", %{repo: repo} do
     assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-resolved-work-request-scope", title: "Resolved WorkRequest scope"})
 
