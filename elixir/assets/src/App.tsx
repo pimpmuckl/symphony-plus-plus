@@ -307,6 +307,10 @@ function jsonHeaders({ csrf = false, content = false }: { csrf?: boolean; conten
   return headers;
 }
 
+function operatorFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  return fetch(input, { ...init, credentials: "include" });
+}
+
 function dashboardErrorMessage(payload: DashboardApiResponse) {
   if (!isRecord(payload) || !isRecord(payload.error)) return null;
   return typeof payload.error.message === "string" ? payload.error.message : null;
@@ -340,7 +344,7 @@ async function ensureDashboardRuntimeConfig() {
     return dashboardRuntimeConfig;
   }
 
-  dashboardRuntimeConfigPromise ??= fetch(operatorConfigUrl(), { headers: jsonHeaders() })
+  dashboardRuntimeConfigPromise ??= operatorFetch(operatorConfigUrl(), { headers: jsonHeaders() })
     .then(async (response) => {
       const payload = await response.json();
       if (!response.ok) {
@@ -654,7 +658,7 @@ export default function App() {
   );
 
   const submitGuidanceAnswer = useCallback(async (item: GuidanceItem, submission: GuidanceAnswerSubmission) => {
-    const response = await fetch(guidanceAnswerUrl(item), {
+    const response = await operatorFetch(guidanceAnswerUrl(item), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify(submission),
@@ -664,7 +668,7 @@ export default function App() {
   }, [applyDashboardResponse, setSelectedGuidance]);
 
   const createWorkRequest = useCallback(async (form: NewRequestForm) => {
-    const response = await fetch(operatorApiUrl("/work-requests"), {
+    const response = await operatorFetch(operatorApiUrl("/work-requests"), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify(form),
@@ -685,7 +689,7 @@ export default function App() {
   }, [setDashboard, setError]);
 
   const submitComment = useCallback<SubmitContextComment>(async (target, body) => {
-    const response = await fetch(operatorApiUrl("/comments"), {
+    const response = await operatorFetch(operatorApiUrl("/comments"), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify({
@@ -710,7 +714,7 @@ export default function App() {
   }, [setDashboard, setError]);
 
   const resolveComment = useCallback<ResolveContextComment>(async (commentId, resolutionNote) => {
-    const response = await fetch(operatorApiUrl(`/comments/${encodeURIComponent(commentId)}/resolve`), {
+    const response = await operatorFetch(operatorApiUrl(`/comments/${encodeURIComponent(commentId)}/resolve`), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify({
@@ -744,7 +748,7 @@ export default function App() {
 
     try {
       await ensureDashboardRuntimeConfig();
-      const response = await fetch(operatorApiUrl("/dashboard"), { headers: jsonHeaders() });
+      const response = await operatorFetch(operatorApiUrl("/dashboard"), { headers: jsonHeaders() });
       await applyDashboardResponse(response, "Dashboard API unavailable");
     } catch (caught) {
       recordConnectionFailure(caught instanceof Error ? caught.message : "Dashboard API unavailable", mode === "initial");
@@ -761,7 +765,7 @@ export default function App() {
 
     try {
       const headers = await mutationHeaders();
-      const response = await fetch(operatorApiUrl("/github/sync-prs"), {
+      const response = await operatorFetch(operatorApiUrl("/github/sync-prs"), {
         method: "POST",
         headers,
         body: JSON.stringify({ mode: "auto" }),
@@ -778,7 +782,7 @@ export default function App() {
     let handoff = cachedHandoff || null;
 
     if (!handoff) {
-      const response = await fetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/architect-handoff`), {
+      const response = await operatorFetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/architect-handoff`), {
         method: "POST",
         headers: await mutationHeaders(),
         body: JSON.stringify({}),
@@ -814,7 +818,7 @@ export default function App() {
   }, [setDashboard]);
 
   const updateArchiveAfterDays = useCallback(async (archiveAfterDays: number) => {
-    const response = await fetch(operatorApiUrl("/settings"), {
+    const response = await operatorFetch(operatorApiUrl("/settings"), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify({ work_request_archive_after_days: archiveAfterDays }),
@@ -823,7 +827,7 @@ export default function App() {
   }, [applyDashboardResponse]);
 
   const archiveWorkRequest = useCallback<WorkRequestMutation>(async (workRequestId) => {
-    const response = await fetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/archive`), {
+    const response = await operatorFetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/archive`), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify({}),
@@ -833,7 +837,7 @@ export default function App() {
   }, [applyDashboardResponse, setSelectedCardDetail]);
 
   const restoreWorkRequest = useCallback<WorkRequestMutation>(async (workRequestId) => {
-    const response = await fetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/restore`), {
+    const response = await operatorFetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/restore`), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify({}),
@@ -842,7 +846,7 @@ export default function App() {
   }, [applyDashboardResponse]);
 
   const changeWorkRequestState = useCallback<WorkRequestStateMutation>(async (workRequestId, nextState) => {
-    const response = await fetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/state`), {
+    const response = await operatorFetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/state`), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify({ state: nextState }),
@@ -852,7 +856,7 @@ export default function App() {
   }, [applyDashboardResponse, setSelectedCardDetail]);
 
   const changeWorkPackageState = useCallback<WorkPackageStateMutation>(async (workPackageId, action, options) => {
-    const response = await fetch(operatorApiUrl(`/work-packages/${encodeURIComponent(workPackageId)}/state`), {
+    const response = await operatorFetch(operatorApiUrl(`/work-packages/${encodeURIComponent(workPackageId)}/state`), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify({ status: action, no_pr_evidence: options?.noPrEvidence }),
@@ -862,7 +866,7 @@ export default function App() {
   }, [applyDashboardResponse, setSelectedCardDetail]);
 
   const archiveWorkPackage = useCallback<WorkPackageArchiveMutation>(async (workPackageId) => {
-    const response = await fetch(operatorApiUrl(`/work-packages/${encodeURIComponent(workPackageId)}/archive`), {
+    const response = await operatorFetch(operatorApiUrl(`/work-packages/${encodeURIComponent(workPackageId)}/archive`), {
       method: "POST",
       headers: await mutationHeaders(),
       body: JSON.stringify({}),
@@ -4246,7 +4250,7 @@ function cardDetailDialogReducer(state: CardDetailDialogState, action: CardDetai
 }
 
 async function loadOperatorPayload<T>(path: string, signal: AbortSignal, fallbackMessage: string): Promise<T> {
-  const response = await fetch(operatorApiUrl(path), {
+  const response = await operatorFetch(operatorApiUrl(path), {
     headers: jsonHeaders(),
     signal,
   });

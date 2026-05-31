@@ -654,6 +654,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
+  @spec operator_options(Conn.t(), map()) :: Conn.t()
+  def operator_options(conn, _params) do
+    send_resp(conn, 204, "")
+  end
+
   @spec operator_package_detail(Conn.t(), map()) :: Conn.t()
   def operator_package_detail(conn, %{"work_package_id" => work_package_id}) do
     send_local_operator_response(

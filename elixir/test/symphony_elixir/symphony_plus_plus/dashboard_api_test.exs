@@ -4904,7 +4904,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
           |> get("/api/v1/sympp/operator/config")
 
         assert %{"operatorMode" => true} = json_response(conn, 200)
+        assert Plug.Conn.get_resp_header(conn, "access-control-allow-origin") == ["http://127.0.0.1:5174"]
+        assert Plug.Conn.get_resp_header(conn, "access-control-allow-credentials") == ["true"]
         assert SymppDashboardApiController.local_operator_session?(conn.private.plug_session)
+      end)
+    end)
+  end
+
+  test "configured local dashboard origin receives credentialed operator API preflight" do
+    with_local_operator_endpoint(fn ->
+      with_local_operator_dashboard_origin("http://127.0.0.1:5174", fn ->
+        conn =
+          build_conn(:options, "/api/v1/sympp/operator/work-requests")
+          |> Map.put(:host, "127.0.0.1")
+          |> Map.put(:remote_ip, {127, 0, 0, 1})
+          |> put_req_header("origin", "http://127.0.0.1:5174")
+          |> put_req_header("access-control-request-method", "POST")
+          |> put_req_header("access-control-request-headers", "content-type,x-csrf-token")
+          |> options("/api/v1/sympp/operator/work-requests")
+
+        assert response(conn, 204) == ""
+        assert Plug.Conn.get_resp_header(conn, "access-control-allow-origin") == ["http://127.0.0.1:5174"]
+        assert Plug.Conn.get_resp_header(conn, "access-control-allow-credentials") == ["true"]
+        assert Plug.Conn.get_resp_header(conn, "access-control-allow-methods") == ["GET, POST, OPTIONS"]
+        assert Plug.Conn.get_resp_header(conn, "access-control-allow-headers") == ["accept, content-type, x-csrf-token"]
       end)
     end)
   end
