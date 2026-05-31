@@ -2851,21 +2851,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp read_virtual_resource(repo, work_package_id, file_name, uri, opts) do
-    if file_name in PlanningRenderer.virtual_files() do
-      case PlanningRepository.get_render_state(repo, work_package_id) do
-        {:ok, state} ->
-          with {:ok, markdown} <- PlanningRenderer.render_state(state, file_name),
-               {:ok, resource} <- virtual_resource_result(uri, markdown, state, file_name, opts) do
-            {:ok, resource}
-          else
-            {:error, reason} -> service_error(reason, uri)
-          end
-
-        {:error, reason} ->
-          service_error(reason, uri)
-      end
+    with true <- file_name in PlanningRenderer.virtual_files(),
+         {:ok, state} <- PlanningRepository.get_render_state(repo, work_package_id),
+         {:ok, markdown} <- PlanningRenderer.render_state(state, file_name),
+         {:ok, resource} <- virtual_resource_result(uri, markdown, state, file_name, opts) do
+      {:ok, resource}
     else
-      {:error, -32_601, "Method not found", %{"resource" => uri, "reason" => "unknown_virtual_file"}}
+      false -> {:error, -32_601, "Method not found", %{"resource" => uri, "reason" => "unknown_virtual_file"}}
+      {:error, reason} -> service_error(reason, uri)
     end
   end
 

@@ -13,6 +13,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.WorkerContext do
 
   @redacted "[REDACTED]"
   @payload_key_limit 20
+  @sensitive_agent_suffixes [
+    "_access_key",
+    "_api_key",
+    "_apikey",
+    "_authorization",
+    "_credential",
+    "_handoff",
+    "_password",
+    "_secret",
+    "_token",
+    "_verifier"
+  ]
   @sensitive_agent_keys MapSet.new([
                           "access_key",
                           "api_key",
@@ -296,12 +308,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.WorkerContext do
       |> String.replace(~r/[^a-z0-9]+/, "_")
       |> String.trim("_")
 
-    MapSet.member?(@sensitive_agent_keys, normalized) or String.ends_with?(normalized, "_secret") or
-      String.ends_with?(normalized, "_token") or String.ends_with?(normalized, "_password") or
-      String.ends_with?(normalized, "_authorization") or String.ends_with?(normalized, "_verifier") or
-      String.ends_with?(normalized, "_handoff") or String.ends_with?(normalized, "_api_key") or
-      String.ends_with?(normalized, "_apikey") or String.ends_with?(normalized, "_access_key") or
-      String.ends_with?(normalized, "_credential")
+    MapSet.member?(@sensitive_agent_keys, normalized) or
+      Enum.any?(@sensitive_agent_suffixes, &String.ends_with?(normalized, &1))
   end
 
   defp encode_agent_payload(payload) do
