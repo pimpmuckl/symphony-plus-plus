@@ -175,8 +175,6 @@ defmodule SymphonyElixirWeb.Router do
     host in ["localhost", "127.0.0.1", "::1", "[::1]"] or String.ends_with?(host, ".localhost")
   end
 
-  defp local_host?(_host), do: false
-
   defp direct_local_request?(conn) do
     Enum.all?(["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip"], fn header ->
       Plug.Conn.get_req_header(conn, header) == []
@@ -227,6 +225,5 @@ defmodule SymphonyElixirWeb.Router do
   end
 
   defp normalize_origin_port("http", nil), do: 80
-  defp normalize_origin_port("https", nil), do: 443
   defp normalize_origin_port(_scheme, port), do: port
 end
