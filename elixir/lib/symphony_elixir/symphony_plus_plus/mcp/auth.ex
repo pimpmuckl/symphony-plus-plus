@@ -22,12 +22,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Auth do
       {:ok, %AccessGrant{} = grant} ->
         with :ok <- require_proof(session, grant),
              :ok <- AccessGrantService.require_live_package_authority(repo, grant),
-             {:ok, scopes} <- load_grant_scopes(repo, grant),
-             {:ok, live_session} <-
-               Session.from_grant(grant, DateTime.utc_now(:microsecond),
-                 proof_hash: session.proof_hash,
-                 scopes: scopes
-               ) do
+             {:ok, live_session} <- session_from_grant(repo, grant, proof_hash: session.proof_hash) do
           {:ok, live_session}
         else
           {:error, {:scope_lookup_failed, reason}} -> {:error, {:service_unavailable, {:scope_lookup_failed, reason}}}
@@ -50,6 +45,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Auth do
   def require_session(nil, repo) when is_atom(repo), do: {:error, :unauthorized}
 
   def require_session(_session, repo) when is_atom(repo), do: {:error, {:unauthorized, :invalid_session}}
+
+  @spec session_from_grant(module(), AccessGrant.t(), keyword()) :: {:ok, Session.t()} | {:error, term()}
+  def session_from_grant(repo, %AccessGrant{} = grant, opts \\ []) when is_atom(repo) and is_list(opts) do
+    now = Keyword.get(opts, :now, DateTime.utc_now(:microsecond))
+
+    with {:ok, scopes} <- load_grant_scopes(repo, grant) do
+      opts = opts |> Keyword.delete(:now) |> Keyword.put(:scopes, scopes)
+      Session.from_grant(grant, now, opts)
+    end
+  end
 
   defp fetch_grant(repo, grant_id) do
     fetch = &AccessGrantRepository.get/2

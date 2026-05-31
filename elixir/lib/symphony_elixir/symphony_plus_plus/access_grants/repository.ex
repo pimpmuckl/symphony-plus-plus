@@ -799,11 +799,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
 
   defp validate_requested_planned_slice_scope(repo, %AccessGrant{} = access_grant, planned_slice_id, work_request_ids) do
     scope_ids = persisted_scope_ids(repo, access_grant.id, "planned_slice")
+    work_request_ids = planned_slice_work_request_scope_ids(repo, access_grant, work_request_ids)
 
     case require_matching_persisted_scope(scope_ids, planned_slice_id) do
       :ok -> validate_planned_slice_anchor(repo, access_grant, planned_slice_id, work_request_ids)
       {:error, _reason} = error -> error
     end
+  end
+
+  defp planned_slice_work_request_scope_ids(_repo, %AccessGrant{}, work_request_ids)
+       when work_request_ids != [],
+       do: work_request_ids
+
+  defp planned_slice_work_request_scope_ids(repo, %AccessGrant{} = access_grant, []) do
+    persisted_scope_ids(repo, access_grant.id, "work_request")
   end
 
   defp require_matching_persisted_scope([], _scope_id), do: :ok

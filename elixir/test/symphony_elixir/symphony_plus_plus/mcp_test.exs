@@ -4506,6 +4506,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == handoff.anchor_package.id
     assert get_in(claim_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "created"
     assert claimed_server.session.assignment.grant_role == "architect"
+    assert Scope.work_request(work_request.id) in claimed_server.session.assignment.scopes
     assert claimed_server.session.proof_hash == unclaimed_grant.secret_hash
     refute inspect(claim_response) =~ unclaimed_grant.secret_hash
 
@@ -4619,6 +4620,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(reconnect_response, ["result", "structuredContent", "assignment", "grant_id"]) == handoff.grant.id
     assert get_in(reconnect_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "heartbeat"
     assert reconnected_server.session.assignment.grant_role == "architect"
+    assert Scope.work_request(work_request.id) in reconnected_server.session.assignment.scopes
   end
 
   test "claim_local_architect_assignment releases heartbeat leases when grant owner changes", %{repo: repo} do
