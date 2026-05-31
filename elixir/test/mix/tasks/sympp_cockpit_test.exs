@@ -15,9 +15,11 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
     previous_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
     previous_endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
     previous_dashboard_origin = System.get_env("SYMPP_DASHBOARD_ORIGIN")
+    previous_open_dashboard = System.get_env("SYMPP_OPEN_DASHBOARD")
 
     Mix.shell(Mix.Shell.Process)
     System.delete_env("SYMPP_DASHBOARD_ORIGIN")
+    System.delete_env("SYMPP_OPEN_DASHBOARD")
     ensure_cockpit_dashboard_asset!()
 
     on_exit(fn ->
@@ -25,6 +27,7 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
       restore_env(:sympp_repo_database, previous_database)
       Application.put_env(:symphony_elixir, Endpoint, previous_endpoint_config)
       restore_system_env("SYMPP_DASHBOARD_ORIGIN", previous_dashboard_origin)
+      restore_system_env("SYMPP_OPEN_DASHBOARD", previous_open_dashboard)
       stop_endpoint()
     end)
 
@@ -45,6 +48,7 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
       assert {:ok, default_opts} = CockpitTask.parse_args_for_test([])
       assert Keyword.fetch!(default_opts, :host) == "127.0.0.1"
       assert Keyword.fetch!(default_opts, :port) == 19_998
+      assert Keyword.fetch!(default_opts, :open_dashboard) == false
       refute Keyword.has_key?(default_opts, :dashboard_origin)
       assert CockpitTask.cockpit_url_for_test(default_opts, 19_998) == "http://127.0.0.1:19998/sympp/board"
 
@@ -133,6 +137,21 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
     assert Keyword.fetch!(opts, :dashboard_origin) == "http://spp.localhost:5174"
   end
 
+  test "parses dashboard browser opener opt-in from flag and environment" do
+    assert {:ok, flag_opts} = CockpitTask.parse_args_for_test(["--open-dashboard"])
+    assert Keyword.fetch!(flag_opts, :open_dashboard) == true
+
+    System.put_env("SYMPP_OPEN_DASHBOARD", "1")
+
+    assert {:ok, env_opts} = CockpitTask.parse_args_for_test([])
+    assert Keyword.fetch!(env_opts, :open_dashboard) == true
+
+    System.put_env("SYMPP_OPEN_DASHBOARD", "false")
+
+    assert {:ok, disabled_env_opts} = CockpitTask.parse_args_for_test([])
+    assert Keyword.fetch!(disabled_env_opts, :open_dashboard) == false
+  end
+
   test "starts a local operator cockpit, prints bridge URLs, and serves an empty ledger API" do
     database_path = WorkPackageFactory.database_path()
 
@@ -172,12 +191,10 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
 
       assert_received {:mix_shell, :info, [url]}
       assert url =~ ~r{Symphony\+\+ local operator dashboard: http://127\.0\.0\.1:\d+/sympp/board\?operator_bootstrap=\[REDACTED\]}
-      assert_received {:operator_dashboard_opened, opened_url}
-      assert opened_url =~ ~r{http://127\.0\.0\.1:\d+/sympp/board\?operator_bootstrap=[^&]+}
-      refute opened_url =~ "[REDACTED]"
+      refute_received {:operator_dashboard_opened, _opened_url}
       assert_received {:mix_shell, :info, [bridge]}
       assert bridge =~ ~r{Symphony\+\+ API bridge: http://127\.0\.0\.1:\d+}
-      assert_received {:mix_shell, :info, ["Bootstrap URL browser open attempted; token redacted from logs."]}
+      assert_received {:mix_shell, :info, ["Dashboard browser auto-open disabled; pass --open-dashboard or set SYMPP_OPEN_DASHBOARD=1 to open it."]}
       assert_received {:mix_shell, :info, ["Press Ctrl+C to stop."]}
       assert_received {:cockpit_response, 200, nil, 401, 200, payload}
       assert payload["board"]["total_count"] == 0
@@ -229,10 +246,7 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
         send(self(), {:retention_payload, config_response.status, api_response.status, api_response.body})
       end)
 
-      assert_received {:operator_dashboard_opened, bootstrap_url}
-      assert bootstrap_url =~ ~r{http://127\.0\.0\.1:5174/api/v1/sympp/operator/config\?operator_bootstrap=[^&]+}
-      assert_received {:operator_dashboard_opened, dashboard_url}
-      assert dashboard_url =~ ~r{http://127\.0\.0\.1:5174/sympp/board\?operator_bootstrap=[^&]+}
+      refute_received {:operator_dashboard_opened, _url}
       assert_received {:retention_payload, 200, 200, payload}
       assert payload["work_requests"]["work_requests"] == []
 
@@ -240,6 +254,39 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
       assert [_slice] = Repo.all(PlannedSlice)
     after
       Repo.put_dynamic_repo(original_dynamic_repo)
+      File.rm(database_path)
+    end
+  end
+
+  test "opens dashboard bootstrap URLs when explicitly requested" do
+    database_path = WorkPackageFactory.database_path()
+
+    try do
+      assert {:ok, opts} =
+               CockpitTask.parse_args_for_test([
+                 "--database",
+                 database_path,
+                 "--port",
+                 "0",
+                 "--dashboard-origin",
+                 "http://127.0.0.1:5174",
+                 "--open-dashboard"
+               ])
+
+      opts =
+        Keyword.put(opts, :operator_dashboard_opener, fn url ->
+          send(self(), {:operator_dashboard_opened, url})
+          :ok
+        end)
+
+      CockpitTask.run_cockpit_for_test(opts, fn -> :ok end)
+
+      assert_received {:operator_dashboard_opened, bootstrap_url}
+      assert bootstrap_url =~ ~r{http://127\.0\.0\.1:5174/api/v1/sympp/operator/config\?operator_bootstrap=[^&]+}
+      assert_received {:operator_dashboard_opened, dashboard_url}
+      assert dashboard_url =~ ~r{http://127\.0\.0\.1:5174/sympp/board\?operator_bootstrap=[^&]+}
+      assert_received {:mix_shell, :info, ["Bootstrap URL browser open attempted; token redacted from logs."]}
+    after
       File.rm(database_path)
     end
   end

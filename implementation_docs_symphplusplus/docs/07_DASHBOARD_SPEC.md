@@ -14,7 +14,8 @@ mix sympp.cockpit --dashboard-origin http://spp.localhost:19999
 
 The launcher binds to `127.0.0.1:19998` by default, prints
 `http://spp.localhost:19999/sympp/board` when a dashboard origin is supplied,
-enables `sympp_local_operator: true`, and serves Streamable HTTP MCP at
+does not open a browser unless `--open-dashboard` or `SYMPP_OPEN_DASHBOARD=1`
+is set, enables `sympp_local_operator: true`, and serves Streamable HTTP MCP at
 `http://127.0.0.1:19998/mcp`. Pass `--port 0` for
 an OS-assigned port during manual or test runs, or `--port <n>` for a different
 stable port. Omit `--database` to use the shared local ledger at
