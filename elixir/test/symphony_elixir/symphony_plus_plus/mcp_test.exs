@@ -15,6 +15,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.Authorization.Scope
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service, as: ClaimLeaseService
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
@@ -444,8 +445,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       claimed_by: "worker-1"
     }
 
-    assert {:ok, session} = Session.from_grant(grant, now, proof_hash: "proof")
+    scopes = [Scope.work_package(grant.work_package_id)]
+
+    assert {:ok, session} = Session.from_grant(grant, now, proof_hash: "proof", scopes: scopes)
     assert session.assignment.work_package_id == "SYMPP-SESSION-GRANT"
+    assert session.assignment.scopes == scopes
 
     assert Session.from_grant(%{grant | revoked_at: now}, now) == {:error, :revoked}
     assert Session.from_grant(%{grant | expires_at: now}, now) == {:error, :expired}
@@ -495,6 +499,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert live_session.assignment.grant_role == "architect"
     assert live_session.assignment.work_package_id == package.id
     assert live_session.assignment.phase_id == package.phase_id
+    assert Scope.work_package(package.id) in live_session.assignment.scopes
+    assert Scope.repo(package.repo, package.base_branch) in live_session.assignment.scopes
 
     assert {:ok, _terminal_package} = WorkPackageRepository.update(repo, package.id, %{status: "merged"})
 
