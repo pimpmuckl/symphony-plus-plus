@@ -108,6 +108,12 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
     assert {:error, dashboard_origin_usage} = CockpitTask.parse_args_for_test(["--dashboard-origin", " "])
     assert dashboard_origin_usage =~ "mix sympp.cockpit"
 
+    assert {:error, remote_dashboard_origin_error} = CockpitTask.parse_args_for_test(["--dashboard-origin", "http://example.com:5174"])
+    assert remote_dashboard_origin_error =~ "dashboard origin must be a loopback http origin"
+
+    assert {:ok, spp_dashboard_origin_opts} = CockpitTask.parse_args_for_test(["--dashboard-origin", "http://spp.localhost:5174"])
+    assert Keyword.fetch!(spp_dashboard_origin_opts, :dashboard_origin) == "http://spp.localhost:5174"
+
     assert {:error, port_error} = CockpitTask.parse_args_for_test(["--port", "65536"])
     assert port_error =~ "port must be an integer"
   end

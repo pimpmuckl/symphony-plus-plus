@@ -227,7 +227,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp loopback_request?(_remote_ip), do: false
 
   defp local_host?(host) when is_binary(host) do
-    host |> String.downcase() |> then(&(&1 in ["localhost", "127.0.0.1", "::1", "[::1]"]))
+    host = String.downcase(host)
+    host in ["localhost", "127.0.0.1", "::1", "[::1]"] or String.ends_with?(host, ".localhost")
   end
 
   defp local_host?(_host), do: false
@@ -308,8 +309,9 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp configured_dashboard_origin(origin) when is_binary(origin) do
     case URI.parse(String.trim_trailing(origin, "/")) do
-      %URI{scheme: scheme, host: host, port: port} when is_binary(scheme) and is_binary(host) ->
+      %URI{scheme: scheme, host: host, port: port} when is_binary(scheme) and is_binary(host) and scheme == "http" ->
         %URI{scheme: scheme, host: host, port: port}
+        |> require_local_origin()
 
       _parsed ->
         nil
@@ -318,6 +320,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp configured_dashboard_origin(_origin), do: nil
 
+  defp require_local_origin(%URI{host: host} = origin) do
+    if local_host?(host), do: origin
+  end
+
   defp origin_matches?(%URI{scheme: expected_scheme, host: expected_host, port: expected_port}, %URI{
          scheme: actual_scheme,
          host: actual_host,
@@ -325,11 +331,18 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
        })
        when is_binary(actual_scheme) and is_binary(actual_host) do
     String.downcase(actual_scheme) == String.downcase(expected_scheme) and
-      String.downcase(actual_host) == String.downcase(expected_host) and
+      local_hosts_match?(actual_host, expected_host) and
       normalize_origin_port(actual_scheme, actual_port) == normalize_origin_port(expected_scheme, expected_port)
   end
 
   defp origin_matches?(_expected_origin, _actual_origin), do: false
+
+  defp local_hosts_match?(actual_host, expected_host) do
+    actual_host = String.downcase(actual_host)
+    expected_host = String.downcase(expected_host)
+
+    actual_host == expected_host or (local_host?(actual_host) and local_host?(expected_host))
+  end
 
   defp browser_navigation_request?(conn) do
     mode = conn |> Conn.get_req_header("sec-fetch-mode") |> List.first()
@@ -352,8 +365,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp normalize_origin_port(_scheme, port), do: port
 
   defp local_operator_session_bootstrapped?(conn) do
-    fetched_active_local_operator_session?(conn) or valid_local_operator_bootstrap?(conn)
+    fetched_active_local_operator_session?(conn) or valid_local_operator_bootstrap?(conn) or local_operator_config_request?(conn)
   end
+
+  defp local_operator_config_request?(conn), do: conn.method == "GET" and conn.request_path == prefixed_path(conn, "/api/v1/sympp/operator/config")
 
   defp valid_local_operator_bootstrap?(conn) do
     with expected when is_binary(expected) <- configured_operator_bootstrap_token(),

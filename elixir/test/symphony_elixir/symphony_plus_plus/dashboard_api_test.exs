@@ -4748,7 +4748,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
-  test "unbound localhost agent requests cannot forge shell bootstrap metadata" do
+  test "plain local dashboard config grants same-origin API session" do
     with_local_operator_endpoint(fn ->
       index = "<!doctype html><html><head></head><body><div id=\"root\"></div></body></html>"
 
@@ -4773,14 +4773,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
           |> put_req_header("sec-fetch-mode", "cors")
           |> put_req_header("sec-fetch-dest", "empty")
           |> Plug.Test.init_test_session(shell_conn.private.plug_session)
+          |> get("/api/v1/sympp/operator/config")
 
-        assert %{"error" => %{"code" => "unauthorized"}} =
-                 json_response(get(conn, "/api/v1/sympp/operator/config"), 401)
+        assert %{"operatorMode" => true} = json_response(conn, 200)
+        assert SymppDashboardApiController.local_operator_session?(conn.private.plug_session)
       end)
     end)
   end
 
-  test "unbound localhost agent requests cannot forge browser API metadata" do
+  test "spp.localhost plain dashboard config grants local operator API session" do
+    with_local_operator_endpoint(fn ->
+      with_local_operator_dashboard_origin("http://127.0.0.1:5174", fn ->
+        index = "<!doctype html><html><head></head><body><div id=\"root\"></div></body></html>"
+
+        with_static_dashboard_file("index.html", index, fn ->
+          shell_conn =
+            build_conn(:get, "/sympp/board")
+            |> Map.put(:host, "spp.localhost")
+            |> Map.put(:remote_ip, {127, 0, 0, 1})
+            |> put_req_header("sec-fetch-site", "none")
+            |> put_req_header("sec-fetch-mode", "navigate")
+            |> Plug.Test.init_test_session(%{})
+            |> ReactDashboardController.index(%{})
+
+          assert redirected_to(shell_conn, 302) == "http://127.0.0.1:5174/sympp/board"
+
+          conn =
+            build_conn()
+            |> Map.put(:host, "127.0.0.1")
+            |> Map.put(:remote_ip, {127, 0, 0, 1})
+            |> put_req_header("origin", "http://spp.localhost:5174")
+            |> put_req_header("sec-fetch-site", "same-site")
+            |> put_req_header("sec-fetch-mode", "cors")
+            |> put_req_header("sec-fetch-dest", "empty")
+            |> Plug.Test.init_test_session(%{})
+            |> get("/api/v1/sympp/operator/config")
+
+          assert %{"operatorMode" => true} = json_response(conn, 200)
+          assert SymppDashboardApiController.local_operator_session?(conn.private.plug_session)
+        end)
+      end)
+    end)
+  end
+
+  test "same-origin local dashboard config establishes local operator session without bootstrap token" do
     with_local_operator_endpoint(fn ->
       conn =
         build_conn()
@@ -4789,9 +4825,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         |> put_req_header("sec-fetch-site", "same-origin")
         |> put_req_header("sec-fetch-mode", "cors")
         |> put_req_header("sec-fetch-dest", "empty")
+        |> Plug.Test.init_test_session(%{})
+        |> get("/api/v1/sympp/operator/config")
 
-      assert %{"error" => %{"code" => "unauthorized"}} =
-               json_response(get(conn, "/api/v1/sympp/operator/config"), 401)
+      assert %{"operatorMode" => true} = json_response(conn, 200)
+      assert SymppDashboardApiController.local_operator_session?(conn.private.plug_session)
+    end)
+  end
+
+  test "configured nonlocal dashboard origin cannot bootstrap local operator API session" do
+    with_local_operator_endpoint(fn ->
+      with_local_operator_dashboard_origin("http://example.com:5174", fn ->
+        conn =
+          build_conn()
+          |> Map.put(:host, "127.0.0.1")
+          |> Map.put(:remote_ip, {127, 0, 0, 1})
+          |> put_req_header("origin", "http://example.com:5174")
+          |> put_req_header("sec-fetch-site", "same-site")
+          |> put_req_header("sec-fetch-mode", "cors")
+          |> put_req_header("sec-fetch-dest", "empty")
+          |> Plug.Test.init_test_session(%{})
+          |> get("/api/v1/sympp/operator/config")
+
+        assert %{"error" => %{"code" => "unauthorized"}} = json_response(conn, 401)
+        refute SymppDashboardApiController.local_operator_session?(conn.private.plug_session)
+      end)
     end)
   end
 
@@ -4827,6 +4885,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
           assert %{"operatorMode" => true} = json_response(conn, 200)
           assert SymppDashboardApiController.local_operator_session?(conn.private.plug_session)
         end)
+      end)
+    end)
+  end
+
+  test "configured dashboard origin can bootstrap local operator API session without token" do
+    with_local_operator_endpoint(fn ->
+      with_local_operator_dashboard_origin("http://127.0.0.1:5174", fn ->
+        conn =
+          build_conn()
+          |> Map.put(:host, "127.0.0.1")
+          |> Map.put(:remote_ip, {127, 0, 0, 1})
+          |> put_req_header("origin", "http://127.0.0.1:5174")
+          |> put_req_header("sec-fetch-site", "same-site")
+          |> put_req_header("sec-fetch-mode", "cors")
+          |> put_req_header("sec-fetch-dest", "empty")
+          |> Plug.Test.init_test_session(%{})
+          |> get("/api/v1/sympp/operator/config")
+
+        assert %{"operatorMode" => true} = json_response(conn, 200)
+        assert SymppDashboardApiController.local_operator_session?(conn.private.plug_session)
+      end)
+    end)
+  end
+
+  test "configured dashboard origin accepts localhost aliases for local operator API session" do
+    with_local_operator_endpoint(fn ->
+      with_local_operator_dashboard_origin("http://127.0.0.1:5174", fn ->
+        conn =
+          build_conn()
+          |> Map.put(:host, "127.0.0.1")
+          |> Map.put(:remote_ip, {127, 0, 0, 1})
+          |> put_req_header("origin", "http://spp.localhost:5174")
+          |> put_req_header("sec-fetch-site", "same-site")
+          |> put_req_header("sec-fetch-mode", "cors")
+          |> put_req_header("sec-fetch-dest", "empty")
+          |> Plug.Test.init_test_session(%{})
+          |> get("/api/v1/sympp/operator/config")
+
+        assert %{"operatorMode" => true} = json_response(conn, 200)
+        assert SymppDashboardApiController.local_operator_session?(conn.private.plug_session)
       end)
     end)
   end

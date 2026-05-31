@@ -87,6 +87,9 @@ defmodule Mix.Tasks.Sympp.Cockpit do
       has_blank_option?(opts, [:dashboard_origin]) ->
         {:error, usage()}
 
+      invalid_dashboard_origin?(Keyword.get(opts, :dashboard_origin)) ->
+        {:error, "Symphony++ cockpit dashboard origin must be a loopback http origin."}
+
       not loopback_host?(Keyword.get(opts, :host, @default_host)) ->
         {:error, "Symphony++ cockpit host must be loopback: #{@default_host}, localhost, ::1, or [::1]."}
 
@@ -590,6 +593,22 @@ defmodule Mix.Tasks.Sympp.Cockpit do
 
   defp server_host("[::1]"), do: "::1"
   defp server_host(host), do: host
+
+  defp invalid_dashboard_origin?(nil), do: false
+
+  defp invalid_dashboard_origin?(origin) when is_binary(origin) do
+    case URI.parse(String.trim(origin)) do
+      %URI{scheme: "http", host: host} when is_binary(host) -> not local_dashboard_host?(host)
+      _origin -> true
+    end
+  end
+
+  defp invalid_dashboard_origin?(_origin), do: true
+
+  defp local_dashboard_host?(host) when is_binary(host) do
+    host = String.downcase(host)
+    host in ["localhost", "127.0.0.1", "::1", "[::1]"] or String.ends_with?(host, ".localhost")
+  end
 
   defp has_blank_option?(opts, keys) do
     Enum.any?(keys, &(Keyword.has_key?(opts, &1) and blank?(Keyword.get(opts, &1))))
