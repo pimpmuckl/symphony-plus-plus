@@ -13410,14 +13410,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-TOON-PLAN-BOUNDS", kind: "mcp"))
 
-    for index <- 1..101 do
-      assert {:ok, _plan_node} =
-               PlanningRepository.append_plan_node(repo, %{
-                 "work_package_id" => package.id,
-                 "title" => "Plan node #{index}",
-                 "status" => "pending"
-               })
-    end
+    plan_nodes =
+      for index <- 1..101 do
+        assert {:ok, plan_node} =
+                 PlanningRepository.append_plan_node(repo, %{
+                   "work_package_id" => package.id,
+                   "title" => "Plan node #{index}",
+                   "status" => "pending"
+                 })
+
+        plan_node
+      end
 
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
@@ -13435,7 +13438,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert read_plan_text =~ "plan_nodes: 1"
     refute read_plan_text =~ "Plan node 101"
     assert get_in(read_plan_response, ["result", "structuredContent", "text"]) =~ "1 later plan nodes omitted"
-    assert get_in(read_plan_response, ["result", "structuredContent", "version"])
+    version = get_in(read_plan_response, ["result", "structuredContent", "version"])
+    assert version
+
+    update_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "update-plan",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{
+              "expected_version" => version,
+              "patch" => %{"nodes" => [%{"id" => hd(plan_nodes).id, "status" => "done"}]}
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(update_response, ["result", "structuredContent", "plan_nodes", Access.at(0), "status"]) == "done"
   end
 
   test "update_task_plan patches existing nodes with expected version", %{repo: repo} do

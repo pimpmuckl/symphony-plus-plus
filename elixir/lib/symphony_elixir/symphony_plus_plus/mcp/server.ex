@@ -10398,11 +10398,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- Auth.require_session(session, repo),
          :ok <- require_worker_assignment(session.assignment),
          work_package_id = Session.work_package_id(session),
-         {:ok, state} <- PlanningRepository.get_render_state(repo, work_package_id),
-         {:ok, summary} <- PlanningRepository.get_status_summary(repo, work_package_id),
+         {:ok, state} <- PlanningRepository.get_task_plan_render_state(repo, work_package_id),
          {:ok, markdown} <- PlanningRenderer.render_state(state, "task_plan.md"),
          uri = "sympp://work-packages/#{work_package_id}/task_plan.md",
-         version = plan_version(summary.plan_nodes),
+         version = plan_version(state.plan_version_material),
          {:ok, toon} <- WorkerContext.encode_virtual_file(state, "task_plan.md", uri: uri, version: version) do
       {:ok,
        agent_tool_result(
