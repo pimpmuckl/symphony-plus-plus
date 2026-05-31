@@ -486,6 +486,66 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     assert [%ClaimLease{id: ^claim_lease_id, actor_display_name: "local-worker-http-stale-binding"}] = active_claim_leases(work_package.id)
   end
 
+  test "POST /mcp refreshes stale durable binding before cleanup" do
+    package_id = "SYMPP-HTTP-STALE-TOUCH"
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               Repo,
+               WorkPackageFactory.attrs(
+                 id: package_id,
+                 kind: "mcp",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main",
+                 branch_pattern: "agent/#{package_id}/worker",
+                 worktree_path: local_claim_worktree_path(package_id),
+                 status: "ready_for_worker"
+               )
+             )
+
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(Repo, work_package.id)
+
+    init = post_json(initialize_request("stale-touch-init"))
+    [session_id] = get_resp_header(init, "mcp-session-id")
+
+    claim =
+      post_json(
+        tool_call_request(
+          "stale-touch-claim",
+          "claim_local_assignment",
+          local_assignment_claim_args(work_package, %{
+            "caller_id" => "codex-http-stale-touch-worker",
+            "claimed_by" => "local-worker-http-stale-touch"
+          })
+        ),
+        [{"mcp-session-id", session_id}]
+      )
+
+    assert get_in(json_response(claim, 200), ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
+
+    binding_id = SessionBinding.binding_id(@client_key, session_id)
+    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -172_800_000, :millisecond)
+
+    assert {1, nil} =
+             Repo.update_all(
+               from(binding in SessionBinding, where: binding.id == ^binding_id),
+               set: [last_seen_at: stale_seen_at]
+             )
+
+    touch =
+      post_json(tool_call_request("stale-touch-assignment", "get_current_assignment", %{}), [{"mcp-session-id", session_id}])
+
+    assert get_in(json_response(touch, 200), ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
+    assert DateTime.compare(Repo.get!(SessionBinding, binding_id).last_seen_at, stale_seen_at) == :gt
+
+    reset_mcp_runtime_state()
+
+    assignment =
+      post_json(tool_call_request("stale-touch-rehydrated-assignment", "get_current_assignment", %{}), [{"mcp-session-id", session_id}])
+
+    assert get_in(json_response(assignment, 200), ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
+  end
+
   test "POST /mcp rehydrates claimed local architect session after backend state reset" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-http-local-architect-rehydrate-#{System.unique_integer([:positive])}")
     previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)

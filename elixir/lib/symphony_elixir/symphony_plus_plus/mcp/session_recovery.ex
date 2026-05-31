@@ -20,13 +20,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
       when is_atom(repo) and is_binary(client_key) and is_binary(state_key) do
     case Repository.ensure_migrated(repo) do
       :ok ->
-        cleanup_stale(repo)
+        result =
+          case remember_action(config, client_key, state_key, payload, server, response) do
+            {:upsert, attrs} -> upsert(repo, attrs)
+            {:touch, id, now} -> touch(repo, id, now)
+            :skip -> :ok
+          end
 
-        case remember_action(config, client_key, state_key, payload, server, response) do
-          {:upsert, attrs} -> upsert(repo, attrs)
-          {:touch, id, now} -> touch(repo, id, now)
-          :skip -> :ok
-        end
+        cleanup_stale(repo)
+        result
 
       _error ->
         :ok
