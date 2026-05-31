@@ -9,6 +9,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.AgentFormat.WorkerContext
   alias SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver
   alias SymphonyElixir.SymphonyPlusPlus.Authorization.Decision
   alias SymphonyElixir.SymphonyPlusPlus.Authorization.MCPError
@@ -63,6 +64,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   @protocol_version "2025-03-26"
   @health_tool "sympp.health"
+  @agent_text_mime_type "text/vnd.toon"
   @solo_tools ["solo_attach", "solo_append", "solo_show", "solo_list", "solo_update_status"]
   @bootstrap_tools ["claim_private_handoff", "create_work_request"]
   @local_operator_tools ["add_work_request_comment", "record_work_request_operator_decision"]
@@ -2848,14 +2850,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end)
   end
 
-  defp read_virtual_resource(repo, work_package_id, file_name, uri) do
-    if file_name in PlanningRenderer.virtual_files() do
-      case PlanningRenderer.render(repo, work_package_id, file_name) do
-        {:ok, markdown} -> {:ok, text_resource(uri, markdown, "text/markdown")}
-        {:error, reason} -> service_error(reason, uri)
+  defp read_virtual_resource(repo, work_package_id, file_name, uri, opts) do
+    with true <- file_name in PlanningRenderer.virtual_files(),
+         {:ok, state} <- PlanningRepository.get_render_state(repo, work_package_id),
+         {:ok, markdown} <- PlanningRenderer.render_state(state, file_name),
+         {:ok, resource} <- virtual_resource_result(uri, markdown, state, file_name, opts) do
+      {:ok, resource}
+    else
+      false -> {:error, -32_601, "Method not found", %{"resource" => uri, "reason" => "unknown_virtual_file"}}
+      {:error, reason} -> service_error(reason, uri)
+    end
+  end
+
+  defp virtual_resource_result(uri, markdown, state, file_name, opts) do
+    if Keyword.get(opts, :agent_text?, false) do
+      with {:ok, toon} <- WorkerContext.encode_virtual_file(state, file_name, uri: uri) do
+        {:ok, agent_text_resource(uri, markdown, toon, "text/markdown")}
       end
     else
-      {:error, -32_601, "Method not found", %{"resource" => uri, "reason" => "unknown_virtual_file"}}
+      {:ok, text_resource(uri, markdown, "text/markdown")}
     end
   end
 
@@ -2866,12 +2879,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- Auth.require_session(session, repo),
          {:ok, actor} <- actor_for_package_resource(repo, session, resource_type, work_package_id),
          :ok <- PlanningService.authorize_package_action(repo, actor, action, work_package_id, resource_type) do
-      read_virtual_resource(repo, work_package_id, file_name, uri)
+      read_virtual_resource(repo, work_package_id, file_name, uri, agent_text?: worker_session?(session))
     else
       {:error, {:authorization_policy_denied, %Decision{} = decision}} -> MCPError.from_decision(decision, uri)
       {:error, reason} -> auth_error(reason, uri)
     end
   end
+
+  defp worker_session?(%Session{assignment: %{grant_role: "worker"}}), do: true
+  defp worker_session?(%Session{}), do: false
 
   defp handle_session_claim_tool("claim_work_key", params, id, %__MODULE__{} = server) do
     handle_claim_work_key(params, id, server)
@@ -9131,7 +9147,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_tool("get_current_assignment", _arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
          :ok <- require_assignment_introspection(session.assignment) do
-      {:ok, tool_result(%{"assignment" => Session.public_assignment(session)})}
+      {:ok, agent_tool_result(%{"assignment" => Session.public_assignment(session)})}
     else
       {:error, reason} -> worker_error(reason, "get_current_assignment")
     end
@@ -9180,7 +9196,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            "caller_supplied_id" => Map.has_key?(arguments, "id")
          },
          {:ok, finding} <- append_authenticated_idempotent_finding(config.repo, session, finding_id, attrs) do
-      {:ok, tool_result(%{"finding" => %{"id" => finding.id, "title" => finding.title, "severity" => finding.severity}})}
+      {:ok, agent_tool_result(%{"finding" => %{"id" => finding.id, "title" => finding.title, "severity" => finding.severity}})}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "append_finding", "reason" => reason}}
       {:error, reason} -> worker_error(reason, "append_finding")
@@ -10359,8 +10375,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp read_current_virtual_file(repo, session, file_name) do
     with {:ok, session} <- Auth.require_session(session, repo),
          :ok <- require_worker_assignment(session.assignment),
-         {:ok, markdown} <- PlanningRenderer.render(repo, Session.work_package_id(session), file_name) do
-      {:ok, tool_result(%{"uri" => "sympp://work-packages/#{Session.work_package_id(session)}/#{file_name}", "text" => markdown})}
+         work_package_id = Session.work_package_id(session),
+         uri = "sympp://work-packages/#{work_package_id}/#{file_name}",
+         {:ok, state} <- PlanningRepository.get_render_state(repo, work_package_id),
+         {:ok, markdown} <- PlanningRenderer.render_state(state, file_name),
+         {:ok, toon} <- WorkerContext.encode_virtual_file(state, file_name, uri: uri) do
+      {:ok, agent_tool_result(%{"uri" => uri, "text" => markdown}, toon)}
     else
       {:error, reason} -> worker_error(reason, "read_#{file_name}")
     end
@@ -10378,14 +10398,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- Auth.require_session(session, repo),
          :ok <- require_worker_assignment(session.assignment),
          work_package_id = Session.work_package_id(session),
-         {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
-         {:ok, markdown} <- PlanningRenderer.render_state(state, "task_plan.md") do
+         {:ok, state} <- PlanningRepository.get_task_plan_render_state(repo, work_package_id),
+         {:ok, markdown} <- PlanningRenderer.render_state(state, "task_plan.md"),
+         uri = "sympp://work-packages/#{work_package_id}/task_plan.md",
+         version = plan_version(state.plan_version_material),
+         {:ok, toon} <- WorkerContext.encode_virtual_file(state, "task_plan.md", uri: uri, version: version) do
       {:ok,
-       tool_result(%{
-         "uri" => "sympp://work-packages/#{work_package_id}/task_plan.md",
-         "text" => markdown,
-         "version" => plan_version(state.plan_nodes)
-       })}
+       agent_tool_result(
+         %{
+           "uri" => uri,
+           "text" => markdown,
+           "version" => version
+         },
+         toon
+       )}
     else
       {:error, reason} -> worker_error(reason, "read_task_plan.md")
     end
@@ -10397,7 +10423,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, plan_nodes, version} <-
            apply_plan_update(repo, session.assignment, work_package_id, expected_version, arguments) do
       {:ok,
-       tool_result(%{
+       agent_tool_result(%{
          "plan_nodes" => Enum.map(plan_nodes, &plan_node_payload/1),
          "version" => version
        })}
@@ -10889,7 +10915,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     case run_worker_transaction(repo, transaction_fun) do
       {:ok, event} ->
-        {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
+        {:ok, agent_tool_result(%{"progress_event" => progress_event_payload(event)})}
 
       {:tool_error, reason} ->
         {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
@@ -11083,7 +11109,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp replay_matching_progress_event(_repo, %Session{} = _session, %ProgressEvent{} = event, attrs, tool) do
     if progress_replay_matches?(event, attrs) do
-      {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
+      {:ok, agent_tool_result(%{"progress_event" => progress_event_payload(event)})}
     else
       {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => "idempotency_conflict"}}
     end
@@ -13566,6 +13592,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
+  defp agent_tool_result(payload) do
+    agent_tool_result(payload, WorkerContext.encode_tool_payload(payload))
+  end
+
+  defp agent_tool_result(payload, agent_text) when is_binary(agent_text) do
+    %{
+      "content" => [%{"type" => "text", "text" => agent_text}],
+      "structuredContent" => payload,
+      "isError" => false
+    }
+  end
+
   defp json_safe_payload(payload) do
     payload
     |> Jason.encode!()
@@ -13746,6 +13784,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
           "uri" => uri,
           "mimeType" => mime_type,
           "text" => text
+        }
+      ]
+    }
+  end
+
+  defp agent_text_resource(uri, markdown, toon, mime_type) do
+    %{
+      "contents" => [
+        %{
+          "uri" => uri,
+          "mimeType" => mime_type,
+          "text" => markdown
+        },
+        %{
+          "uri" => uri,
+          "mimeType" => @agent_text_mime_type,
+          "text" => toon
         }
       ]
     }
