@@ -4781,6 +4781,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator config recovers stale browser session state after backend restart", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      %{work_package: work_package} = create_dashboard_fixture(repo, id: "SYMPP-LOCAL-RECONNECT")
+
+      stale_session = %{
+        "sympp_board_grant_id" => "stale-board-grant",
+        "sympp_package_grant_ids" => %{work_package.id => "stale-package-grant"},
+        "sympp_package_grant_order" => [work_package.id]
+      }
+
+      stale_conn =
+        build_conn()
+        |> Map.put(:host, "localhost")
+        |> Map.put(:remote_ip, {127, 0, 0, 1})
+        |> put_req_header("origin", "http://localhost")
+        |> Plug.Test.init_test_session(stale_session)
+        |> get("/api/v1/sympp/operator/dashboard")
+
+      assert %{"error" => %{"code" => "unauthorized"}} = json_response(stale_conn, 401)
+      refute SymppDashboardApiController.local_operator_session?(stale_conn.private.plug_session)
+
+      config_conn =
+        build_conn()
+        |> Map.put(:host, "localhost")
+        |> Map.put(:remote_ip, {127, 0, 0, 1})
+        |> put_req_header("origin", "http://localhost")
+        |> put_req_header("sec-fetch-site", "same-origin")
+        |> put_req_header("sec-fetch-mode", "cors")
+        |> put_req_header("sec-fetch-dest", "empty")
+        |> Plug.Test.init_test_session(stale_session)
+        |> get("/api/v1/sympp/operator/config")
+
+      assert %{"operatorMode" => true, "csrfToken" => csrf_token} = json_response(config_conn, 200)
+      assert is_binary(csrf_token)
+      assert SymppDashboardApiController.local_operator_session?(config_conn.private.plug_session)
+
+      payload =
+        config_conn
+        |> recycle_local_operator_conn("http://localhost")
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      assert Enum.any?(board_work_package_ids(payload), &(&1 == work_package.id))
+    end)
+  end
+
   test "spp.localhost plain dashboard config grants local operator API session" do
     with_local_operator_endpoint(fn ->
       with_local_operator_dashboard_origin("http://127.0.0.1:5174", fn ->
