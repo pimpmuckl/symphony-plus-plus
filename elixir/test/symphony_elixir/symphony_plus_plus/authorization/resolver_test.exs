@@ -43,33 +43,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ResolverTest do
            )
   end
 
-  test "prefers persisted work request scope while preserving fallback phase scope" do
+  test "prefers persisted work request scope without caller repo or phase fallback" do
     actor =
       assignment("architect",
         work_package_id: "wp-anchor",
         phase_id: "phase-1",
         scopes: [Scope.work_request("wr-persisted")]
       )
-      |> ActorResolver.from_assignment(work_request_id: "wr-fallback", repo: "nextide/symphony-plus-plus", base_branch: "main")
+      |> ActorResolver.from_assignment(work_request_id: "wr-fallback", repo: "nextide/other-repo", base_branch: "feature")
 
     assert Scope.work_request("wr-persisted") in actor.scopes
     refute Scope.work_request("wr-fallback") in actor.scopes
     assert Enum.any?(actor.scopes, &match?(%Scope{type: :work_package, id: "wp-anchor"}, &1))
-    assert Scope.repo("nextide/symphony-plus-plus", "main") in actor.scopes
-
-    assert Enum.any?(
-             actor.scopes,
-             &match?(
-               %Scope{
-                 type: :phase,
-                 id: "phase-1",
-                 repo: "nextide/symphony-plus-plus",
-                 base_branch: "main",
-                 metadata: %{migration_only: true}
-               },
-               &1
-             )
-           )
+    refute Scope.repo("nextide/other-repo", "feature") in actor.scopes
+    refute Enum.any?(actor.scopes, &match?(%Scope{type: :phase}, &1))
   end
 
   test "preserves fallback work request scope when persisted legacy scopes are incomplete" do

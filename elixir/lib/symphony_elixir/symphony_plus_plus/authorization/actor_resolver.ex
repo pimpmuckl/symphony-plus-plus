@@ -128,12 +128,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver do
   end
 
   defp architect_fallback_scopes(persisted_scopes, fallback_scopes) do
-    if Enum.any?(persisted_scopes, &match?(%Scope{type: :work_request}, &1)) do
-      Enum.reject(fallback_scopes, &match?(%Scope{type: :work_request}, &1))
-    else
-      fallback_scopes
-    end
+    Enum.reject(fallback_scopes, &reject_architect_fallback_scope?(&1, persisted_scopes))
   end
+
+  defp reject_architect_fallback_scope?(%Scope{type: type}, _persisted_scopes) when type in [:repo, :phase],
+    do: true
+
+  defp reject_architect_fallback_scope?(%Scope{type: :work_request}, persisted_scopes),
+    do: Enum.any?(persisted_scopes, &match?(%Scope{type: :work_request}, &1))
+
+  defp reject_architect_fallback_scope?(%Scope{}, _persisted_scopes), do: false
 
   defp architect_scopes(%Assignment{} = assignment, opts) do
     [

@@ -17,6 +17,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixir.WorkPackageFactory
 
+  defmodule ScopeLookupFailingRepo do
+    def database_path, do: Repo.database_path()
+    def get(schema, id), do: Repo.get(schema, id)
+
+    def all(%Ecto.Query{from: %{source: {"sympp_access_grant_scopes", _schema}}}) do
+      raise %Exqlite.Error{message: "scope lookup failed"}
+    end
+
+    def all(query), do: Repo.all(query)
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
@@ -1070,6 +1081,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
     assert Enum.map(active_unclaimed_grants, & &1.id) == [renewed.grant.id]
 
     Enum.each(grants, &cleanup_handoff(anchor, &1, handoff_opts))
+  end
+
+  test "scope lookup failure aborts replay before retiring active handoff grants", %{repo: repo, handoff_opts: handoff_opts} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+
+    assert {:ok, first} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert {:ok, anchor} = WorkPackageRepository.get(repo, first.anchor_package.id)
+    assert {:ok, [first_grant]} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+
+    assert {:error, {:storage_failed, "scope lookup failed"}} =
+             ArchitectHandoff.create_or_replay(ScopeLookupFailingRepo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert {:ok, preserved} = AccessGrantRepository.get(repo, first.grant.id)
+    assert is_nil(preserved.revoked_at)
+    assert is_nil(preserved.claimed_at)
+    assert SecretHandoff.worker_secret_available?(first.secret_handoff, handoff_opts)
+
+    cleanup_handoff(anchor, first_grant, handoff_opts)
   end
 
   test "stale grant cleanup failure aborts renewal instead of reporting success", %{repo: repo, handoff_opts: handoff_opts} do

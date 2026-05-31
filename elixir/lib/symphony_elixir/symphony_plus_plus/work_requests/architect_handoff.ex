@@ -726,11 +726,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       |> Enum.filter(&active_unclaimed_handoff_grant?(&1, phase, anchor, now))
       |> Enum.reverse()
 
-    replayable_grant? = &matching_handoff_grant?(repo, &1, work_request, phase, anchor, now)
-    replayable_grants = Enum.filter(active_handoff_grants, replayable_grant?)
-    stale_grants = Enum.reject(active_handoff_grants, replayable_grant?)
+    case split_replayable_handoff_grants(repo, active_handoff_grants, work_request, phase, anchor, now) do
+      {:ok, replayable_grants, stale_grants} ->
+        replay_latest_active_handoff(repo, work_request, phase, anchor, replayable_grants, handoff_opts, stale_grants)
 
-    replay_latest_active_handoff(repo, work_request, phase, anchor, replayable_grants, handoff_opts, stale_grants)
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   defp existing_display_for_latest_handoff(
@@ -742,10 +744,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
          handoff_opts,
          now
        ) do
-    grants
-    |> latest_active_unclaimed_handoff_grants(phase, anchor, now)
-    |> Enum.filter(&matching_handoff_grant?(repo, &1, work_request, phase, anchor, now))
-    |> existing_display_for_replayable_handoffs(work_request, phase, anchor, handoff_opts)
+    active_handoff_grants = latest_active_unclaimed_handoff_grants(grants, phase, anchor, now)
+
+    case split_replayable_handoff_grants(repo, active_handoff_grants, work_request, phase, anchor, now) do
+      {:ok, replayable_grants, _stale_grants} ->
+        existing_display_for_replayable_handoffs(replayable_grants, work_request, phase, anchor, handoff_opts)
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   defp existing_display_for_replayable_handoffs([], %WorkRequest{}, %Phase{}, %WorkPackage{}, _handoff_opts),
@@ -1080,21 +1087,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       live_expires_at?(grant.expires_at, now)
   end
 
-  defp matching_handoff_grant?(repo, %AccessGrant{} = grant, %WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, now) do
-    active_unclaimed_handoff_grant?(grant, phase, anchor, now) and
-      grant.scope_repo == work_request.repo and
-      grant.scope_base_branch == work_request.base_branch and
-      required_capabilities?(grant.capabilities) and
-      scoped_to_work_request?(repo, grant, work_request)
+  defp split_replayable_handoff_grants(repo, grants, %WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, now) do
+    Enum.reduce_while(grants, {:ok, [], []}, fn grant, {:ok, replayable_grants, stale_grants} ->
+      case matching_handoff_grant(repo, grant, work_request, phase, anchor, now) do
+        {:ok, true} -> {:cont, {:ok, [grant | replayable_grants], stale_grants}}
+        {:ok, false} -> {:cont, {:ok, replayable_grants, [grant | stale_grants]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, replayable_grants, stale_grants} -> {:ok, Enum.reverse(replayable_grants), Enum.reverse(stale_grants)}
+      {:error, _reason} = error -> error
+    end
   end
 
-  defp scoped_to_work_request?(repo, %AccessGrant{} = grant, %WorkRequest{} = work_request) do
+  defp matching_handoff_grant(repo, %AccessGrant{} = grant, %WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, now) do
+    if active_unclaimed_handoff_grant?(grant, phase, anchor, now) and
+         grant.scope_repo == work_request.repo and
+         grant.scope_base_branch == work_request.base_branch and
+         required_capabilities?(grant.capabilities) do
+      scoped_to_work_request(repo, grant, work_request)
+    else
+      {:ok, false}
+    end
+  end
+
+  defp scoped_to_work_request(repo, %AccessGrant{} = grant, %WorkRequest{} = work_request) do
     case work_request_scope_ids(repo, grant) do
       {:ok, scope_ids} ->
-        work_request.id in scope_ids
+        {:ok, work_request.id in scope_ids}
 
-      {:error, _reason} ->
-        false
+      {:error, _reason} = error ->
+        error
     end
   end
 
