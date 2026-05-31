@@ -17,11 +17,13 @@ defmodule Mix.Tasks.Sympp.Cockpit do
   @board_path "/sympp/board"
   @operator_bootstrap_param "operator_bootstrap"
   @operator_bootstrap_config_key :sympp_local_operator_bootstrap_token
+  @open_dashboard_env "SYMPP_OPEN_DASHBOARD"
   @switches [
     database: :string,
     host: :string,
     port: :integer,
     dashboard_origin: :string,
+    open_dashboard: :boolean,
     help: :boolean
   ]
 
@@ -43,7 +45,7 @@ defmodule Mix.Tasks.Sympp.Cockpit do
   def usage do
     [
       "Usage: mix sympp.cockpit [--host <loopback-host>] [--port <port>] " <>
-        "[--database <sqlite-path>] [--dashboard-origin <vite-origin>]",
+        "[--database <sqlite-path>] [--dashboard-origin <vite-origin>] [--open-dashboard]",
       Repo.default_database_help_text()
     ]
     |> Enum.join("\n")
@@ -108,6 +110,7 @@ defmodule Mix.Tasks.Sympp.Cockpit do
     |> Keyword.put_new(:host, @default_host)
     |> Keyword.put_new(:port, @default_port)
     |> maybe_put_dashboard_origin_from_env()
+    |> maybe_put_open_dashboard_from_env()
     |> maybe_resolve_database()
   end
 
@@ -126,6 +129,27 @@ defmodule Mix.Tasks.Sympp.Cockpit do
     case System.get_env("SYMPP_DASHBOARD_ORIGIN") do
       value when is_binary(value) and value != "" -> value
       _value -> nil
+    end
+  end
+
+  defp maybe_put_open_dashboard_from_env(opts) do
+    if Keyword.has_key?(opts, :open_dashboard) do
+      opts
+    else
+      Keyword.put(opts, :open_dashboard, open_dashboard_from_env?())
+    end
+  end
+
+  defp open_dashboard_from_env? do
+    case System.get_env(@open_dashboard_env) do
+      value when is_binary(value) ->
+        value
+        |> String.trim()
+        |> String.downcase()
+        |> then(&(&1 in ["1", "true", "yes", "on"]))
+
+      _value ->
+        false
     end
   end
 
@@ -154,11 +178,11 @@ defmodule Mix.Tasks.Sympp.Cockpit do
       :ok = run_work_request_retention()
       :ok = start_http_server_or_raise(opts)
       port = wait_for_bound_port()
-      :ok = open_operator_dashboard(opts, port)
 
       Mix.shell().info("Symphony++ local operator dashboard: #{redacted_cockpit_url(opts, port)}")
       Mix.shell().info("Symphony++ API bridge: #{api_url(opts, port)}")
-      Mix.shell().info("Bootstrap URL browser open attempted; token redacted from logs.")
+      :ok = maybe_open_operator_dashboard(opts, port)
+      Mix.shell().info(dashboard_open_message(opts))
       Mix.shell().info("Press Ctrl+C to stop.")
 
       wait_fun.()
@@ -440,6 +464,22 @@ defmodule Mix.Tasks.Sympp.Cockpit do
     32
     |> :crypto.strong_rand_bytes()
     |> Base.url_encode64(padding: false)
+  end
+
+  defp maybe_open_operator_dashboard(opts, port) do
+    if Keyword.get(opts, :open_dashboard, false) do
+      open_operator_dashboard(opts, port)
+    else
+      :ok
+    end
+  end
+
+  defp dashboard_open_message(opts) do
+    if Keyword.get(opts, :open_dashboard, false) do
+      "Bootstrap URL browser open attempted; token redacted from logs."
+    else
+      "Dashboard browser auto-open disabled; pass --open-dashboard or set #{@open_dashboard_env}=1 to open it."
+    end
   end
 
   defp open_operator_dashboard(opts, port) do
