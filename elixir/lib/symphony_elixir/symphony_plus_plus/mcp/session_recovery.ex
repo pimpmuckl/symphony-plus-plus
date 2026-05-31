@@ -71,16 +71,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
   end
 
   defp remember_action(config, client_key, state_key, payload, %Server{initialized: true, session: %Session{} = session}, response) do
-    tool_name = claim_tool_name(payload, response)
-
-    cond do
-      tool_name in @local_claim_tools ->
+    case claim_tool_name(payload, response, session) do
+      tool_name when tool_name in @local_claim_tools ->
         remember_local_claim(config, client_key, state_key, session, response, tool_name)
 
-      tool_name in @session_claim_tools ->
+      tool_name when tool_name in @session_claim_tools ->
         remember_nonrecoverable_claim(client_key, state_key, session, tool_name)
 
-      true ->
+      :ambiguous_claim ->
+        remember_nonrecoverable_claim(client_key, state_key, session, "ambiguous_claim")
+
+      _tool_name ->
         {:touch, SessionBinding.binding_id(client_key, state_key), now()}
     end
   end
@@ -361,18 +362,108 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
   defp initialize_request?(%{"method" => "initialize"}), do: true
   defp initialize_request?(_payload), do: false
 
-  defp claim_tool_name(payloads, responses) when is_list(payloads) do
-    Enum.find_value(payloads, fn payload ->
-      claim_tool_name(payload, response_for_payload(payload, responses))
+  defp claim_tool_name(payloads, responses, %Session{} = session) when is_list(payloads) do
+    candidates = Enum.map(payloads, &{&1, response_for_payload(&1, responses)})
+
+    explicit_claim_tool_name(candidates, session) ||
+      case claim_payload_count(candidates) do
+        0 -> nil
+        1 -> notification_claim_tool_name(candidates, session)
+        _count -> :ambiguous_claim
+      end
+  end
+
+  defp claim_tool_name(payload, response, %Session{} = session) do
+    explicit_claim_tool_name([{payload, response}], session) || successful_claim_tool_name(payload, response) ||
+      notification_claim_tool_name([{payload, response}], session)
+  end
+
+  defp explicit_claim_tool_name(candidates, %Session{} = session) do
+    Enum.reduce(candidates, nil, fn {payload, response}, selected ->
+      explicit_claim_tool_name(payload, response, session) || selected
     end)
   end
 
-  defp claim_tool_name(%{"method" => "tools/call", "params" => %{"name" => name}}, response)
-       when name in @session_claim_tools do
-    if successful_claim_response?(response), do: name
+  defp explicit_claim_tool_name(
+         %{"method" => "tools/call", "params" => %{"name" => name}},
+         %{"result" => %{"structuredContent" => %{"assignment" => assignment}}},
+         %Session{} = session
+       )
+       when name in @session_claim_tools and is_map(assignment) do
+    if assignment_matches_session?(assignment, session), do: name
   end
 
-  defp claim_tool_name(_payload, _response), do: nil
+  defp explicit_claim_tool_name(_payload, _response, %Session{}), do: nil
+
+  defp successful_claim_tool_name(
+         %{"method" => "tools/call", "params" => %{"name" => name}},
+         %{"result" => %{"structuredContent" => %{"assignment" => assignment}}}
+       )
+       when name in @session_claim_tools and is_map(assignment),
+       do: name
+
+  defp successful_claim_tool_name(_payload, _response), do: nil
+
+  defp notification_claim_tool_name(candidates, %Session{} = session) do
+    Enum.reduce(candidates, nil, fn {payload, response}, selected ->
+      notification_claim_tool_name(payload, response, session) || selected
+    end)
+  end
+
+  defp notification_claim_tool_name(
+         %{"method" => "tools/call", "params" => %{"name" => name, "arguments" => arguments}},
+         nil,
+         %Session{} = session
+       )
+       when name in @local_claim_tools and is_map(arguments) do
+    if local_claim_payload_matches_session?(name, arguments, session), do: name
+  end
+
+  defp notification_claim_tool_name(%{"method" => "tools/call", "params" => %{"name" => name}}, nil, %Session{})
+       when name in ["claim_work_key", "claim_private_handoff"],
+       do: name
+
+  defp notification_claim_tool_name(_payload, _response, %Session{}), do: nil
+
+  defp claim_payload_count(candidates) do
+    Enum.count(candidates, fn {payload, _response} -> claim_payload?(payload) end)
+  end
+
+  defp claim_payload?(%{"method" => "tools/call", "params" => %{"name" => name}}) when name in @session_claim_tools, do: true
+  defp claim_payload?(_payload), do: false
+
+  defp assignment_matches_session?(assignment, %Session{} = session) when is_map(assignment) do
+    public_assignment = Session.public_assignment(session)
+
+    Enum.all?(["grant_id", "work_package_id", "phase_id", "grant_role", "claimed_by"], fn key ->
+      Map.get(assignment, key) == Map.get(public_assignment, key)
+    end)
+  end
+
+  defp local_claim_payload_matches_session?(
+         "claim_local_assignment",
+         %{"work_package_id" => work_package_id, "claimed_by" => claimed_by},
+         %Session{assignment: assignment}
+       ) do
+    assignment.work_package_id == work_package_id and
+      assignment.grant_role == "worker" and
+      assignment.claimed_by == claimed_by
+  end
+
+  defp local_claim_payload_matches_session?(
+         "claim_local_architect_assignment",
+         %{"architect_anchor_work_package_id" => work_package_id, "claimed_by" => claimed_by} = arguments,
+         %Session{assignment: assignment}
+       ) do
+    phase_id = Map.get(arguments, "phase_id")
+
+    assignment.work_package_id == work_package_id and
+      assignment.grant_role == "architect" and
+      assignment.claimed_by == claimed_by and
+      (not is_binary(phase_id) or assignment.phase_id == phase_id)
+  end
+
+  defp local_claim_payload_matches_session?(_tool_name, _arguments, %Session{}), do: false
 
   defp response_for_payload(%{"id" => id}, responses) when is_list(responses) do
     Enum.find(responses, :missing, &(Map.get(&1, "id") == id))
@@ -381,10 +472,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
   defp response_for_payload(%{"id" => id}, %{"id" => id} = response), do: response
   defp response_for_payload(%{"id" => _id}, _response), do: :missing
   defp response_for_payload(_notification, _response), do: nil
-
-  defp successful_claim_response?(%{"result" => %{"structuredContent" => %{"assignment" => _assignment}}}), do: true
-  defp successful_claim_response?(nil), do: true
-  defp successful_claim_response?(_response), do: false
 
   defp normalize_datetimes(attrs) do
     Map.new(attrs, fn
