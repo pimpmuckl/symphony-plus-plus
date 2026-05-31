@@ -12,19 +12,30 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ExpectedTools = @(
+$ExpectedGenericUnboundTools = @(
   "sympp.health",
   "solo_attach",
   "solo_append",
   "solo_show",
   "solo_list",
   "solo_update_status",
-  "claim_work_key"
+  "claim_work_key",
+  "claim_private_handoff",
+  "create_work_request"
+)
+
+$ExpectedHttpUnboundTools = @(
+  "claim_local_assignment",
+  "claim_local_architect_assignment"
+)
+
+$OptionalTrustedLocalHttpUnboundTools = @(
+  "add_work_request_comment",
+  "record_work_request_operator_decision"
 )
 
 $ExpectedBoundWorkerTools = @(
   "sympp.health",
-  "claim_work_key",
   "get_current_assignment",
   "read_context",
   "read_task_plan",
@@ -34,6 +45,9 @@ $ExpectedBoundWorkerTools = @(
   "set_status",
   "report_blocker",
   "resolve_blocker",
+  "add_comment",
+  "list_comments",
+  "resolve_comment",
   "create_guidance_request",
   "read_guidance_request",
   "request_scope_expansion",
@@ -84,11 +98,17 @@ $ArchitectTools = @(
 )
 
 $ArchitectOnlyTools = @($ArchitectTools | Where-Object { $ExpectedBoundWorkerTools -notcontains $_ })
-$UnboundAllowedBoundTools = @("sympp.health", "claim_work_key")
+$ExpectedUnboundTools = $ExpectedGenericUnboundTools + $ExpectedHttpUnboundTools
+$AllowedUnboundTools = $ExpectedUnboundTools + $OptionalTrustedLocalHttpUnboundTools
+$UnboundOnlyTools = @($AllowedUnboundTools | Where-Object { $ExpectedBoundWorkerTools -notcontains $_ })
 $ForbiddenUnboundTools =
-  @($ExpectedBoundWorkerTools | Where-Object { $UnboundAllowedBoundTools -notcontains $_ -and $ArchitectTools -notcontains $_ })
-$ForbiddenBoundWorkerTools = $SoloTools + $ArchitectOnlyTools
-$ExpectedUnboundTools = $ExpectedTools + $ArchitectTools
+  @($ExpectedBoundWorkerTools + $ArchitectTools |
+    Where-Object { $AllowedUnboundTools -notcontains $_ } |
+    Sort-Object -Unique)
+$ForbiddenBoundWorkerTools =
+  @($SoloTools + $ArchitectOnlyTools + $UnboundOnlyTools |
+    Where-Object { $_ -ne "sympp.health" } |
+    Sort-Object -Unique)
 
 $ExpectedWorkerResourceFiles = @(
   "context.md",
@@ -720,10 +740,10 @@ function Get-ResourceJsonPayload($Payload, [string]$Stage) {
 
 function Resolve-BoundSmokeConfig([bool]$UseBound, [string]$SecretEnvName, [string]$Owner) {
   if (-not $UseBound) {
-    if (-not [string]::IsNullOrWhiteSpace($SecretEnvName) -or -not [string]::IsNullOrWhiteSpace($Owner) -or $SkipUnboundTools) {
+    if (-not [string]::IsNullOrWhiteSpace($SecretEnvName) -or -not [string]::IsNullOrWhiteSpace($Owner)) {
       return [pscustomobject]@{
         ok = $false
-        result = New-SmokeResult "invalid_arguments" "Bound smoke arguments require -Bound. Run without -Bound for the unbound health smoke."
+        result = New-SmokeResult "invalid_arguments" "Bound smoke secret/owner arguments require -Bound. Run without -Bound for the unbound health smoke."
       }
     }
 
@@ -881,7 +901,16 @@ function Invoke-McpSmoke {
     return $session.result
   }
 
-  $toolsCheck = Invoke-ToolsListSmoke $session.sessionId $ExpectedUnboundTools "unbound"
+  if ($SkipUnboundTools) {
+    return New-SmokeResult "ok" "Local Symphony++ HTTP MCP daemon is initialized and passed health/source checks." @{
+      mode = "unbound_health"
+      sessionId = $session.sessionId
+      daemonSourceRevision = $session.sourceRevision
+      expectedSourceRevision = $session.expectedRevision
+    }
+  }
+
+  $toolsCheck = Invoke-ToolsListSmoke $session.sessionId $ExpectedUnboundTools "unbound" $ForbiddenUnboundTools
   if (-not $toolsCheck.ok) {
     return $toolsCheck.result
   }
@@ -1090,20 +1119,40 @@ function Invoke-SelfTest {
     throw "Expected mismatched session header to fail continuity validation."
   }
 
+  if ($ExpectedUnboundTools -notcontains "claim_local_assignment" -or $ExpectedUnboundTools -notcontains "claim_local_architect_assignment") {
+    throw "Expected unbound discovery to include local HTTP claim tools."
+  }
+
+  if ($ExpectedUnboundTools -notcontains "claim_private_handoff" -or $ExpectedUnboundTools -notcontains "create_work_request") {
+    throw "Expected unbound discovery to include generic bootstrap tools."
+  }
+
+  if ($OptionalTrustedLocalHttpUnboundTools -notcontains "add_work_request_comment" -or $OptionalTrustedLocalHttpUnboundTools -notcontains "record_work_request_operator_decision") {
+    throw "Expected unbound discovery to allow trusted local operator note tools when available."
+  }
+
+  if ($ForbiddenUnboundTools -contains "add_work_request_comment" -or $ForbiddenUnboundTools -contains "record_work_request_operator_decision") {
+    throw "Expected unbound forbidden tools to allow optional trusted local operator note tools."
+  }
+
   if ($ForbiddenUnboundTools -notcontains "append_progress" -or $ForbiddenUnboundTools -notcontains "get_current_assignment") {
     throw "Expected unbound forbidden tools to include worker-only tools."
+  }
+
+  if ($ForbiddenUnboundTools -notcontains "read_work_request" -or $ForbiddenUnboundTools -notcontains "dispatch_work_request_planned_slice") {
+    throw "Expected unbound forbidden tools to include architect-only tools."
   }
 
   if ($ForbiddenUnboundTools -contains "claim_work_key" -or $ForbiddenUnboundTools -contains "sympp.health") {
     throw "Expected unbound forbidden tools to keep health and claim_work_key allowed."
   }
 
-  if ($ForbiddenUnboundTools -contains "read_work_request" -or $ExpectedUnboundTools -notcontains "read_work_request") {
-    throw "Expected unbound discovery to allow architect schemas."
-  }
-
   if ($ForbiddenBoundWorkerTools -notcontains "list_work_requests" -or $ForbiddenBoundWorkerTools -notcontains "dispatch_work_request_planned_slice") {
     throw "Expected bound worker forbidden tools to include architect-only tools."
+  }
+
+  if ($ForbiddenBoundWorkerTools -notcontains "claim_work_key" -or $ForbiddenBoundWorkerTools -notcontains "claim_local_assignment") {
+    throw "Expected bound worker forbidden tools to include unbound claim tools."
   }
 
   if ($ArchitectTools -notcontains "read_guidance_request") {
@@ -1176,6 +1225,17 @@ function Invoke-SelfTest {
   $invalidEnvName = Resolve-BoundSmokeConfig $true "BAD-NAME" "worker-self-test"
   if ($invalidEnvName.ok -or $invalidEnvName.result.status -ne "invalid_arguments") {
     throw "Expected invalid env-var names to fail bound smoke validation."
+  }
+
+  $script:SkipUnboundTools = $true
+  try {
+    $unboundSkip = Resolve-BoundSmokeConfig $false "" ""
+    if (-not $unboundSkip.ok -or $unboundSkip.bound) {
+      throw "Expected -SkipUnboundTools without -Bound to remain a valid unbound health/source smoke."
+    }
+  }
+  finally {
+    $script:SkipUnboundTools = $false
   }
 
   $missingEnv = Resolve-BoundSmokeConfig $true "SYMPP_SMOKE_SELFTEST_MISSING" "worker-self-test"
