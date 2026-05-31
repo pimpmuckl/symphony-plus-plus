@@ -7,7 +7,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
   current-alias, explicit reconnect, or browser auth semantics.
   """
 
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, HTTPStateStore, Server}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, HTTPStateStore, Server, SessionRecovery}
 
   @client_lock_key "__sympp_mcp_client_lock__"
   @current_state_key "__sympp_mcp_current_state__"
@@ -73,7 +73,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
         process_existing_state(config, payload, client_key, state_key)
 
       nil ->
-        {:ok, result(unknown_state_key_error(payload), nil)}
+        case recover_existing_state(config, client_key, state_key) do
+          {:ok, %Server{} = server} ->
+            :ok = HTTPStateStore.put(config, client_key, state_key, server)
+            process_existing_state(config, payload, client_key, state_key)
+
+          :not_found ->
+            {:ok, result(unknown_state_key_error(payload), nil)}
+        end
     end
   end
 
@@ -92,7 +99,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
   end
 
   defp process_state(%Config{} = config, payload, client_key, state_key, allow_new_state?, default_fun) do
-    {{response, _stored_server}, status} =
+    {{response, maybe_updated_server}, status} =
       HTTPStateStore.update_with_status(config, client_key, state_key, default_fun, fn %Server{} = server ->
         if missing_state?(server) and not allow_new_state? do
           # Keep the fallback server non-persistable so raced missing state keys stay absent.
@@ -105,6 +112,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
 
     case status do
       :stored ->
+        %Server{} = updated_server = maybe_updated_server
+        SessionRecovery.remember(config, client_key, state_key, payload, updated_server, response)
         {:ok, result(response, state_key)}
 
       :skipped ->
@@ -113,6 +122,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
       :dropped ->
         {:ok, result(state_update_lost_error(payload), nil)}
     end
+  end
+
+  defp recover_existing_state(%Config{} = config, client_key, state_key) do
+    SessionRecovery.rehydrate(config, client_key, state_key)
   end
 
   defp transient_response(%Config{} = config, payload) do
