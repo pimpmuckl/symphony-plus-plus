@@ -5738,6 +5738,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       "work_key_secret" => "#{sentinel}-work-key-secret",
       "grant_secret" => "#{sentinel}-grant-secret",
       "secret" => "#{sentinel}-generic-secret",
+      "operator_bootstrap" => "#{sentinel}-operator-bootstrap",
       "work_package_id" => "SYMPP-P10-LOG-FILTER"
     }
 
@@ -5749,6 +5750,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert filtered["work_key_secret"] == "[FILTERED]"
     assert filtered["grant_secret"] == "[FILTERED]"
     assert filtered["secret"] == "[FILTERED]"
+    assert filtered["operator_bootstrap"] == "[FILTERED]"
     assert filtered["work_package_id"] == "SYMPP-P10-LOG-FILTER"
   end
 

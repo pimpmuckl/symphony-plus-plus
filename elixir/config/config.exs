@@ -1,7 +1,7 @@
 import Config
 
 config :phoenix, :json_library, Jason
-config :phoenix, :filter_parameters, ["password", "work_key", "work_key_secret", "grant_secret", "secret"]
+config :phoenix, :filter_parameters, ["password", "work_key", "work_key_secret", "grant_secret", "secret", "operator_bootstrap"]
 config :phoenix_live_view, :colocated_js, disable_symlink_warning: true
 
 config :symphony_elixir, SymphonyElixirWeb.Endpoint,
