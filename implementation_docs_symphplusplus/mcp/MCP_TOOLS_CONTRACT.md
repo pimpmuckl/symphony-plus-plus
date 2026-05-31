@@ -482,6 +482,14 @@ WorkRequest is created, the tool returns a partial-success shape with the
 WorkRequest id and a non-duplicating manual architect-handoff replay hint while
 still withholding raw secret material.
 
+WorkRequest repo scopes are persisted as explicit ledger rows for future
+multi-repo requests. The existing `repo` and `base_branch` fields remain the
+primary compatibility scope used by current MCP intake, list, read, dispatch,
+and worker-claim flows. P8 does not add caller-facing multi-repo dashboard or
+per-slice repo selection; future tools may expose repo-scope input only after
+their policy checks and denial tests cover service A/service B allow and
+service C deny behavior.
+
 Explicit `state_key` values retain initialized handshake continuity for
 stateless transports, but they do not restore claimed worker sessions. A
 reconnecting worker normally replays `claim_local_assignment` with the same

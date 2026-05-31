@@ -91,6 +91,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.PolicyTest do
              Policy.decide(actor, :work_request_read, Target.work_request("wr-1", repo: "nextide/symphony-plus-plus", base_branch: "dev"))
   end
 
+  test "explicit WorkRequest repo scopes allow multi-repo read without granting mutation" do
+    target =
+      Target.work_request("wr-multi",
+        repo: "service-a",
+        base_branch: "main",
+        repo_scopes: [
+          %{repo: "service-a", base_branch: "main"},
+          %{repo: "service-b", base_branch: "release"}
+        ]
+      )
+
+    assert %Decision{allowed?: true, matched_scope: %Scope{type: :repo, repo: "service-a"}} =
+             Policy.decide(architect([Scope.repo("service-a", "main")]), :work_request_read, target)
+
+    assert %Decision{allowed?: true, matched_scope: %Scope{type: :repo, repo: "service-b"}} =
+             Policy.decide(architect([Scope.repo("service-b", "release")]), :work_request_read, target)
+
+    assert %Decision{allowed?: false, reason_code: "scope_mismatch"} =
+             Policy.decide(architect([Scope.repo("service-c", "main")]), :work_request_read, target)
+
+    assert %Decision{allowed?: false, reason_code: "scope_mismatch"} =
+             Policy.decide(architect([Scope.repo("service-b", "release")]), :work_request_update, target)
+  end
+
   test "explicit planned slice scope authorizes planned slice actions only" do
     actor = architect([Scope.planned_slice("wrs-1")])
     target = Target.planned_slice("wrs-1", "wr-1")

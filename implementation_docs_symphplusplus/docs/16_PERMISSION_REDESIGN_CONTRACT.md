@@ -226,8 +226,18 @@ WorkRequest WR-1
 The architect claim remains `work_request:WR-1`. The worker claim remains one
 `work_package` scope. Repo C remains denied unless added explicitly.
 
-For the first implementation, add the scope model and tests without forcing the
-full multi-repo dashboard UX.
+For the first implementation, `sympp_work_request_repo_scopes` is the durable
+repo-scope primitive. `sympp_work_requests.repo` and
+`sympp_work_requests.base_branch` remain the primary compatibility scope and are
+backfilled into repo-scope rows for historical records. Authorization targets
+may carry explicit WorkRequest repo scopes so repo-scoped read/discovery allows
+service A and service B while denying service C. Repo scope alone still does
+not authorize WorkRequest mutation, and workers remain limited to one
+`work_package` scope.
+
+This slice does not force full multi-repo dashboard, dispatch, or worker-UX
+behavior. Planned slices and WorkPackages remain single-repo execution units
+until a later slice adds explicit per-slice repo selection.
 
 ## Reviewable PR Slices
 
@@ -240,6 +250,12 @@ full multi-repo dashboard UX.
 7. Human/operator actor and audit for dangerous actions.
 8. Multi-repo repo-scope groundwork.
 9. Remove old capability/phase/repo helper checks after policy coverage is real.
+
+P8 cleanup decision: no remaining legacy capability/phase/repo helper path is
+deleted here. The compatibility helpers still protect existing MCP WorkRequest,
+phase, and dispatch flows while policy coverage is being completed. P9 may
+remove a helper only when the equivalent policy check, stable denial code, and
+focused regression test exist for that exact caller.
 
 Each slice should be PR-sized and independently testable. Do not hide behavior
 changes inside the skeleton slice.
