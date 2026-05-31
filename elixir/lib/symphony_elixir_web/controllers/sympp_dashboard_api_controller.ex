@@ -365,10 +365,15 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp normalize_origin_port(_scheme, port), do: port
 
   defp local_operator_session_bootstrapped?(conn) do
-    fetched_active_local_operator_session?(conn) or valid_local_operator_bootstrap?(conn) or local_operator_config_request?(conn)
+    fetched_active_local_operator_session?(conn) or
+      valid_local_operator_bootstrap?(conn) or
+      local_operator_config_request?(conn)
   end
 
-  defp local_operator_config_request?(conn), do: conn.method == "GET" and conn.request_path == prefixed_path(conn, "/api/v1/sympp/operator/config")
+  defp local_operator_config_request?(conn) do
+    conn.method == "GET" and
+      conn.request_path == prefixed_path(conn, "/api/v1/sympp/operator/config")
+  end
 
   defp valid_local_operator_bootstrap?(conn) do
     with expected when is_binary(expected) <- configured_operator_bootstrap_token(),
