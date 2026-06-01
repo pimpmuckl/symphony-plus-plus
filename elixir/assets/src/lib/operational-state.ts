@@ -1,4 +1,4 @@
-import type { SignalTone, StateCardTone } from "@/components/dashboard/state-card";
+import type { SignalTone, StateCardTone } from "@/components/dashboard/state-card-style";
 import { formatStatus, statusLabel } from "@/lib/status-labels";
 import type { PackageOperationalAttention, PlannedSlice, WorkPackageCard, WorkRequestCard, WorkRequestDetail } from "@/types/dashboard";
 

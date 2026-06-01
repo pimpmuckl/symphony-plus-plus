@@ -39,6 +39,13 @@ boundary.
 8. Do not create local `task_plan.md`, `findings.md`, or `progress.md` files as
    the source of truth.
 
+## Context Format
+
+S++ MCP resources may include compact TOON text alongside Markdown or JSON for
+agent-readable context. Use TOON only as presentation; MCP tool arguments remain
+JSON/schema-native, and tool `structuredContent` remains the canonical
+machine-readable response.
+
 ## Work Loop
 
 Keep S++ current as the work changes:

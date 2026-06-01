@@ -1,15 +1,15 @@
 import type { RefObject } from "react";
-import { useId, useLayoutEffect, useState } from "react";
+import { useId, useLayoutEffect, useReducer, useRef } from "react";
 
-import {
-  wireGradientStopsStyle,
-  wireGradientStrokeStyle,
-  wireToneStyle,
-} from "@/components/dashboard/state-card";
-import type { StateCardTone } from "@/components/dashboard/state-card";
+import { wireToneStyle } from "@/components/dashboard/state-card-style";
+import type { StateCardTone } from "@/components/dashboard/state-card-style";
 import { sortedCopy } from "@/lib/collections";
 
 const BOARD_WIRE_TRACK_CLEARANCE = 40;
+const BOARD_WIRE_VISIBILITY_ROOT_MARGIN = "1000px 0px";
+const BOARD_WIRE_EXHAUSTIVE_ASSIGNMENT_LIMIT = 7;
+const BOARD_WIRE_LOCAL_SEARCH_ASSIGNMENT_LIMIT = 18;
+const BOARD_WIRE_LOCAL_SEARCH_MAX_PASSES = 2;
 
 export type BoardWire = {
   id: string;
@@ -77,6 +77,24 @@ type BoardWireLayerProps = {
   height: number;
 };
 
+type BoardWireMeasurement = {
+  paths: BoardWirePath[];
+  size: {
+    width: number;
+    height: number;
+  };
+};
+
+const EMPTY_BOARD_WIRE_MEASUREMENT: BoardWireMeasurement = {
+  paths: [],
+  size: { width: 0, height: 0 },
+};
+const EMPTY_BOARD_WIRE_SIGNATURE = "0x0:";
+
+type BoardWireMeasurementAction =
+  | { type: "clear" }
+  | { type: "replace"; measurement: BoardWireMeasurement };
+
 export function BoardWireLayer({ paths, width, height }: BoardWireLayerProps) {
   const layerId = useId().replace(/:/g, "");
   if (paths.length === 0 || width <= 0 || height <= 0) return null;
@@ -91,21 +109,6 @@ export function BoardWireLayer({ paths, width, height }: BoardWireLayerProps) {
     <>
       <svg className="board-wire-layer" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
         <defs>
-          {paths.map((wire, index) => (
-            <linearGradient
-              key={`${wire.id}:gradient`}
-              id={boardWireGradientId(layerId, index)}
-              gradientUnits="userSpaceOnUse"
-              x1={wire.sourceX}
-              y1={wire.sourceY}
-              x2={wire.targetX}
-              y2={wire.targetY}
-              style={wireGradientStopsStyle(wire.sourceTone, wire.tone)}
-            >
-              <stop className="board-wire-gradient-stop-source" offset="0%" />
-              <stop className="board-wire-gradient-stop-target" offset="100%" />
-            </linearGradient>
-          ))}
           {maskedPaths.map(({ wire, maskId }) => (
             <mask key={maskId} id={maskId} maskUnits="userSpaceOnUse">
               <rect x="0" y="0" width={width} height={height} fill="white" />
@@ -117,7 +120,6 @@ export function BoardWireLayer({ paths, width, height }: BoardWireLayerProps) {
         </defs>
         {paths.map((wire, index) => {
           const maskId = wire.hiddenRects.length > 0 ? `${layerId}-board-wire-mask-${index}` : undefined;
-          const gradientId = boardWireGradientId(layerId, index);
 
           return (
             <g
@@ -132,7 +134,7 @@ export function BoardWireLayer({ paths, width, height }: BoardWireLayerProps) {
               data-wire-track-count={wire.trackCount}
               data-wire-track-side={wire.trackSide}
               data-mask-rects={wire.hiddenRects.length}
-              style={wireGradientStrokeStyle(gradientId)}
+              style={wireToneStyle(wire.tone)}
             >
               <path className="board-wire-path" d={wire.path} mask={maskId ? `url(#${maskId})` : undefined} />
             </g>
@@ -165,53 +167,143 @@ export function BoardWireLayer({ paths, width, height }: BoardWireLayerProps) {
   );
 }
 
-function boardWireGradientId(layerId: string, index: number) {
-  return `${layerId}-board-wire-gradient-${index}`;
-}
-
 function diamondPath(x: number, y: number, radius: number) {
   return `M ${x} ${y - radius} L ${x + radius} ${y} L ${x} ${y + radius} L ${x - radius} ${y} Z`;
 }
 
 export function useBoardWirePaths(boardRef: RefObject<HTMLDivElement | null>, wires: BoardWire[], measureKey: string) {
-  const [paths, setPaths] = useState<BoardWirePath[]>([]);
-  const [size, setSize] = useState({ width: 0, height: 0 });
+  const [measurement, dispatchMeasurement] = useReducer(boardWireMeasurementReducer, EMPTY_BOARD_WIRE_MEASUREMENT);
+  const measurementSignatureRef = useRef(EMPTY_BOARD_WIRE_SIGNATURE);
 
   useLayoutEffect(() => {
     const board = boardRef.current;
-    if (!board) return;
+    if (!board || wires.length === 0) {
+      measurementSignatureRef.current = EMPTY_BOARD_WIRE_SIGNATURE;
+      dispatchMeasurement({ type: "clear" });
+      return;
+    }
 
+    let active = false;
     let frame: number | null = null;
     const timers: number[] = [];
+    let resizeObserver: ResizeObserver | null = null;
+    let listeningForResize = false;
+
     const schedule = () => {
+      if (!active) return;
       if (frame !== null) return;
       frame = window.requestAnimationFrame(() => {
         frame = null;
+        if (!active) return;
         const measured = measureBoardWires(board, wires);
-        setPaths(measured.paths);
-        setSize(measured.size);
+        const signature = boardWireMeasurementSignature(measured);
+        if (measurementSignatureRef.current === signature) return;
+
+        measurementSignatureRef.current = signature;
+        dispatchMeasurement({ type: "replace", measurement: measured });
       });
     };
 
-    schedule();
-    timers.push(window.setTimeout(schedule, 180), window.setTimeout(schedule, 420));
+    const clearTimers = () => {
+      while (timers.length > 0) {
+        const timer = timers.pop();
+        if (timer !== undefined) window.clearTimeout(timer);
+      }
+    };
 
-    const observer = new ResizeObserver(schedule);
-    observer.observe(board);
-    board.querySelectorAll<HTMLElement>("[data-wire-id]").forEach((node) => observer.observe(node));
-    window.addEventListener("resize", schedule);
-
-    return () => {
+    const stopMeasuring = () => {
+      if (!active) return;
+      active = false;
       if (frame !== null) {
         window.cancelAnimationFrame(frame);
+        frame = null;
       }
-      timers.forEach((timer) => window.clearTimeout(timer));
-      observer.disconnect();
-      window.removeEventListener("resize", schedule);
+      clearTimers();
+      resizeObserver?.disconnect();
+      resizeObserver = null;
+      if (listeningForResize) {
+        window.removeEventListener("resize", schedule);
+        listeningForResize = false;
+      }
+      measurementSignatureRef.current = EMPTY_BOARD_WIRE_SIGNATURE;
+      dispatchMeasurement({ type: "clear" });
+    };
+
+    const startMeasuring = () => {
+      if (active) return;
+      active = true;
+
+      resizeObserver = new ResizeObserver(schedule);
+      resizeObserver.observe(board);
+      board.querySelectorAll<HTMLElement>("[data-wire-id]").forEach((node) => resizeObserver?.observe(node));
+      window.addEventListener("resize", schedule);
+      listeningForResize = true;
+
+      schedule();
+      timers.push(window.setTimeout(schedule, 180), window.setTimeout(schedule, 420));
+    };
+
+    if (!("IntersectionObserver" in window)) {
+      startMeasuring();
+      return stopMeasuring;
+    }
+
+    const visibilityObserver = new IntersectionObserver(
+      ([entry]) => {
+        if (entry?.isIntersecting) {
+          startMeasuring();
+        } else {
+          stopMeasuring();
+        }
+      },
+      { rootMargin: BOARD_WIRE_VISIBILITY_ROOT_MARGIN },
+    );
+    visibilityObserver.observe(board);
+
+    return () => {
+      visibilityObserver.disconnect();
+      stopMeasuring();
     };
   }, [boardRef, measureKey, wires]);
 
-  return { paths, size };
+  return measurement;
+}
+
+function boardWireMeasurementReducer(current: BoardWireMeasurement, action: BoardWireMeasurementAction) {
+  if (action.type === "clear") return boardWireMeasurementIsEmpty(current) ? current : EMPTY_BOARD_WIRE_MEASUREMENT;
+  return action.measurement;
+}
+
+function boardWireMeasurementIsEmpty(measurement: BoardWireMeasurement) {
+  return measurement.paths.length === 0 && measurement.size.width === 0 && measurement.size.height === 0;
+}
+
+function boardWireMeasurementSignature(measurement: BoardWireMeasurement) {
+  return `${measurement.size.width}x${measurement.size.height}:` + measurement.paths.map(boardWirePathSignature).join("|");
+}
+
+function boardWirePathSignature(wire: BoardWirePath) {
+  const hiddenRects = wire.hiddenRects
+    .map((rect) => `${wireSignatureNumber(rect.x)},${wireSignatureNumber(rect.y)},${wireSignatureNumber(rect.width)},${wireSignatureNumber(rect.height)}`)
+    .join(";");
+  return [
+    wire.id,
+    wire.kind || "progress",
+    wire.tone,
+    wireSignatureNumber(wire.sourceX),
+    wireSignatureNumber(wire.sourceY),
+    wireSignatureNumber(wire.targetX),
+    wireSignatureNumber(wire.targetY),
+    wireSignatureNumber(wire.trackX),
+    wire.trackIndex,
+    wire.trackCount,
+    wire.trackSide,
+    hiddenRects,
+  ].join(":");
+}
+
+function wireSignatureNumber(value: number) {
+  return value.toFixed(1);
 }
 
 function measureBoardWires(board: HTMLDivElement, wires: BoardWire[]) {
@@ -228,14 +320,18 @@ function measureBoardWires(board: HTMLDivElement, wires: BoardWire[]) {
     const id = node.dataset.wireId;
     if (id) nodes.set(id, node);
   });
+  const laneIndexByNode = new Map<HTMLElement, number>();
+  nodes.forEach((node) => {
+    laneIndexByNode.set(node, lanes.findIndex((lane) => lane.node.contains(node)));
+  });
 
   const measuredWires = wires.flatMap<MeasuredBoardWire>((wire) => {
     const source = nodes.get(wire.from);
     const target = nodes.get(wire.to);
     if (!source || !target) return [];
 
-    const sourceLane = lanes.findIndex((lane) => lane.node.contains(source));
-    const targetLane = lanes.findIndex((lane) => lane.node.contains(target));
+    const sourceLane = laneIndexByNode.get(source) ?? -1;
+    const targetLane = laneIndexByNode.get(target) ?? -1;
     if (sourceLane < 0 || targetLane < 0) return [];
 
     const sourceRect = layoutRectWithinBoard(source, board);
@@ -287,7 +383,7 @@ function measureBoardWires(board: HTMLDivElement, wires: BoardWire[]) {
       trackIndex: wire.trackIndex,
       trackCount: wire.trackCount,
       trackSide: wire.trackSide,
-      hiddenRects: skippedLaneRects(wire.source, wire.target, lanes),
+      hiddenRects: skippedLaneRects(wire.sourceLane, wire.targetLane, lanes),
     })),
   };
 }
@@ -398,7 +494,11 @@ function bestSpreadTrackAssignment(
   const indices = Array.from({ length: trackCount }, (_, index) => index);
   const initial = [...indices].reverse();
 
-  if (wires.length > 8) {
+  if (wires.length > BOARD_WIRE_LOCAL_SEARCH_ASSIGNMENT_LIMIT) {
+    return initial;
+  }
+
+  if (wires.length > BOARD_WIRE_EXHAUSTIVE_ASSIGNMENT_LIMIT) {
     return optimizeSpreadTrackAssignment(wires, lanes, initial, trackCount);
   }
 
@@ -441,9 +541,11 @@ function optimizeSpreadTrackAssignment(
   const assignment = [...initial];
   let bestCost = boardWireAssignmentCost(wires, lanes, assignment, trackCount);
   let improved = true;
+  let pass = 0;
 
-  while (improved) {
+  while (improved && pass < BOARD_WIRE_LOCAL_SEARCH_MAX_PASSES) {
     improved = false;
+    pass += 1;
     for (let left = 0; left < assignment.length; left += 1) {
       for (let right = left + 1; right < assignment.length; right += 1) {
         [assignment[left], assignment[right]] = [assignment[right], assignment[left]];
@@ -724,12 +826,10 @@ function layoutRectWithinBoard(node: HTMLElement, board: HTMLElement): BoardWire
 }
 
 function skippedLaneRects(
-  source: HTMLElement,
-  target: HTMLElement,
+  sourceLane: number,
+  targetLane: number,
   lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>,
 ): BoardWireHiddenRect[] {
-  const sourceLane = lanes.findIndex((lane) => lane.node.contains(source));
-  const targetLane = lanes.findIndex((lane) => lane.node.contains(target));
   if (sourceLane < 0 || targetLane < 0 || Math.abs(targetLane - sourceLane) <= 1) return [];
 
   const start = Math.min(sourceLane, targetLane) + 1;

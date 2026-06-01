@@ -1,7 +1,14 @@
 import { Children, isValidElement, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
-import type { ComponentProps, MutableRefObject, ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
+import {
+  clearMotionTimers,
+  dashboardPrefersReducedMotion,
+  later,
+  measureElementHeight,
+  nextFrame,
+} from "@/components/dashboard/motion-utils";
 import { cn } from "@/lib/utils";
 
 export const TOP_PANEL_RESIZE_MS = 210;
@@ -26,6 +33,9 @@ type AnimatedBadgeState = {
   phase: BadgePushPhase;
   width: number | null;
 };
+type AnimatedBadgeAction =
+  | { type: "replace"; state: AnimatedBadgeState }
+  | { type: "patch"; state: Partial<AnimatedBadgeState> };
 
 type AnimatedCardBodyState = {
   targetKey: string;
@@ -37,11 +47,6 @@ type AnimatedCardBodyState = {
 type AnimatedCardBodyAction =
   | { type: "replace"; state: AnimatedCardBodyState }
   | { type: "patch"; state: Partial<AnimatedCardBodyState> };
-
-export function updateMotionAttributes(motion?: UpdateMotion) {
-  if (motion?.kind === "settled") return { "data-update-settled": "true" };
-  return motion ? { "data-update-kind": motion.kind, "data-update-token": motion.token } : {};
-}
 
 export function useCountMotion(value: number, pulseToken = 0) {
   const currentRef = useRef(value);
@@ -121,7 +126,7 @@ export function AnimatedBadge({
   variant?: ComponentProps<typeof Badge>["variant"];
   className?: string;
 }) {
-  const [state, setState] = useState(() => initialAnimatedBadgeState(label));
+  const [state, dispatch] = useReducer(animatedBadgeReducer, label, initialAnimatedBadgeState);
   const badgeRef = useRef<HTMLDivElement | null>(null);
   const currentTextRef = useRef<HTMLSpanElement | null>(null);
   const measureRef = useRef<HTMLSpanElement | null>(null);
@@ -144,7 +149,7 @@ export function AnimatedBadge({
     const oldTextWidth = measureElementWidth(currentTextRef.current);
     const chromeWidth = Math.max(0, oldWidth - oldTextWidth);
 
-    setState({ currentLabel: label, previousLabel: state.currentLabel, phase: "measure", width: oldWidth });
+    dispatch({ type: "replace", state: { currentLabel: label, previousLabel: state.currentLabel, phase: "measure", width: oldWidth } });
 
     nextFrame(framesRef, () => {
       const newTextWidth = measureElementWidth(measureRef.current);
@@ -152,26 +157,28 @@ export function AnimatedBadge({
       const wider = newWidth > oldWidth + 1;
 
       if (wider) {
-        setState((current) => ({ ...current, phase: "resize-first", width: newWidth }));
+        dispatch({ type: "patch", state: { phase: "resize-first", width: newWidth } });
 
         later(timersRef, BADGE_RESIZE_MS, () => {
-          setState((current) => ({ ...current, phase: "push" }));
+          dispatch({ type: "patch", state: { phase: "push" } });
           later(timersRef, BADGE_TEXT_PUSH_MS, () =>
-            setState((current) => ({ ...current, previousLabel: null, phase: "idle", width: null })),
+            dispatch({ type: "patch", state: { previousLabel: null, phase: "idle", width: null } }),
           );
         });
       } else {
-        setState((current) => ({ ...current, phase: "push" }));
+        dispatch({ type: "patch", state: { phase: "push" } });
 
         later(timersRef, BADGE_TEXT_PUSH_MS, () => {
-          setState((current) => ({ ...current, phase: "resize-last", width: newWidth }));
+          dispatch({ type: "patch", state: { phase: "resize-last", width: newWidth } });
           later(timersRef, BADGE_RESIZE_MS, () =>
-            setState((current) => ({ ...current, previousLabel: null, phase: "idle", width: null })),
+            dispatch({ type: "patch", state: { previousLabel: null, phase: "idle", width: null } }),
           );
         });
       }
     });
   }, [label, state.currentLabel]);
+
+  const renderMeasure = label !== state.currentLabel || state.phase !== "idle";
 
   return (
     <Badge
@@ -182,9 +189,11 @@ export function AnimatedBadge({
       data-badge-has-previous={state.previousLabel ? "true" : "false"}
       style={state.width === null ? undefined : { width: `${Math.max(state.width, 0)}px` }}
     >
-      <span ref={measureRef} className="badge-push-measure">
-        {state.currentLabel}
-      </span>
+      {renderMeasure ? (
+        <span ref={measureRef} className="badge-push-measure">
+          {state.currentLabel}
+        </span>
+      ) : null}
       <span className="badge-push-stack">
         {state.previousLabel ? <span className="badge-push-old">{state.previousLabel}</span> : null}
         <span ref={currentTextRef} className="badge-push-new">
@@ -272,12 +281,15 @@ export function AnimatedCardBody({ motionKey, children }: { motionKey: string; c
   }, [children, motionKey, state.renderedChildren, state.targetKey]);
 
   const renderedChildren = state.phase === "idle" && state.targetKey === motionKey ? children : state.renderedChildren;
+  const renderMeasure = motionKey !== state.targetKey || state.phase !== "idle";
 
   return (
     <div className="state-card-size-shell">
-      <div ref={measureRef} className="state-card-size-measure" aria-hidden="true">
-        <div className="state-card-size-inner">{children}</div>
-      </div>
+      {renderMeasure ? (
+        <div ref={measureRef} className="state-card-size-measure" aria-hidden="true">
+          <div className="state-card-size-inner">{children}</div>
+        </div>
+      ) : null}
       <div
         ref={frameRef}
         className="state-card-size-frame"
@@ -292,35 +304,15 @@ export function AnimatedCardBody({ motionKey, children }: { motionKey: string; c
   );
 }
 
-export function measureElementHeight(element: HTMLElement | null) {
-  return element?.getBoundingClientRect().height || 0;
-}
-
-export function nextFrame(refs: MutableRefObject<number[]>, callback: () => void) {
-  const id = window.requestAnimationFrame(callback);
-  refs.current.push(id);
-}
-
-export function later(refs: MutableRefObject<number[]>, delay: number, callback: () => void) {
-  const id = window.setTimeout(callback, delay);
-  refs.current.push(id);
-}
-
-export function clearMotionTimers(timersRef: MutableRefObject<number[]>, framesRef: MutableRefObject<number[]>) {
-  timersRef.current.forEach((id) => window.clearTimeout(id));
-  framesRef.current.forEach((id) => window.cancelAnimationFrame(id));
-  timersRef.current = [];
-  framesRef.current = [];
-}
-
 export function useFlipList(layoutKey: string) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const previousRectsRef = useRef<Map<string, DOMRect>>(new Map());
+  const previousRectsRef = useRef<Map<string, DOMRect> | null>(null);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
+    const previousRects = previousRectsRef.current ?? new Map<string, DOMRect>();
     const nextRects = new Map<string, DOMRect>();
     const nodes = Array.from(container.querySelectorAll<HTMLElement>("[data-flip-id]"));
 
@@ -329,7 +321,7 @@ export function useFlipList(layoutKey: string) {
       if (!id) return;
 
       const rect = node.getBoundingClientRect();
-      const previous = previousRectsRef.current.get(id);
+      const previous = previousRects.get(id);
       nextRects.set(id, rect);
 
       if (!previous) return;
@@ -365,6 +357,11 @@ function initialAnimatedBadgeState(label: string): AnimatedBadgeState {
   };
 }
 
+function animatedBadgeReducer(state: AnimatedBadgeState, action: AnimatedBadgeAction): AnimatedBadgeState {
+  if (action.type === "replace") return action.state;
+  return { ...state, ...action.state };
+}
+
 function animatedCardBodyReducer(state: AnimatedCardBodyState, action: AnimatedCardBodyAction): AnimatedCardBodyState {
   if (action.type === "replace") return action.state;
   return { ...state, ...action.state };
@@ -372,8 +369,4 @@ function animatedCardBodyReducer(state: AnimatedCardBodyState, action: AnimatedC
 
 function measureElementWidth(element: HTMLElement | null) {
   return element?.getBoundingClientRect().width || 0;
-}
-
-export function dashboardPrefersReducedMotion() {
-  return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
