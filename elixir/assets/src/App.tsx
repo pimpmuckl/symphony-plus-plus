@@ -167,7 +167,7 @@ const LOCAL_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { month: "short"
 const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
 const DEFAULT_DASHBOARD_API_BASE = "/api/v1/sympp/operator";
 const OPERATOR_BOOTSTRAP_PARAM = "operator_bootstrap";
-const LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE = "Local operator session required. Refresh the local dashboard or restart Symphony++ cockpit.";
+const LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE = "Local operator session needs reconnect. Use Reconnect after Symphony++ is reachable.";
 const PR_SYNC_INTERVAL_MS = 60_000;
 const COMMENT_BODY_MAX_LENGTH = 4000;
 
@@ -181,8 +181,19 @@ type DashboardRuntimeConfig = {
 type DashboardApiResponse = unknown;
 type DashboardResponseSelector = (payload: DashboardApiResponse) => DashboardPayload | null | undefined;
 
+class DashboardApiError extends Error {
+  readonly reconnectableLocalSession: boolean;
+
+  constructor(message: string, reconnectableLocalSession = false) {
+    super(message);
+    this.name = "DashboardApiError";
+    this.reconnectableLocalSession = reconnectableLocalSession;
+  }
+}
+
 let dashboardRuntimeConfig: DashboardRuntimeConfig | undefined = typeof window === "undefined" ? undefined : window.SYMPP_DASHBOARD_CONFIG;
 let dashboardRuntimeConfigPromise: Promise<DashboardRuntimeConfig | undefined> | null = null;
+let dashboardRuntimeConfigGeneration = 0;
 const DASHBOARD_LOGO_URL = dashboardRuntimeConfig?.logoUrl || "/splusplus-logo.png";
 
 type TopPanelKey = "guidance" | "blockers" | "finished";
@@ -214,6 +225,7 @@ type DashboardConnectionIssue = {
   firstFailedAt: number;
   lastFailedAt: number;
   message: string;
+  reconnectableLocalSession: boolean;
 };
 type CardDetailSelection =
   | { kind: "request"; detail: WorkRequestDetail }
@@ -311,9 +323,34 @@ function operatorFetch(input: RequestInfo | URL, init: RequestInit = {}) {
   return fetch(input, { ...init, credentials: "include" });
 }
 
+async function readDashboardApiResponse(response: Response, fallbackMessage: string): Promise<DashboardApiResponse> {
+  const payload = await readDashboardJson(response);
+
+  if (!response.ok) {
+    throw dashboardResponseError(response, payload, fallbackMessage);
+  }
+
+  return payload;
+}
+
+async function readDashboardJson(response: Response): Promise<DashboardApiResponse> {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
 function dashboardErrorMessage(payload: DashboardApiResponse) {
   if (!isRecord(payload) || !isRecord(payload.error)) return null;
   return typeof payload.error.message === "string" ? payload.error.message : null;
+}
+
+function dashboardResponseError(response: Response, payload: DashboardApiResponse, fallbackMessage: string) {
+  return new DashboardApiError(
+    dashboardResponseErrorMessage(response, payload, fallbackMessage),
+    isLocalOperatorAuthResponse(response, payload),
+  );
 }
 
 function dashboardResponseErrorMessage(response: Response, payload: DashboardApiResponse, fallbackMessage: string) {
@@ -323,19 +360,60 @@ function dashboardResponseErrorMessage(response: Response, payload: DashboardApi
 
 function isLocalOperatorAuthResponse(response: Response, payload: DashboardApiResponse) {
   if (response.status === 401) return true;
+  if (response.status === 403 && !isRecord(payload)) return true;
 
   if (!isRecord(payload) || !isRecord(payload.error)) return false;
   const code = typeof payload.error.code === "string" ? payload.error.code : "";
-  return code === "unauthorized" || code === "forbidden";
+  return code === "unauthorized" || code === "forbidden" || code.toLowerCase().includes("csrf");
 }
 
 function isLocalOperatorAuthRequiredMessage(message?: string | null) {
   return message === LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE;
 }
 
+function dashboardCaughtMessage(caught: unknown, fallbackMessage: string) {
+  return caught instanceof Error ? caught.message : fallbackMessage;
+}
+
+function isReconnectableLocalOperatorError(caught: unknown) {
+  return (
+    (caught instanceof DashboardApiError && caught.reconnectableLocalSession) ||
+    (caught instanceof Error && isLocalOperatorAuthRequiredMessage(caught.message))
+  );
+}
+
 function dashboardFromEnvelope(payload: DashboardApiResponse) {
   if (!isRecord(payload) || !isRecord(payload.dashboard)) return null;
   return payload.dashboard as DashboardPayload;
+}
+
+function invalidateDashboardRuntimeAuth() {
+  dashboardRuntimeConfigGeneration += 1;
+  dashboardRuntimeConfigPromise = null;
+  const currentConfig = dashboardRuntimeConfig ?? (typeof window === "undefined" ? undefined : window.SYMPP_DASHBOARD_CONFIG);
+  dashboardRuntimeConfig = currentConfig ? { ...currentConfig, csrfToken: undefined } : undefined;
+
+  if (typeof window !== "undefined" && window.SYMPP_DASHBOARD_CONFIG) {
+    window.SYMPP_DASHBOARD_CONFIG = { ...window.SYMPP_DASHBOARD_CONFIG, csrfToken: undefined };
+  }
+}
+
+async function reconnectLocalOperatorSession() {
+  invalidateDashboardRuntimeAuth();
+  return ensureDashboardRuntimeConfig();
+}
+
+async function withLocalOperatorReconnect<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (caught) {
+    if (!isReconnectableLocalOperatorError(caught)) {
+      throw caught;
+    }
+
+    await reconnectLocalOperatorSession();
+    return operation();
+  }
 }
 
 async function ensureDashboardRuntimeConfig() {
@@ -344,19 +422,29 @@ async function ensureDashboardRuntimeConfig() {
     return dashboardRuntimeConfig;
   }
 
-  dashboardRuntimeConfigPromise ??= operatorFetch(operatorConfigUrl(), { headers: jsonHeaders() })
-    .then(async (response) => {
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(dashboardResponseErrorMessage(response, payload, "Dashboard runtime config unavailable"));
-      }
-      dashboardRuntimeConfig = payload as DashboardRuntimeConfig;
-      scrubOperatorBootstrapFromUrl();
-      return dashboardRuntimeConfig;
-    })
-    .finally(() => {
-      dashboardRuntimeConfigPromise = null;
-    });
+  if (!dashboardRuntimeConfigPromise) {
+    const loadGeneration = dashboardRuntimeConfigGeneration;
+    const configPromise: Promise<DashboardRuntimeConfig | undefined> = operatorFetch(operatorConfigUrl(), { headers: jsonHeaders() })
+      .then(async (response) => {
+        const payload = await readDashboardApiResponse(response, "Dashboard runtime config unavailable");
+        const nextConfig = payload as DashboardRuntimeConfig;
+
+        if (dashboardRuntimeConfigPromise !== configPromise || loadGeneration !== dashboardRuntimeConfigGeneration) {
+          return dashboardRuntimeConfig ?? { ...nextConfig, csrfToken: undefined };
+        }
+
+        dashboardRuntimeConfig = nextConfig;
+        scrubOperatorBootstrapFromUrl();
+        return dashboardRuntimeConfig;
+      })
+      .finally(() => {
+        if (dashboardRuntimeConfigPromise === configPromise) {
+          dashboardRuntimeConfigPromise = null;
+        }
+      });
+
+    dashboardRuntimeConfigPromise = configPromise;
+  }
 
   return dashboardRuntimeConfigPromise;
 }
@@ -599,7 +687,7 @@ export default function App() {
   }, [connectionIssue]);
 
   const recordConnectionFailure = useCallback(
-    (message: string, immediate = false) => {
+    (message: string, immediate = false, reconnectableLocalSession = false) => {
       const now = Date.now();
       const canGrace = !immediate && Boolean(dashboardRef.current);
 
@@ -611,7 +699,7 @@ export default function App() {
 
       const currentIssue = connectionIssueRef.current;
       const firstFailedAt = currentIssue?.firstFailedAt ?? now;
-      const nextIssue = { firstFailedAt, lastFailedAt: now, message };
+      const nextIssue = { firstFailedAt, lastFailedAt: now, message, reconnectableLocalSession };
 
       setConnectionIssue(nextIssue);
 
@@ -638,11 +726,7 @@ export default function App() {
 
   const applyDashboardResponse = useCallback(
     async (response: Response, fallbackMessage: string, selectDashboard: DashboardResponseSelector = (payload) => payload as DashboardPayload) => {
-      const payload = (await response.json()) as DashboardApiResponse;
-
-      if (!response.ok) {
-        throw new Error(dashboardResponseErrorMessage(response, payload, fallbackMessage));
-      }
+      const payload = await readDashboardApiResponse(response, fallbackMessage);
 
       const nextDashboard = selectDashboard(payload);
       if (!nextDashboard) {
@@ -658,26 +742,27 @@ export default function App() {
   );
 
   const submitGuidanceAnswer = useCallback(async (item: GuidanceItem, submission: GuidanceAnswerSubmission) => {
-    const response = await operatorFetch(guidanceAnswerUrl(item), {
-      method: "POST",
-      headers: await mutationHeaders(),
-      body: JSON.stringify(submission),
+    await withLocalOperatorReconnect(async () => {
+      const response = await operatorFetch(guidanceAnswerUrl(item), {
+        method: "POST",
+        headers: await mutationHeaders(),
+        body: JSON.stringify(submission),
+      });
+      await applyDashboardResponse(response, "Answer was not recorded", dashboardFromEnvelope);
     });
-    await applyDashboardResponse(response, "Answer was not recorded", dashboardFromEnvelope);
     setSelectedGuidance(null);
   }, [applyDashboardResponse, setSelectedGuidance]);
 
   const createWorkRequest = useCallback(async (form: NewRequestForm) => {
-    const response = await operatorFetch(operatorApiUrl("/work-requests"), {
-      method: "POST",
-      headers: await mutationHeaders(),
-      body: JSON.stringify(form),
-    });
-    const payload = (await response.json()) as CreateWorkRequestPayload & { error?: { message?: string } };
+    const payload = (await withLocalOperatorReconnect(async () => {
+      const response = await operatorFetch(operatorApiUrl("/work-requests"), {
+        method: "POST",
+        headers: await mutationHeaders(),
+        body: JSON.stringify(form),
+      });
+      return readDashboardApiResponse(response, "Request was not created");
+    })) as CreateWorkRequestPayload;
 
-    if (!response.ok) {
-      throw new Error(dashboardResponseErrorMessage(response, payload, "Request was not created"));
-    }
     if (!payload.dashboard || !payload.work_request) {
       throw new Error("Request was created, but the dashboard response was incomplete");
     }
@@ -689,20 +774,19 @@ export default function App() {
   }, [setDashboard, setError]);
 
   const submitComment = useCallback<SubmitContextComment>(async (target, body) => {
-    const response = await operatorFetch(operatorApiUrl("/comments"), {
-      method: "POST",
-      headers: await mutationHeaders(),
-      body: JSON.stringify({
-        target_kind: target.target_kind,
-        target_id: target.target_id,
-        body,
-      }),
-    });
-    const payload = (await response.json()) as { comment?: ContextComment; dashboard?: DashboardPayload; error?: { message?: string } };
+    const payload = (await withLocalOperatorReconnect(async () => {
+      const response = await operatorFetch(operatorApiUrl("/comments"), {
+        method: "POST",
+        headers: await mutationHeaders(),
+        body: JSON.stringify({
+          target_kind: target.target_kind,
+          target_id: target.target_id,
+          body,
+        }),
+      });
+      return readDashboardApiResponse(response, "Comment was not recorded");
+    })) as { comment?: ContextComment; dashboard?: DashboardPayload };
 
-    if (!response.ok) {
-      throw new Error(dashboardResponseErrorMessage(response, payload, "Comment was not recorded"));
-    }
     if (!payload.dashboard || !payload.comment) {
       throw new Error("Comment was recorded, but the dashboard response was incomplete");
     }
@@ -714,18 +798,17 @@ export default function App() {
   }, [setDashboard, setError]);
 
   const resolveComment = useCallback<ResolveContextComment>(async (commentId, resolutionNote) => {
-    const response = await operatorFetch(operatorApiUrl(`/comments/${encodeURIComponent(commentId)}/resolve`), {
-      method: "POST",
-      headers: await mutationHeaders(),
-      body: JSON.stringify({
-        resolution_note: resolutionNote || "",
-      }),
-    });
-    const payload = (await response.json()) as { comment?: ContextComment; dashboard?: DashboardPayload; error?: { message?: string } };
+    const payload = (await withLocalOperatorReconnect(async () => {
+      const response = await operatorFetch(operatorApiUrl(`/comments/${encodeURIComponent(commentId)}/resolve`), {
+        method: "POST",
+        headers: await mutationHeaders(),
+        body: JSON.stringify({
+          resolution_note: resolutionNote || "",
+        }),
+      });
+      return readDashboardApiResponse(response, "Comment was not resolved");
+    })) as { comment?: ContextComment; dashboard?: DashboardPayload };
 
-    if (!response.ok) {
-      throw new Error(dashboardResponseErrorMessage(response, payload, "Comment was not resolved"));
-    }
     if (!payload.dashboard || !payload.comment) {
       throw new Error("Comment was resolved, but the dashboard response was incomplete");
     }
@@ -736,26 +819,33 @@ export default function App() {
     return payload.comment;
   }, [setDashboard, setError]);
 
-  const loadDashboard = useCallback(async (mode: "initial" | "refresh" | "silent" = "refresh") => {
+  const loadDashboard = useCallback(async (mode: "initial" | "refresh" | "silent" | "reconnect" = "refresh") => {
     if (loadInFlightRef.current && mode === "silent") return;
     loadInFlightRef.current = true;
 
     if (mode === "initial") {
       setLoading(true);
-    } else if (mode === "refresh") {
+    } else if (mode === "refresh" || mode === "reconnect") {
       setRefreshing(true);
     }
 
     try {
-      await ensureDashboardRuntimeConfig();
-      const response = await operatorFetch(operatorApiUrl("/dashboard"), { headers: jsonHeaders() });
-      await applyDashboardResponse(response, "Dashboard API unavailable");
+      await withLocalOperatorReconnect(async () => {
+        const config = mode === "reconnect" ? await reconnectLocalOperatorSession() : await ensureDashboardRuntimeConfig();
+        setRuntimeConfig(config);
+        const response = await operatorFetch(operatorApiUrl("/dashboard"), { headers: jsonHeaders() });
+        await applyDashboardResponse(response, "Dashboard API unavailable");
+      });
     } catch (caught) {
-      recordConnectionFailure(caught instanceof Error ? caught.message : "Dashboard API unavailable", mode === "initial");
+      recordConnectionFailure(
+        dashboardCaughtMessage(caught, "Dashboard API unavailable"),
+        mode === "initial" || mode === "reconnect",
+        isReconnectableLocalOperatorError(caught),
+      );
     } finally {
       loadInFlightRef.current = false;
       setLoading(false);
-      if (mode === "refresh") setRefreshing(false);
+      if (mode === "refresh" || mode === "reconnect") setRefreshing(false);
     }
   }, [applyDashboardResponse, recordConnectionFailure, setLoading, setRefreshing]);
 
@@ -764,15 +854,21 @@ export default function App() {
     prSyncInFlightRef.current = true;
 
     try {
-      const headers = await mutationHeaders();
-      const response = await operatorFetch(operatorApiUrl("/github/sync-prs"), {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ mode: "auto" }),
+      await withLocalOperatorReconnect(async () => {
+        const headers = await mutationHeaders();
+        const response = await operatorFetch(operatorApiUrl("/github/sync-prs"), {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ mode: "auto" }),
+        });
+        await applyDashboardResponse(response, "GitHub PR sync unavailable", dashboardFromEnvelope);
       });
-      await applyDashboardResponse(response, "GitHub PR sync unavailable", dashboardFromEnvelope);
     } catch (caught) {
-      recordConnectionFailure(caught instanceof Error ? caught.message : "GitHub PR sync unavailable");
+      recordConnectionFailure(
+        dashboardCaughtMessage(caught, "GitHub PR sync unavailable"),
+        false,
+        isReconnectableLocalOperatorError(caught),
+      );
     } finally {
       prSyncInFlightRef.current = false;
     }
@@ -782,16 +878,14 @@ export default function App() {
     let handoff = cachedHandoff || null;
 
     if (!handoff) {
-      const response = await operatorFetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/architect-handoff`), {
-        method: "POST",
-        headers: await mutationHeaders(),
-        body: JSON.stringify({}),
-      });
-      const payload: ArchitectHandoffPayload & { error?: { message?: string } } = await response.json();
-
-      if (!response.ok) {
-        throw new Error(dashboardResponseErrorMessage(response, payload, "Architect handoff unavailable"));
-      }
+      const payload = (await withLocalOperatorReconnect(async () => {
+        const response = await operatorFetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/architect-handoff`), {
+          method: "POST",
+          headers: await mutationHeaders(),
+          body: JSON.stringify({}),
+        });
+        return readDashboardApiResponse(response, "Architect handoff unavailable");
+      })) as ArchitectHandoffPayload;
 
       handoff = payload.architect_handoff || null;
 
@@ -818,60 +912,72 @@ export default function App() {
   }, [setDashboard]);
 
   const updateArchiveAfterDays = useCallback(async (archiveAfterDays: number) => {
-    const response = await operatorFetch(operatorApiUrl("/settings"), {
-      method: "POST",
-      headers: await mutationHeaders(),
-      body: JSON.stringify({ work_request_archive_after_days: archiveAfterDays }),
+    await withLocalOperatorReconnect(async () => {
+      const response = await operatorFetch(operatorApiUrl("/settings"), {
+        method: "POST",
+        headers: await mutationHeaders(),
+        body: JSON.stringify({ work_request_archive_after_days: archiveAfterDays }),
+      });
+      await applyDashboardResponse(response, "Settings were not saved", dashboardFromEnvelope);
     });
-    await applyDashboardResponse(response, "Settings were not saved", dashboardFromEnvelope);
   }, [applyDashboardResponse]);
 
   const archiveWorkRequest = useCallback<WorkRequestMutation>(async (workRequestId) => {
-    const response = await operatorFetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/archive`), {
-      method: "POST",
-      headers: await mutationHeaders(),
-      body: JSON.stringify({}),
+    await withLocalOperatorReconnect(async () => {
+      const response = await operatorFetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/archive`), {
+        method: "POST",
+        headers: await mutationHeaders(),
+        body: JSON.stringify({}),
+      });
+      await applyDashboardResponse(response, "WorkRequest was not archived", dashboardFromEnvelope);
     });
-    await applyDashboardResponse(response, "WorkRequest was not archived", dashboardFromEnvelope);
     setSelectedCardDetail(null);
   }, [applyDashboardResponse, setSelectedCardDetail]);
 
   const restoreWorkRequest = useCallback<WorkRequestMutation>(async (workRequestId) => {
-    const response = await operatorFetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/restore`), {
-      method: "POST",
-      headers: await mutationHeaders(),
-      body: JSON.stringify({}),
+    await withLocalOperatorReconnect(async () => {
+      const response = await operatorFetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/restore`), {
+        method: "POST",
+        headers: await mutationHeaders(),
+        body: JSON.stringify({}),
+      });
+      await applyDashboardResponse(response, "WorkRequest was not restored", dashboardFromEnvelope);
     });
-    await applyDashboardResponse(response, "WorkRequest was not restored", dashboardFromEnvelope);
   }, [applyDashboardResponse]);
 
   const changeWorkRequestState = useCallback<WorkRequestStateMutation>(async (workRequestId, nextState) => {
-    const response = await operatorFetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/state`), {
-      method: "POST",
-      headers: await mutationHeaders(),
-      body: JSON.stringify({ state: nextState }),
+    await withLocalOperatorReconnect(async () => {
+      const response = await operatorFetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/state`), {
+        method: "POST",
+        headers: await mutationHeaders(),
+        body: JSON.stringify({ state: nextState }),
+      });
+      await applyDashboardResponse(response, "WorkRequest state was not changed", dashboardFromEnvelope);
     });
-    await applyDashboardResponse(response, "WorkRequest state was not changed", dashboardFromEnvelope);
     setSelectedCardDetail(null);
   }, [applyDashboardResponse, setSelectedCardDetail]);
 
   const changeWorkPackageState = useCallback<WorkPackageStateMutation>(async (workPackageId, action, options) => {
-    const response = await operatorFetch(operatorApiUrl(`/work-packages/${encodeURIComponent(workPackageId)}/state`), {
-      method: "POST",
-      headers: await mutationHeaders(),
-      body: JSON.stringify({ status: action, no_pr_evidence: options?.noPrEvidence }),
+    await withLocalOperatorReconnect(async () => {
+      const response = await operatorFetch(operatorApiUrl(`/work-packages/${encodeURIComponent(workPackageId)}/state`), {
+        method: "POST",
+        headers: await mutationHeaders(),
+        body: JSON.stringify({ status: action, no_pr_evidence: options?.noPrEvidence }),
+      });
+      await applyDashboardResponse(response, "WorkPackage state was not changed", dashboardFromEnvelope);
     });
-    await applyDashboardResponse(response, "WorkPackage state was not changed", dashboardFromEnvelope);
     setSelectedCardDetail(null);
   }, [applyDashboardResponse, setSelectedCardDetail]);
 
   const archiveWorkPackage = useCallback<WorkPackageArchiveMutation>(async (workPackageId) => {
-    const response = await operatorFetch(operatorApiUrl(`/work-packages/${encodeURIComponent(workPackageId)}/archive`), {
-      method: "POST",
-      headers: await mutationHeaders(),
-      body: JSON.stringify({}),
+    await withLocalOperatorReconnect(async () => {
+      const response = await operatorFetch(operatorApiUrl(`/work-packages/${encodeURIComponent(workPackageId)}/archive`), {
+        method: "POST",
+        headers: await mutationHeaders(),
+        body: JSON.stringify({}),
+      });
+      await applyDashboardResponse(response, "WorkPackage was not archived", dashboardFromEnvelope);
     });
-    await applyDashboardResponse(response, "WorkPackage was not archived", dashboardFromEnvelope);
     setSelectedCardDetail(null);
   }, [applyDashboardResponse, setSelectedCardDetail]);
 
@@ -954,6 +1060,8 @@ export default function App() {
     ready: dashboard !== null,
     soloSessions,
   });
+  const localOperatorReconnectIssue = isLocalOperatorAuthRequiredMessage(error) || connectionIssue?.reconnectableLocalSession === true;
+  const dashboardAlertMessage = error || (localOperatorReconnectIssue ? connectionIssue?.message || LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE : null);
   const workspacePanes = useMemo<Record<WorkspaceTab, React.ReactNode>>(
     () => ({
       workstreams: (
@@ -1040,16 +1148,36 @@ export default function App() {
         </header>
 
         <div className="mx-auto grid max-w-[1500px] gap-5 px-4 py-5 sm:px-6 lg:px-8">
-          {error ? (
-            <Card className="dashboard-glass-surface border-rose-200 bg-rose-50 motion-card dark:border-rose-700/70 dark:bg-rose-950/45">
-              <CardContent className="flex items-start gap-3 p-4 text-sm text-rose-800 dark:text-rose-200">
-                <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                <div className="grid gap-1">
-                  <span className="font-medium">
-                    {isLocalOperatorAuthRequiredMessage(error) ? "Local operator session required" : "Dashboard error"}
-                  </span>
-                  <span>{error}</span>
+          {dashboardAlertMessage ? (
+            <Card
+              className={cn(
+                "dashboard-glass-surface motion-card",
+                localOperatorReconnectIssue
+                  ? "border-amber-200 bg-amber-50 dark:border-amber-700/70 dark:bg-amber-950/45"
+                  : "border-rose-200 bg-rose-50 dark:border-rose-700/70 dark:bg-rose-950/45",
+              )}
+            >
+              <CardContent
+                className={cn(
+                  "flex flex-wrap items-start justify-between gap-3 p-4 text-sm",
+                  localOperatorReconnectIssue ? "text-amber-900 dark:text-amber-100" : "text-rose-800 dark:text-rose-200",
+                )}
+              >
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="mt-0.5 size-4 shrink-0" />
+                  <div className="grid gap-1">
+                    <span className="font-medium">
+                      {localOperatorReconnectIssue ? "Local operator reconnect" : "Dashboard error"}
+                    </span>
+                    <span>{dashboardAlertMessage}</span>
+                  </div>
                 </div>
+                {localOperatorReconnectIssue ? (
+                  <Button variant="outline" size="sm" onClick={() => void loadDashboard("reconnect")} disabled={refreshing} className="button-lift">
+                    {refreshing ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                    Reconnect
+                  </Button>
+                ) : null}
               </CardContent>
             </Card>
           ) : null}
@@ -4250,15 +4378,15 @@ function cardDetailDialogReducer(state: CardDetailDialogState, action: CardDetai
 }
 
 async function loadOperatorPayload<T>(path: string, signal: AbortSignal, fallbackMessage: string): Promise<T> {
-  const response = await operatorFetch(operatorApiUrl(path), {
-    headers: jsonHeaders(),
-    signal,
+  return withLocalOperatorReconnect(async () => {
+    await ensureDashboardRuntimeConfig();
+    const response = await operatorFetch(operatorApiUrl(path), {
+      headers: jsonHeaders(),
+      signal,
+    });
+    const payload = await readDashboardApiResponse(response, fallbackMessage);
+    return payload as T;
   });
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(dashboardResponseErrorMessage(response, payload, fallbackMessage));
-  }
-  return payload;
 }
 
 function CardDetailDialog({
