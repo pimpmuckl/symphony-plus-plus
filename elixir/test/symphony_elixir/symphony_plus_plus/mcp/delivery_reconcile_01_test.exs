@@ -735,30 +735,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile01Test do
     assert_same_ledger_database(blank_database_payload["worker_bootstrap"]["ledger"], live_database)
     refute inspect(blank_database_response) =~ "run_mcp_command"
 
-    assert {:ok, branch_mismatch_slice} =
+    delivery_base = "feature/integration-base"
+
+    assert {:ok, delivery_base_slice} =
              WorkRequestRepository.add_planned_slice(
                repo,
                in_scope.id,
                work_request_planned_slice_attrs(
-                 id: "WRS-MCP-WR-DISPATCH-BRANCH-MISMATCH",
-                 target_base_branch: "feature/out-of-scope"
+                 id: "WRS-MCP-WR-DISPATCH-DELIVERY-BASE",
+                 target_base_branch: delivery_base
                )
              )
 
-    assert {:ok, approved_branch_mismatch_slice} =
-             WorkRequestRepository.approve_planned_slice(repo, in_scope.id, branch_mismatch_slice.id, "planned")
+    assert {:ok, approved_delivery_base_slice} =
+             WorkRequestRepository.approve_planned_slice(repo, in_scope.id, delivery_base_slice.id, "planned")
 
-    counts_before_branch_mismatch = {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)}
-
-    branch_mismatch_response =
+    delivery_base_response =
       mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
         "work_request_id" => in_scope.id,
-        "planned_slice_id" => approved_branch_mismatch_slice.id,
-        "claimed_by" => "worker-dispatch-1"
+        "planned_slice_id" => approved_delivery_base_slice.id,
+        "claimed_by" => "worker-dispatch-delivery-base"
       })
 
-    assert get_in(branch_mismatch_response, ["error", "code"]) == -32_602
-    assert get_in(branch_mismatch_response, ["error", "data", "reason"]) == "target_base_branch_scope_mismatch"
-    assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before_branch_mismatch
+    delivery_base_payload = get_in(delivery_base_response, ["result", "structuredContent"])
+    assert delivery_base_payload["scope"] == %{"repo" => anchor.repo, "base_branch" => anchor.base_branch}
+    assert delivery_base_payload["planned_slice"]["status"] == "dispatched"
+    assert delivery_base_payload["work_package"]["base_branch"] == delivery_base
+    assert delivery_base_payload["worker_bootstrap"]["claim"]["arguments"]["base_branch"] == delivery_base
   end
 end

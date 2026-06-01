@@ -2336,7 +2336,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "title" => string_schema(),
         "goal" => string_schema(),
         "work_package_kind" => string_enum_schema(StateMachine.standalone_kinds()),
-        "target_base_branch" => string_schema(),
+        "target_base_branch" =>
+          described_string_schema(
+            "Delivery base branch for the planned slice and created WorkPackage. It may differ from the parent WorkRequest base branch; worktree preparation must use this package base branch."
+          ),
         "owned_file_globs" =>
           described_string_array_schema(
             "Repo-relative slash-separated owned file globs. `**` must be a complete path segment, for example `scripts/**/deploy*.ps1`; invalid examples include `scripts/**deploy**` and `packages/**kraken_batch**`."
@@ -2411,7 +2414,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       %{
         "work_package_id" => string_schema(),
         "target_repo_root" => described_string_schema("Target product repository root used for git ref validation, fetch, and worktree operations."),
-        "base_branch" => string_schema(),
+        "base_branch" => described_string_schema("Git base branch to prepare from. Must match the linked WorkPackage delivery base branch."),
         "branch" => string_schema(),
         "worktree_parent" => described_string_schema("Optional parent directory for the generated worktree path. It must remain under the safe Symphony++ worktree root.")
       },
@@ -5408,7 +5411,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            authorized_work_request_scope(config.repo, live_session, work_request_id, reconcile_work_request_action(apply?), "reconcile_work_request"),
          {:ok, planned_slices} <- WorkRequestService.list_planned_slices(config.repo, work_request_id),
          {visible_work_package_ids, work_package_contexts} <-
-           visible_delivery_board_work_package_contexts(config.repo, work_request_id, planned_slices, filters),
+           visible_delivery_board_work_package_contexts(config.repo, work_request, planned_slices, filters),
          {:ok, reconciliation} <-
            DeliveryReconciler.reconcile(config.repo, work_request_id,
              mode: reconcile_work_request_mode(apply?),
@@ -5837,7 +5840,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, work_request, filters, scope} <-
            authorized_work_request_scope(config.repo, session, work_request_id, :planned_slice_create, "add_work_request_planned_slice"),
          :ok <- require_planned_slice_authoring_status(work_request.status),
-         :ok <- require_planned_slice_target_base_branch_scope(work_request, target_base_branch),
          :ok <- validate_planned_slice_scope_for_tool(work_request, work_package_kind, owned_file_globs),
          {:ok, planned_slice} <-
            WorkRequestService.add_planned_slice(
@@ -5929,7 +5931,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
-         {:ok, work_request, planned_slice, _filters, scope} <-
+         {:ok, _work_request, planned_slice, _filters, scope} <-
            authorized_planned_slice_scope(
              config.repo,
              session,
@@ -5938,7 +5940,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              :planned_slice_dispatch,
              "dispatch_work_request_planned_slice"
            ),
-         :ok <- require_planned_slice_target_base_branch_scope(work_request, planned_slice.target_base_branch),
          :ok <- require_approved_dispatch_planned_slice(planned_slice),
          {:ok, handoff_opts, dispatch_opts} <- dispatch_planned_slice_bootstrap_opts(config, arguments, claimed_by),
          {:ok, dispatch} <- PlannedSliceDispatch.dispatch(config.repo, work_request_id, planned_slice_id, handoff_opts, dispatch_opts) do
@@ -7153,7 +7154,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp scoped_delivery_board(repo, %WorkRequest{} = work_request, planned_slices, filters, opts \\ []) when is_list(planned_slices) do
     {visible_work_package_ids, work_package_contexts} =
-      visible_delivery_board_work_package_contexts(repo, work_request.id, planned_slices, filters)
+      visible_delivery_board_work_package_contexts(repo, work_request, planned_slices, filters)
 
     DeliveryBoard.project(repo, work_request.id,
       work_request: work_request,
@@ -7189,13 +7190,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp reconcile_work_request_mode(true), do: :apply
   defp reconcile_work_request_mode(false), do: :dry_run
 
-  defp visible_delivery_board_work_package_contexts(repo, work_request_id, planned_slices, filters) do
+  defp visible_delivery_board_work_package_contexts(repo, %WorkRequest{} = work_request, planned_slices, filters) do
     planned_slice_ids = Enum.map(planned_slices, & &1.id)
 
     work_package_ids =
       repo.all(
         from(delivery in PlannedSliceDelivery,
-          where: delivery.work_request_id == ^work_request_id,
+          where: delivery.work_request_id == ^work_request.id,
           where: delivery.planned_slice_id in ^planned_slice_ids,
           select: delivery.successor_work_package_id
         )
@@ -7206,49 +7207,82 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     work_package_contexts =
       work_package_ids
-      |> scoped_work_packages_by_id(repo, filters)
+      |> scoped_delivery_work_packages_by_id(repo, work_request, planned_slices, filters)
       |> Map.new(fn {id, work_package} -> {id, %{work_package: work_package}} end)
 
     {Map.keys(work_package_contexts), work_package_contexts}
   end
 
-  defp scoped_work_packages_by_id([], _repo, _filters), do: %{}
+  defp scoped_delivery_work_packages_by_id([], _repo, %WorkRequest{}, _planned_slices, _filters), do: %{}
 
-  defp scoped_work_packages_by_id(work_package_ids, repo, filters) do
+  defp scoped_delivery_work_packages_by_id(work_package_ids, repo, %WorkRequest{} = work_request, planned_slices, filters) do
+    primary_scope? = primary_work_request_scope?(repo, work_request, filters)
+
+    planned_slices_by_work_package_id =
+      planned_slices
+      |> Enum.filter(&filled_string?(&1.work_package_id))
+      |> Map.new(&{&1.work_package_id, &1})
+
     repo.all(from(work_package in WorkPackage, where: work_package.id in ^work_package_ids))
-    |> Enum.filter(&(require_work_package_scope(&1, filters) == :ok))
+    |> Enum.filter(fn work_package ->
+      case Map.fetch(planned_slices_by_work_package_id, work_package.id) do
+        {:ok, planned_slice} ->
+          require_delivery_work_package_scope(work_package, work_request, planned_slice) == :ok and
+            delivery_work_package_visible_to_filters?(work_package, primary_scope?, filters)
+
+        :error ->
+          false
+      end
+    end)
     |> Map.new(&{&1.id, &1})
   end
 
+  defp primary_work_request_scope?(repo, %WorkRequest{} = work_request, filters) do
+    {:ok, matches?} = work_request_matches_primary_filters?(repo, work_request, filters)
+    matches?
+  end
+
+  defp delivery_work_package_visible_to_filters?(_work_package, true, _filters), do: true
+
+  defp delivery_work_package_visible_to_filters?(%WorkPackage{} = work_package, false, filters) do
+    work_package_matches_filters?(work_package, filters)
+  end
+
   defp require_planned_slice_delivery_scope(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, attrs, filters) do
-    with :ok <- require_planned_slice_target_base_branch_scope(work_request, planned_slice.target_base_branch),
-         :ok <- require_linked_delivery_work_package_scope(repo, planned_slice, filters),
+    primary_scope? = primary_work_request_scope?(repo, work_request, filters)
+
+    with :ok <- require_linked_delivery_work_package_scope(repo, work_request, planned_slice, primary_scope?, filters),
          :ok <- require_successor_planned_slice_scope(repo, work_request, attrs) do
-      require_successor_work_package_scope(repo, work_request, attrs, filters)
+      require_successor_work_package_scope(repo, work_request, attrs, primary_scope?, filters)
     end
   end
 
-  defp require_linked_delivery_work_package_scope(_repo, %PlannedSlice{work_package_id: work_package_id}, _filters)
+  defp require_linked_delivery_work_package_scope(_repo, %WorkRequest{}, %PlannedSlice{work_package_id: work_package_id}, _primary_scope?, _filters)
        when work_package_id in [nil, ""],
        do: :ok
 
-  defp require_linked_delivery_work_package_scope(repo, %PlannedSlice{work_package_id: work_package_id}, filters) do
+  defp require_linked_delivery_work_package_scope(
+         repo,
+         %WorkRequest{} = work_request,
+         %PlannedSlice{work_package_id: work_package_id} = planned_slice,
+         primary_scope?,
+         filters
+       ) do
     with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id) do
-      require_work_package_scope(work_package, filters)
+      require_scoped_delivery_work_package_visibility(work_package, work_request, planned_slice, primary_scope?, filters)
     end
   end
 
-  defp require_successor_work_package_scope(repo, %WorkRequest{} = work_request, attrs, filters) do
+  defp require_successor_work_package_scope(repo, %WorkRequest{} = work_request, attrs, primary_scope?, filters) do
     case Map.get(attrs, "successor_work_package_id") do
       nil ->
         :ok
 
       successor_work_package_id ->
-        with true <- work_request_linked_work_package?(repo, work_request.id, successor_work_package_id),
-             {:ok, successor_work_package} <- WorkPackageRepository.get(repo, successor_work_package_id) do
-          require_work_package_scope(successor_work_package, filters)
+        with {:ok, successor_work_package} <- WorkPackageRepository.get(repo, successor_work_package_id),
+             {:ok, successor_slice} <- scoped_work_request_work_package_planned_slice(repo, work_request.id, successor_work_package_id) do
+          require_scoped_delivery_work_package_visibility(successor_work_package, work_request, successor_slice, primary_scope?, filters)
         else
-          false -> {:tool_error, "successor_work_package_out_of_scope"}
           {:error, :not_found} -> {:tool_error, "successor_work_package_out_of_scope"}
           {:error, reason} -> {:error, reason}
         end
@@ -7263,8 +7297,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         {:tool_error, "missing_successor_planned_slice_id"}
 
       successor_planned_slice_id ->
-        with {:ok, successor_slice} <- scoped_work_request_planned_slice(repo, work_request.id, successor_planned_slice_id),
-             :ok <- require_planned_slice_target_base_branch_scope(work_request, successor_slice.target_base_branch) do
+        with {:ok, successor_slice} <- scoped_work_request_planned_slice(repo, work_request.id, successor_planned_slice_id) do
           require_successor_work_package_matches_slice(successor_slice, attrs)
         else
           {:error, :not_found} -> {:tool_error, "successor_planned_slice_out_of_scope"}
@@ -7281,15 +7314,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp work_request_linked_work_package?(repo, work_request_id, work_package_id) do
-    repo.exists?(
-      from(planned_slice in PlannedSlice,
-        where: planned_slice.work_request_id == ^work_request_id,
-        where: planned_slice.work_package_id == ^work_package_id,
-        select: 1,
-        limit: 1
-      )
-    )
+  defp scoped_work_request_work_package_planned_slice(repo, work_request_id, work_package_id) do
+    case repo.one(
+           from(planned_slice in PlannedSlice,
+             where: planned_slice.work_request_id == ^work_request_id,
+             where: planned_slice.work_package_id == ^work_package_id,
+             limit: 1
+           )
+         ) do
+      %PlannedSlice{} = planned_slice -> {:ok, planned_slice}
+      nil -> {:error, :not_found}
+    end
   end
 
   defp scoped_worktree_work_package(repo, %Session{} = session, work_package_id) do
@@ -7304,11 +7339,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp require_worktree_work_package_scope(repo, %WorkPackage{} = work_package, filters) do
-    with :ok <- require_work_package_scope(work_package, filters) do
-      case linked_work_request_for_work_package(repo, work_package.id) do
-        nil -> {:error, :forbidden}
-        %WorkRequest{} = work_request -> require_work_request_scope(repo, work_request, filters)
-      end
+    case linked_planned_slice_work_request_for_work_package(repo, work_package.id) do
+      nil ->
+        {:error, :forbidden}
+
+      {%PlannedSlice{} = planned_slice, %WorkRequest{} = work_request} ->
+        with :ok <- require_work_package_repo_scope(work_package, work_request),
+             :ok <- require_work_package_delivery_base_scope(work_package, planned_slice),
+             :ok <- require_work_request_scope(repo, work_request, filters) do
+          require_delivery_work_package_filter_scope(repo, work_package, work_request, filters)
+        end
+    end
+  end
+
+  defp require_scoped_delivery_work_package_visibility(
+         %WorkPackage{} = work_package,
+         %WorkRequest{} = work_request,
+         %PlannedSlice{} = planned_slice,
+         primary_scope?,
+         filters
+       ) do
+    with :ok <- require_delivery_work_package_scope(work_package, work_request, planned_slice) do
+      require_delivery_work_package_filter_scope(work_package, primary_scope?, filters)
+    end
+  end
+
+  defp require_delivery_work_package_filter_scope(repo, %WorkPackage{} = work_package, %WorkRequest{} = work_request, filters) do
+    primary_scope? = primary_work_request_scope?(repo, work_request, filters)
+    require_delivery_work_package_filter_scope(work_package, primary_scope?, filters)
+  end
+
+  defp require_delivery_work_package_filter_scope(%WorkPackage{} = work_package, primary_scope?, filters) do
+    if delivery_work_package_visible_to_filters?(work_package, primary_scope?, filters) do
+      :ok
+    else
+      {:error, :not_found}
     end
   end
 
@@ -7388,13 +7453,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if match?({:win32, _name}, :os.type()), do: String.downcase(path), else: path
   end
 
-  defp linked_work_request_for_work_package(repo, work_package_id) do
+  defp linked_planned_slice_work_request_for_work_package(repo, work_package_id) do
     repo.one(
       from(planned_slice in PlannedSlice,
         join: work_request in WorkRequest,
         on: work_request.id == planned_slice.work_request_id,
         where: planned_slice.work_package_id == ^work_package_id,
-        select: work_request,
+        select: {planned_slice, work_request},
         limit: 1
       )
     )
@@ -7408,19 +7473,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_work_package_scope(%WorkPackage{} = work_package, filters) do
-    if work_package_matches_filters?(work_package, filters) do
-      :ok
-    else
-      {:error, :forbidden}
-    end
-  end
+  defp require_work_package_repo_scope(%WorkPackage{repo: repo}, %WorkRequest{repo: repo}), do: :ok
+  defp require_work_package_repo_scope(%WorkPackage{}, _scope), do: {:error, :forbidden}
 
-  defp require_planned_slice_target_base_branch_scope(%WorkRequest{} = work_request, target_base_branch) do
-    if work_request.base_branch == target_base_branch do
-      :ok
-    else
-      {:tool_error, "target_base_branch_scope_mismatch"}
+  defp require_work_package_delivery_base_scope(%WorkPackage{base_branch: base_branch}, %PlannedSlice{target_base_branch: base_branch}), do: :ok
+  defp require_work_package_delivery_base_scope(%WorkPackage{}, %PlannedSlice{}), do: {:error, :forbidden}
+
+  defp require_delivery_work_package_scope(%WorkPackage{} = work_package, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice) do
+    with :ok <- require_work_package_repo_scope(work_package, work_request) do
+      require_work_package_delivery_base_scope(work_package, planned_slice)
     end
   end
 
@@ -7789,6 +7850,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          filters
        ) do
     now = DateTime.utc_now(:microsecond)
+    primary_scope? = primary_work_request_scope?(repo, work_request, filters)
 
     with :ok <- lock_access_grant(repo, session.assignment.grant_id),
          {:ok, _architect_grant} <- require_live_architect_grant(repo, session),
@@ -7796,7 +7858,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- lock_work_package(repo, work_package_id),
          :ok <- lock_access_grant(repo, grant_id),
          {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
-         :ok <- require_work_package_scope(work_package, filters),
+         :ok <- require_scoped_delivery_work_package_visibility(work_package, work_request, planned_slice, primary_scope?, filters),
          :ok <- require_planned_slice_worker_revoke_status(work_package),
          {:ok, grant} <- scoped_planned_slice_worker_grant_for_revoke(repo, grant_id, work_package_id, now),
          {:ok, revoked_grant} <- revoke_live_planned_slice_worker_grant(repo, grant, now),
