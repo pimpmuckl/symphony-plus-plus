@@ -98,7 +98,7 @@ ledger identity for operator diagnosis:
 | create_child_work_package | Create a `phase_child` work package inside the architect grant's current phase; child repo, phase, parent, and base branch are constrained to the architect phase anchor. |
 | mint_child_worker_key | Mint a child-scoped worker grant for a same-phase `phase_child` package; worker capabilities are limited to the child worker set, and explicit expiry cannot exceed an explicitly expiring architect grant. |
 | revoke_child_worker_key | Revoke one live child-delegated worker grant for a same-phase child package inside the architect grant's frozen scope, reset active/interrupted children to `ready_for_worker`, and make immediate remint available. |
-| list_work_requests | List WorkRequests scoped to the architect assignment repo/base branch. Accepts only optional `status`. |
+| list_work_requests | List WorkRequests scoped to the architect assignment repo/base branch; trusted local unbound HTTP sessions may list redacted local-ledger summaries. Accepts only optional `status`. |
 | read_work_request | Read one scoped WorkRequest with clarification questions, decision log entries, visible planned slices, and count/status summaries. |
 | read_work_request_delivery_board | Read the scoped WorkRequest delivery-board projection for visible planned-slice closeout without broad package visibility. |
 | set_work_request_status | Move a scoped WorkRequest between valid statuses with optimistic `current_status` checking. |
@@ -123,11 +123,12 @@ ledger identity for operator diagnosis:
 | publish_phase_update | Phase 7 stub for phase updates; returns `phase7_not_implemented` after architect authorization. |
 
 Architect tools require a live architect grant session and the matching
-architect capability from the permission model. Worker grants and architect
-grants without the required capability are denied at call time. Worker grants
-cannot be minted with architect-only MCP capabilities such as `read:phase`,
-`read:child_progress`, or `mint:child_worker_key`. `tools/list` is predictable
-session-shape discovery, not authorization:
+architect capability from the permission model, except for the trusted local
+unbound WorkRequest read-only discovery path documented below. Worker grants
+and architect grants without the required capability are denied at call time.
+Worker grants cannot be minted with architect-only MCP capabilities such as
+`read:phase`, `read:child_progress`, or `mint:child_worker_key`. `tools/list`
+is predictable session-shape discovery, not authorization:
 
 - Healthy unbound generic sessions advertise health, Solo Session bootstrap
   tools, `claim_work_key`, `claim_private_handoff`, and
@@ -137,7 +138,9 @@ session-shape discovery, not authorization:
   `claim_local_architect_assignment` so local worker and architect sessions can
   claim or reconnect without private handoff files.
 - Trusted unbound local HTTP sessions with explicit state-key continuity may
-  additionally advertise the local operator note tools described above.
+  additionally advertise the local operator note tools described above and
+  WorkRequest read-only discovery tools: `list_work_requests`,
+  `read_work_request`, and `read_work_request_delivery_board`.
 - Bound worker sessions advertise health, `get_current_assignment`, and bound
   worker WorkPackage tools. They do not advertise Solo tools, architect-only
   tool schemas, or claim/bootstrap tools.
@@ -168,13 +171,15 @@ than being treated as phase-wide. Existing lifecycle
 capabilities such as
 `architect:lifecycle.transition` do not imply MCP architect tool authorization;
 P3-003 requires the explicit MCP capability strings listed in the permission
-model at call time. WorkRequest read, mutation, and dispatch schemas are
-discoverable before claim and for bound architect sessions even when the current
-grant lacks capability or usable frozen scope; direct calls fail closed until an
-explicit phase-scoped architect grant with the required frozen repo/base-branch
-scope and `read:work_request`, `write:work_request`, or
-`dispatch:work_request` capability is live. Legacy null-`phase_id` architect
-grants do not authorize those tools. Phase-dependent
+model at call time. WorkRequest mutation and dispatch schemas are discoverable
+before claim and for bound architect sessions even when the current grant lacks
+capability or usable frozen scope; direct mutation and dispatch calls fail
+closed until an explicit phase-scoped architect grant with the required frozen
+repo/base-branch scope and `write:work_request` or `dispatch:work_request`
+capability is live. WorkRequest read schemas are also discoverable before
+claim, but only the trusted local unbound read-only discovery path below may
+execute without an architect grant. Legacy null-`phase_id` architect grants do
+not authorize those tools. Phase-dependent
 architect tools revalidate the grant's explicit phase scope plus the anchor
 repo/base-branch scope frozen when the phase architect grant was minted.
 Legacy null-`phase_id` grants may still derive the current
@@ -220,22 +225,32 @@ architect-controlled/closed/merged or terminal states. The response and durable
 audit/progress event are redacted and include only safe child package/grant
 metadata, previous and new child statuses, and the redacted recycle reason;
 persisted private handoff cleanup is not performed in this v1 package.
-`list_work_requests` and `read_work_request` require `read:work_request`, are
-read-only, and require an explicit phase-scoped architect grant with frozen
+For claimed architect sessions, `list_work_requests`, `read_work_request`, and
+`read_work_request_delivery_board` require `read:work_request`, are read-only,
+and require an explicit phase-scoped architect grant with frozen
 repo/base-branch scope. They do not accept caller-supplied repo or base-branch
 arguments. Legacy null `phase_id` architect grants are not supported for
 WorkRequest MCP reads and fail closed rather than deriving scope from a mutable
-anchor package. `list_work_requests` accepts only optional `status`;
+anchor package. Trusted local unbound HTTP sessions with explicit state-key
+continuity and a file-backed local ledger may also call the same read-only
+tools without an architect claim for non-secret local-ledger discovery.
+`list_work_requests` returns redacted WorkRequest summaries for that local
+ledger, accepts only optional `status`, and reports scope as
+`visibility: "local_ledger"` rather than a repo/base authorization snapshot.
 `read_work_request` requires `work_request_id` and accepts optional
 `include_planning_scratch`; `read_work_request_delivery_board` accepts the same
-visibility flag. Skipped never-dispatched planned slices with no WorkPackage and
-no planned-slice delivery record are hidden by default as planning scratch, not
+visibility flag. The unbound read path may inspect only visible local
+WorkRequest state and planned-slice/delivery-board projections. It does not
+grant WorkRequest ownership, dispatch authority, lifecycle authority, secret
+access, worker package write authority, or arbitrary local file access.
+Skipped never-dispatched planned slices with no WorkPackage and no
+planned-slice delivery record are hidden by default as planning scratch, not
 delivery work. When included, delivery-board slices are classified as
-`planning_scratch`. Missing or out-of-scope WorkRequests fail closed as not found
-without leaking sibling content. Payloads are JSON-safe and redacted: they
-exclude work-key secrets, tokens, private handoff payloads, and worker secret
-material. MCP tools must not be bypassed with direct SQLite deletion for
-planning scratch cleanup.
+`planning_scratch`. Missing or out-of-scope WorkRequests fail closed as not
+found without leaking sibling content. Payloads are JSON-safe and redacted:
+they exclude work-key secrets, grant verifiers, bearer/API/GitHub tokens,
+private handoff payloads, and worker secret material. MCP tools must not be
+bypassed with direct SQLite deletion for planning scratch cleanup.
 `set_work_request_status`, `ask_work_request_question`,
 `answer_work_request_question`, `answer_work_request_question_and_record_decision`,
 `close_work_request_question`, and `record_work_request_decision` require

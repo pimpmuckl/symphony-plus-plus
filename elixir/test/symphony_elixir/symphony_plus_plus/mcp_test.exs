@@ -1935,9 +1935,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       create_work_request!(
         repo,
         id: "WR-MCP-LOCAL-READ",
-        repo: "nextide/symphony-plus-plus",
-        base_branch: "feature/sympp-v21-ledger-claims",
-        status: "ready_for_slicing"
+        title: "Trusted local ghp_localreadsecret discovery",
+        repo: "https://example.test/repo?token=ghp_localreadsecret",
+        base_branch: "feature/raw-secret-localreadbranch",
+        status: "ready_for_slicing",
+        human_description: "Do not expose Bearer localreadsecretvalue."
+      )
+
+    _other_status =
+      create_work_request!(
+        repo,
+        id: "WR-MCP-LOCAL-READ-DRAFT",
+        repo: work_request.repo,
+        base_branch: work_request.base_branch,
+        status: "draft"
       )
 
     assert {:ok, planned_slice} =
@@ -1953,8 +1964,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     local_server = local_mcp_server(local_mcp_config(repo), "local-work-request-read-state")
     tools_by_name = tools_for_server(local_server) |> Map.new(&{&1["name"], &1})
 
+    assert Map.has_key?(tools_by_name, "list_work_requests")
     assert Map.has_key?(tools_by_name, "read_work_request")
     assert Map.has_key?(tools_by_name, "read_work_request_delivery_board")
+
+    {list_response, list_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-list-work-requests",
+          "method" => "tools/call",
+          "params" => %{"name" => "list_work_requests", "arguments" => %{"status" => "ready_for_slicing"}}
+        },
+        local_server
+      )
+
+    assert list_server.session == nil
+
+    list_payload = get_in(list_response, ["result", "structuredContent"])
+    assert list_payload["scope"] == %{"visibility" => "local_ledger"}
+    assert list_payload["filters"] == %{"status" => "ready_for_slicing"}
+    assert list_payload["total_count"] == 1
+    assert [%{"id" => "WR-MCP-LOCAL-READ", "title" => listed_title} = listed] = list_payload["work_requests"]
+    assert listed_title == "Trusted local [REDACTED] discovery"
+    assert listed["repo"] == "https://example.test/repo?token=[REDACTED]"
+    assert listed["base_branch"] == "feature/[REDACTED]"
+    refute inspect(list_response) =~ "ghp_localreadsecret"
+    refute inspect(list_response) =~ "localreadsecretvalue"
+    refute inspect(list_response) =~ "raw-secret-localreadbranch"
 
     {read_response, read_server} =
       Server.handle_state(
@@ -1964,7 +2001,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "method" => "tools/call",
           "params" => %{"name" => "read_work_request", "arguments" => %{"work_request_id" => work_request.id}}
         },
-        local_server
+        list_server
       )
 
     assert read_server.session == nil
@@ -1972,9 +2009,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(read_response, ["result", "structuredContent", "planned_slices", Access.at(0), "id"]) == planned_slice.id
 
     assert get_in(read_response, ["result", "structuredContent", "scope"]) == %{
-             "repo" => work_request.repo,
-             "base_branch" => work_request.base_branch
+             "repo" => "https://example.test/repo?token=[REDACTED]",
+             "base_branch" => "feature/[REDACTED]"
            }
+
+    refute inspect(read_response) =~ "ghp_localreadsecret"
+    refute inspect(read_response) =~ "localreadsecretvalue"
+    refute inspect(read_response) =~ "raw-secret-localreadbranch"
 
     board_response =
       Server.handle(
@@ -1992,6 +2033,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(board_response, ["result", "structuredContent", "work_request", "id"]) == work_request.id
     assert get_in(board_response, ["result", "structuredContent", "delivery_board", "slices", Access.at(0), "id"]) == planned_slice.id
+
+    assert get_in(board_response, ["result", "structuredContent", "scope"]) == %{
+             "repo" => "https://example.test/repo?token=[REDACTED]",
+             "base_branch" => "feature/[REDACTED]"
+           }
+
+    refute inspect(board_response) =~ "ghp_localreadsecret"
+    refute inspect(board_response) =~ "localreadsecretvalue"
+    refute inspect(board_response) =~ "raw-secret-localreadbranch"
 
     mutation_response =
       Server.handle(
@@ -2042,6 +2092,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(stdio_response, ["error", "code"]) == -32_001
     assert get_in(stdio_response, ["error", "data", "reason"]) == "local_mcp_required"
 
+    stdio_list_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "stdio-work-request-list-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "list_work_requests", "arguments" => %{}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(stdio_list_response, ["error", "code"]) == -32_001
+    assert get_in(stdio_list_response, ["error", "data", "reason"]) == "local_mcp_required"
+
     implicit_state_response =
       Server.handle(
         %{
@@ -2072,6 +2136,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(remote_response, ["error", "code"]) == -32_001
     assert get_in(remote_response, ["error", "data", "reason"]) == "local_database_required"
     refute inspect(remote_response) =~ "ghp_localreadsecret"
+
+    remote_list_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "remote-work-request-list-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "list_work_requests", "arguments" => %{}}
+        },
+        local_mcp_server(remote_config, "remote-work-request-list-state")
+      )
+
+    assert get_in(remote_list_response, ["error", "code"]) == -32_001
+    assert get_in(remote_list_response, ["error", "data", "reason"]) == "local_database_required"
+    refute inspect(remote_list_response) =~ "ghp_localreadsecret"
   end
 
   test "local operator WorkRequest note tools reject nonlocal and remote database modes", %{repo: repo} do
