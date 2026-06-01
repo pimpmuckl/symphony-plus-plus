@@ -7,6 +7,12 @@ import { defineConfig } from "vite";
 const apiOrigin = process.env.SYMPP_API_ORIGIN || "http://127.0.0.1:19998";
 const dashboardPort = 19999;
 const boardPath = "/sympp/board";
+const operatorProxy = {
+  "/api": apiOrigin,
+  "/mcp": apiOrigin,
+  "/sympp/board/session": apiOrigin,
+  "/sympp/work-packages": apiOrigin,
+};
 
 function redirectBoardRoot(req: IncomingMessage, res: ServerResponse, next: () => void) {
   const url = new URL(req.url || "/", "http://spp.localhost");
@@ -40,18 +46,14 @@ export default defineConfig({
     port: dashboardPort,
     strictPort: true,
     allowedHosts: ["spp.localhost"],
-    proxy: {
-      "/api": apiOrigin,
-      "/mcp": apiOrigin,
-      "/sympp/board/session": apiOrigin,
-      "/sympp/work-packages": apiOrigin,
-    },
+    proxy: operatorProxy,
   },
   preview: {
     host: "127.0.0.1",
     port: dashboardPort,
     strictPort: true,
     allowedHosts: ["spp.localhost"],
+    proxy: operatorProxy,
   },
   resolve: {
     alias: {

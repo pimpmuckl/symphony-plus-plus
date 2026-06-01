@@ -63,22 +63,22 @@ import {
   TOP_PANEL_SLIDE_MS,
   UPDATE_ANIMATION_TTL_MS,
   WORKSPACE_TAB_SLIDE_MS,
+  useCountMotion,
+  useFlipList,
+} from "@/components/dashboard/motion";
+import type { UpdateMotion, UpdateMotionKind } from "@/components/dashboard/motion";
+import {
   clearMotionTimers,
   dashboardPrefersReducedMotion,
   later,
   measureElementHeight,
   nextFrame,
   updateMotionAttributes,
-  useCountMotion,
-  useFlipList,
-} from "@/components/dashboard/motion";
-import type { UpdateMotion, UpdateMotionKind } from "@/components/dashboard/motion";
-import {
-  CardSignalFrame,
-  CardSignal,
-  StateCard,
-} from "@/components/dashboard/state-card";
-import type { SignalTone, StateCardTone } from "@/components/dashboard/state-card";
+} from "@/components/dashboard/motion-utils";
+import { CardSignal } from "@/components/dashboard/card-signal";
+import { CardSignalFrame } from "@/components/dashboard/card-signal-frame";
+import { StateCard } from "@/components/dashboard/state-card";
+import type { SignalTone, StateCardTone } from "@/components/dashboard/state-card-style";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -170,6 +170,7 @@ const OPERATOR_BOOTSTRAP_PARAM = "operator_bootstrap";
 const LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE = "Local operator session needs reconnect. Use Reconnect after Symphony++ is reachable.";
 const PR_SYNC_INTERVAL_MS = 60_000;
 const COMMENT_BODY_MAX_LENGTH = 4000;
+const MAX_UPDATE_MOTION_ENTRIES = 120;
 
 type DashboardRuntimeConfig = {
   apiBase?: string;
@@ -205,6 +206,8 @@ type WorkspaceTabPhase = "idle" | "swapping";
 type CardDetailStage = "loading" | "width" | "height" | "ready";
 type DashboardTheme = "light" | "dark";
 type CommentCardSignal = { open: number; total: number };
+type StatusTileTone = "violet" | "amber" | "emerald";
+type RepoSummaryPlateTone = "requested" | "active" | "implementing" | "finished" | "guidance" | "blocker";
 type UpdateMotionsAction =
   | { type: "clear" }
   | { type: "merge"; motions: Record<string, UpdateMotion> }
@@ -227,6 +230,45 @@ type DashboardConnectionIssue = {
   message: string;
   reconnectableLocalSession: boolean;
 };
+
+const STATUS_TILE_TONES: Record<StatusTileTone, { card: string; icon: string; value: string }> = {
+  violet: {
+    card: "border-violet-300 bg-violet-50/35 dark:border-violet-700/70 dark:bg-violet-950/35",
+    icon: "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-700/70 dark:bg-violet-950/70 dark:text-violet-200",
+    value: "text-violet-700 dark:text-violet-200",
+  },
+  amber: {
+    card: "border-amber-200 bg-amber-50/25 dark:border-amber-700/70 dark:bg-amber-950/30",
+    icon: "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-700/70 dark:bg-amber-950/70 dark:text-amber-200",
+    value: "text-amber-700 dark:text-amber-200",
+  },
+  emerald: {
+    card: "border-emerald-200 bg-emerald-50/25 dark:border-emerald-700/70 dark:bg-emerald-950/30",
+    icon: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/70 dark:bg-emerald-950/70 dark:text-emerald-200",
+    value: "text-emerald-700 dark:text-emerald-200",
+  },
+};
+
+const UPDATE_SIMULATION_CONTROLS: Array<{
+  kind: UpdateMotionKind;
+  label: string;
+  icon: React.ReactNode;
+  tooltip: string;
+}> = [
+  { kind: "guidance", label: "G", icon: <MessageSquareText className="size-3.5" />, tooltip: "Simulate new human guidance" },
+  { kind: "blocker", label: "B", icon: <AlertTriangle className="size-3.5" />, tooltip: "Simulate a fresh blocker" },
+  { kind: "finished", label: "F", icon: <CheckCircle2 className="size-3.5" />, tooltip: "Simulate finished work" },
+  { kind: "changed", label: "U", icon: <RefreshCw className="size-3.5" />, tooltip: "Simulate a card update" },
+];
+
+const REPO_SUMMARY_PLATE_TONES: Record<RepoSummaryPlateTone, string> = {
+  requested: "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700/70 dark:bg-slate-900/70 dark:text-slate-200",
+  active: "border-cyan-200 bg-cyan-50 text-cyan-800 dark:border-cyan-700/70 dark:bg-cyan-950/50 dark:text-cyan-200",
+  implementing: "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-700/70 dark:bg-sky-950/50 dark:text-sky-200",
+  finished: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/70 dark:bg-emerald-950/50 dark:text-emerald-200",
+  guidance: "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-700/70 dark:bg-violet-950/50 dark:text-violet-200",
+  blocker: "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/50 dark:text-amber-200",
+};
 type CardDetailSelection =
   | { kind: "request"; detail: WorkRequestDetail }
   | { kind: "slice"; detail: WorkRequestDetail; slice: PlannedSlice; pkg?: WorkPackageCard }
@@ -243,6 +285,43 @@ type WorkRequestStateMutation = (workRequestId: string, nextState: "completed") 
 type WorkPackageStateAction = "merged" | "merged_and_archive" | "closed_and_archive" | "completed_no_pr";
 type WorkPackageStateMutation = (workPackageId: string, action: WorkPackageStateAction, options?: { noPrEvidence?: string }) => Promise<void>;
 type WorkPackageArchiveMutation = (workPackageId: string) => Promise<void>;
+type RequestDetailUiState = {
+  archiveError: string | null;
+  archivePending: boolean;
+  commentsOpen: boolean;
+  deliverConfirmOpen: boolean;
+  stateError: string | null;
+  statePending: boolean;
+};
+type RequestDetailUiAction =
+  | { type: "archiveError"; error: string | null }
+  | { type: "archivePending"; pending: boolean }
+  | { type: "commentsOpen"; open: boolean }
+  | { type: "deliverConfirmOpen"; open: boolean }
+  | { type: "stateError"; error: string | null }
+  | { type: "statePending"; pending: boolean };
+type PackageDetailUiState = {
+  archiveConfirmOpen: boolean;
+  archiveError: string | null;
+  archivePending: boolean;
+  evidenceDialogOpen: boolean;
+  noPrEvidence: string;
+  pendingStateAction: WorkPackageStateAction | null;
+  stateConfirmOpen: boolean;
+  stateError: string | null;
+  statePending: boolean;
+};
+type PackageDetailUiAction =
+  | { type: "archiveConfirmOpen"; open: boolean }
+  | { type: "archiveError"; error: string | null }
+  | { type: "archivePending"; pending: boolean }
+  | { type: "evidenceDialogOpen"; open: boolean }
+  | { type: "noPrEvidence"; value: string }
+  | { type: "pendingStateAction"; action: WorkPackageStateAction | null }
+  | { type: "stateClosed" }
+  | { type: "stateConfirmOpen"; open: boolean }
+  | { type: "stateError"; error: string | null }
+  | { type: "statePending"; pending: boolean };
 type ScopedHandoffCopy = {
   error: string | null;
   identity: string;
@@ -552,6 +631,8 @@ type WorkstreamRow = {
   unlinked?: boolean;
 };
 
+const EMPTY_WORK_REQUEST_DETAILS: WorkRequestDetail[] = [];
+
 type AppState = {
   dashboard: DashboardPayload | null;
   loading: boolean;
@@ -582,7 +663,9 @@ function createInitialAppState(): AppState {
 }
 
 function appStateReducer(state: AppState, action: AppStateAction): AppState {
-  return { ...state, ...action.state };
+  const entries = Object.entries(action.state) as Array<[keyof AppState, AppState[keyof AppState]]>;
+  const changed = entries.some(([key, value]) => !Object.is(state[key], value));
+  return changed ? { ...state, ...action.state } : state;
 }
 
 type AppDialogState = {
@@ -613,6 +696,69 @@ function appDialogReducer(state: AppDialogState, action: AppDialogAction): AppDi
   }
 }
 
+const initialRequestDetailUiState: RequestDetailUiState = {
+  archiveError: null,
+  archivePending: false,
+  commentsOpen: false,
+  deliverConfirmOpen: false,
+  stateError: null,
+  statePending: false,
+};
+
+function requestDetailUiReducer(state: RequestDetailUiState, action: RequestDetailUiAction): RequestDetailUiState {
+  switch (action.type) {
+    case "archiveError":
+      return state.archiveError === action.error ? state : { ...state, archiveError: action.error };
+    case "archivePending":
+      return state.archivePending === action.pending ? state : { ...state, archivePending: action.pending };
+    case "commentsOpen":
+      return state.commentsOpen === action.open ? state : { ...state, commentsOpen: action.open };
+    case "deliverConfirmOpen":
+      return state.deliverConfirmOpen === action.open ? state : { ...state, deliverConfirmOpen: action.open };
+    case "stateError":
+      return state.stateError === action.error ? state : { ...state, stateError: action.error };
+    case "statePending":
+      return state.statePending === action.pending ? state : { ...state, statePending: action.pending };
+  }
+}
+
+const initialPackageDetailUiState: PackageDetailUiState = {
+  archiveConfirmOpen: false,
+  archiveError: null,
+  archivePending: false,
+  evidenceDialogOpen: false,
+  noPrEvidence: "",
+  pendingStateAction: null,
+  stateConfirmOpen: false,
+  stateError: null,
+  statePending: false,
+};
+
+function packageDetailUiReducer(state: PackageDetailUiState, action: PackageDetailUiAction): PackageDetailUiState {
+  switch (action.type) {
+    case "archiveConfirmOpen":
+      return state.archiveConfirmOpen === action.open ? state : { ...state, archiveConfirmOpen: action.open };
+    case "archiveError":
+      return state.archiveError === action.error ? state : { ...state, archiveError: action.error };
+    case "archivePending":
+      return state.archivePending === action.pending ? state : { ...state, archivePending: action.pending };
+    case "evidenceDialogOpen":
+      return state.evidenceDialogOpen === action.open ? state : { ...state, evidenceDialogOpen: action.open };
+    case "noPrEvidence":
+      return state.noPrEvidence === action.value ? state : { ...state, noPrEvidence: action.value };
+    case "pendingStateAction":
+      return state.pendingStateAction === action.action ? state : { ...state, pendingStateAction: action.action };
+    case "stateClosed":
+      return { ...state, evidenceDialogOpen: false, noPrEvidence: "", pendingStateAction: null, stateConfirmOpen: false };
+    case "stateConfirmOpen":
+      return state.stateConfirmOpen === action.open ? state : { ...state, stateConfirmOpen: action.open };
+    case "stateError":
+      return state.stateError === action.error ? state : { ...state, stateError: action.error };
+    case "statePending":
+      return state.statePending === action.pending ? state : { ...state, statePending: action.pending };
+  }
+}
+
 function updateMotionsReducer(current: Record<string, UpdateMotion>, action: UpdateMotionsAction): Record<string, UpdateMotion> {
   switch (action.type) {
     case "clear":
@@ -636,6 +782,11 @@ function updateMotionsReducer(current: Record<string, UpdateMotion>, action: Upd
 }
 
 export default function App() {
+  const shellProps = useDashboardController();
+  return <DashboardShell {...shellProps} />;
+}
+
+function useDashboardController() {
   const [appState, dispatchApp] = useReducer(appStateReducer, null, createInitialAppState);
   const { dashboard, error, hideEmptyWorkstreams, loading, refreshing, theme, workspaceTab, workstreamLayout } = appState;
   const [dialogState, dispatchDialog] = useReducer(appDialogReducer, initialAppDialogState);
@@ -643,11 +794,17 @@ export default function App() {
   const showUpdateSimulationControls = useMemo(() => shouldShowUpdateSimulationControls(), []);
   const [runtimeConfig, setRuntimeConfig] = useState<DashboardRuntimeConfig | undefined>(() => dashboardRuntimeConfig);
   const dashboardRef = useRef<DashboardPayload | null>(dashboard);
+  const initialDashboardFingerprint = useMemo(() => dashboardContentFingerprint(dashboard), [dashboard]);
+  const dashboardFingerprintRef = useRef(initialDashboardFingerprint);
   const connectionIssueRef = useRef<DashboardConnectionIssue | null>(null);
   const loadInFlightRef = useRef(false);
   const prSyncInFlightRef = useRef(false);
   const lastPrSyncAtRef = useRef(0);
   const setDashboard = useCallback((nextDashboard: DashboardPayload | null) => {
+    const nextFingerprint = dashboardContentFingerprint(nextDashboard);
+    if (dashboardFingerprintRef.current === nextFingerprint) return;
+
+    dashboardFingerprintRef.current = nextFingerprint;
     dispatchApp({ type: "patch", state: { dashboard: nextDashboard } });
   }, []);
   const setLoading = useCallback((nextLoading: boolean) => {
@@ -982,7 +1139,15 @@ export default function App() {
   }, [applyDashboardResponse, setSelectedCardDetail]);
 
   useEffect(() => {
-    void loadDashboard("initial");
+    let cancelled = false;
+
+    queueMicrotask(() => {
+      if (!cancelled) void loadDashboard("initial");
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [loadDashboard]);
 
   useEffect(() => {
@@ -1034,10 +1199,18 @@ export default function App() {
   const archivedRequests = useMemo(() => dashboard?.archived_work_requests?.work_requests ?? [], [dashboard]);
   const requestDetails = useMemo(() => dashboard?.work_request_details ?? [], [dashboard]);
   const linkedWorkPackageIds = useMemo(() => new Set(dashboard?.linked_work_package_ids ?? []), [dashboard]);
+  const requestDetailsByRepo = useMemo(() => requestDetailsByRepoKey(requestDetails), [requestDetails]);
+  const requestLinkedPackageIds = useMemo(() => linkedPackageIdsForDetails(requestDetails), [requestDetails]);
+  const packageSelections = useMemo(() => packageSelectionIndex(requestDetails, packages), [packages, requestDetails]);
   const archiveAfterDays = dashboard?.settings?.work_request_archive_after_days ?? 14;
   const guidanceItems = useMemo(() => allGuidanceItems(dashboard), [dashboard]);
-  const blockerItems = useMemo(() => activeBlockerItems(packages, requestDetails), [packages, requestDetails]);
-  const finishedHighlights = useMemo(() => recentFinishedHighlights(packages, requests, requestDetails), [packages, requests, requestDetails]);
+  const blockerItems = useMemo(() => activeBlockerItems(packages, packageSelections), [packages, packageSelections]);
+  const finishedHighlights = useMemo(() => recentFinishedHighlights(packages, requests, requestDetails, packageSelections), [
+    packages,
+    packageSelections,
+    requests,
+    requestDetails,
+  ]);
   const soloSessions = useMemo(() => dashboard?.solo_sessions?.solo_sessions ?? [], [dashboard]);
   const repos = useMemo(() => repoSummaries(packages, requests, guidanceItems, soloSessions, requestDetails), [
     packages,
@@ -1060,15 +1233,15 @@ export default function App() {
     ready: dashboard !== null,
     soloSessions,
   });
-  const localOperatorReconnectIssue = isLocalOperatorAuthRequiredMessage(error) || connectionIssue?.reconnectableLocalSession === true;
-  const dashboardAlertMessage = error || (localOperatorReconnectIssue ? connectionIssue?.message || LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE : null);
+  const reconnectDashboard = useCallback(() => loadDashboard("reconnect"), [loadDashboard]);
   const workspacePanes = useMemo<Record<WorkspaceTab, React.ReactNode>>(
     () => ({
       workstreams: (
         <WorkstreamsPane
           repos={workstreamRepos}
           hiddenRepoCount={hiddenWorkstreamCount}
-          requestDetails={requestDetails}
+          requestDetailsByRepo={requestDetailsByRepo}
+          requestLinkedPackageIds={requestLinkedPackageIds}
           activeBlockingEdges={dashboard?.active_blocking_edges ?? []}
           onSelectGuidance={setSelectedGuidance}
           onSelectCard={setSelectedCardDetail}
@@ -1083,7 +1256,8 @@ export default function App() {
       copyArchitectHandoff,
       dashboard?.active_blocking_edges,
       hiddenWorkstreamCount,
-      requestDetails,
+      requestDetailsByRepo,
+      requestLinkedPackageIds,
       setSelectedCardDetail,
       setSelectedGuidance,
       soloSessions,
@@ -1092,6 +1266,142 @@ export default function App() {
       workstreamLayout,
     ],
   );
+
+  return {
+    archiveAfterDays,
+    archivedRequests,
+    blockerItems,
+    canMutateComments: canMutateDashboardComments(runtimeConfig),
+    changeWorkPackageState,
+    changeWorkRequestState,
+    connectionIssue,
+    copyArchitectHandoff,
+    createWorkRequest,
+    dashboard,
+    dialogState,
+    error,
+    finishedHighlights,
+    guidanceItems,
+    hiddenWorkstreamCount,
+    hideEmptyWorkstreams,
+    linkedWorkPackageIds,
+    loading,
+    onArchiveWorkPackage: archiveWorkPackage,
+    onArchiveWorkRequest: archiveWorkRequest,
+    onHideEmptyWorkstreamsChange: setHideEmptyWorkstreams,
+    onReconnectDashboard: reconnectDashboard,
+    onRefreshDashboard: loadDashboard,
+    onRestoreWorkRequest: restoreWorkRequest,
+    onResolveComment: resolveComment,
+    onSelectCard: setSelectedCardDetail,
+    onSelectGuidance: setSelectedGuidance,
+    onSetNewRequestOpen: setNewRequestOpen,
+    onSubmitComment: submitComment,
+    onSubmitGuidanceAnswer: submitGuidanceAnswer,
+    onUpdateArchiveAfterDays: updateArchiveAfterDays,
+    onWorkspaceTabChange: setWorkspaceTab,
+    onWorkstreamLayoutChange: setWorkstreamLayout,
+    refreshing,
+    repos,
+    showUpdateSimulationControls,
+    theme,
+    toggleTheme,
+    updateAnimations,
+    workspacePanes,
+    workspaceTab,
+    workstreamLayout,
+  };
+}
+
+function DashboardShell({
+  archiveAfterDays,
+  archivedRequests,
+  blockerItems,
+  canMutateComments,
+  changeWorkPackageState,
+  changeWorkRequestState,
+  connectionIssue,
+  copyArchitectHandoff,
+  createWorkRequest,
+  dashboard,
+  dialogState,
+  error,
+  finishedHighlights,
+  guidanceItems,
+  hiddenWorkstreamCount,
+  hideEmptyWorkstreams,
+  linkedWorkPackageIds,
+  loading,
+  onArchiveWorkPackage,
+  onArchiveWorkRequest,
+  onHideEmptyWorkstreamsChange,
+  onReconnectDashboard,
+  onRefreshDashboard,
+  onResolveComment,
+  onRestoreWorkRequest,
+  onSelectCard,
+  onSelectGuidance,
+  onSetNewRequestOpen,
+  onSubmitComment,
+  onSubmitGuidanceAnswer,
+  onUpdateArchiveAfterDays,
+  onWorkspaceTabChange,
+  onWorkstreamLayoutChange,
+  refreshing,
+  repos,
+  showUpdateSimulationControls,
+  theme,
+  toggleTheme,
+  updateAnimations,
+  workspacePanes,
+  workspaceTab,
+  workstreamLayout,
+}: {
+  archiveAfterDays: number;
+  archivedRequests: WorkRequestCard[];
+  blockerItems: BlockerItem[];
+  canMutateComments: boolean;
+  changeWorkPackageState: WorkPackageStateMutation;
+  changeWorkRequestState: WorkRequestStateMutation;
+  connectionIssue: DashboardConnectionIssue | null;
+  copyArchitectHandoff: CopyArchitectHandoff;
+  createWorkRequest: (form: NewRequestForm) => Promise<WorkRequestDetail>;
+  dashboard: DashboardPayload | null;
+  dialogState: AppDialogState;
+  error: string | null;
+  finishedHighlights: FinishedHighlight[];
+  guidanceItems: GuidanceItem[];
+  hiddenWorkstreamCount: number;
+  hideEmptyWorkstreams: boolean;
+  linkedWorkPackageIds: Set<string>;
+  loading: boolean;
+  onArchiveWorkPackage: WorkPackageArchiveMutation;
+  onArchiveWorkRequest: WorkRequestMutation;
+  onHideEmptyWorkstreamsChange: (hide: boolean) => void;
+  onReconnectDashboard: () => Promise<void>;
+  onRefreshDashboard: () => Promise<void>;
+  onResolveComment: ResolveContextComment;
+  onRestoreWorkRequest: WorkRequestMutation;
+  onSelectCard: (selection: CardDetailSelection | null) => void;
+  onSelectGuidance: (item: GuidanceItem | null) => void;
+  onSetNewRequestOpen: (open: boolean) => void;
+  onSubmitComment: SubmitContextComment;
+  onSubmitGuidanceAnswer: (item: GuidanceItem, submission: GuidanceAnswerSubmission) => Promise<void>;
+  onUpdateArchiveAfterDays: (archiveAfterDays: number) => Promise<void>;
+  onWorkspaceTabChange: (tab: WorkspaceTab) => void;
+  onWorkstreamLayoutChange: (mode: WorkstreamLayoutMode) => void;
+  refreshing: boolean;
+  repos: RepoSummary[];
+  showUpdateSimulationControls: boolean;
+  theme: DashboardTheme;
+  toggleTheme: () => void;
+  updateAnimations: DashboardUpdateAnimations;
+  workspacePanes: Record<WorkspaceTab, React.ReactNode>;
+  workspaceTab: WorkspaceTab;
+  workstreamLayout: WorkstreamLayoutMode;
+}) {
+  const localOperatorReconnectIssue = isLocalOperatorAuthRequiredMessage(error) || connectionIssue?.reconnectableLocalSession === true;
+  const dashboardAlertMessage = error || (localOperatorReconnectIssue ? connectionIssue?.message || LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE : null);
 
   if (loading) {
     return (
@@ -1127,11 +1437,11 @@ export default function App() {
                 archiveAfterDays={archiveAfterDays}
                 hideEmptyWorkstreams={hideEmptyWorkstreams}
                 hiddenWorkstreamCount={hiddenWorkstreamCount}
-                onArchiveAfterDaysChange={updateArchiveAfterDays}
-                onHideEmptyWorkstreamsChange={setHideEmptyWorkstreams}
+                onArchiveAfterDaysChange={onUpdateArchiveAfterDays}
+                onHideEmptyWorkstreamsChange={onHideEmptyWorkstreamsChange}
               />
-              <ArchivedRequestsDialog requests={archivedRequests} onRestoreWorkRequest={restoreWorkRequest} />
-              <Button variant="outline" size="sm" onClick={() => void loadDashboard()} disabled={refreshing} className="button-lift">
+              <ArchivedRequestsDialog requests={archivedRequests} onRestoreWorkRequest={onRestoreWorkRequest} />
+              <Button variant="outline" size="sm" onClick={() => void onRefreshDashboard()} disabled={refreshing} className="button-lift">
                 {refreshing ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                 Refresh
               </Button>
@@ -1140,7 +1450,7 @@ export default function App() {
                 onCopyArchitectHandoff={copyArchitectHandoff}
                 onCreateRequest={createWorkRequest}
                 open={dialogState.newRequestOpen}
-                onOpenChange={setNewRequestOpen}
+                onOpenChange={onSetNewRequestOpen}
                 repos={repos}
               />
             </div>
@@ -1173,7 +1483,7 @@ export default function App() {
                   </div>
                 </div>
                 {localOperatorReconnectIssue ? (
-                  <Button variant="outline" size="sm" onClick={() => void loadDashboard("reconnect")} disabled={refreshing} className="button-lift">
+                  <Button variant="outline" size="sm" onClick={() => void onReconnectDashboard()} disabled={refreshing} className="button-lift">
                     {refreshing ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                     Reconnect
                   </Button>
@@ -1186,12 +1496,12 @@ export default function App() {
             guidanceItems={guidanceItems}
             blockerItems={blockerItems}
             finishedHighlights={finishedHighlights}
-            onSelectGuidance={setSelectedGuidance}
-            onSelectCard={setSelectedCardDetail}
+            onSelectGuidance={onSelectGuidance}
+            onSelectCard={onSelectCard}
             updateAnimations={updateAnimations}
           />
 
-          <Tabs value={workspaceTab} onValueChange={(value) => setWorkspaceTab(value as WorkspaceTab)} className="w-full motion-card">
+          <Tabs value={workspaceTab} onValueChange={(value) => onWorkspaceTabChange(value as WorkspaceTab)} className="w-full motion-card">
             <div className="dashboard-tabs-row">
               <TabsList className="dashboard-tabs-list">
                 <span className="dashboard-tabs-indicator" data-tab={workspaceTab} aria-hidden="true" />
@@ -1202,7 +1512,7 @@ export default function App() {
                   Solo Sessions
                 </TabsTrigger>
               </TabsList>
-              {workspaceTab === "workstreams" ? <WorkstreamLayoutToggle value={workstreamLayout} onChange={setWorkstreamLayout} /> : null}
+              {workspaceTab === "workstreams" ? <WorkstreamLayoutToggle value={workstreamLayout} onChange={onWorkstreamLayoutChange} /> : null}
             </div>
             <WorkspaceTabCarousel activeTab={workspaceTab} paneContent={workspacePanes} />
           </Tabs>
@@ -1211,25 +1521,25 @@ export default function App() {
         <GuidanceDialog
           item={dialogState.selectedGuidance}
           onOpenChange={(open) => {
-            if (!open) setSelectedGuidance(null);
+            if (!open) onSelectGuidance(null);
           }}
-          onSubmitAnswer={submitGuidanceAnswer}
+          onSubmitAnswer={onSubmitGuidanceAnswer}
         />
         <CardDetailDialog
           selection={dialogState.selectedCardDetail}
           onOpenChange={(open) => {
-            if (!open) setSelectedCardDetail(null);
+            if (!open) onSelectCard(null);
           }}
-          onSelectGuidance={setSelectedGuidance}
+          onSelectGuidance={onSelectGuidance}
           onCopyArchitectHandoff={copyArchitectHandoff}
-          onArchiveWorkRequest={archiveWorkRequest}
+          onArchiveWorkRequest={onArchiveWorkRequest}
           onChangeWorkRequestState={changeWorkRequestState}
           onChangeWorkPackageState={changeWorkPackageState}
-          onArchiveWorkPackage={archiveWorkPackage}
+          onArchiveWorkPackage={onArchiveWorkPackage}
           linkedWorkPackageIds={linkedWorkPackageIds}
-          onSubmitComment={submitComment}
-          onResolveComment={resolveComment}
-          canMutateComments={canMutateDashboardComments(runtimeConfig)}
+          onSubmitComment={onSubmitComment}
+          onResolveComment={onResolveComment}
+          canMutateComments={canMutateComments}
         />
       </main>
     </TooltipProvider>
@@ -1254,17 +1564,18 @@ function useDashboardUpdateAnimations({
   soloSessions: SoloSession[];
 }): DashboardUpdateAnimations {
   const previousSnapshotRef = useRef<Map<string, UpdateAnimationEntity> | null>(null);
-  const latestSnapshotRef = useRef<Map<string, UpdateAnimationEntity>>(new Map());
+  const initialLatestSnapshot = useMemo(() => new Map<string, UpdateAnimationEntity>(), []);
+  const latestSnapshotRef = useRef<Map<string, UpdateAnimationEntity>>(initialLatestSnapshot);
   const timersRef = useRef<number[]>([]);
   const tokenRef = useRef(0);
   const [motions, dispatchMotions] = useReducer(updateMotionsReducer, {});
   const [countPulses, setCountPulses] = useState<Record<TopPanelKey, number>>({ blockers: 0, finished: 0, guidance: 0 });
 
   const applyMotions = useCallback((nextMotions: Record<string, UpdateMotion>) => {
-    const motionEntries = Object.entries(nextMotions);
+    const motionEntries = Object.entries(nextMotions).slice(0, MAX_UPDATE_MOTION_ENTRIES);
     if (motionEntries.length === 0) return;
 
-    dispatchMotions({ type: "merge", motions: nextMotions });
+    dispatchMotions({ type: "merge", motions: Object.fromEntries(motionEntries) });
 
     const timer = window.setTimeout(() => {
       dispatchMotions({ type: "settle", entries: motionEntries });
@@ -1281,7 +1592,7 @@ function useDashboardUpdateAnimations({
     [],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!ready) {
       latestSnapshotRef.current = new Map();
       previousSnapshotRef.current = null;
@@ -1597,7 +1908,8 @@ function isBlockedStatus(status?: string | null) {
 function WorkstreamsPane({
   repos,
   hiddenRepoCount,
-  requestDetails,
+  requestDetailsByRepo,
+  requestLinkedPackageIds,
   activeBlockingEdges,
   onSelectGuidance,
   onSelectCard,
@@ -1607,7 +1919,8 @@ function WorkstreamsPane({
 }: {
   repos: RepoSummary[];
   hiddenRepoCount: number;
-  requestDetails: WorkRequestDetail[];
+  requestDetailsByRepo: Map<string, WorkRequestDetail[]>;
+  requestLinkedPackageIds: ReadonlySet<string>;
   activeBlockingEdges: ActiveBlockingEdge[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
@@ -1625,7 +1938,8 @@ function WorkstreamsPane({
         <RepoWorkstream
           key={repoWorkstreamStateKey(repo)}
           repo={repo}
-          requestDetails={requestDetails}
+          requestDetailsByRepo={requestDetailsByRepo}
+          requestLinkedPackageIds={requestLinkedPackageIds}
           activeBlockingEdges={activeBlockingEdges}
           onSelectGuidance={onSelectGuidance}
           onSelectCard={onSelectCard}
@@ -1764,7 +2078,9 @@ function WorkspaceTabCarousel({
             data-pane={current ? "current" : "previous"}
             aria-hidden={!current}
           >
-            <div className="workspace-tab-pane-inner">{paneContent[tab]}</div>
+            <div className="workspace-tab-motion-frame">
+              <div className="workspace-tab-pane-inner">{paneContent[tab]}</div>
+            </div>
           </div>
         ))}
       </div>
@@ -2118,19 +2434,28 @@ function TopPanelCarousel({
   return (
     <>
       <div className="top-panel-measure" ref={measureRef} aria-hidden="true">
-        {activePanel ? <TopPanelContent {...contentProps} panel={activePanel} interactive={false} /> : null}
+        {activePanel ? (
+          <div className="top-panel-motion-frame">
+            <div className="top-panel-pane-inner">
+              <TopPanelContent {...contentProps} panel={activePanel} interactive={false} />
+            </div>
+          </div>
+        ) : null}
       </div>
       <div
         ref={viewportRef}
         className="top-panel-viewport"
         data-phase={state.phase}
         data-resize={resizeMode}
+        data-has-content={panes.length > 0}
         style={viewportStyle}
       >
         {showStaticPrevious ? (
           <div ref={visibleRef} className="top-panel-static" data-motion="hold">
-            <div className="top-panel-pane-inner">
-              {state.previousPanel ? <TopPanelContent {...contentProps} panel={state.previousPanel} /> : null}
+            <div className="top-panel-motion-frame">
+              <div className="top-panel-pane-inner">
+                {state.previousPanel ? <TopPanelContent {...contentProps} panel={state.previousPanel} /> : null}
+              </div>
             </div>
           </div>
         ) : null}
@@ -2144,8 +2469,10 @@ function TopPanelCarousel({
                 data-pane={current ? "current" : "previous"}
                 aria-hidden={!current}
               >
-                <div className="top-panel-pane-inner">
-                  <TopPanelContent {...contentProps} panel={panel} />
+                <div className="top-panel-motion-frame">
+                  <div className="top-panel-pane-inner">
+                    <TopPanelContent {...contentProps} panel={panel} />
+                  </div>
                 </div>
               </div>
             ))}
@@ -2158,8 +2485,10 @@ function TopPanelCarousel({
             data-motion={state.phase === "opening" ? "open" : state.phase === "closing" ? "close" : "idle"}
             data-direction={state.direction}
           >
-            <div className="top-panel-pane-inner">
-              {state.visiblePanel ? <TopPanelContent {...contentProps} panel={state.visiblePanel} /> : null}
+            <div className="top-panel-motion-frame">
+              <div className="top-panel-pane-inner">
+                {state.visiblePanel ? <TopPanelContent {...contentProps} panel={state.visiblePanel} /> : null}
+              </div>
             </div>
           </div>
         ) : null}
@@ -2182,47 +2511,31 @@ function StatusTile({
   title: string;
   value: number;
   icon: React.ReactNode;
-  tone: "violet" | "amber" | "emerald";
+  tone: StatusTileTone;
   openPanel: TopPanelKey | null;
   onToggle: (panel: TopPanelKey | null) => void;
   pulseToken?: number;
 }) {
   const open = openPanel === panel;
   const countMotion = useCountMotion(value, pulseToken);
-  const tones = {
-    violet: {
-      card: "border-violet-300 bg-violet-50/35 dark:border-violet-700/70 dark:bg-violet-950/35",
-      icon: "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-700/70 dark:bg-violet-950/70 dark:text-violet-200",
-      value: "text-violet-700 dark:text-violet-200",
-    },
-    amber: {
-      card: "border-amber-200 bg-amber-50/25 dark:border-amber-700/70 dark:bg-amber-950/30",
-      icon: "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-700/70 dark:bg-amber-950/70 dark:text-amber-200",
-      value: "text-amber-700 dark:text-amber-200",
-    },
-    emerald: {
-      card: "border-emerald-200 bg-emerald-50/25 dark:border-emerald-700/70 dark:bg-emerald-950/30",
-      icon: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/70 dark:bg-emerald-950/70 dark:text-emerald-200",
-      value: "text-emerald-700 dark:text-emerald-200",
-    },
-  };
+  const toneClasses = STATUS_TILE_TONES[tone];
 
   return (
     <button
       type="button"
       className={cn(
         "dashboard-glass-surface status-tile motion-card group flex min-h-[104px] items-center justify-between rounded-lg border bg-card p-5 text-left shadow-sm outline-none transition-all hover:shadow-dashboard focus-visible:ring-2 focus-visible:ring-ring",
-        open && tones[tone].card,
+        open && toneClasses.card,
       )}
       data-count-motion={countMotion.direction}
       onClick={() => onToggle(open ? null : panel)}
       aria-expanded={open}
     >
       <div className="flex items-center gap-4">
-        <div className={cn("flex size-12 items-center justify-center rounded-full border", tones[tone].icon)}>{icon}</div>
+        <div className={cn("flex size-12 items-center justify-center rounded-full border", toneClasses.icon)}>{icon}</div>
         <div>
           <p className="text-base font-semibold">{title}</p>
-          <p className={cn("mt-2 text-3xl font-semibold", tones[tone].value)}>
+          <p className={cn("mt-2 text-3xl font-semibold", toneClasses.value)}>
             <NumberWheel value={value} motion={countMotion} />
           </p>
         </div>
@@ -2251,21 +2564,9 @@ function TopTray({ title, children }: { title: string; children: React.ReactNode
 }
 
 function UpdateSimulationControls({ updateAnimations }: { updateAnimations: DashboardUpdateAnimations }) {
-  const controls: Array<{
-    kind: UpdateMotionKind;
-    label: string;
-    icon: React.ReactNode;
-    tooltip: string;
-  }> = [
-    { kind: "guidance", label: "G", icon: <MessageSquareText className="size-3.5" />, tooltip: "Simulate new human guidance" },
-    { kind: "blocker", label: "B", icon: <AlertTriangle className="size-3.5" />, tooltip: "Simulate a fresh blocker" },
-    { kind: "finished", label: "F", icon: <CheckCircle2 className="size-3.5" />, tooltip: "Simulate finished work" },
-    { kind: "changed", label: "U", icon: <RefreshCw className="size-3.5" />, tooltip: "Simulate a card update" },
-  ];
-
   return (
     <div className="update-sim-controls" aria-label="Simulate dashboard update animations">
-      {controls.map((control) => (
+      {UPDATE_SIMULATION_CONTROLS.map((control) => (
         <Tooltip key={control.kind}>
           <TooltipTrigger asChild>
             <button
@@ -2508,7 +2809,8 @@ function FinishedHighlightCard({
 
 function RepoWorkstream({
   repo,
-  requestDetails,
+  requestDetailsByRepo,
+  requestLinkedPackageIds,
   activeBlockingEdges,
   onSelectGuidance,
   onSelectCard,
@@ -2517,7 +2819,8 @@ function RepoWorkstream({
   updateAnimations,
 }: {
   repo: RepoSummary;
-  requestDetails: WorkRequestDetail[];
+  requestDetailsByRepo: Map<string, WorkRequestDetail[]>;
+  requestLinkedPackageIds: ReadonlySet<string>;
   activeBlockingEdges: ActiveBlockingEdge[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
@@ -2527,13 +2830,10 @@ function RepoWorkstream({
 }) {
   const stateKey = repoWorkstreamStateKey(repo);
   const contentId = useId();
-  const repoDetails = useMemo(
-    () => requestDetails.filter((detail) => repoIdentityKey(detail.work_request) === repo.repoKey),
-    [repo.repoKey, requestDetails],
-  );
+  const repoDetails = requestDetailsByRepo.get(repo.repoKey) ?? EMPTY_WORK_REQUEST_DETAILS;
   const unlinkedPackages = useMemo(
-    () => repo.packages.filter((pkg) => !packageLinkedToRequest(pkg, requestDetails)),
-    [repo.packages, requestDetails],
+    () => repo.packages.filter((pkg) => !requestLinkedPackageIds.has(pkg.id)),
+    [repo.packages, requestLinkedPackageIds],
   );
   const [expandedFinishedRequests, setExpandedFinishedRequests] = useState(() => readStoredFinishedRequestChildren());
   const setFinishedRequestChildrenOpen = useCallback((workRequestId: string, open: boolean) => {
@@ -2589,7 +2889,7 @@ function RepoWorkstream({
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <Card className="dashboard-glass-surface motion-card overflow-hidden">
+      <Card className="dashboard-glass-surface workstream-repo-card motion-card overflow-hidden">
         <CardHeader className="dashboard-panel-header relative space-y-0 overflow-hidden border-b">
           <button
             type="button"
@@ -2633,6 +2933,7 @@ function RepoWorkstream({
               finishedRequestScopeKey={stateKey}
               onSetFinishedRequestChildrenOpen={setFinishedRequestChildrenOpen}
               updateAnimations={updateAnimations}
+              measureKey={`${stateKey}:${open ? "open" : "closed"}:${openMotion ? "opening" : "settled"}`}
             />
           </CardContent>
         </CollapsibleContent>
@@ -2671,7 +2972,8 @@ function RepoSummaryStrip({ repo, categoryCounts }: { repo: RepoSummary; categor
 
 function WorkstreamLayoutToggle({ value, onChange }: { value: WorkstreamLayoutMode; onChange: (mode: WorkstreamLayoutMode) => void }) {
   return (
-    <div className="workstream-layout-toggle" role="group" aria-label="Workstream layout">
+    <fieldset className="workstream-layout-toggle">
+      <legend className="sr-only">Workstream layout</legend>
       {[
         { value: "jira", label: "Jira" },
         { value: "aligned", label: "Aligned" },
@@ -2686,7 +2988,7 @@ function WorkstreamLayoutToggle({ value, onChange }: { value: WorkstreamLayoutMo
           {option.label}
         </button>
       ))}
-    </div>
+    </fieldset>
   );
 }
 
@@ -2980,20 +3282,12 @@ function RepoSummaryPlate({
 }: {
   label: string;
   value: number;
-  tone: "requested" | "active" | "implementing" | "finished" | "guidance" | "blocker";
+  tone: RepoSummaryPlateTone;
 }) {
   const countMotion = useCountMotion(value);
-  const tones: Record<typeof tone, string> = {
-    requested: "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700/70 dark:bg-slate-900/70 dark:text-slate-200",
-    active: "border-cyan-200 bg-cyan-50 text-cyan-800 dark:border-cyan-700/70 dark:bg-cyan-950/50 dark:text-cyan-200",
-    implementing: "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-700/70 dark:bg-sky-950/50 dark:text-sky-200",
-    finished: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/70 dark:bg-emerald-950/50 dark:text-emerald-200",
-    guidance: "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-700/70 dark:bg-violet-950/50 dark:text-violet-200",
-    blocker: "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/50 dark:text-amber-200",
-  };
 
   return (
-    <div className={cn("inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium", tones[tone])}>
+    <div className={cn("inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium", REPO_SUMMARY_PLATE_TONES[tone])}>
       <span className="font-semibold tabular-nums">
         <NumberWheel value={value} motion={countMotion} compact />
       </span>
@@ -3015,6 +3309,7 @@ function WorkstreamBoard({
   finishedRequestScopeKey,
   onSetFinishedRequestChildrenOpen,
   updateAnimations,
+  measureKey,
 }: {
   repoDetails: WorkRequestDetail[];
   packages: WorkPackageCard[];
@@ -3028,6 +3323,7 @@ function WorkstreamBoard({
   finishedRequestScopeKey: string;
   onSetFinishedRequestChildrenOpen: (workRequestId: string, open: boolean) => void;
   updateAnimations: DashboardUpdateAnimations;
+  measureKey: string;
 }) {
   const shellRef = useRef<HTMLDivElement | null>(null);
   const boardRef = useRef<HTMLDivElement | null>(null);
@@ -3051,8 +3347,8 @@ function WorkstreamBoard({
     [expandedFinishedRequests, finishedRequestScopeKey, sliceEntries],
   );
   const visibleWireDetails = useMemo(() => detailsWithVisibleSlices(sortedDetails, visibleSliceEntries), [sortedDetails, visibleSliceEntries]);
-  const active = useMemo(() => sortSliceEntries(visibleSliceEntries), [visibleSliceEntries]);
-  const packageEntries = useMemo(() => sortSliceEntries(visibleSliceEntries.filter((entry) => entry.pkg)), [visibleSliceEntries]);
+  const active = visibleSliceEntries;
+  const packageEntries = useMemo(() => visibleSliceEntries.filter((entry) => entry.pkg), [visibleSliceEntries]);
   const implementing = useMemo(() => packageEntries.filter((entry) => sliceLane(entry.slice, entry.pkg) !== "finished"), [packageEntries]);
   const finished = useMemo(() => packageEntries.filter((entry) => sliceLane(entry.slice, entry.pkg) === "finished"), [packageEntries]);
   const sortedUnlinkedPackages = useMemo(() => sortPackages(unlinkedPackages), [unlinkedPackages]);
@@ -3076,8 +3372,8 @@ function WorkstreamBoard({
     rowTemplate,
     slotTemplates: alignedSlotTemplates,
   } = useAlignedBoardLayout(boardRef, alignedMeasurementRows, layoutMode);
-  const wires = useMemo(() => workstreamWires(visibleWireDetails, packages, activeBlockingEdges), [activeBlockingEdges, visibleWireDetails, packages]);
-  const { paths: wirePaths, size: wireSize } = useBoardWirePaths(boardRef, wires, layoutMode);
+  const wires = useMemo(() => workstreamWires(visibleWireDetails, active, packages, activeBlockingEdges), [active, activeBlockingEdges, visibleWireDetails, packages]);
+  const { paths: wirePaths, size: wireSize } = useBoardWirePaths(boardRef, wires, `${layoutMode}:${measureKey}`);
   const layoutMotion = useBoardLayoutMotion(shellRef, boardRef, layoutMode);
 
   return (
@@ -4466,14 +4762,20 @@ function CardDetailDialog({
   }, [soloSessionId]);
 
   useEffect(() => {
-    if (!selection) {
-      setDetailStage({ key: "closed", stage: "ready" });
-      return;
-    }
+    let cancelled = false;
 
-    setDetailStage((current) =>
-      current.key === selectionIdentity ? current : { key: selectionIdentity, stage: prefersReducedDetailMotion ? "ready" : "loading" },
-    );
+    queueMicrotask(() => {
+      if (cancelled) return;
+
+      setDetailStage((current) => {
+        if (!selection) return current.key === "closed" ? current : { key: "closed", stage: "ready" };
+        return current.key === selectionIdentity ? current : { key: selectionIdentity, stage: prefersReducedDetailMotion ? "ready" : "loading" };
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [prefersReducedDetailMotion, selection, selectionIdentity]);
 
   const detailReady = cardDetailContentReady(selection, state);
@@ -4481,7 +4783,15 @@ function CardDetailDialog({
   useEffect(() => {
     if (!selection || !prefersReducedDetailMotion || detailStage.key !== selectionIdentity || detailStage.stage === "ready") return;
 
-    setDetailStage((current) => (current.key === selectionIdentity ? { ...current, stage: "ready" } : current));
+    let cancelled = false;
+
+    queueMicrotask(() => {
+      if (!cancelled) setDetailStage((current) => (current.key === selectionIdentity ? { ...current, stage: "ready" } : current));
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [detailStage, prefersReducedDetailMotion, selection, selectionIdentity]);
 
   useEffect(() => {
@@ -4529,7 +4839,7 @@ function CardDetailDialog({
 
   return (
     <Dialog open={Boolean(selection)} onOpenChange={onOpenChange}>
-      <DialogContent className="dashboard-dialog-content card-detail-dialog" data-detail-stage={activeDetailStage}>
+      <DialogContent className="dashboard-dialog-content card-detail-dialog" data-detail-stage={activeDetailStage} resizeKey={`${activeDetailStage}:${detailMotionKey}`}>
         <NaturalDetailBody motionKey={detailMotionKey}>
           {selection && showStagedLoadingHeader ? <CardDetailLoadingContent selection={selection} stage={activeDetailStage} /> : null}
           {selection?.kind === "request" && !showStagedLoadingHeader ? (
@@ -4586,7 +4896,6 @@ function useDashboardReducedMotionPreference() {
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
     const updatePreference = () => setPrefersReducedMotion(query.matches);
 
-    updatePreference();
     query.addEventListener("change", updatePreference);
     return () => query.removeEventListener("change", updatePreference);
   }, []);
@@ -4693,9 +5002,15 @@ function DetailLoadingHeader({ title, eyebrow, badge, stage }: { title: string; 
         <DialogDescription className="detail-loading-eyebrow">{eyebrow}</DialogDescription>
       </div>
       <div className="detail-loading-actions">
-        <span className="detail-loading-progress" data-progress-state={stage === "width" ? "exiting" : "active"} aria-label="Loading detail" role="status">
+        <output
+          className="detail-loading-progress"
+          data-progress-state={stage === "width" ? "exiting" : "active"}
+          aria-label="Loading detail"
+          aria-live="polite"
+          aria-atomic="true"
+        >
           <Loader2 className="size-3.5" aria-hidden="true" />
-        </span>
+        </output>
         <div className="shrink-0">{badge}</div>
       </div>
     </DialogHeader>
@@ -4786,12 +5101,10 @@ function RequestDetailContent({
 }) {
   const request = detail.work_request;
   const [requestComments, setRequestComments] = useSyncedComments(detail.comments || []);
-  const [commentsOpen, setCommentsOpen] = useState(false);
-  const [archivePending, setArchivePending] = useState(false);
-  const [archiveError, setArchiveError] = useState<string | null>(null);
-  const [deliverConfirmOpen, setDeliverConfirmOpen] = useState(false);
-  const [statePending, setStatePending] = useState(false);
-  const [stateError, setStateError] = useState<string | null>(null);
+  const [uiState, dispatchUiState] = useReducer(requestDetailUiReducer, initialRequestDetailUiState);
+  const { archiveError, archivePending, commentsOpen, deliverConfirmOpen, stateError, statePending } = uiState;
+  const setCommentsOpen = useCallback((open: boolean) => dispatchUiState({ type: "commentsOpen", open }), []);
+  const setDeliverConfirmOpen = useCallback((open: boolean) => dispatchUiState({ type: "deliverConfirmOpen", open }), []);
   const commentTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const operational = request.operational_state || null;
   const detailFinished = [operational?.key, request.status].some(isFinishedBoardStatus);
@@ -4827,32 +5140,32 @@ function RequestDetailContent({
   const openCommentComposer = useCallback(() => {
     setCommentsOpen(true);
     window.setTimeout(() => commentTextareaRef.current?.focus(), 80);
-  }, []);
+  }, [setCommentsOpen]);
 
   async function archiveRequest() {
-    setArchivePending(true);
-    setArchiveError(null);
+    dispatchUiState({ type: "archivePending", pending: true });
+    dispatchUiState({ type: "archiveError", error: null });
 
     try {
       await onArchiveWorkRequest(request.id);
     } catch (caught) {
-      setArchiveError(caught instanceof Error ? caught.message : "WorkRequest was not archived");
+      dispatchUiState({ type: "archiveError", error: caught instanceof Error ? caught.message : "WorkRequest was not archived" });
     } finally {
-      setArchivePending(false);
+      dispatchUiState({ type: "archivePending", pending: false });
     }
   }
 
   async function markDelivered() {
-    setStatePending(true);
-    setStateError(null);
+    dispatchUiState({ type: "statePending", pending: true });
+    dispatchUiState({ type: "stateError", error: null });
 
     try {
       await onChangeWorkRequestState(request.id, "completed");
       setDeliverConfirmOpen(false);
     } catch (caught) {
-      setStateError(caught instanceof Error ? caught.message : "WorkRequest state was not changed");
+      dispatchUiState({ type: "stateError", error: caught instanceof Error ? caught.message : "WorkRequest state was not changed" });
     } finally {
-      setStatePending(false);
+      dispatchUiState({ type: "statePending", pending: false });
     }
   }
 
@@ -4863,7 +5176,7 @@ function RequestDetailContent({
         eyebrow={`${repoDisplayName(request)} / ${request.base_branch || "main"} / ${request.work_type || "feature"}`}
         badge={<Badge variant={operationalBadgeVariant(operational, request.status)}>{operationalLabel(operational, request.status)}</Badge>}
       />
-      <div className="grid gap-4">
+      <div className="detail-modal-reveal-body grid gap-4">
         {handoffEligible || canMutateComments ? (
           <div className={cn("handoff-action-panel", handoffHasOpenQuestions && "handoff-action-panel-muted")} data-guidance-section style={{ animationDelay: "58ms" }}>
             <div className="handoff-action-row">
@@ -5058,7 +5371,7 @@ function SliceDetailContent({
         eyebrow={`${repoDisplayName(detail.work_request)} / ${detail.work_request.title || detail.work_request.id}`}
         badge={<Badge variant={operationalBadgeVariant(operational, status)}>{operationalLabel(operational, status)}</Badge>}
       />
-      <div className="grid gap-4">
+      <div className="detail-modal-reveal-body grid gap-4">
         <DetailStatGrid
           stats={[
             { label: "State", value: operationalLabel(operational, status) },
@@ -5147,8 +5460,22 @@ function PackageDetailContent({
   canMutateComments: boolean;
 }) {
   const [packageComments, setPackageComments] = useSyncedComments(detailPayload?.comments || []);
-  const [statePending, setStatePending] = useState(false);
-  const [stateError, setStateError] = useState<string | null>(null);
+  const [uiState, dispatchUiState] = useReducer(packageDetailUiReducer, initialPackageDetailUiState);
+  const {
+    archiveConfirmOpen,
+    archiveError,
+    archivePending,
+    evidenceDialogOpen,
+    noPrEvidence,
+    pendingStateAction,
+    stateConfirmOpen,
+    stateError,
+    statePending,
+  } = uiState;
+  const setArchiveConfirmOpen = useCallback((open: boolean) => dispatchUiState({ type: "archiveConfirmOpen", open }), []);
+  const setEvidenceDialogOpen = useCallback((open: boolean) => dispatchUiState({ type: "evidenceDialogOpen", open }), []);
+  const setNoPrEvidence = useCallback((value: string) => dispatchUiState({ type: "noPrEvidence", value }), []);
+  const setStateConfirmOpen = useCallback((open: boolean) => dispatchUiState({ type: "stateConfirmOpen", open }), []);
   const pkg = { ...selection.pkg, ...(detailPayload?.work_package || {}) } as WorkPackageCard & {
     branch_pattern?: string | null;
     product_description?: string | null;
@@ -5180,17 +5507,9 @@ function PackageDetailContent({
           { value: "closed_and_archive", label: "Closed + Archive" },
         ]
       : [];
-  const [stateConfirmOpen, setStateConfirmOpen] = useState(false);
-  const [pendingStateAction, setPendingStateAction] = useState<WorkPackageStateAction | null>(null);
-  const [evidenceDialogOpen, setEvidenceDialogOpen] = useState(false);
-  const [noPrEvidence, setNoPrEvidence] = useState("");
-  const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
-  const [archivePending, setArchivePending] = useState(false);
-  const [archiveError, setArchiveError] = useState<string | null>(null);
-
   function selectStateAction(action: string) {
     const nextAction = action as WorkPackageStateAction;
-    setStateError(null);
+    dispatchUiState({ type: "stateError", error: null });
     setNoPrEvidence("");
 
     if (nextAction === "completed_no_pr") {
@@ -5198,38 +5517,35 @@ function PackageDetailContent({
       return;
     }
 
-    setPendingStateAction(nextAction);
+    dispatchUiState({ type: "pendingStateAction", action: nextAction });
     setStateConfirmOpen(true);
   }
 
   async function changePackageState(action: WorkPackageStateAction, options?: { noPrEvidence?: string }) {
-    setStatePending(true);
-    setStateError(null);
+    dispatchUiState({ type: "statePending", pending: true });
+    dispatchUiState({ type: "stateError", error: null });
 
     try {
       await onChangeWorkPackageState(pkg.id, action, options);
-      setStateConfirmOpen(false);
-      setEvidenceDialogOpen(false);
-      setPendingStateAction(null);
-      setNoPrEvidence("");
+      dispatchUiState({ type: "stateClosed" });
     } catch (caught) {
-      setStateError(caught instanceof Error ? caught.message : "WorkPackage state was not changed");
+      dispatchUiState({ type: "stateError", error: caught instanceof Error ? caught.message : "WorkPackage state was not changed" });
     } finally {
-      setStatePending(false);
+      dispatchUiState({ type: "statePending", pending: false });
     }
   }
 
   async function archivePackage() {
-    setArchivePending(true);
-    setArchiveError(null);
+    dispatchUiState({ type: "archivePending", pending: true });
+    dispatchUiState({ type: "archiveError", error: null });
 
     try {
       await onArchiveWorkPackage(pkg.id);
       setArchiveConfirmOpen(false);
     } catch (caught) {
-      setArchiveError(caught instanceof Error ? caught.message : "WorkPackage was not archived");
+      dispatchUiState({ type: "archiveError", error: caught instanceof Error ? caught.message : "WorkPackage was not archived" });
     } finally {
-      setArchivePending(false);
+      dispatchUiState({ type: "archivePending", pending: false });
     }
   }
 
@@ -5240,7 +5556,7 @@ function PackageDetailContent({
         eyebrow={`${repoDisplayName(pkg)} / ${pkg.base_branch || "main"} / ${pkg.kind || "work package"}`}
         badge={<Badge variant={operationalBadgeVariant(operational, pkg.status)}>{operationalLabel(operational, pkg.status)}</Badge>}
       />
-      <div className="grid gap-4">
+      <div className="detail-modal-reveal-body grid gap-4">
         <DetailStatGrid
           stats={[
             { label: "State", value: operationalLabel(operational, pkg.status) },
@@ -5348,7 +5664,7 @@ function PackageDetailContent({
         open={stateConfirmOpen}
         onOpenChange={(open) => {
           setStateConfirmOpen(open);
-          if (!open) setPendingStateAction(null);
+          if (!open) dispatchUiState({ type: "pendingStateAction", action: null });
         }}
         title={pendingStateAction === "closed_and_archive" ? "Close and Archive WorkPackage?" : "Merge WorkPackage?"}
         description={
@@ -5597,7 +5913,7 @@ function SoloSessionDetailContent({
         eyebrow={`${repoDisplayName(detailSession)} / ${detailSession.base_branch || "main"} / ${detailSession.caller_id || "solo"}`}
         badge={<Badge variant={soloSessionStatusVariant(detailSession.status)}>{formatStatus(detailSession.status)}</Badge>}
       />
-      <div className="grid gap-4">
+      <div className="detail-modal-reveal-body grid gap-4">
         <DetailStatGrid
           stats={[
             { label: "Status", value: formatStatus(detailSession.status) },
@@ -6127,6 +6443,14 @@ function EmptyPanel({ title, compact = false }: { title: string; compact?: boole
   );
 }
 
+function dashboardContentFingerprint(payload: DashboardPayload | null) {
+  if (!payload) return "null";
+
+  const content = { ...payload } as Record<string, unknown>;
+  delete content.generated_at;
+  return JSON.stringify(content);
+}
+
 type RepoSummary = {
   repoKey: string;
   repo: string;
@@ -6189,10 +6513,10 @@ function clarificationGuidanceItem(detail: WorkRequestDetail, question: Clarific
   };
 }
 
-function activeBlockerItems(packages: WorkPackageCard[], details: WorkRequestDetail[] = []): BlockerItem[] {
+function activeBlockerItems(packages: WorkPackageCard[], packageSelections: ReadonlyMap<string, CardDetailSelection> = new Map()): BlockerItem[] {
   return packages.reduce<BlockerItem[]>((items, pkg) => {
     const operational = pkg.operational_state || null;
-    if (operational?.key === "blocked" || pkg.status === "blocked" || (pkg.active_blocker_count || 0) > 0) {
+    if (packageHasActiveBlocker(pkg)) {
       items.push({
         id: pkg.id,
         title: pkg.title || pkg.id,
@@ -6204,7 +6528,7 @@ function activeBlockerItems(packages: WorkPackageCard[], details: WorkRequestDet
           (pkg.status === "blocked"
             ? "This work package is blocked and needs another condition or dependency cleared before it can move."
             : "This work package has active blockers attached to its execution path."),
-        selection: packageBoardSelection(pkg, details),
+        selection: packageSelections.get(pkg.id) ?? { kind: "package", pkg },
       });
     }
 
@@ -6216,6 +6540,7 @@ function recentFinishedHighlights(
   packages: WorkPackageCard[],
   requests: WorkRequestCard[],
   details: WorkRequestDetail[],
+  packageSelections: ReadonlyMap<string, CardDetailSelection> = new Map(),
 ): FinishedHighlight[] {
   const detailByRequestId = new Map(details.map((detail) => [detail.work_request.id, detail]));
   const packageById = new Map(packages.map((pkg) => [pkg.id, pkg]));
@@ -6230,7 +6555,7 @@ function recentFinishedHighlights(
         kind: "Work Package",
         state: operationalLabel(operational, pkg.status),
         at: pkg.latest_progress_at,
-        selection: packageBoardSelection(pkg, details),
+        selection: packageSelections.get(pkg.id) ?? { kind: "package", pkg },
       });
     }
 
@@ -6283,18 +6608,6 @@ function recentFinishedHighlights(
     const right = b.at ? Date.parse(b.at) : 0;
     return right - left;
   });
-}
-
-function packageBoardSelection(pkg: WorkPackageCard, details: WorkRequestDetail[]): CardDetailSelection {
-  for (const detail of details) {
-    for (const slice of detail.planned_slices || []) {
-      if (slice.work_package_id === pkg.id) {
-        return sliceLane(slice, pkg) === "slices" ? { kind: "slice", detail, slice, pkg } : { kind: "package", pkg, detail, slice };
-      }
-    }
-  }
-
-  return { kind: "package", pkg };
 }
 
 function repoSummaries(
@@ -6353,21 +6666,28 @@ function repoSummaries(
   });
 
   repos.forEach((summary) => {
-    summary.requested = summary.requests.filter((request) => workRequestLane(request) === "requested").length;
-    summary.active =
-      summary.requests.filter((request) => workRequestLane(request) === "slices").length +
-      summary.packages.filter((pkg) => packageLane(pkg) === "slices").length;
-    summary.implementing = summary.packages.filter((pkg) => packageLane(pkg) === "implementing").length;
-    summary.finished = summary.packages.filter((pkg) => packageLane(pkg) === "finished").length;
-    summary.blockerCount = activeBlockerItems(summary.packages).length;
-    details.forEach((detail) => {
-      if (repoIdentityKey(detail.work_request) !== summary.repoKey) return;
-      (detail.planned_slices || []).forEach((slice) => {
-        const lane = sliceLane(slice, slice.work_package_id ? packageById.get(slice.work_package_id) : undefined);
-        if (lane === "slices") summary.active += 1;
-        if (lane === "implementing") summary.implementing += 1;
-        if (lane === "finished") summary.finished += 1;
-      });
+    summary.requests.forEach((request) => {
+      const lane = workRequestLane(request);
+      if (lane === "requested") summary.requested += 1;
+      if (lane === "slices") summary.active += 1;
+    });
+
+    summary.packages.forEach((pkg) => {
+      const lane = packageLane(pkg);
+      if (lane === "slices") summary.active += 1;
+      if (lane === "implementing") summary.implementing += 1;
+      if (lane === "finished") summary.finished += 1;
+      if (packageHasActiveBlocker(pkg)) summary.blockerCount += 1;
+    });
+  });
+
+  details.forEach((detail) => {
+    const summary = ensure(detail.work_request);
+    (detail.planned_slices || []).forEach((slice) => {
+      const lane = sliceLane(slice, slice.work_package_id ? packageById.get(slice.work_package_id) : undefined);
+      if (lane === "slices") summary.active += 1;
+      if (lane === "implementing") summary.implementing += 1;
+      if (lane === "finished") summary.finished += 1;
     });
   });
 
@@ -6382,8 +6702,46 @@ function guidanceAnswerUrl(item: GuidanceItem) {
   return operatorApiUrl(`/work-requests/${encodeURIComponent(item.workRequestId)}/questions/${encodeURIComponent(item.id)}/answer`);
 }
 
-function packageLinkedToRequest(pkg: WorkPackageCard, details: WorkRequestDetail[]) {
-  return details.some((detail) => (detail.planned_slices || []).some((slice) => slice.work_package_id === pkg.id));
+function requestDetailsByRepoKey(details: WorkRequestDetail[]) {
+  return details.reduce<Map<string, WorkRequestDetail[]>>((byRepo, detail) => {
+    const repoKey = repoIdentityKey(detail.work_request);
+    const repoDetails = byRepo.get(repoKey) || [];
+    repoDetails.push(detail);
+    byRepo.set(repoKey, repoDetails);
+    return byRepo;
+  }, new Map());
+}
+
+function linkedPackageIdsForDetails(details: WorkRequestDetail[]) {
+  return details.reduce<Set<string>>((ids, detail) => {
+    (detail.planned_slices || []).forEach((slice) => {
+      if (slice.work_package_id) ids.add(slice.work_package_id);
+    });
+    return ids;
+  }, new Set());
+}
+
+function packageSelectionIndex(details: WorkRequestDetail[], packages: WorkPackageCard[]) {
+  const packageById = new Map(packages.map((pkg) => [pkg.id, pkg]));
+  const selections = new Map<string, CardDetailSelection>();
+
+  details.forEach((detail) => {
+    (detail.planned_slices || []).forEach((slice) => {
+      if (!slice.work_package_id || selections.has(slice.work_package_id)) return;
+
+      const pkg = packageById.get(slice.work_package_id);
+      if (!pkg) return;
+
+      selections.set(slice.work_package_id, sliceLane(slice, pkg) === "slices" ? { kind: "slice", detail, slice, pkg } : { kind: "package", pkg, detail, slice });
+    });
+  });
+
+  return selections;
+}
+
+function packageHasActiveBlocker(pkg: WorkPackageCard) {
+  const operational = pkg.operational_state || null;
+  return operational?.key === "blocked" || pkg.status === "blocked" || (pkg.active_blocker_count || 0) > 0;
 }
 
 function sortWorkRequestDetails(details: WorkRequestDetail[]) {
@@ -6472,10 +6830,16 @@ function workstreamRows(
   implementingPackages: WorkPackageCard[],
   finishedPackages: WorkPackageCard[],
 ): WorkstreamRow[] {
+  const entriesByRequestIndex = sliceEntries.reduce<Map<number, SliceEntry[]>>((byIndex, entry) => {
+    const entries = byIndex.get(entry.requestIndex) || [];
+    entries.push(entry);
+    byIndex.set(entry.requestIndex, entries);
+    return byIndex;
+  }, new Map());
+
   const rows: WorkstreamRow[] = details.map((detail, index) => {
-    const entries = sliceEntries.filter((entry) => entry.requestIndex === index);
-    const active = sortSliceEntries(entries);
-    const packageEntries = sortSliceEntries(entries.filter((entry) => entry.pkg));
+    const active = entriesByRequestIndex.get(index) || [];
+    const packageEntries = active.filter((entry) => entry.pkg);
     const implementing = packageEntries.filter((entry) => sliceLane(entry.slice, entry.pkg) !== "finished");
     const finished = packageEntries.filter((entry) => sliceLane(entry.slice, entry.pkg) === "finished");
 
@@ -6550,38 +6914,45 @@ function workstreamRowKey(row: WorkstreamRow, index: number) {
   return row.unlinked ? "unlinked-row" : `row:${index}`;
 }
 
-function workstreamWires(details: WorkRequestDetail[], packages: WorkPackageCard[], activeBlockingEdges: ActiveBlockingEdge[] = []): BoardWire[] {
+function workstreamWires(
+  details: WorkRequestDetail[],
+  sliceEntries: SliceEntry[],
+  packages: WorkPackageCard[],
+  activeBlockingEdges: ActiveBlockingEdge[] = [],
+): BoardWire[] {
   const packageMap = new Map(packages.map((pkg) => [pkg.id, pkg]));
-  const progressWires = details.flatMap((detail) => {
+  const sourceToneByRequestId = new Map<string, StateCardTone>();
+  details.forEach((detail) => {
+    sourceToneByRequestId.set(detail.work_request.id, requestStateCardTone(detail));
+  });
+
+  const progressWires = sliceEntries.flatMap((entry, index) => {
+    const { detail, slice: target } = entry;
     const source = requestNodeId(detail);
-    const sourceTone = requestStateCardTone(detail);
-    const slices = sortPlannedSlices(detail.planned_slices || []);
+    const sourceTone = sourceToneByRequestId.get(detail.work_request.id) || requestStateCardTone(detail);
+    const pkg = packageMap.get(target.work_package_id || "");
+    const targetNode = sliceNodeId(target);
+    const targetTone = sliceCardTone(target, pkg, "slices");
+    const wires: BoardWire[] = [{
+      id: `${source}->${targetNode}:${index}:slice`,
+      from: source,
+      to: targetNode,
+      sourceTone,
+      tone: targetTone,
+    }];
 
-    return slices.flatMap((target, index) => {
-      const pkg = packageMap.get(target.work_package_id || "");
-      const targetNode = sliceNodeId(target);
-      const targetTone = sliceCardTone(target, pkg, "slices");
-      const wires: BoardWire[] = [{
-        id: `${source}->${targetNode}:${index}:slice`,
-        from: source,
-        to: targetNode,
-        sourceTone,
-        tone: targetTone,
-      }];
+    if (pkg) {
+      const packageTargetNode = packageNodeId(pkg);
+      wires.push({
+        id: `${targetNode}->${packageTargetNode}:${index}:package`,
+        from: targetNode,
+        to: packageTargetNode,
+        sourceTone: targetTone,
+        tone: packageCardTone(pkg, sliceLane(target, pkg)),
+      });
+    }
 
-      if (pkg) {
-        const packageTargetNode = packageNodeId(pkg);
-        wires.push({
-          id: `${targetNode}->${packageTargetNode}:${index}:package`,
-          from: targetNode,
-          to: packageTargetNode,
-          sourceTone: targetTone,
-          tone: packageCardTone(pkg, sliceLane(target, pkg)),
-        });
-      }
-
-      return wires;
-    });
+    return wires;
   });
 
   return [...progressWires, ...activeBlockingWires(details, packages, activeBlockingEdges)];

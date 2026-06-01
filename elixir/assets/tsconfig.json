@@ -2,7 +2,7 @@
   "compilerOptions": {
     "composite": true,
     "jsx": "react-jsx",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "noEmit": true,
@@ -10,7 +10,7 @@
       "@/*": ["./src/*"]
     },
     "strict": true,
-    "target": "ES2022",
+    "target": "ES2023",
     "useDefineForClassFields": true
   },
   "include": ["src", "vite.config.ts"]

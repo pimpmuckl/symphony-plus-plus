@@ -424,17 +424,27 @@
   }
 
   .top-panel-viewport {
+    --dashboard-motion-shadow-gutter: 1.25rem;
     position: relative;
     isolation: isolate;
     width: 100vw;
     margin-inline: calc(50% - 50vw);
+    margin-block: calc(-1 * var(--dashboard-motion-shadow-gutter));
     overflow: hidden;
     --top-panel-next-height: 0px;
     transition: height 210ms cubic-bezier(0.2, 0.8, 0.2, 1);
   }
 
+  .top-panel-viewport[data-has-content="false"] {
+    margin-block: 0;
+  }
+
   .top-panel-viewport[data-phase="idle"] {
     overflow: visible;
+  }
+
+  .top-panel-motion-frame {
+    padding-block: var(--dashboard-motion-shadow-gutter, 1.25rem);
   }
 
   .top-panel-static {
@@ -531,12 +541,14 @@
   }
 
   .workspace-tab-viewport {
+    --dashboard-motion-shadow-gutter: 1.25rem;
     position: relative;
     isolation: isolate;
     min-width: 0;
     width: 100vw;
     margin-inline: calc(50% - 50vw);
-    margin-top: 1rem;
+    margin-top: calc(1rem - var(--dashboard-motion-shadow-gutter));
+    margin-bottom: calc(-1 * var(--dashboard-motion-shadow-gutter));
     overflow: hidden;
     transition: height 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
   }
@@ -564,6 +576,10 @@
 
   .workspace-tab-track[data-phase="swapping"][data-direction="backward"] {
     animation: dashboard-push-track-backward 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .workspace-tab-motion-frame {
+    padding-block: var(--dashboard-motion-shadow-gutter, 1.25rem);
   }
 
   .workspace-tab-pane {
@@ -735,6 +751,8 @@
     display: inline-grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.125rem;
+    min-inline-size: 0;
+    margin: 0;
     border: 1px solid hsl(var(--border));
     border-radius: calc(var(--radius) - 2px);
     background: hsl(var(--muted) / 0.68);
@@ -782,6 +800,11 @@
     padding-bottom: 0.25rem;
   }
 
+  .workstream-repo-card {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 34rem;
+  }
+
   .jira-board {
     display: grid;
     align-items: start;
@@ -797,13 +820,6 @@
     gap: clamp(0.875rem, 2.6vw, 3.25rem);
   }
 
-  .workstream-board .jira-lane,
-  .workstream-board .stagger-item,
-  .workstream-board .board-wire-layer,
-  .workstream-board .board-wire-node-layer {
-    will-change: opacity, transform, filter;
-  }
-
   .workstream-board .stagger-item:not([data-update-kind]) {
     animation: none;
   }
@@ -811,11 +827,13 @@
   [data-board-open-motion="open"] .workstream-board,
   .workstream-board[data-board-motion="layout"] {
     animation: board-body-enter 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    will-change: opacity, transform;
   }
 
   [data-board-open-motion="open"] .workstream-board .jira-lane,
   .workstream-board[data-board-motion="layout"] .jira-lane {
     animation: board-lane-enter 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    will-change: opacity, transform;
   }
 
   [data-board-open-motion="open"] .workstream-board .jira-lane:nth-of-type(2),
@@ -831,6 +849,7 @@
   [data-board-open-motion="open"] .workstream-board .stagger-item:not([data-update-kind]),
   .workstream-board[data-board-motion="layout"] .stagger-item:not([data-update-kind]) {
     animation: board-card-enter 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    will-change: opacity;
   }
 
   [data-board-open-motion="open"] .workstream-board .board-wire-layer,
@@ -838,6 +857,7 @@
   .workstream-board[data-board-motion="layout"] .board-wire-layer,
   .workstream-board[data-board-motion="layout"] .board-wire-node-layer {
     animation: board-wire-enter 340ms cubic-bezier(0.16, 1, 0.3, 1) 70ms both;
+    will-change: opacity;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -1063,59 +1083,31 @@
 
   .board-wire-path {
     fill: none;
-    stroke: var(--wire-stroke, var(--wire-color, rgb(148 163 184)));
+    stroke: var(--wire-color, rgb(148 163 184));
     stroke-linecap: round;
     stroke-linejoin: round;
     stroke-width: 2.25;
     opacity: 0.86;
-    filter: drop-shadow(0 1px 1px hsl(224 27% 12% / 0.12));
-    transition:
-      stroke 180ms ease,
-      opacity 180ms ease,
-      filter 180ms ease;
-  }
-
-  .board-wire-gradient-stop-source {
-    stop-color: var(--wire-start-color-light, var(--wire-color, rgb(148 163 184)));
-    stop-opacity: var(--wire-start-opacity-light, 1);
-  }
-
-  .board-wire-gradient-stop-target {
-    stop-color: var(--wire-end-color, var(--wire-color, rgb(148 163 184)));
-    stop-opacity: 1;
-  }
-
-  .dark .board-wire-gradient-stop-source {
-    stop-color: var(--wire-start-color-dark, var(--wire-start-color-light, var(--wire-color, rgb(148 163 184))));
-    stop-opacity: var(--wire-start-opacity-dark, var(--wire-start-opacity-light, 1));
   }
 
   .board-wire-group[data-wire-kind="blocker"] .board-wire-path {
     stroke-dasharray: 7 7;
     stroke-width: 2.5;
     opacity: 0.94;
-    filter: drop-shadow(0 1px 2px hsl(348 83% 47% / 0.24));
   }
 
   .dark .board-wire-path {
     opacity: 0.92;
-    filter: drop-shadow(0 1px 2px hsl(0 0% 0% / 0.42));
   }
 
   .dark .board-wire-group[data-wire-kind="blocker"] .board-wire-path {
     opacity: 0.98;
-    filter: drop-shadow(0 1px 3px hsl(348 83% 47% / 0.46));
   }
 
   .board-wire-node {
     fill: hsl(var(--background));
     stroke: var(--wire-color, rgb(148 163 184));
     stroke-width: 2.25;
-    filter: drop-shadow(0 1px 2px hsl(224 27% 12% / 0.2));
-  }
-
-  .dark .board-wire-node {
-    filter: drop-shadow(0 1px 2px hsl(0 0% 0% / 0.52));
   }
 
   .board-wire-node-target {
@@ -1133,8 +1125,6 @@
     border: 0;
     padding: 0;
     background-color: hsl(224 27% 12% / 0.35);
-    backdrop-filter: blur(4px);
-    -webkit-backdrop-filter: blur(4px);
     animation: dialog-overlay-open 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
@@ -1147,11 +1137,12 @@
   }
 
   .dialog-content {
+    contain: layout paint;
     transition: height var(--dashboard-modal-size-ms) var(--dashboard-modal-ease);
   }
 
   .dialog-content-sizing {
-    overflow: hidden;
+    overflow: clip;
     will-change: height;
   }
 
@@ -1419,6 +1410,20 @@
 
   .detail-modal-size-inner {
     min-width: 0;
+  }
+
+  .detail-modal-reveal-body {
+    min-width: 0;
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+    transition:
+      opacity 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  .card-detail-dialog[data-detail-stage="height"] .detail-modal-reveal-body {
+    pointer-events: none;
+    animation: detail-modal-unroll-reveal 240ms cubic-bezier(0.2, 0.8, 0.2, 1) 85ms both;
   }
 
   .handoff-success-panel,
@@ -1902,13 +1907,11 @@
     from {
       opacity: 0.72;
       transform: translateY(5px);
-      filter: blur(1px);
     }
 
     to {
       opacity: 1;
       transform: translateY(0);
-      filter: blur(0);
     }
   }
 
@@ -1916,42 +1919,35 @@
     from {
       opacity: 0;
       transform: translateY(10px) scale(0.996);
-      filter: blur(1px);
     }
 
     to {
       opacity: 1;
       transform: translateY(0) scale(1);
-      filter: blur(0);
     }
   }
 
   @keyframes board-card-enter {
     0% {
       opacity: 0;
-      filter: blur(1px);
     }
 
     78% {
       opacity: 1;
-      filter: blur(0);
     }
 
     100% {
       opacity: 1;
-      filter: blur(0);
     }
   }
 
   @keyframes board-wire-enter {
     from {
       opacity: 0;
-      filter: blur(1px);
     }
 
     to {
       opacity: 1;
-      filter: blur(0);
     }
   }
 
@@ -2263,15 +2259,11 @@
     from {
       opacity: 0;
       background-color: hsl(224 27% 12% / 0);
-      backdrop-filter: blur(0);
-      -webkit-backdrop-filter: blur(0);
     }
 
     to {
       opacity: 1;
       background-color: hsl(224 27% 12% / 0.35);
-      backdrop-filter: blur(4px);
-      -webkit-backdrop-filter: blur(4px);
     }
   }
 
@@ -2279,15 +2271,11 @@
     from {
       opacity: 1;
       background-color: hsl(224 27% 12% / 0.35);
-      backdrop-filter: blur(4px);
-      -webkit-backdrop-filter: blur(4px);
     }
 
     to {
       opacity: 0;
       background-color: hsl(224 27% 12% / 0);
-      backdrop-filter: blur(0);
-      -webkit-backdrop-filter: blur(0);
     }
   }
 
@@ -2334,6 +2322,18 @@
   @keyframes detail-progress-spin {
     to {
       transform: rotate(360deg);
+    }
+  }
+
+  @keyframes detail-modal-unroll-reveal {
+    from {
+      opacity: 0;
+      transform: translate3d(0, 0.625rem, 0);
+    }
+
+    to {
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
     }
   }
 

@@ -339,9 +339,16 @@ export function NewRequestDialog({
 
 function AnimatedDetailBody({ motionKey, children }: { motionKey: string; children: ReactNode }) {
   const innerRef = useRef<HTMLDivElement>(null);
-  const animationFrameRef = useRef<number | null>(null);
   const settleTimerRef = useRef<number | null>(null);
   const [height, setHeight] = useState<number | null>(null);
+
+  const clearSettleTimer = useCallback(() => {
+    const settleTimer = settleTimerRef.current;
+    if (settleTimer === null) return;
+
+    window.clearTimeout(settleTimer);
+    settleTimerRef.current = null;
+  }, []);
 
   const measure = useCallback(() => {
     const node = innerRef.current;
@@ -352,15 +359,13 @@ function AnimatedDetailBody({ motionKey, children }: { motionKey: string; childr
 
     setHeight((currentHeight) => (currentHeight === nextHeight ? currentHeight : nextHeight));
 
-    if (settleTimerRef.current !== null) {
-      window.clearTimeout(settleTimerRef.current);
-    }
+    clearSettleTimer();
 
     settleTimerRef.current = window.setTimeout(() => {
       setHeight(null);
       settleTimerRef.current = null;
     }, 340);
-  }, []);
+  }, [clearSettleTimer]);
 
   useLayoutEffect(() => {
     measure();
@@ -371,13 +376,14 @@ function AnimatedDetailBody({ motionKey, children }: { motionKey: string; childr
   useEffect(() => {
     const node = innerRef.current;
     if (!node || typeof ResizeObserver === "undefined") return;
+    let animationFrame: number | null = null;
 
     const observer = new ResizeObserver(() => {
-      if (animationFrameRef.current !== null) {
-        window.cancelAnimationFrame(animationFrameRef.current);
+      if (animationFrame !== null) {
+        window.cancelAnimationFrame(animationFrame);
       }
 
-      animationFrameRef.current = window.requestAnimationFrame(measure);
+      animationFrame = window.requestAnimationFrame(measure);
     });
 
     observer.observe(node);
@@ -385,17 +391,14 @@ function AnimatedDetailBody({ motionKey, children }: { motionKey: string; childr
     return () => {
       observer.disconnect();
 
-      if (animationFrameRef.current !== null) {
-        window.cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
+      if (animationFrame !== null) {
+        window.cancelAnimationFrame(animationFrame);
+        animationFrame = null;
       }
 
-      if (settleTimerRef.current !== null) {
-        window.clearTimeout(settleTimerRef.current);
-        settleTimerRef.current = null;
-      }
+      clearSettleTimer();
     };
-  }, [measure]);
+  }, [clearSettleTimer, measure]);
 
   return (
     <div className="detail-modal-size-frame" data-detail-motion-key={motionKey} style={height === null ? undefined : { height }}>
