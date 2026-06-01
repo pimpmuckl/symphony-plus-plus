@@ -71,6 +71,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     assert get_in(unbound_tools_by_name, ["solo_list", "inputSchema", "required"]) == []
     assert get_in(unbound_tools_by_name, ["solo_update_status", "inputSchema", "required"]) == ["session_id", "current_status", "next_status"]
 
+    unbound_release_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "release-current-assignment-unbound",
+          "method" => "tools/call",
+          "params" => %{"name" => "release_current_assignment", "arguments" => %{"reason" => "done"}}
+        },
+        unbound_server
+      )
+
+    assert get_in(unbound_release_response, ["error", "code"]) == -32_001
+    assert get_in(unbound_release_response, ["error", "data", "reason"]) == "assignment_release_requires_bound_session"
+
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SOLO-WORKER-TOOLS", kind: "mcp"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, worker_assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")

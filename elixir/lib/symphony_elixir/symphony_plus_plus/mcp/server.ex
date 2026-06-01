@@ -2506,7 +2506,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp unbound_tool_specs(%__MODULE__{config: config}), do: unbound_tool_specs_for_config(config)
 
   defp unbound_tool_specs_for_config(%Config{} = config) do
-    [health_tool_spec()] ++
+    [health_tool_spec(), assignment_release_tool_spec()] ++
       Enum.map(@solo_tools, &solo_tool_spec/1) ++
       unbound_scoped_tool_specs() ++
       [worker_tool_spec("claim_work_key")] ++
