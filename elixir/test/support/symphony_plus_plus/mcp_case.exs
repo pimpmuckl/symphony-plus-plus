@@ -394,10 +394,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase do
       alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
       alias SymphonyElixir.SymphonyPlusPlus.MCP.Auth
       alias SymphonyElixir.SymphonyPlusPlus.MCP.Config
+      alias SymphonyElixir.SymphonyPlusPlus.MCP.Repository, as: MCPRepository
       alias SymphonyElixir.SymphonyPlusPlus.MCP.Server
       alias SymphonyElixir.SymphonyPlusPlus.MCP.Session
       alias SymphonyElixir.SymphonyPlusPlus.MCP.Stdio
-      alias SymphonyElixir.SymphonyPlusPlus.MCP.Repository, as: MCPRepository
+      alias SymphonyElixir.SymphonyPlusPlus.MCPCase
       alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
       alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
       alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
@@ -426,7 +427,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase do
       @handoff_store_process_key SymphonyElixir.SymphonyPlusPlus.MCPCase.handoff_store_process_key()
       @architect_tool_names SymphonyElixir.SymphonyPlusPlus.MCPCase.architect_tool_names()
       @worker_tool_names SymphonyElixir.SymphonyPlusPlus.MCPCase.worker_tool_names()
-      @codex_forbidden_top_level_schema_keys SymphonyElixir.SymphonyPlusPlus.MCPCase.codex_forbidden_top_level_schema_keys()
+      @codex_forbidden_top_level_schema_keys MCPCase.codex_forbidden_top_level_schema_keys()
 
       import SymphonyElixir.SymphonyPlusPlus.MCPCase.CommonHelpers
       import SymphonyElixir.SymphonyPlusPlus.MCPCase.SessionHelpers
