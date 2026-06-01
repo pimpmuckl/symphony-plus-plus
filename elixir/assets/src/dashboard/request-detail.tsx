@@ -1,0 +1,275 @@
+import { AlertTriangle, Archive, CheckCircle2, Copy, Loader2, MessageSquareText } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import type { CopyArchitectHandoff, GuidanceItem, WorkRequestDetail } from "@/types/dashboard";
+import { DetailDisclosure, DetailFacts, DetailHeader, DetailList, DetailSection, DetailStatGrid, JsonDetail } from "@/components/dashboard/detail-layout";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { architectHandoffEligibleRequest, isFinishedBoardStatus, operationalBadgeVariant, operationalLabel } from "@/lib/operational-state";
+import { cn } from "@/lib/utils";
+import { formatStatus, statusLabel } from "@/lib/status-labels";
+import { useCallback, useReducer, useRef } from "react";
+import { CommentsPanel, useSyncedComments } from "./comments-panel";
+import { RecentDecisionsDisclosure, commentStatLabel, commentStats, detailDate, requestCommentStats, requestOpenQuestions, requestProgressText, requestSliceCounts } from "./detail-extras";
+import { ResolveContextComment, SubmitContextComment, WorkRequestMutation, WorkRequestStateMutation } from "./runtime";
+import { clarificationGuidanceItem } from "./dashboard-data";
+import { initialRequestDetailUiState, requestDetailUiReducer, useScopedHandoffCopy } from "./dashboard-state";
+import { repoDisplayName } from "./dashboard-persistence";
+
+export function RequestDetailContent({
+  detail,
+  onSelectGuidance,
+  onCopyArchitectHandoff,
+  onArchiveWorkRequest,
+  onChangeWorkRequestState,
+  onSubmitComment,
+  onResolveComment,
+  canMutateComments,
+}: {
+  detail: WorkRequestDetail;
+  onSelectGuidance: (item: GuidanceItem) => void;
+  onCopyArchitectHandoff: CopyArchitectHandoff;
+  onArchiveWorkRequest: WorkRequestMutation;
+  onChangeWorkRequestState: WorkRequestStateMutation;
+  onSubmitComment: SubmitContextComment;
+  onResolveComment: ResolveContextComment;
+  canMutateComments: boolean;
+}) {
+  const request = detail.work_request;
+  const [requestComments, setRequestComments] = useSyncedComments(detail.comments || []);
+  const [uiState, dispatchUiState] = useReducer(requestDetailUiReducer, initialRequestDetailUiState);
+  const { archiveError, archivePending, commentsOpen, deliverConfirmOpen, stateError, statePending } = uiState;
+  const setCommentsOpen = useCallback((open: boolean) => dispatchUiState({ type: "commentsOpen", open }), []);
+  const setDeliverConfirmOpen = useCallback((open: boolean) => dispatchUiState({ type: "deliverConfirmOpen", open }), []);
+  const commentTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const operational = request.operational_state || null;
+  const detailFinished = [operational?.key, request.status].some(isFinishedBoardStatus);
+  const openQuestions = requestOpenQuestions(detail);
+  const sliceCounts = requestSliceCounts(detail);
+  const currentCommentStats = requestCommentStats(detail, requestComments);
+  const requestOnlyCommentStats = commentStats(requestComments);
+  const handoffEligible = !detailFinished && architectHandoffEligibleRequest(request);
+  const handoffHasOpenQuestions = (openQuestions.length || request.open_question_count || 0) > 0;
+  const handoffButtonLabel = handoffHasOpenQuestions ? "Copy Resume Handoff Prompt" : "Copy Agent Handoff Prompt";
+  const handoffIdentity = `${handoffHasOpenQuestions}:${request.id}:${request.status || ""}:${request.updated_at || ""}`;
+  const canManualArchive = Boolean(request.completed_at && !request.archived_at);
+  const canMarkDelivered = !detailFinished;
+  const {
+    cachedHandoff,
+    error: handoffError,
+    recordCopyError,
+    recordCopyResult,
+    startCopy,
+    state: handoffCopyState,
+  } = useScopedHandoffCopy(handoffIdentity);
+
+  async function copyHandoff() {
+    startCopy();
+
+    try {
+      recordCopyResult(await onCopyArchitectHandoff(request.id, cachedHandoff()));
+    } catch (caught) {
+      recordCopyError(caught instanceof Error ? caught.message : "Architect handoff could not be copied");
+    }
+  }
+
+  const openCommentComposer = useCallback(() => {
+    setCommentsOpen(true);
+    window.setTimeout(() => commentTextareaRef.current?.focus(), 80);
+  }, [setCommentsOpen]);
+
+  async function archiveRequest() {
+    dispatchUiState({ type: "archivePending", pending: true });
+    dispatchUiState({ type: "archiveError", error: null });
+
+    try {
+      await onArchiveWorkRequest(request.id);
+    } catch (caught) {
+      dispatchUiState({ type: "archiveError", error: caught instanceof Error ? caught.message : "WorkRequest was not archived" });
+    } finally {
+      dispatchUiState({ type: "archivePending", pending: false });
+    }
+  }
+
+  async function markDelivered() {
+    dispatchUiState({ type: "statePending", pending: true });
+    dispatchUiState({ type: "stateError", error: null });
+
+    try {
+      await onChangeWorkRequestState(request.id, "completed");
+      setDeliverConfirmOpen(false);
+    } catch (caught) {
+      dispatchUiState({ type: "stateError", error: caught instanceof Error ? caught.message : "WorkRequest state was not changed" });
+    } finally {
+      dispatchUiState({ type: "statePending", pending: false });
+    }
+  }
+
+  return (
+    <>
+      <DetailHeader
+        title={request.title || request.id}
+        eyebrow={`${repoDisplayName(request)} / ${request.base_branch || "main"} / ${request.work_type || "feature"}`}
+        badge={<Badge variant={operationalBadgeVariant(operational, request.status)}>{operationalLabel(operational, request.status)}</Badge>}
+      />
+      <div className="detail-modal-reveal-body grid gap-4">
+        {handoffEligible || canMutateComments ? (
+          <div className={cn("handoff-action-panel", handoffHasOpenQuestions && "handoff-action-panel-muted")} data-guidance-section style={{ animationDelay: "58ms" }}>
+            <div className="handoff-action-row">
+              {handoffEligible ? (
+                <Button type="button" size="sm" variant={handoffHasOpenQuestions ? "outline" : "default"} onClick={() => void copyHandoff()} disabled={handoffCopyState === "copying"}>
+                  {handoffCopyState === "copying" ? <Loader2 className="size-4 animate-spin" /> : handoffCopyState === "copied" ? <CheckCircle2 className="size-4" /> : <Copy className="size-4" />}
+                  {handoffCopyState === "copied" ? "Copied" : handoffButtonLabel}
+                </Button>
+              ) : null}
+              {canMutateComments ? (
+                <Button type="button" size="sm" variant="outline" onClick={openCommentComposer}>
+                  <MessageSquareText className="size-4" />
+                  Add Comment
+                </Button>
+              ) : null}
+            </div>
+            {handoffError ? <p className="text-xs text-destructive">{handoffError}</p> : null}
+          </div>
+        ) : null}
+        <DetailStatGrid
+          stats={[
+            { label: "Open Questions", value: String(openQuestions.length || request.open_question_count || 0) },
+            { label: "Slices", value: String(sliceCounts.total) },
+            { label: "Decisions", value: String(detail.decision_logs?.length || detail.summary?.decision_count || 0) },
+            { label: "Comments", value: commentStatLabel(currentCommentStats.open_comment_count, currentCommentStats.comment_count) },
+            { label: "Updated", value: detailDate(request.updated_at || request.inserted_at) },
+          ]}
+        />
+        <DetailSection title="What It Does">
+          <p>{request.human_description || "No operator-facing description has been recorded yet."}</p>
+        </DetailSection>
+        <DetailSection title="Progress">
+          <p>{requestProgressText(detail)}</p>
+        </DetailSection>
+        <DetailSection title="Blocked By">
+          {openQuestions.length > 0 ? (
+            <div className="grid gap-2">
+              {openQuestions.slice(0, 2).map((question) => (
+                <button
+                  type="button"
+                  key={question.id}
+                  className="detail-list-item text-left hover:border-primary/50 hover:bg-primary/5"
+                  onClick={() => onSelectGuidance(clarificationGuidanceItem(detail, question))}
+                >
+                  <span className="text-sm font-medium">{question.decision_prompt?.tl_dr || question.question || "Open question"}</span>
+                  {question.why_needed ? <span className="mt-1 line-clamp-2 text-xs text-muted-foreground">{question.why_needed}</span> : null}
+                </button>
+              ))}
+              {openQuestions.length > 2 ? <p className="text-xs text-muted-foreground">+{openQuestions.length - 2} more open question{openQuestions.length - 2 === 1 ? "" : "s"}</p> : null}
+            </div>
+          ) : (
+            <p>No open human questions.</p>
+          )}
+        </DetailSection>
+        <DetailDisclosure
+          title="Comments"
+          meta={commentStatLabel(requestOnlyCommentStats.open_comment_count, requestOnlyCommentStats.comment_count)}
+          open={commentsOpen}
+          onOpenChange={setCommentsOpen}
+        >
+          <CommentsPanel
+            key={`work_request:${request.id}`}
+            target={{ target_kind: "work_request", target_id: request.id }}
+            comments={requestComments}
+            onCommentsChange={setRequestComments}
+            onSubmitComment={onSubmitComment}
+            onResolveComment={onResolveComment}
+            canMutate={canMutateComments}
+            textareaRef={commentTextareaRef}
+          />
+        </DetailDisclosure>
+        <RecentDecisionsDisclosure detail={detail} />
+        <DetailDisclosure title="Details" meta="IDs, constraints, and slice plan">
+          <DetailFacts
+            facts={[
+              ["Request ID", request.id],
+              ["Dispatch Shape", formatStatus(request.desired_dispatch_shape)],
+              ["Raw Lifecycle", statusLabel(request.status)],
+              ["Delivered", detailDate(request.completed_at)],
+              ["Archived", detailDate(request.archived_at)],
+              ["Created", detailDate(request.inserted_at)],
+              ["Updated", detailDate(request.updated_at)],
+            ]}
+          />
+          <DetailList title="Planned slices" items={(detail.planned_slices || []).map((slice) => slice.title || slice.id)} empty="No slices recorded." />
+          <JsonDetail label="Constraints" value={request.constraints} />
+        </DetailDisclosure>
+        {canMarkDelivered || canManualArchive ? (
+          <div className="flex flex-col items-start gap-2 border-t border-destructive/20 pt-4">
+            <div className="flex flex-wrap gap-2">
+              {canMarkDelivered ? (
+                <Button type="button" size="sm" variant="destructive" onClick={() => setDeliverConfirmOpen(true)} disabled={statePending}>
+                  {statePending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+                  Mark Delivered
+                </Button>
+              ) : null}
+              {canManualArchive ? (
+                <Button type="button" size="sm" variant="outline" disabled={archivePending} onClick={() => void archiveRequest()}>
+                  {archivePending ? <Loader2 className="size-4 animate-spin" /> : <Archive className="size-4" />}
+                  Archive Request
+                </Button>
+              ) : null}
+            </div>
+            {stateError ? <p className="text-xs text-destructive">{stateError}</p> : null}
+            {archiveError ? <p className="text-xs text-destructive">{archiveError}</p> : null}
+          </div>
+        ) : null}
+      </div>
+      <DangerousStateConfirmationDialog
+        open={deliverConfirmOpen}
+        onOpenChange={setDeliverConfirmOpen}
+        title="Mark WorkRequest Delivered?"
+        description="This manually marks the request Delivered for the local dashboard even if unfinished slices, packages, or questions still exist."
+        confirmLabel="Mark Delivered"
+        pending={statePending}
+        onConfirm={() => void markDelivered()}
+      />
+    </>
+  );
+}
+
+export function DangerousStateConfirmationDialog({
+  open,
+  onOpenChange,
+  title,
+  description,
+  confirmLabel,
+  pending,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+  description: string;
+  confirmLabel: string;
+  pending: boolean;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => (!pending ? onOpenChange(nextOpen) : undefined)}>
+      <DialogContent className="dashboard-dialog-content sm:max-w-[420px]">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <AlertTriangle className="size-4 text-destructive" />
+            {title}
+          </DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button type="button" variant="destructive" disabled={pending} onClick={onConfirm}>
+            {pending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+            {confirmLabel}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
