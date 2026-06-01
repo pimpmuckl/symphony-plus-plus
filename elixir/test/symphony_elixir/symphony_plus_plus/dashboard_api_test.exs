@@ -5234,6 +5234,122 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator dashboard retention hides stale terminal unlinked WorkPackages only", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      assert {:ok, _settings} = OperatorSettingsService.update(repo, %{"work_request_archive_after_days" => 1})
+
+      stale_at = DateTime.add(DateTime.utc_now(:microsecond), -2 * 24 * 60 * 60, :second)
+      recent_at = DateTime.utc_now(:microsecond)
+
+      stale_terminal_package =
+        create_work_package!(repo,
+          id: "WP-LOCAL-RETENTION-STALE-TERMINAL",
+          status: "merged",
+          repo: "nextide/symphony-plus-plus",
+          base_branch: "main"
+        )
+        |> set_work_package_updated_at!(repo, stale_at)
+
+      recent_terminal_package =
+        create_work_package!(repo,
+          id: "WP-LOCAL-RETENTION-RECENT-TERMINAL",
+          status: "closed",
+          repo: stale_terminal_package.repo,
+          base_branch: stale_terminal_package.base_branch
+        )
+        |> set_work_package_updated_at!(repo, recent_at)
+
+      active_package =
+        create_work_package!(repo,
+          id: "WP-LOCAL-RETENTION-ACTIVE",
+          status: "ready_for_worker",
+          repo: stale_terminal_package.repo,
+          base_branch: stale_terminal_package.base_branch
+        )
+        |> set_work_package_updated_at!(repo, stale_at)
+
+      existing_hidden_package =
+        create_work_package!(repo,
+          id: "WP-LOCAL-RETENTION-EXISTING-HIDDEN",
+          status: "closed",
+          repo: stale_terminal_package.repo,
+          base_branch: stale_terminal_package.base_branch
+        )
+        |> set_work_package_updated_at!(repo, stale_at)
+
+      terminal_parent_package =
+        create_work_package!(repo,
+          id: "WP-LOCAL-RETENTION-TERMINAL-PARENT",
+          status: "merged",
+          repo: stale_terminal_package.repo,
+          base_branch: stale_terminal_package.base_branch
+        )
+        |> set_work_package_updated_at!(repo, stale_at)
+
+      child_package =
+        create_work_package!(repo,
+          id: "WP-LOCAL-RETENTION-PARENT-CHILD",
+          status: "ready_for_worker",
+          parent_id: terminal_parent_package.id,
+          repo: stale_terminal_package.repo,
+          base_branch: stale_terminal_package.base_branch
+        )
+        |> set_work_package_updated_at!(repo, stale_at)
+
+      work_request =
+        create_work_request!(repo,
+          id: "WR-LOCAL-RETENTION-LINKED",
+          status: "ready_for_slicing",
+          repo: stale_terminal_package.repo,
+          base_branch: stale_terminal_package.base_branch
+        )
+
+      assert {:ok, slice} =
+               WorkRequestRepository.add_planned_slice(
+                 repo,
+                 work_request.id,
+                 planned_slice_attrs(id: "WRS-LOCAL-RETENTION-LINKED", target_base_branch: work_request.base_branch)
+               )
+
+      assert {:ok, approved} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, slice.id, "planned")
+
+      linked_terminal_package =
+        create_matching_work_package!(repo, work_request, approved,
+          id: "WP-LOCAL-RETENTION-LINKED-TERMINAL",
+          status: "merged"
+        )
+        |> set_work_package_updated_at!(repo, stale_at)
+
+      assert {:ok, _dispatched} =
+               WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", linked_terminal_package.id)
+
+      assert {:ok, _settings} =
+               OperatorSettingsService.update(repo, %{
+                 "hidden_work_package_ids" => [existing_hidden_package.id, existing_hidden_package.id]
+               })
+
+      payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      assert get_in(payload, ["settings", "hidden_work_package_ids"]) == [
+               existing_hidden_package.id
+             ]
+
+      package_ids = board_work_package_ids(payload)
+
+      refute stale_terminal_package.id in package_ids
+      refute existing_hidden_package.id in package_ids
+      assert recent_terminal_package.id in package_ids
+      assert active_package.id in package_ids
+      assert terminal_parent_package.id in package_ids
+      assert child_package.id in package_ids
+      assert linked_terminal_package.id in package_ids
+      assert linked_terminal_package.id in payload["linked_work_package_ids"]
+    end)
+  end
+
   test "local operator can manually archive completed WorkRequests only", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       completed_at = DateTime.add(DateTime.utc_now(:microsecond), -24 * 60 * 60, :second)
@@ -6201,6 +6317,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       {:ok, work_package} -> work_package
       {:error, reason} -> flunk("failed to create WorkPackage: #{inspect(reason)}")
     end
+  end
+
+  defp set_work_package_updated_at!(%WorkPackage{} = work_package, repo, %DateTime{} = updated_at) do
+    work_package
+    |> Ecto.Changeset.change(updated_at: updated_at)
+    |> repo.update!()
   end
 
   defp create_comment_at!(repo, offset_seconds, attrs) do

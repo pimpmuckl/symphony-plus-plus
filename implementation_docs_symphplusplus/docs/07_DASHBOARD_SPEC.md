@@ -288,6 +288,13 @@ linked WorkPackages that remain inside the grant's frozen repo/base scope;
 out-of-scope links are treated as unavailable instead of leaking hidden package
 state.
 
+Local operator dashboard refresh applies the operator archive-age setting to
+completed WorkRequests and to terminal root WorkPackages with no planned-slice,
+parent, or phase relationship. Stale root unlinked packages are hidden from the
+active board during refresh; manual package hides remain stored in the local
+hidden-package list. Linked or parent/phase packages remain visible for their
+WorkRequest, planned-slice, or phase retention path.
+
 The delivery-board projection is the closeout detail source for WorkRequest-led
 delivery. It shows per-slice delivery outcomes, closeout evidence summaries,
 linked package raw status, attention reason codes, successor links, and counts
