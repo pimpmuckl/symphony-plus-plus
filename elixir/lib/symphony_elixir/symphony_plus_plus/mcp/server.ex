@@ -69,7 +69,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @solo_tools ["solo_attach", "solo_append", "solo_show", "solo_list", "solo_update_status"]
   @bootstrap_tools ["claim_private_handoff", "create_work_request"]
   @local_operator_tools ["add_work_request_comment", "record_work_request_operator_decision"]
-  @local_trusted_work_request_read_tools ["read_work_request", "read_work_request_delivery_board"]
+  @local_trusted_work_request_read_tools ["list_work_requests", "read_work_request", "read_work_request_delivery_board"]
   @local_operator_text_max_length Comment.max_body_length()
   @local_operator_provenance_max_length 512
   @local_assignment_claim_tool "claim_local_assignment"
@@ -4989,6 +4989,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> optional_put("source_id", Redactor.redact_text(source_id))
   end
 
+  defp architect_tool("list_work_requests", arguments, %__MODULE__{config: config, session: nil} = server) do
+    with :ok <- authorize_local_trusted_work_request_read_tool_call(server, "list_work_requests"),
+         {:ok, status} <- optional_work_request_status(arguments),
+         filters = work_request_list_filters(%{}, status),
+         {:ok, work_requests} <- WorkRequestService.list(config.repo, work_request_repository_filters(filters)) do
+      cards = work_request_cards(work_requests)
+
+      {:ok,
+       tool_result(%{
+         "work_requests" => cards,
+         "total_count" => length(cards),
+         "scope" => %{"visibility" => "local_ledger"},
+         "filters" => work_request_filter_payload(status)
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "list_work_requests", "reason" => reason}}
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:error, reason} -> architect_error(reason, "list_work_requests")
+    end
+  end
+
   defp architect_tool("list_work_requests", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, status} <- optional_work_request_status(arguments),
@@ -5017,9 +5038,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with :ok <- authorize_local_trusted_work_request_read_tool_call(server, "read_work_request"),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false),
-         {:ok, work_request, scope} <- local_trusted_work_request_read_scope(config.repo, work_request_id),
+         {:ok, work_request, _filters} <- local_trusted_work_request_read_scope(config.repo, work_request_id),
          {:ok, payload} <- work_request_detail_payload(config.repo, work_request, include_planning_scratch?: include_planning_scratch?) do
-      payload = Map.put(payload, "scope", scope)
+      payload = Map.put(payload, "scope", redacted_work_request_scope(work_request))
       {:ok, architect_agent_tool_result(payload, :work_request_read)}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_work_request", "reason" => reason}}
@@ -5116,14 +5137,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with :ok <- authorize_local_trusted_work_request_read_tool_call(server, "read_work_request_delivery_board"),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false),
-         {:ok, work_request, scope} <- local_trusted_work_request_read_scope(config.repo, work_request_id),
+         {:ok, work_request, filters} <- local_trusted_work_request_read_scope(config.repo, work_request_id),
          {:ok, planned_slices} <- WorkRequestService.list_planned_slices(config.repo, work_request_id),
          {:ok, delivery_board} <-
-           scoped_delivery_board(config.repo, work_request, planned_slices, scope, include_planning_scratch?: include_planning_scratch?) do
+           scoped_delivery_board(config.repo, work_request, planned_slices, filters, include_planning_scratch?: include_planning_scratch?) do
       payload = %{
         "work_request" => work_request_mutation_payload(work_request),
         "delivery_board" => delivery_board_payload(delivery_board),
-        "scope" => scope
+        "scope" => redacted_work_request_scope(work_request)
       }
 
       {:ok, architect_agent_tool_result(payload, :work_request_delivery_board)}
@@ -13274,11 +13295,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp work_request_card_payload(%WorkRequest{} = work_request) do
+    scope = redacted_work_request_scope(work_request)
+
     %{
       "id" => work_request.id,
       "title" => Redactor.redact_text(work_request.title),
-      "repo" => work_request.repo,
-      "base_branch" => work_request.base_branch,
+      "repo" => Map.fetch!(scope, "repo"),
+      "base_branch" => Map.fetch!(scope, "base_branch"),
       "work_type" => work_request.work_type,
       "desired_dispatch_shape" => work_request.desired_dispatch_shape,
       "creator" => work_request_creator_payload(work_request),
@@ -13366,11 +13389,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp work_request_payload(%WorkRequest{} = work_request) do
+    scope = redacted_work_request_scope(work_request)
+
     %{
       "id" => work_request.id,
       "title" => Redactor.redact_text(work_request.title),
-      "repo" => work_request.repo,
-      "base_branch" => work_request.base_branch,
+      "repo" => Map.fetch!(scope, "repo"),
+      "base_branch" => Map.fetch!(scope, "base_branch"),
       "work_type" => work_request.work_type,
       "human_description" => Redactor.redact_text(work_request.human_description),
       "constraints" => Redactor.redact_output(work_request.constraints || %{}),
@@ -13387,6 +13412,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "kind" => work_request.creator_kind,
       "name" => Redactor.redact_text(work_request.creator_name),
       "via" => work_request.created_via
+    }
+  end
+
+  defp redacted_work_request_scope(%WorkRequest{} = work_request) do
+    %{
+      "repo" => Redactor.redact_text(work_request.repo),
+      "base_branch" => Redactor.redact_text(work_request.base_branch)
     }
   end
 
@@ -13442,7 +13474,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "title" => Redactor.redact_text(planned_slice.title),
       "goal" => Redactor.redact_text(planned_slice.goal),
       "work_package_kind" => planned_slice.work_package_kind,
-      "target_base_branch" => planned_slice.target_base_branch,
+      "target_base_branch" => Redactor.redact_text(planned_slice.target_base_branch),
       "branch_pattern" => Redactor.redact_text(planned_slice.branch_pattern),
       "owned_file_globs" => Enum.map(planned_slice.owned_file_globs || [], &Redactor.redact_text/1),
       "forbidden_file_globs" => Enum.map(planned_slice.forbidden_file_globs || [], &Redactor.redact_text/1),
