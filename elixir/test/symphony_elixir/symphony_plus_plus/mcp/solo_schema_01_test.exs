@@ -1,0 +1,815 @@
+Code.require_file("../../../support/symphony_plus_plus/mcp_case.exs", __DIR__)
+
+defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
+  use SymphonyElixir.SymphonyPlusPlus.MCPCase
+
+  test "tools list advertises Solo tools for unbound sessions only", %{repo: repo} do
+    unbound_server = Server.new(Config.default(repo: repo), initialized: true)
+
+    unbound_response =
+      Server.handle(%{"jsonrpc" => "2.0", "id" => "solo-tools", "method" => "tools/list", "params" => %{}}, unbound_server)
+
+    unbound_tools_by_name =
+      unbound_response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    assert get_in(unbound_tools_by_name, ["solo_attach", "inputSchema", "required"]) == ["repo", "base_branch", "workspace_path", "caller_id"]
+    assert get_in(unbound_tools_by_name, ["solo_append", "inputSchema", "required"]) == ["session_id", "entry_kind", "title"]
+    assert get_in(unbound_tools_by_name, ["solo_append", "inputSchema", "properties", "payload", "type"]) == "object"
+    assert get_in(unbound_tools_by_name, ["solo_show", "inputSchema", "required"]) == ["session_id"]
+    assert get_in(unbound_tools_by_name, ["solo_list", "inputSchema", "required"]) == []
+    assert get_in(unbound_tools_by_name, ["solo_update_status", "inputSchema", "required"]) == ["session_id", "current_status", "next_status"]
+
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SOLO-WORKER-TOOLS", kind: "mcp"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    worker_session = MCPHarness.session(worker_assignment, proof_hash: minted.grant.secret_hash)
+
+    worker_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "solo-worker-tools", "method" => "tools/list", "params" => %{}},
+        Server.new(Config.default(repo: repo), initialized: true, session: worker_session)
+      )
+
+    worker_tools_by_name =
+      worker_response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    refute Map.has_key?(worker_tools_by_name, "solo_attach")
+    refute Map.has_key?(worker_tools_by_name, "solo_append")
+    refute Map.has_key?(worker_tools_by_name, "solo_show")
+    refute Map.has_key?(worker_tools_by_name, "solo_list")
+    refute Map.has_key?(worker_tools_by_name, "solo_update_status")
+
+    {_anchor, architect_session, _grant} = create_phase_architect_session(repo, "SYMPP-SOLO-ARCH-TOOLS", ["read:phase"])
+
+    architect_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "solo-architect-tools", "method" => "tools/list", "params" => %{}},
+        Server.new(test_mcp_config(repo), initialized: true, session: architect_session)
+      )
+
+    architect_tools_by_name =
+      architect_response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    refute Map.has_key?(architect_tools_by_name, "solo_attach")
+    refute Map.has_key?(architect_tools_by_name, "solo_append")
+    refute Map.has_key?(architect_tools_by_name, "solo_show")
+    refute Map.has_key?(architect_tools_by_name, "solo_list")
+    refute Map.has_key?(architect_tools_by_name, "solo_update_status")
+  end
+
+  test "Solo MCP tools attach append show list redact and replay idempotent appends", %{repo: repo} do
+    workspace_path = solo_workspace_path("happy")
+
+    attach_response =
+      mcp_tool(repo, nil, "solo_attach", %{
+        "repo" => "nextide/example",
+        "base_branch" => "main",
+        "workspace_path" => workspace_path,
+        "caller_id" => "codex-local",
+        "title" => "Plan bearer abcdefghijkl"
+      })
+
+    assert get_in(attach_response, ["result", "structuredContent", "action"]) == "solo_attach"
+    session = get_in(attach_response, ["result", "structuredContent", "solo_session"])
+    assert session["id"] =~ "solo_"
+    assert session["session_key"] =~ "solo_key_"
+    assert session["title"] == "Plan [REDACTED]"
+
+    append_args = %{
+      "session_id" => session["id"],
+      "entry_kind" => "progress",
+      "title" => "Use ghp_abcdefgh",
+      "body" => "Body bearer abcdefghijkl",
+      "status" => "recorded",
+      "idempotency_key" => "solo-entry-1",
+      "payload" => %{"token" => "ghp_abcdefgh", "nested" => %{"url" => "https://example.test/?token=ghp_abcdefgh"}}
+    }
+
+    append_response = mcp_tool(repo, nil, "solo_append", append_args)
+    entry = get_in(append_response, ["result", "structuredContent", "entry"])
+    assert entry["entry_kind"] == "progress"
+    assert entry["title"] == "Use [REDACTED]"
+    assert entry["body"] == "Body [REDACTED]"
+    assert entry["payload"]["token"] == "[REDACTED]"
+    assert entry["payload"]["nested"]["url"] == "https://example.test/?token=[REDACTED]"
+
+    replay_response = mcp_tool(repo, nil, "solo_append", %{append_args | "title" => "Changed retry"})
+    replay_entry = get_in(replay_response, ["result", "structuredContent", "entry"])
+    assert replay_entry["id"] == entry["id"]
+    assert replay_entry["title"] == entry["title"]
+
+    show_response = mcp_tool(repo, nil, "solo_show", %{"session_id" => session["id"]})
+    assert get_in(show_response, ["result", "structuredContent", "solo_session", "id"]) == session["id"]
+    assert [shown_entry] = get_in(show_response, ["result", "structuredContent", "entries"])
+    assert shown_entry["id"] == entry["id"]
+
+    list_response =
+      mcp_tool(repo, nil, "solo_list", %{
+        "repo" => " nextide/example ",
+        "base_branch" => "main",
+        "workspace_path" => workspace_path,
+        "caller_id" => "codex-local",
+        "status" => "active"
+      })
+
+    assert get_in(list_response, ["result", "structuredContent", "solo_sessions"]) |> Enum.map(& &1["id"]) == [session["id"]]
+  end
+
+  test "Solo MCP lifecycle updates follow the Solo Session service contract", %{repo: repo} do
+    attach_response =
+      mcp_tool(repo, nil, "solo_attach", %{
+        "repo" => "nextide/example",
+        "base_branch" => "main",
+        "workspace_path" => solo_workspace_path("lifecycle"),
+        "caller_id" => "codex-local"
+      })
+
+    session_id = get_in(attach_response, ["result", "structuredContent", "solo_session", "id"])
+
+    pause_response =
+      mcp_tool(repo, nil, "solo_update_status", %{
+        "session_id" => session_id,
+        "current_status" => "active",
+        "next_status" => "paused"
+      })
+
+    assert get_in(pause_response, ["result", "structuredContent", "action"]) == "solo_update_status"
+    assert get_in(pause_response, ["result", "structuredContent", "solo_session", "status"]) == "paused"
+
+    resume_response =
+      mcp_tool(repo, nil, "solo_update_status", %{
+        "session_id" => session_id,
+        "current_status" => "paused",
+        "next_status" => "active"
+      })
+
+    assert get_in(resume_response, ["result", "structuredContent", "solo_session", "status"]) == "active"
+
+    complete_response =
+      mcp_tool(repo, nil, "solo_update_status", %{
+        "session_id" => session_id,
+        "current_status" => "active",
+        "next_status" => "completed"
+      })
+
+    assert get_in(complete_response, ["result", "structuredContent", "solo_session", "status"]) == "completed"
+
+    archive_response =
+      mcp_tool(repo, nil, "solo_update_status", %{
+        "session_id" => session_id,
+        "current_status" => "completed",
+        "next_status" => "archived"
+      })
+
+    assert get_in(archive_response, ["result", "structuredContent", "solo_session", "status"]) == "archived"
+    assert is_binary(get_in(archive_response, ["result", "structuredContent", "solo_session", "archived_at"]))
+
+    paused_attach_response =
+      mcp_tool(repo, nil, "solo_attach", %{
+        "repo" => "nextide/example",
+        "base_branch" => "main",
+        "workspace_path" => solo_workspace_path("paused-complete"),
+        "caller_id" => "codex-local"
+      })
+
+    paused_session_id = get_in(paused_attach_response, ["result", "structuredContent", "solo_session", "id"])
+
+    assert get_in(
+             mcp_tool(repo, nil, "solo_update_status", %{
+               "session_id" => paused_session_id,
+               "current_status" => "active",
+               "next_status" => "paused"
+             }),
+             ["result", "structuredContent", "solo_session", "status"]
+           ) == "paused"
+
+    assert get_in(
+             mcp_tool(repo, nil, "solo_update_status", %{
+               "session_id" => paused_session_id,
+               "current_status" => "paused",
+               "next_status" => "completed"
+             }),
+             ["result", "structuredContent", "solo_session", "status"]
+           ) == "completed"
+  end
+
+  test "Solo MCP show returns a bounded recent entry window", %{repo: repo} do
+    attach_response =
+      mcp_tool(repo, nil, "solo_attach", %{
+        "repo" => "nextide/example",
+        "base_branch" => "main",
+        "workspace_path" => solo_workspace_path("recent-window"),
+        "caller_id" => "codex-local"
+      })
+
+    session_id = get_in(attach_response, ["result", "structuredContent", "solo_session", "id"])
+
+    for index <- 1..55 do
+      response =
+        mcp_tool(repo, nil, "solo_append", %{
+          "session_id" => session_id,
+          "entry_kind" => "progress",
+          "title" => "Entry #{index}",
+          "idempotency_key" => "recent-window-#{index}"
+        })
+
+      assert get_in(response, ["result", "structuredContent", "entry", "sequence"]) == index
+    end
+
+    show_response = mcp_tool(repo, nil, "solo_show", %{"session_id" => session_id})
+    show = get_in(show_response, ["result", "structuredContent"])
+
+    assert show["entry_count"] == 55
+    assert show["entries_returned"] == 50
+    assert show["entries_truncated"] == true
+    assert Enum.map(show["entries"], & &1["sequence"]) == Enum.to_list(6..55)
+  end
+
+  test "Solo MCP tools surface validation errors without mutating state", %{repo: repo} do
+    invalid_attach_response =
+      mcp_tool(repo, nil, "solo_attach", %{
+        "repo" => "nextide/example",
+        "base_branch" => "main",
+        "workspace_path" => "relative/workspace",
+        "caller_id" => "codex-local"
+      })
+
+    assert get_in(invalid_attach_response, ["error", "data", "reason"]) == "invalid_workspace_path"
+    assert repo.aggregate(SoloSession, :count, :id) == 0
+
+    attach_response =
+      mcp_tool(repo, nil, "solo_attach", %{
+        "repo" => "nextide/example",
+        "base_branch" => "main",
+        "workspace_path" => solo_workspace_path("validation"),
+        "caller_id" => "codex-local"
+      })
+
+    session_id = get_in(attach_response, ["result", "structuredContent", "solo_session", "id"])
+
+    invalid_append_response =
+      mcp_tool(repo, nil, "solo_append", %{
+        "session_id" => session_id,
+        "entry_kind" => "progress",
+        "title" => "Reject secret key",
+        "idempotency_key" => "wk_" <> String.duplicate("A", 43)
+      })
+
+    assert get_in(invalid_append_response, ["error", "data", "reason"]) == "invalid_entry_idempotency_key"
+    assert repo.aggregate(SoloSessionEntry, :count, :id) == 0
+  end
+
+  test "Solo MCP lifecycle errors are clean and do not mutate sessions", %{repo: repo} do
+    attach_response =
+      mcp_tool(repo, nil, "solo_attach", %{
+        "repo" => "nextide/example",
+        "base_branch" => "main",
+        "workspace_path" => solo_workspace_path("lifecycle-errors"),
+        "caller_id" => "codex-local"
+      })
+
+    session_id = get_in(attach_response, ["result", "structuredContent", "solo_session", "id"])
+    assert {:ok, active_before} = SoloSessionRepository.get(repo, session_id)
+
+    stale_response =
+      mcp_tool(repo, nil, "solo_update_status", %{
+        "session_id" => session_id,
+        "current_status" => "paused",
+        "next_status" => "completed"
+      })
+
+    assert get_in(stale_response, ["error", "data", "reason"]) == "stale_status"
+    assert {:ok, active_after_stale} = SoloSessionRepository.get(repo, session_id)
+    assert active_after_stale.status == "active"
+    assert active_after_stale.last_activity_at == active_before.last_activity_at
+    assert active_after_stale.updated_at == active_before.updated_at
+    assert active_after_stale.archived_at == active_before.archived_at
+
+    invalid_status_response =
+      mcp_tool(repo, nil, "solo_update_status", %{
+        "session_id" => session_id,
+        "current_status" => "active",
+        "next_status" => "claimed"
+      })
+
+    assert get_in(invalid_status_response, ["error", "data", "reason"]) == "invalid_status"
+    assert {:ok, active_after_invalid_status} = SoloSessionRepository.get(repo, session_id)
+    assert active_after_invalid_status.status == "active"
+    assert active_after_invalid_status.last_activity_at == active_before.last_activity_at
+    assert active_after_invalid_status.updated_at == active_before.updated_at
+
+    invalid_transition_response =
+      mcp_tool(repo, nil, "solo_update_status", %{
+        "session_id" => session_id,
+        "current_status" => "active",
+        "next_status" => "active"
+      })
+
+    assert get_in(invalid_transition_response, ["error", "data", "reason"]) == "invalid_transition"
+    assert {:ok, active_after_invalid_transition} = SoloSessionRepository.get(repo, session_id)
+    assert active_after_invalid_transition.status == "active"
+    assert active_after_invalid_transition.last_activity_at == active_before.last_activity_at
+    assert active_after_invalid_transition.updated_at == active_before.updated_at
+
+    missing_response =
+      mcp_tool(repo, nil, "solo_update_status", %{
+        "session_id" => "solo_missing",
+        "current_status" => "active",
+        "next_status" => "paused"
+      })
+
+    assert get_in(missing_response, ["error", "code"]) == -32_004
+    assert get_in(missing_response, ["error", "data", "reason"]) == "not_found"
+    assert repo.aggregate(SoloSession, :count, :id) == 1
+
+    complete_response =
+      mcp_tool(repo, nil, "solo_update_status", %{
+        "session_id" => session_id,
+        "current_status" => "active",
+        "next_status" => "completed"
+      })
+
+    assert get_in(complete_response, ["result", "structuredContent", "solo_session", "status"]) == "completed"
+    assert {:ok, completed_before} = SoloSessionRepository.get(repo, session_id)
+
+    completed_to_active_response =
+      mcp_tool(repo, nil, "solo_update_status", %{
+        "session_id" => session_id,
+        "current_status" => "completed",
+        "next_status" => "active"
+      })
+
+    assert get_in(completed_to_active_response, ["error", "data", "reason"]) == "invalid_transition"
+    assert {:ok, completed_after_invalid_transition} = SoloSessionRepository.get(repo, session_id)
+    assert completed_after_invalid_transition.status == "completed"
+    assert completed_after_invalid_transition.last_activity_at == completed_before.last_activity_at
+    assert completed_after_invalid_transition.updated_at == completed_before.updated_at
+  end
+
+  test "Solo MCP calls from bound sessions fail before mutation", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SOLO-BOUND-DENY", kind: "mcp"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    worker_session = MCPHarness.session(worker_assignment, proof_hash: minted.grant.secret_hash)
+
+    response =
+      mcp_tool(
+        repo,
+        worker_session,
+        "solo_attach",
+        %{
+          "repo" => "nextide/example",
+          "base_branch" => "main",
+          "workspace_path" => solo_workspace_path("bound"),
+          "caller_id" => "codex-local"
+        }
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_001
+    assert get_in(response, ["error", "data", "reason"]) == "solo_tools_require_unbound_session"
+    assert repo.aggregate(SoloSession, :count, :id) == 0
+
+    attach_response =
+      mcp_tool(repo, nil, "solo_attach", %{
+        "repo" => "nextide/example",
+        "base_branch" => "main",
+        "workspace_path" => solo_workspace_path("bound-lifecycle"),
+        "caller_id" => "codex-local"
+      })
+
+    session_id = get_in(attach_response, ["result", "structuredContent", "solo_session", "id"])
+
+    update_response =
+      mcp_tool(
+        repo,
+        worker_session,
+        "solo_update_status",
+        %{
+          "session_id" => session_id,
+          "current_status" => "active",
+          "next_status" => "paused"
+        }
+      )
+
+    assert get_in(update_response, ["error", "code"]) == -32_001
+    assert get_in(update_response, ["error", "data", "reason"]) == "solo_tools_require_unbound_session"
+    assert {:ok, session} = SoloSessionRepository.get(repo, session_id)
+    assert session.status == "active"
+  end
+
+  test "tools list advertises static architect schemas for architect sessions", %{repo: repo} do
+    {_anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-TOOLS-LIST", [
+        "create:child_work_package",
+        "read:child_progress",
+        "read:child_findings",
+        "read:work_request",
+        "write:work_request",
+        "read:guidance_request",
+        "write:guidance_request",
+        "mint:child_worker_key",
+        "revoke:child_worker_key",
+        "read:phase",
+        "dispatch:work_request",
+        "approve:child_ready_state",
+        "approve:scope_expansion",
+        "request:child_replan",
+        "merge:child_into_phase",
+        "split:child_work_package",
+        "publish:phase_update"
+      ])
+
+    server = Server.new(test_mcp_config(repo), initialized: true, session: session)
+
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "architect-tools", "method" => "tools/list", "params" => %{}}, server)
+    tools = get_in(response, ["result", "tools"])
+    tools_by_name = Map.new(tools, &{&1["name"], &1})
+
+    assert Map.has_key?(tools_by_name, "sympp.health")
+    assert Map.has_key?(tools_by_name, "get_current_assignment")
+    refute Map.has_key?(tools_by_name, "claim_work_key")
+
+    for tool <- @architect_tool_names do
+      assert Map.has_key?(tools_by_name, tool)
+    end
+
+    assert get_in(tools_by_name, ["list_work_requests", "inputSchema", "required"]) == []
+    assert get_in(tools_by_name, ["list_work_requests", "inputSchema", "properties", "status", "type"]) == "string"
+    assert get_in(tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
+    assert get_in(tools_by_name, ["read_work_request", "inputSchema", "properties", "work_request_id", "type"]) == "string"
+    assert get_in(tools_by_name, ["read_work_request", "inputSchema", "properties", "include_planning_scratch", "type"]) == "boolean"
+    assert get_in(tools_by_name, ["add_comment", "inputSchema", "required"]) == ["target_kind", "target_id", "body"]
+    assert get_in(tools_by_name, ["list_comments", "inputSchema", "required"]) == ["target_kind", "target_id"]
+    assert get_in(tools_by_name, ["resolve_comment", "inputSchema", "required"]) == ["comment_id"]
+    assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
+    assert get_in(tools_by_name, ["read_work_request_delivery_board", "inputSchema", "required"]) == ["work_request_id"]
+    assert get_in(tools_by_name, ["read_work_request_delivery_board", "inputSchema", "properties", "include_planning_scratch", "type"]) == "boolean"
+    assert get_in(tools_by_name, ["reconcile_work_request", "inputSchema", "required"]) == ["work_request_id"]
+    assert get_in(tools_by_name, ["reconcile_work_request", "inputSchema", "properties", "apply", "type"]) == "boolean"
+
+    delivery_schema = get_in(tools_by_name, ["record_planned_slice_delivery", "inputSchema"])
+    revoke_schema = get_in(tools_by_name, ["revoke_planned_slice_worker_key", "inputSchema"])
+
+    assert delivery_schema["required"] == ["work_request_id", "planned_slice_id", "outcome", "idempotency_key"]
+    assert get_in(delivery_schema, ["properties", "outcome", "enum"]) == ["pr_merged", "completed_no_pr", "superseded", "abandoned"]
+    assert get_in(delivery_schema, ["properties", "idempotency_key", "description"]) =~ "Reusing the same key"
+    assert get_in(delivery_schema, ["properties", "merge_commit_sha", "description"]) =~ "strong evidence"
+
+    assert revoke_schema["required"] == ["work_request_id", "planned_slice_id", "grant_id", "reason"]
+    assert get_in(revoke_schema, ["properties", "grant_id", "description"]) =~ "Raw worker secrets are never accepted or returned"
+
+    assert get_in(tools_by_name, ["set_work_request_status", "inputSchema", "required"]) == ["work_request_id", "current_status", "next_status"]
+    assert get_in(tools_by_name, ["ask_work_request_question", "inputSchema", "required"]) == ["work_request_id", "category", "question", "why_needed"]
+    assert get_in(tools_by_name, ["ask_work_request_question", "inputSchema", "properties", "decision_prompt", "required"]) == ["tl_dr", "details", "options"]
+
+    assert get_in(tools_by_name, ["answer_work_request_question", "inputSchema", "required"]) == [
+             "work_request_id",
+             "question_id",
+             "answer"
+           ]
+
+    assert get_in(tools_by_name, ["answer_work_request_question", "inputSchema", "properties", "answered_by", "type"]) == "string"
+    assert get_in(tools_by_name, ["answer_work_request_question", "inputSchema", "properties", "current_status", "description"]) =~ "Deprecated alias"
+    assert get_in(tools_by_name, ["escalate_guidance_request", "inputSchema", "properties", "decision_prompt", "required"]) == ["tl_dr", "details", "options"]
+    assert get_in(tools_by_name, ["close_work_request_question", "inputSchema", "required"]) == ["work_request_id", "question_id"]
+
+    assert get_in(tools_by_name, ["answer_work_request_question_and_record_decision", "inputSchema", "required"]) == [
+             "work_request_id",
+             "question_id",
+             "answer",
+             "source_type",
+             "decision",
+             "rationale",
+             "scope_impact"
+           ]
+
+    assert get_in(tools_by_name, ["record_work_request_decision", "inputSchema", "required"]) == [
+             "work_request_id",
+             "source_type",
+             "decision",
+             "rationale",
+             "scope_impact",
+             "created_by"
+           ]
+
+    assert get_in(tools_by_name, ["record_work_request_decision", "inputSchema", "properties", "source_id", "type"]) == "string"
+    assert get_in(tools_by_name, ["record_work_request_decision", "inputSchema", "properties", "source_type", "enum"]) == DecisionLogEntry.source_types()
+
+    assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "required"]) == [
+             "work_request_id",
+             "title",
+             "goal",
+             "work_package_kind",
+             "target_base_branch",
+             "owned_file_globs",
+             "forbidden_file_globs",
+             "acceptance_criteria",
+             "validation_steps",
+             "review_lanes",
+             "stop_conditions"
+           ]
+
+    assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "owned_file_globs", "type"]) == "array"
+
+    assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "owned_file_globs", "description"]) =~
+             "`**` must be a complete path segment"
+
+    planned_slice_kinds = get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "work_package_kind", "enum"])
+    assert planned_slice_kinds == StateMachine.standalone_kinds()
+    assert "docs" in planned_slice_kinds
+
+    refute Map.has_key?(get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "forbidden_file_globs"]), "minItems")
+    assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "branch_pattern", "type"]) == "string"
+
+    assert get_in(tools_by_name, ["approve_work_request_planned_slice", "inputSchema", "required"]) == [
+             "work_request_id",
+             "planned_slice_id",
+             "current_status"
+           ]
+
+    assert get_in(tools_by_name, ["skip_work_request_planned_slice", "inputSchema", "required"]) == [
+             "work_request_id",
+             "planned_slice_id",
+             "current_status"
+           ]
+
+    assert get_in(tools_by_name, ["mark_work_request_sliced", "inputSchema", "required"]) == ["work_request_id", "current_status"]
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "required"]) == [
+             "work_request_id",
+             "planned_slice_id",
+             "claimed_by"
+           ]
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_handoff", "type"]) == "string"
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_store_dir", "type"]) == "string"
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_handoff", "description"]) =~
+             "Legacy recovery-only"
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_store_dir", "description"]) =~
+             "Legacy recovery-only"
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "legacy_private_handoff", "type"]) == "boolean"
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "legacy_private_handoff", "description"]) =~
+             "recovery-only"
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "symphony_repo_root", "type"]) == "string"
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "symphony_repo_root", "description"]) =~
+             "helper/namespace repo root"
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "repo_root", "deprecated"]) == true
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "repo_root", "description"]) =~
+             "Legacy compatibility alias"
+
+    assert get_in(tools_by_name, ["prepare_work_package_worktree", "inputSchema", "required"]) == [
+             "work_package_id",
+             "target_repo_root",
+             "base_branch",
+             "branch"
+           ]
+
+    assert get_in(tools_by_name, ["prepare_work_package_worktree", "inputSchema", "properties", "target_repo_root", "description"]) =~
+             "Target product repository root"
+
+    assert get_in(tools_by_name, ["prepare_work_package_worktree", "inputSchema", "properties", "worktree_parent", "description"]) =~
+             "safe Symphony++ worktree root"
+
+    assert get_in(tools_by_name, ["cleanup_work_package_worktree", "inputSchema", "required"]) == [
+             "work_package_id",
+             "target_repo_root"
+           ]
+
+    assert get_in(tools_by_name, ["cleanup_work_package_worktree", "inputSchema", "properties", "target_repo_root", "description"]) =~
+             "Target product repository root"
+
+    assert get_in(tools_by_name, ["read_child_status", "inputSchema", "required"]) == ["work_package_id"]
+    assert get_in(tools_by_name, ["read_child_status", "inputSchema", "properties", "work_package_id", "type"]) == "string"
+    assert get_in(tools_by_name, ["read_phase_board", "inputSchema", "required"]) == ["phase_id"]
+    assert get_in(tools_by_name, ["approve_scope_expansion", "inputSchema", "required"]) == ["work_package_id", "allowed_file_globs", "rationale"]
+    assert get_in(tools_by_name, ["approve_scope_expansion", "inputSchema", "properties", "allowed_file_globs", "minItems"]) == 1
+    assert get_in(tools_by_name, ["approve_child_ready_state", "inputSchema", "required"]) == ["work_package_id", "rationale"]
+    assert get_in(tools_by_name, ["approve_child_ready_state", "inputSchema", "properties", "request_id", "type"]) == "string"
+    assert get_in(tools_by_name, ["mint_child_worker_key", "inputSchema", "required"]) == ["work_package_id", "template"]
+    assert get_in(tools_by_name, ["mint_child_worker_key", "inputSchema", "properties", "template", "type"]) == "object"
+    assert get_in(tools_by_name, ["revoke_child_worker_key", "inputSchema", "required"]) == ["grant_id", "reason"]
+    assert get_in(tools_by_name, ["revoke_child_worker_key", "inputSchema", "properties", "grant_id", "type"]) == "string"
+    assert get_in(tools_by_name, ["merge_child_into_phase", "inputSchema", "required"]) == ["work_package_id", "merge_artifact"]
+    assert get_in(tools_by_name, ["merge_child_into_phase", "inputSchema", "properties", "merge_artifact", "required"]) == ["status", "uri"]
+    assert get_in(tools_by_name, ["split_work_package", "inputSchema", "properties", "child_specs", "minItems"]) == 1
+  end
+
+  test "tools list advertises planned-slice dispatch even when repo_root is not configured", %{repo: repo} do
+    {_anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-DISPATCH-TOOLS-NO-ROOT", [
+        "read:work_request",
+        "write:work_request",
+        "dispatch:work_request",
+        "read:phase"
+      ])
+
+    server = Server.new(Config.default(repo: repo), initialized: true, session: session)
+
+    response =
+      Server.handle(%{"jsonrpc" => "2.0", "id" => "architect-tools-no-root", "method" => "tools/list", "params" => %{}}, server)
+
+    tools_by_name =
+      response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    assert Map.has_key?(tools_by_name, "list_work_requests")
+    assert Map.has_key?(tools_by_name, "add_work_request_planned_slice")
+    assert Map.has_key?(tools_by_name, "dispatch_work_request_planned_slice")
+  end
+
+  test "tools list advertises planned-slice dispatch when the ledger cannot be handed off", %{repo: repo} do
+    {_anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-DISPATCH-TOOLS-MEMORY-DB", [
+        "read:work_request",
+        "write:work_request",
+        "dispatch:work_request",
+        "read:phase"
+      ])
+
+    server = Server.new(Config.default(repo: repo, repo_root: test_repo_root(), database: ":memory:"), initialized: true, session: session)
+
+    response =
+      Server.handle(%{"jsonrpc" => "2.0", "id" => "architect-tools-memory-db", "method" => "tools/list", "params" => %{}}, server)
+
+    tools_by_name =
+      response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    assert Map.has_key?(tools_by_name, "list_work_requests")
+    assert Map.has_key?(tools_by_name, "add_work_request_planned_slice")
+    assert Map.has_key?(tools_by_name, "dispatch_work_request_planned_slice")
+  end
+
+  test "tools list cannot receive legacy WorkRequest architect sessions from grant creation", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-WR-TOOLS-LEGACY", kind: "mcp"))
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             create_architect_work_key(repo, package.id, ["read:work_request", "write:work_request"])
+
+    assert {"architect phase-scoped grants require phase scope", []} in Keyword.get_values(changeset.errors, :phase_id)
+  end
+
+  test "tools list keeps static architect schemas when phase scope snapshot is missing", %{repo: repo} do
+    {_anchor, session, grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-TOOLS-MISSING-SCOPE", [
+        "read:work_request",
+        "write:work_request"
+      ])
+
+    repo.update_all(
+      from(access_grant in AccessGrant, where: access_grant.id == ^grant.id),
+      set: [scope_base_branch: nil]
+    )
+
+    server = Server.new(Config.default(repo: repo), initialized: true, session: session)
+
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "missing-scope-architect-tools", "method" => "tools/list", "params" => %{}}, server)
+    tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    for tool <- @architect_tool_names do
+      assert Map.has_key?(tools_by_name, tool)
+    end
+  end
+
+  test "tools list keeps static architect schemas when phase anchor no longer matches frozen scope", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-TOOLS-DRIFTED-ANCHOR", [
+        "read:work_request",
+        "write:work_request"
+      ])
+
+    assert {:ok, _anchor} = WorkPackageRepository.update(repo, anchor.id, %{repo: "nextide/other"})
+
+    server = Server.new(Config.default(repo: repo), initialized: true, session: session)
+
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "drifted-anchor-architect-tools", "method" => "tools/list", "params" => %{}}, server)
+    tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    assert Map.has_key?(tools_by_name, "sympp.health")
+    assert Map.has_key?(tools_by_name, "get_current_assignment")
+
+    for tool <- @architect_tool_names do
+      assert Map.has_key?(tools_by_name, tool)
+    end
+  end
+
+  test "tools list exposes only claim refresh for stale architect sessions after grant revocation", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-TOOLS-REVOKED", kind: "mcp"))
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+    server = Server.new(Config.default(repo: repo), initialized: true, session: session)
+
+    assert {:ok, _revoked} = AccessGrantService.revoke(repo, architect_assignment.grant_id)
+
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "revoked-architect-tools", "method" => "tools/list", "params" => %{}}, server)
+    tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    assert Map.keys(tools_by_name) |> Enum.sort() == ["claim_private_handoff", "claim_work_key", "sympp.health"]
+  end
+
+  test "tools list preserves ledger failures while revalidating bound sessions" do
+    session =
+      Session.new(%Assignment{
+        grant_id: "grant-1",
+        work_package_id: "SYMPP-LEDGER-TOOLS-LIST",
+        display_key: "ABCD",
+        grant_role: "architect",
+        capabilities: ["read:phase"],
+        claimed_at: DateTime.utc_now(:microsecond),
+        claimed_by: "architect-1"
+      })
+
+    response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "tools-list-ledger-failure", "method" => "tools/list", "params" => %{}},
+        config: Config.default(repo: FailingAuthRepo),
+        session: session
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_000
+    assert get_in(response, ["error", "data", "reason"]) == "ledger_unavailable"
+  end
+
+  test "tools list keeps static architect schemas while calls use live capabilities", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-LIVE-CAPABILITY-LIST", kind: "mcp"))
+
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(%{architect_assignment | capabilities: []}, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+    server = Server.new(Config.default(repo: repo), initialized: true, session: session)
+
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "live-capability-architect-tools", "method" => "tools/list", "params" => %{}}, server)
+    tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    assert Map.has_key?(tools_by_name, "get_current_assignment")
+    assert Map.has_key?(tools_by_name, "sympp.health")
+
+    for tool <- @architect_tool_names do
+      assert Map.has_key?(tools_by_name, tool)
+    end
+
+    denied_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "lifecycle-only-read-work-request",
+          "method" => "tools/call",
+          "params" => %{"name" => "list_work_requests", "arguments" => %{}}
+        },
+        server
+      )
+
+    assert get_in(denied_response, ["error", "code"]) == -32_003
+    assert get_in(denied_response, ["error", "data", "reason"]) == "insufficient_capability"
+    assert get_in(denied_response, ["error", "data", "reason_code"]) == "insufficient_capability"
+  end
+
+  test "architect tools reject arguments outside their advertised schemas", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-STRICT", kind: "mcp"))
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:child_progress", "read:child_findings"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "strict-architect-args",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_child_status", "arguments" => %{"work_package_id" => package.id, "unexpected" => "value"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "unexpected_argument"
+    assert get_in(response, ["error", "data", "arguments"]) == ["unexpected"]
+  end
+end
