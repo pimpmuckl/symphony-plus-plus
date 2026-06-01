@@ -249,8 +249,7 @@ defmodule Mix.Tasks.CodeQuality.Guard do
     end
   end
 
-  defp parse_error_line(line) when is_integer(line), do: line
-  defp parse_error_line(location) when is_list(location), do: Keyword.get(location, :line, 1)
+  defp parse_error_line(location), do: Keyword.get(location, :line, 1)
 
   defp collect_owners(ast) do
     {_ast, owners} =
