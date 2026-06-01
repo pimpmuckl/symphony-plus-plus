@@ -22,6 +22,15 @@ make -C elixir all MIX="mise exec -- mix"
 That gate runs dependency setup, build, format check, lint/static checks,
 coverage, and Dialyzer through the Elixir `Makefile`.
 
+The Elixir lint/static step includes `mix code_quality.guard`. The Mix guard
+scans backend and frontend source paths, applies separate production and test
+line/function-complexity defaults, and keeps measured legacy oversize files in
+an explicit ratchet allowlist. Frontend ESLint applies the matching
+line/complexity defaults and legacy ratchets for JavaScript/TypeScript/React
+sources through the existing `npm run quality` / `make -C elixir assets-check`
+path. Legacy entries may shrink without an update, but growth beyond the
+recorded value must be an intentional ratchet edit in the same PR.
+
 When diagnosing a coverage-only change, run the coverage gate directly from the
 Elixir project:
 

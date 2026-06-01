@@ -1,0 +1,311 @@
+Code.require_file("../../../support/symphony_plus_plus/mcp_case.exs", __DIR__)
+
+defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
+  use SymphonyElixir.SymphonyPlusPlus.MCPCase
+
+  test "mix task reuses an already-started repo for the exact SQLite URI" do
+    database = "file:sympp_mcp_#{System.unique_integer([:positive])}?mode=memory&cache=shared"
+    original_repo = Repo.get_dynamic_repo()
+    original_logger_config = Application.fetch_env(:logger, :console)
+    {:ok, pid} = Repo.start_link(database: database, name: Repo.process_name(database), pool_size: 1, log: false)
+
+    input =
+      [
+        Jason.encode!(%{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}),
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => 1,
+          "method" => "tools/call",
+          "params" => %{"name" => "sympp.health", "arguments" => %{}}
+        })
+      ]
+      |> Enum.join("\n")
+      |> Kernel.<>("\n")
+
+    try do
+      output =
+        capture_io(input, fn ->
+          McpTask.run(["--database", database])
+        end)
+
+      responses = decode_json_lines(output)
+
+      assert Enum.any?(responses, fn response ->
+               get_in(response, ["result", "structuredContent", "ledger", "reachable"]) == true
+             end)
+
+      assert Process.alive?(pid)
+      assert Repo.get_dynamic_repo() == original_repo
+      assert Application.fetch_env(:logger, :console) == original_logger_config
+    after
+      GenServer.stop(pid)
+    end
+  end
+
+  test "harness config override does not require a repo option" do
+    config = Config.default(repo: Repo, version: "test-version")
+
+    response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => 1, "method" => "resources/read", "params" => %{"uri" => "sympp://health/version"}},
+        config: config
+      )
+
+    text = get_in(response, ["result", "contents", Access.at(0), "text"])
+    assert Jason.decode!(text)["version"] == "test-version"
+  end
+
+  test "initialize returns server version and MCP capabilities", %{repo: repo} do
+    response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => 1, "method" => "initialize", "params" => initialize_params()},
+        repo: repo
+      )
+
+    assert response["jsonrpc"] == "2.0"
+    assert response["id"] == 1
+    assert get_in(response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+    assert get_in(response, ["result", "serverInfo", "version"])
+    assert get_in(response, ["result", "capabilities", "tools"]) == %{}
+    assert get_in(response, ["result", "capabilities", "resources"]) == %{}
+  end
+
+  test "server requires initialize before MCP operations", %{repo: repo} do
+    server = Server.new(Config.default(repo: repo))
+
+    pre_init_response =
+      Server.handle(%{"jsonrpc" => "2.0", "id" => "tools", "method" => "tools/list", "params" => %{}}, server)
+
+    assert get_in(pre_init_response, ["error", "code"]) == -32_000
+    assert get_in(pre_init_response, ["error", "data", "reason"]) == "server_not_initialized"
+
+    {init_response, initialized_server} =
+      Server.handle_state(%{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}, server)
+
+    assert init_response["result"]["protocolVersion"] == "2025-03-26"
+    assert initialized_server.initialized == true
+
+    post_init_response =
+      Server.handle(%{"jsonrpc" => "2.0", "id" => "tools", "method" => "tools/list", "params" => %{}}, initialized_server)
+
+    assert is_list(get_in(post_init_response, ["result", "tools"]))
+  end
+
+  test "tools list exposes scoped schemas before binding while write calls stay claim-gated", %{repo: repo} do
+    unbound_server = Server.new(Config.default(repo: repo), initialized: true)
+
+    unbound_response =
+      Server.handle(%{"jsonrpc" => "2.0", "id" => "unbound-tools", "method" => "tools/list", "params" => %{}}, unbound_server)
+
+    unbound_tools = get_in(unbound_response, ["result", "tools"])
+    unbound_tool_names = Enum.map(unbound_tools, & &1["name"])
+    unbound_tools_by_name = Map.new(unbound_tools, &{&1["name"], &1})
+
+    assert length(unbound_tool_names) == length(Enum.uniq(unbound_tool_names))
+
+    for tool <- [
+          "claim_private_handoff",
+          "claim_work_key",
+          "create_work_request",
+          "solo_append",
+          "solo_attach",
+          "solo_list",
+          "solo_show",
+          "solo_update_status",
+          "sympp.health"
+        ] do
+      assert Map.has_key?(unbound_tools_by_name, tool)
+    end
+
+    for tool <- @architect_tool_names do
+      assert Map.has_key?(unbound_tools_by_name, tool)
+    end
+
+    for tool <- @worker_tool_names do
+      assert Map.has_key?(unbound_tools_by_name, tool)
+    end
+
+    assert get_in(unbound_tools_by_name, ["claim_work_key", "inputSchema", "required"]) == ["secret", "claimed_by"]
+    assert get_in(unbound_tools_by_name, ["claim_work_key", "inputSchema", "properties", "secret", "type"]) == "string"
+    assert get_in(unbound_tools_by_name, ["claim_private_handoff", "inputSchema", "required"]) == ["claimed_by"]
+    assert get_in(unbound_tools_by_name, ["claim_private_handoff", "inputSchema", "properties", "private_handoff", "type"]) == "object"
+
+    assert get_in(unbound_tools_by_name, ["claim_private_handoff", "inputSchema", "then", "anyOf"]) == [
+             %{"required" => ["private_handoff"]},
+             %{"required" => ["mode", "path", "target", "grant_id", "display_key", "work_package_id"]}
+           ]
+
+    assert get_in(unbound_tools_by_name, ["create_work_request", "inputSchema", "required"]) == [
+             "repo",
+             "base_branch",
+             "title",
+             "request_kind"
+           ]
+
+    assert get_in(unbound_tools_by_name, ["create_work_request", "inputSchema", "then", "anyOf"]) == [
+             %{"required" => ["description"]},
+             %{"required" => ["human_description"]}
+           ]
+
+    assert get_in(unbound_tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
+    assert get_in(unbound_tools_by_name, ["append_progress", "inputSchema", "required"]) == ["summary", "idempotency_key"]
+
+    assert get_in(unbound_tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == [
+             "blocker_id",
+             "resolution",
+             "summary",
+             "idempotency_key"
+           ]
+
+    assert get_in(unbound_tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "required"]) == [
+             "work_request_id",
+             "planned_slice_id",
+             "claimed_by"
+           ]
+
+    unclaimed_read_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "unclaimed-read-work-request",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_work_request", "arguments" => %{"unexpected" => "value"}}
+        },
+        unbound_server
+      )
+
+    assert get_in(unclaimed_read_response, ["error", "code"]) == -32_001
+    assert get_in(unclaimed_read_response, ["error", "data", "tool"]) == "read_work_request"
+    assert get_in(unclaimed_read_response, ["error", "data", "reason"]) == "local_mcp_required"
+
+    unclaimed_progress_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "unclaimed-append-progress",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_progress", "arguments" => %{"unexpected" => "value"}}
+        },
+        unbound_server
+      )
+
+    assert get_in(unclaimed_progress_response, ["error", "code"]) == -32_001
+    assert get_in(unclaimed_progress_response, ["error", "data", "resource"]) == "append_progress"
+    assert get_in(unclaimed_progress_response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(unclaimed_progress_response, ["error", "data", "action"]) == "claim_work_key"
+
+    assert {:ok, claim_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-UNBOUND-CLAIM-CALL", kind: "mcp"))
+    assert {:ok, claim_minted} = AccessGrantService.mint_worker_grant(repo, claim_package.id)
+
+    claim_response =
+      mcp_tool(repo, nil, "claim_work_key", %{
+        "secret" => claim_minted.work_key.secret,
+        "claimed_by" => "worker-1"
+      })
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-UNBOUND-CLAIM-CALL"
+
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-TOOLS-LIST", kind: "mcp"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    worker_session = MCPHarness.session(worker_assignment, proof_hash: minted.grant.secret_hash)
+    worker_server = Server.new(Config.default(repo: repo), initialized: true, session: worker_session)
+
+    worker_response =
+      Server.handle(%{"jsonrpc" => "2.0", "id" => "worker-tools", "method" => "tools/list", "params" => %{}}, worker_server)
+
+    tools_by_name =
+      worker_response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    assert get_in(tools_by_name, ["get_current_assignment", "inputSchema", "required"]) == []
+    assert get_in(tools_by_name, ["append_progress", "inputSchema", "required"]) == ["summary", "idempotency_key"]
+    assert get_in(tools_by_name, ["append_finding", "inputSchema", "required"]) == ["title", "body", "idempotency_key"]
+    assert get_in(tools_by_name, ["read_guidance_request", "inputSchema", "required"]) == ["guidance_request_id"]
+    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "required"]) == ["expected_version"]
+    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "expected_version", "type"]) == "integer"
+    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "required"]) == ["nodes"]
+    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "properties", "nodes", "minItems"]) == 1
+    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "work_package_id", "type"]) == "string"
+    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "then", "oneOf"]) != nil
+
+    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "properties", "nodes", "items", "anyOf"]) == [
+             %{"required" => ["title"]},
+             %{"required" => ["id"], "anyOf" => [%{"required" => ["title"]}, %{"required" => ["body"]}, %{"required" => ["status"]}]}
+           ]
+
+    assert get_in(tools_by_name, ["set_status", "inputSchema", "required"]) == ["status", "expected_status"]
+    assert get_in(tools_by_name, ["report_blocker", "inputSchema", "properties", "blocker_id", "type"]) == "string"
+    assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
+    assert get_in(tools_by_name, ["add_comment", "inputSchema", "required"]) == ["target_kind", "target_id", "body"]
+    assert get_in(tools_by_name, ["add_comment", "inputSchema", "properties", "target_kind", "enum"]) == ["work_request", "planned_slice", "work_package"]
+    assert get_in(tools_by_name, ["add_comment", "inputSchema", "properties", "body", "maxLength"]) == Comment.max_body_length()
+    assert get_in(tools_by_name, ["list_comments", "inputSchema", "required"]) == ["target_kind", "target_id"]
+    assert get_in(tools_by_name, ["resolve_comment", "inputSchema", "required"]) == ["comment_id"]
+    assert get_in(tools_by_name, ["resolve_comment", "inputSchema", "properties", "resolution_note", "maxLength"]) == Comment.max_resolution_note_length()
+    assert get_in(tools_by_name, ["attach_branch", "inputSchema", "required"]) == ["branch", "head_sha"]
+    assert get_in(tools_by_name, ["attach_branch", "inputSchema", "properties", "head_sha", "type"]) == "string"
+
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "then", "allOf"]) != nil
+
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "number", "anyOf"]) == [
+             %{"type" => "integer", "minimum" => 1},
+             %{"type" => "string", "pattern" => "^[1-9][0-9]*$"}
+           ]
+
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "required"]) == ["metadata"]
+
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "then", "allOf"]) != nil
+
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "number", "anyOf"]) == [
+             %{"type" => "integer", "minimum" => 1},
+             %{"type" => "string", "pattern" => "^[1-9][0-9]*$"}
+           ]
+
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts", "head_sha"]
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "minItems"]) == 1
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "items", "type"]) == "string"
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "items", "pattern"]) == "\\S"
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "artifacts", "minItems"]) == 1
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "artifacts", "items", "type"]) == "string"
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "artifacts", "items", "pattern"]) == "\\S"
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "items", "required"]) == ["lane", "verdict"]
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "head_sha", "type"]) == "string"
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "acceptance_criteria_met", "type"]) == "boolean"
+
+    refute Map.has_key?(tools_by_name, "read_child_status")
+    refute Map.has_key?(tools_by_name, "mint_child_worker_key")
+
+    refute Map.has_key?(tools_by_name, "claim_work_key")
+  end
+
+  test "tools list returns Codex-compatible top-level input schemas for every surface", %{repo: repo} do
+    assert {:ok, worker_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-CODEX-SCHEMA-WORKER", kind: "mcp"))
+    assert {:ok, worker_minted} = AccessGrantService.mint_worker_grant(repo, worker_package.id)
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, worker_minted.work_key.secret, claimed_by: "worker-1")
+    worker_session = MCPHarness.session(worker_assignment, proof_hash: worker_minted.grant.secret_hash)
+
+    {_anchor, architect_session, _grant} = create_phase_architect_session(repo, "SYMPP-CODEX-SCHEMA-ARCHITECT", ["read:phase"])
+
+    surfaces = [
+      {"unbound", Server.new(Config.default(repo: repo), initialized: true)},
+      {"worker", Server.new(Config.default(repo: repo), initialized: true, session: worker_session)},
+      {"architect", Server.new(test_mcp_config(repo), initialized: true, session: architect_session)}
+    ]
+
+    for {surface, server} <- surfaces,
+        tool <- tools_for_server(server) do
+      schema = Map.fetch!(tool, "inputSchema")
+
+      assert schema["type"] == "object", "#{surface} #{tool["name"]} inputSchema must be a top-level object"
+
+      forbidden = Map.take(schema, @codex_forbidden_top_level_schema_keys)
+      assert forbidden == %{}, "#{surface} #{tool["name"]} has Codex-rejected top-level schema keys: #{inspect(Map.keys(forbidden))}"
+    end
+  end
+end

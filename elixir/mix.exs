@@ -47,6 +47,10 @@ defmodule SymphonyElixir.MixProject do
         "test/support/github_test_support.exs",
         "test/support/mcp_harness.exs",
         "test/support/symphony_plus_plus/agent_format_fixtures.exs",
+        "test/support/symphony_plus_plus/mcp_case.exs",
+        "test/support/symphony_plus_plus/mcp_common_helpers.exs",
+        "test/support/symphony_plus_plus/mcp_handoff_helpers.exs",
+        "test/support/symphony_plus_plus/mcp_session_helpers.exs",
         "test/support/snapshot_support.exs",
         "test/support/test_support.exs",
         "test/support/work_package_factory.exs"
@@ -101,7 +105,7 @@ defmodule SymphonyElixir.MixProject do
       setup: ["deps.get"],
       build: ["escript.build"],
       "sympp.integration": ["test test/symphony_elixir/symphony_plus_plus/integration_harness_test.exs"],
-      lint: ["specs.check", "credo --strict"]
+      lint: ["specs.check", "code_quality.guard", "credo --strict"]
     ]
   end
 

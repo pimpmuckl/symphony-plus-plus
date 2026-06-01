@@ -1,0 +1,474 @@
+import { AlertTriangle, CheckCircle2, MessageSquareText, RefreshCw } from "lucide-react";
+import type { ContextComment, DashboardPayload, HandoffCopyState, PlannedSlice, SoloSession, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
+import type * as React from "react";
+import type { UpdateMotion, UpdateMotionKind } from "@/components/dashboard/motion";
+import type { BoardLayoutMode as WorkstreamLayoutMode } from "@/components/dashboard/board-layout";
+
+declare global {
+  interface Window {
+    SYMPP_DASHBOARD_CONFIG?: {
+      apiBase?: string;
+      basePath?: string;
+      csrfToken?: string;
+      logoUrl?: string;
+      operatorMode?: boolean;
+    };
+  }
+}
+
+export const DASHBOARD_UI_STATE_KEY = "symphony-plus-plus.dashboard.ui-state.v1";
+
+export const DASHBOARD_THEME_KEY = "symphony-plus-plus.dashboard.theme.v1";
+
+export const DASHBOARD_DEBUG_ANIMATIONS_KEY = "symphony-plus-plus.dashboard.debug-animations";
+
+export const REPO_WORKSTREAM_MOTION_MS = 360;
+
+export const DASHBOARD_POLL_INTERVAL_MS = 7000;
+
+export const DASHBOARD_RECONNECT_GRACE_MS = 5 * 60 * 1000;
+
+export const CARD_DETAIL_LOADING_HOLD_MS = 220;
+
+export const CARD_DETAIL_WIDTH_MS = 340;
+
+export const CARD_DETAIL_HEIGHT_MS = 620;
+
+export const LOCAL_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
+export const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
+
+export const DEFAULT_DASHBOARD_API_BASE = "/api/v1/sympp/operator";
+
+export const OPERATOR_BOOTSTRAP_PARAM = "operator_bootstrap";
+
+export const LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE = "Local operator session needs reconnect. Use Reconnect after Symphony++ is reachable.";
+
+export const PR_SYNC_INTERVAL_MS = 60_000;
+
+export const COMMENT_BODY_MAX_LENGTH = 4000;
+
+export const MAX_UPDATE_MOTION_ENTRIES = 120;
+
+export type DashboardRuntimeConfig = {
+  apiBase?: string;
+  basePath?: string;
+  csrfToken?: string;
+  logoUrl?: string;
+  operatorMode?: boolean;
+};
+
+export type DashboardApiResponse = unknown;
+
+export type DashboardResponseSelector = (payload: DashboardApiResponse) => DashboardPayload | null | undefined;
+
+export class DashboardApiError extends Error {
+  readonly reconnectableLocalSession: boolean;
+
+  constructor(message: string, reconnectableLocalSession = false) {
+    super(message);
+    this.name = "DashboardApiError";
+    this.reconnectableLocalSession = reconnectableLocalSession;
+  }
+}
+
+export let dashboardRuntimeConfig: DashboardRuntimeConfig | undefined = typeof window === "undefined" ? undefined : window.SYMPP_DASHBOARD_CONFIG;
+
+export let dashboardRuntimeConfigPromise: Promise<DashboardRuntimeConfig | undefined> | null = null;
+
+export let dashboardRuntimeConfigGeneration = 0;
+
+export const DASHBOARD_LOGO_URL = dashboardRuntimeConfig?.logoUrl || "/splusplus-logo.png";
+
+export type TopPanelKey = "guidance" | "blockers" | "finished";
+
+export type TopPanelDirection = "forward" | "backward";
+
+export type TopPanelPhase = "idle" | "opening" | "closing" | "pre-resize" | "swapping" | "post-resize";
+
+export type PackageLineageProjection = NonNullable<WorkPackageCard["lineage"]>;
+
+export type WorkspaceTab = "workstreams" | "solo";
+
+export type WorkspaceTabPhase = "idle" | "swapping";
+
+export type CardDetailStage = "loading" | "width" | "height" | "ready";
+
+export type DashboardTheme = "light" | "dark";
+
+export type CommentCardSignal = { open: number; total: number };
+
+export type StatusTileTone = "violet" | "amber" | "emerald";
+
+export type RepoSummaryPlateTone = "requested" | "active" | "implementing" | "finished" | "guidance" | "blocker";
+
+export type UpdateMotionsAction =
+  | { type: "clear" }
+  | { type: "merge"; motions: Record<string, UpdateMotion> }
+  | { type: "settle"; entries: [string, UpdateMotion][] };
+
+export type UpdateAnimationEntity = {
+  signature: string;
+  status?: string | null;
+  guidanceCount: number;
+  blockerCount: number;
+  finished: boolean;
+};
+
+export type DashboardUpdateAnimations = {
+  countPulseFor: (panel: TopPanelKey) => number;
+  motionFor: (key?: string | null) => UpdateMotion | undefined;
+  simulate: (kind: UpdateMotionKind) => void;
+};
+
+export type DashboardConnectionIssue = {
+  firstFailedAt: number;
+  lastFailedAt: number;
+  message: string;
+  reconnectableLocalSession: boolean;
+};
+
+export const STATUS_TILE_TONES: Record<StatusTileTone, { card: string; icon: string; value: string }> = {
+  violet: {
+    card: "border-violet-300 bg-violet-50/35 dark:border-violet-700/70 dark:bg-violet-950/35",
+    icon: "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-700/70 dark:bg-violet-950/70 dark:text-violet-200",
+    value: "text-violet-700 dark:text-violet-200",
+  },
+  amber: {
+    card: "border-amber-200 bg-amber-50/25 dark:border-amber-700/70 dark:bg-amber-950/30",
+    icon: "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-700/70 dark:bg-amber-950/70 dark:text-amber-200",
+    value: "text-amber-700 dark:text-amber-200",
+  },
+  emerald: {
+    card: "border-emerald-200 bg-emerald-50/25 dark:border-emerald-700/70 dark:bg-emerald-950/30",
+    icon: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/70 dark:bg-emerald-950/70 dark:text-emerald-200",
+    value: "text-emerald-700 dark:text-emerald-200",
+  },
+};
+
+export const UPDATE_SIMULATION_CONTROLS: Array<{
+  kind: UpdateMotionKind;
+  label: string;
+  icon: React.ReactNode;
+  tooltip: string;
+}> = [
+  { kind: "guidance", label: "G", icon: <MessageSquareText className="size-3.5" />, tooltip: "Simulate new human guidance" },
+  { kind: "blocker", label: "B", icon: <AlertTriangle className="size-3.5" />, tooltip: "Simulate a fresh blocker" },
+  { kind: "finished", label: "F", icon: <CheckCircle2 className="size-3.5" />, tooltip: "Simulate finished work" },
+  { kind: "changed", label: "U", icon: <RefreshCw className="size-3.5" />, tooltip: "Simulate a card update" },
+];
+
+export const REPO_SUMMARY_PLATE_TONES: Record<RepoSummaryPlateTone, string> = {
+  requested: "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700/70 dark:bg-slate-900/70 dark:text-slate-200",
+  active: "border-cyan-200 bg-cyan-50 text-cyan-800 dark:border-cyan-700/70 dark:bg-cyan-950/50 dark:text-cyan-200",
+  implementing: "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-700/70 dark:bg-sky-950/50 dark:text-sky-200",
+  finished: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/70 dark:bg-emerald-950/50 dark:text-emerald-200",
+  guidance: "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-700/70 dark:bg-violet-950/50 dark:text-violet-200",
+  blocker: "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/50 dark:text-amber-200",
+};
+
+export type CardDetailSelection =
+  | { kind: "request"; detail: WorkRequestDetail }
+  | { kind: "slice"; detail: WorkRequestDetail; slice: PlannedSlice; pkg?: WorkPackageCard }
+  | { kind: "package"; pkg: WorkPackageCard; detail?: WorkRequestDetail; slice?: PlannedSlice }
+  | { kind: "solo"; session: SoloSession };
+
+export type CardDetailSelect = (selection: CardDetailSelection) => void;
+
+export type CommentTargetKind = "work_request" | "planned_slice" | "work_package";
+
+export type CommentTarget = { target_kind: CommentTargetKind; target_id: string };
+
+export type SubmitContextComment = (target: CommentTarget, body: string) => Promise<ContextComment>;
+
+export type ResolveContextComment = (commentId: string, resolutionNote?: string) => Promise<ContextComment>;
+
+export type CommentStats = { comment_count: number; open_comment_count: number };
+
+export type WorkRequestMutation = (workRequestId: string) => Promise<void>;
+
+export type WorkRequestStateMutation = (workRequestId: string, nextState: "completed") => Promise<void>;
+
+export type WorkPackageStateAction = "merged" | "merged_and_archive" | "closed_and_archive" | "completed_no_pr";
+
+export type WorkPackageStateMutation = (workPackageId: string, action: WorkPackageStateAction, options?: { noPrEvidence?: string }) => Promise<void>;
+
+export type WorkPackageArchiveMutation = (workPackageId: string) => Promise<void>;
+
+export type RequestDetailUiState = {
+  archiveError: string | null;
+  archivePending: boolean;
+  commentsOpen: boolean;
+  deliverConfirmOpen: boolean;
+  stateError: string | null;
+  statePending: boolean;
+};
+
+export type RequestDetailUiAction =
+  | { type: "archiveError"; error: string | null }
+  | { type: "archivePending"; pending: boolean }
+  | { type: "commentsOpen"; open: boolean }
+  | { type: "deliverConfirmOpen"; open: boolean }
+  | { type: "stateError"; error: string | null }
+  | { type: "statePending"; pending: boolean };
+
+export type PackageDetailUiState = {
+  archiveConfirmOpen: boolean;
+  archiveError: string | null;
+  archivePending: boolean;
+  evidenceDialogOpen: boolean;
+  noPrEvidence: string;
+  pendingStateAction: WorkPackageStateAction | null;
+  stateConfirmOpen: boolean;
+  stateError: string | null;
+  statePending: boolean;
+};
+
+export type PackageDetailUiAction =
+  | { type: "archiveConfirmOpen"; open: boolean }
+  | { type: "archiveError"; error: string | null }
+  | { type: "archivePending"; pending: boolean }
+  | { type: "evidenceDialogOpen"; open: boolean }
+  | { type: "noPrEvidence"; value: string }
+  | { type: "pendingStateAction"; action: WorkPackageStateAction | null }
+  | { type: "stateClosed" }
+  | { type: "stateConfirmOpen"; open: boolean }
+  | { type: "stateError"; error: string | null }
+  | { type: "statePending"; pending: boolean };
+
+export type ScopedHandoffCopy = {
+  error: string | null;
+  identity: string;
+  state: HandoffCopyState;
+};
+
+export type DashboardUiState = {
+  workspaceTab?: WorkspaceTab;
+  topPanel?: TopPanelKey | null;
+  repoWorkstreams?: Record<string, boolean>;
+  finishedRequestChildren?: Record<string, boolean>;
+  workstreamLayout?: WorkstreamLayoutMode;
+  hideEmptyWorkstreams?: boolean;
+  theme?: DashboardTheme;
+};
+
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function normalizeRuntimeBase(value: string | undefined, fallback: string) {
+  const base = value?.trim() || fallback;
+  return base.replace(/\/+$/, "");
+}
+
+export function operatorApiUrl(path: string) {
+  const base = normalizeRuntimeBase(dashboardRuntimeConfig?.apiBase, DEFAULT_DASHBOARD_API_BASE);
+  const suffix = path.startsWith("/") ? path : `/${path}`;
+  return `${base}${suffix}`;
+}
+
+export function operatorConfigUrl() {
+  const url = operatorApiUrl("/config");
+  const token = currentOperatorBootstrapToken();
+
+  if (!token) return url;
+
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}${encodeURIComponent(OPERATOR_BOOTSTRAP_PARAM)}=${encodeURIComponent(token)}`;
+}
+
+export function currentOperatorBootstrapToken() {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const value = new URLSearchParams(window.location.search).get(OPERATOR_BOOTSTRAP_PARAM);
+    return value?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export function scrubOperatorBootstrapFromUrl() {
+  if (typeof window === "undefined") return;
+
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has(OPERATOR_BOOTSTRAP_PARAM)) return;
+
+    url.searchParams.delete(OPERATOR_BOOTSTRAP_PARAM);
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState(window.history.state, document.title, nextUrl);
+  } catch {
+    // URL cleanup is best-effort; auth state must not depend on browser history mutation.
+  }
+}
+
+export function jsonHeaders({ csrf = false, content = false }: { csrf?: boolean; content?: boolean } = {}) {
+  const headers: Record<string, string> = { accept: "application/json" };
+
+  if (content) {
+    headers["content-type"] = "application/json";
+  }
+
+  if (csrf && dashboardRuntimeConfig?.csrfToken) {
+    headers["x-csrf-token"] = dashboardRuntimeConfig.csrfToken;
+  }
+
+  return headers;
+}
+
+export function operatorFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  return fetch(input, { ...init, credentials: "include" });
+}
+
+export async function readDashboardApiResponse(response: Response, fallbackMessage: string): Promise<DashboardApiResponse> {
+  const payload = await readDashboardJson(response);
+
+  if (!response.ok) {
+    throw dashboardResponseError(response, payload, fallbackMessage);
+  }
+
+  return payload;
+}
+
+export async function readDashboardJson(response: Response): Promise<DashboardApiResponse> {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+export function dashboardErrorMessage(payload: DashboardApiResponse) {
+  if (!isRecord(payload) || !isRecord(payload.error)) return null;
+  return typeof payload.error.message === "string" ? payload.error.message : null;
+}
+
+export function dashboardResponseError(response: Response, payload: DashboardApiResponse, fallbackMessage: string) {
+  return new DashboardApiError(
+    dashboardResponseErrorMessage(response, payload, fallbackMessage),
+    isLocalOperatorAuthResponse(response, payload),
+  );
+}
+
+export function dashboardResponseErrorMessage(response: Response, payload: DashboardApiResponse, fallbackMessage: string) {
+  if (isLocalOperatorAuthResponse(response, payload)) return LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE;
+  return dashboardErrorMessage(payload) || fallbackMessage;
+}
+
+export function isLocalOperatorAuthResponse(response: Response, payload: DashboardApiResponse) {
+  if (response.status === 401) return true;
+  if (response.status === 403 && !isRecord(payload)) return true;
+
+  if (!isRecord(payload) || !isRecord(payload.error)) return false;
+  const code = typeof payload.error.code === "string" ? payload.error.code : "";
+  return code === "unauthorized" || code === "forbidden" || code.toLowerCase().includes("csrf");
+}
+
+export function isLocalOperatorAuthRequiredMessage(message?: string | null) {
+  return message === LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE;
+}
+
+export function dashboardCaughtMessage(caught: unknown, fallbackMessage: string) {
+  return caught instanceof Error ? caught.message : fallbackMessage;
+}
+
+export function isReconnectableLocalOperatorError(caught: unknown) {
+  return (
+    (caught instanceof DashboardApiError && caught.reconnectableLocalSession) ||
+    (caught instanceof Error && isLocalOperatorAuthRequiredMessage(caught.message))
+  );
+}
+
+export function dashboardFromEnvelope(payload: DashboardApiResponse) {
+  if (!isRecord(payload) || !isRecord(payload.dashboard)) return null;
+  return payload.dashboard as DashboardPayload;
+}
+
+export function invalidateDashboardRuntimeAuth() {
+  dashboardRuntimeConfigGeneration += 1;
+  dashboardRuntimeConfigPromise = null;
+  const currentConfig = dashboardRuntimeConfig ?? (typeof window === "undefined" ? undefined : window.SYMPP_DASHBOARD_CONFIG);
+  dashboardRuntimeConfig = currentConfig ? { ...currentConfig, csrfToken: undefined } : undefined;
+
+  if (typeof window !== "undefined" && window.SYMPP_DASHBOARD_CONFIG) {
+    window.SYMPP_DASHBOARD_CONFIG = { ...window.SYMPP_DASHBOARD_CONFIG, csrfToken: undefined };
+  }
+}
+
+export async function reconnectLocalOperatorSession() {
+  invalidateDashboardRuntimeAuth();
+  return ensureDashboardRuntimeConfig();
+}
+
+export async function withLocalOperatorReconnect<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (caught) {
+    if (!isReconnectableLocalOperatorError(caught)) {
+      throw caught;
+    }
+
+    await reconnectLocalOperatorSession();
+    return operation();
+  }
+}
+
+export async function ensureDashboardRuntimeConfig() {
+  if (dashboardRuntimeConfig?.csrfToken) {
+    scrubOperatorBootstrapFromUrl();
+    return dashboardRuntimeConfig;
+  }
+
+  if (!dashboardRuntimeConfigPromise) {
+    const loadGeneration = dashboardRuntimeConfigGeneration;
+    const configPromise: Promise<DashboardRuntimeConfig | undefined> = operatorFetch(operatorConfigUrl(), { headers: jsonHeaders() })
+      .then(async (response) => {
+        const payload = await readDashboardApiResponse(response, "Dashboard runtime config unavailable");
+        const nextConfig = payload as DashboardRuntimeConfig;
+
+        if (dashboardRuntimeConfigPromise !== configPromise || loadGeneration !== dashboardRuntimeConfigGeneration) {
+          return dashboardRuntimeConfig ?? { ...nextConfig, csrfToken: undefined };
+        }
+
+        dashboardRuntimeConfig = nextConfig;
+        scrubOperatorBootstrapFromUrl();
+        return dashboardRuntimeConfig;
+      })
+      .finally(() => {
+        if (dashboardRuntimeConfigPromise === configPromise) {
+          dashboardRuntimeConfigPromise = null;
+        }
+      });
+
+    dashboardRuntimeConfigPromise = configPromise;
+  }
+
+  return dashboardRuntimeConfigPromise;
+}
+
+export async function mutationHeaders() {
+  await ensureDashboardRuntimeConfig();
+  return jsonHeaders({ csrf: true, content: true });
+}
+
+export async function copyTextToClipboard(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const textArea = document.createElement("textarea");
+  textArea.value = value;
+  textArea.setAttribute("readonly", "");
+  textArea.style.cssText = "position: fixed; left: -9999px; top: 0;";
+  document.body.appendChild(textArea);
+  textArea.select();
+
+  try {
+    const copied = document.execCommand("copy");
+    if (!copied) throw new Error("Clipboard copy unavailable");
+  } finally {
+    document.body.removeChild(textArea);
+  }
+}

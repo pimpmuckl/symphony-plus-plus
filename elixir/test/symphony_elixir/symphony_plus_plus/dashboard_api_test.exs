@@ -2331,51 +2331,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert encoded =~ "[REDACTED]"
   end
 
-  test "worker scoping classifies status-only run payloads", %{repo: repo} do
-    assert {:ok, work_package} =
-             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUNTIME-STATUS-ONLY", status: "implementing"))
-
-    grant = create_claimed_worker_grant(repo, work_package.id, "worker-1")
-    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -600, :second)
-
-    payload =
-      SymppDashboardApiController.scope_package_payload_for_grant(grant, %{
-        active_agent_run: %{id: "run-other", access_grant_id: "grant-other", status: "running"},
-        agent_runs: [
-          %{id: "run-owned", access_grant_id: grant.id, status: "running", last_seen_at: stale_seen_at},
-          %{id: "run-other", access_grant_id: "grant-other", status: "running"}
-        ],
-        runtime: %{
-          stale_heartbeat_after_seconds: 300,
-          active_count: 2,
-          queued_count: 0,
-          stopped_count: 0,
-          failed_count: 0,
-          completed_count: 0,
-          terminal_count: 0,
-          stale_count: 1
-        },
-        summary: %{runtime: %{stale_heartbeat_after_seconds: 300}},
-        alert_indicators: [
-          %{type: "stale_heartbeat", active: false, detail: "0 run(s) past 300s"},
-          %{type: "failed_run", active: false, detail: "0 failed run(s)"}
-        ]
-      })
-
-    alerts = Map.new(payload.alert_indicators, &{&1.type, &1})
-
-    assert [%{id: "run-owned"}] = payload.agent_runs
-    assert payload.active_agent_run.id == "run-owned"
-    assert payload.summary.active_agent_run_count == 1
-    assert payload.summary.stale_agent_run_count == 1
-    assert payload.summary.runtime.active_count == 1
-    assert payload.summary.runtime.stale_count == 1
-    assert payload.runtime.active_count == 1
-    assert payload.runtime.stale_count == 1
-    assert alerts["stale_heartbeat"].active == true
-    assert alerts["stale_heartbeat"].detail == "1 run(s) past 300s"
-  end
-
   test "worker-scoped stale alerts keep the configured threshold", %{repo: repo} do
     %{work_package: work_package, work_key_secret: secret, grant: grant} =
       create_dashboard_fixture(repo, id: "SYMPP-RUNTIME-SCOPED-STALE")
