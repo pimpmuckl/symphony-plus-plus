@@ -22,13 +22,25 @@ const testCodeQualityRules = {
 };
 
 const legacyLineRatchets = {
-  "src/App.tsx": 7263,
   "src/components/dashboard/board-wires.tsx": 881,
   "src/types/dashboard.ts": 624,
 };
 
 const legacyComplexityRatchets = {
-  "src/App.tsx": 100,
+  "src/dashboard/card-detail-dialog.tsx": 35,
+  "src/dashboard/dashboard-data.tsx": 14,
+  "src/dashboard/dashboard-settings.tsx": 13,
+  "src/dashboard/dashboard-shell.tsx": 19,
+  "src/dashboard/dashboard-state.tsx": 20,
+  "src/dashboard/detail-extras.tsx": 29,
+  "src/dashboard/package-detail.tsx": 100,
+  "src/dashboard/request-detail.tsx": 44,
+  "src/dashboard/solo-detail.tsx": 20,
+  "src/dashboard/solo-sessions.tsx": 21,
+  "src/dashboard/status-cards.tsx": 15,
+  "src/dashboard/status-rail.tsx": 28,
+  "src/dashboard/update-animations.tsx": 19,
+  "src/dashboard/workstream-cards.tsx": 52,
   "src/components/dashboard/board-wires.tsx": 16,
   "src/components/dashboard/guidance-dialog.tsx": 14,
   "src/components/dashboard/markdown-block.tsx": 18,
