@@ -265,7 +265,20 @@ follow-up slice, not part of this contract.
 Solo MCP tools are deliberately not advertised to bound worker or architect
 WorkPackage sessions. Direct calls from a bound session fail with
 `solo_tools_require_unbound_session` before mutation so Solo planning cannot be
-confused with WorkPackage orchestration.
+confused with WorkPackage orchestration. The denial includes safe current
+assignment context (`role`, repo/base, WorkPackage or WorkRequest id when
+available, `claimed_by`, and matching claim lease id/status when available) and
+points agents at `release_current_assignment`. That tool clears only the current
+MCP session binding, releases the matching current claim lease when one exists,
+redacts any supplied release reason before storage, and returns whether the
+same MCP session can immediately retry Solo tools. If the matching lease exists
+but cannot be released safely, the binding remains active and the response
+names the retry action instead of silently orphaning the lease. If the current
+session does not carry enough safe claim-lease identity to prove ownership, the
+binding also remains active and the response sets `fresh_mcp_session_required`
+with `start_fresh_mcp_session` as the next action. If that tool is not available
+or reports that a fresh session is required, start a fresh MCP session before
+using `solo_*` tools.
 
 ## Local Operator MCP tools
 
@@ -344,7 +357,11 @@ ownership contract. The call binds the session to an existing worker or
 architect grant and does not mint new grants. It remains available to unbound
 sessions only as a legacy/recovery bridge, not as the normal worker planning
 surface. Reconnects are accepted only when the same secret proof is presented
-by the same `claimed_by` owner.
+by the same `claimed_by` owner. Successful work-package claims attach a
+non-secret claim lease identity to the live session so
+`release_current_assignment` can release the matching lease. Persisted HTTP
+`state_key` recovery remains nonrecoverable for secret-backed claims after
+runtime reset.
 
 `claim_private_handoff` is a legacy/recovery local-private-file bootstrap path.
 It accepts `claimed_by` and either a redacted `private_handoff` object or
@@ -545,10 +562,10 @@ return a claim-required denial. Stale bound sessions expose only health,
 `claim_local_assignment` and `claim_local_architect_assignment` for refresh; duplicate
 `initialize` on that same stale explicit MCP session does not downgrade it into
 generic unbound discovery.
-Worker sessions keep the bound worker-facing discovery surface without Solo
-tools or architect-only schemas.
-Bound architect sessions advertise the static architect schema set and may call
-`get_current_assignment()` and read
+Worker sessions keep the bound worker-facing discovery surface, including
+`release_current_assignment`, without Solo tools or architect-only schemas.
+Bound architect sessions advertise `release_current_assignment`, the static
+architect schema set, and may call `get_current_assignment()` and read
 `sympp://assignment/current` to recover their scoped `work_package_id` after
 reconnect, but they still cannot use worker package read/write tools.
 Lifecycle capabilities such as `architect:lifecycle.transition` do not authorize
@@ -915,9 +932,11 @@ back under a temp/relative `.agents/splusplus` root if home is unavailable; add
 it only for isolated tests or manual experiments. Do not embed raw work-key secrets or bearer tokens
 in that configuration. For first-use worker dispatch, use the
 `claim_local_assignment` metadata documented in `mcp_wiring.md`. The
-private-store wrapper is a legacy/recovery fallback. For stateless transports,
-`state_key` is only handshake continuity and does not replace the ledger claim
-or legacy secret proof plus owner identity.
+private-store wrapper is a legacy/recovery fallback. For HTTP transports,
+`state_key` provides continuity and may restore local claim-lease-backed
+sessions while the matching lease remains live, but it does not replace the
+ledger claim or legacy secret proof plus owner identity when recovery is
+unavailable.
 
 ## Hook role
 

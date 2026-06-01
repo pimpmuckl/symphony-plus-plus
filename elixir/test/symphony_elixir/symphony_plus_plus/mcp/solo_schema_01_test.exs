@@ -3,6 +3,56 @@ Code.require_file("../../../support/symphony_plus_plus/mcp_case.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
+  defmodule WorkKeyClaimRaceRepo do
+    import Ecto.Query, only: [from: 2]
+
+    alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    @race_key :sympp_work_key_claim_race
+
+    def arm(grant_id, claimed_by), do: Process.put(@race_key, {grant_id, claimed_by})
+    def disarm, do: Process.delete(@race_key)
+
+    def transaction(fun) do
+      {:ok, fun.()}
+    catch
+      {:rollback, value} -> {:error, value}
+    end
+
+    def rollback(value), do: throw({:rollback, value})
+    def get(schema, id), do: Repo.get(schema, id)
+    def one(query), do: Repo.one(query)
+    def all(query), do: Repo.all(query)
+    def insert(changeset), do: Repo.insert(changeset)
+    def update(changeset), do: Repo.update(changeset)
+
+    def update_all(query, updates) do
+      inject_claim_race(updates)
+      Repo.update_all(query, updates)
+    end
+
+    defp inject_claim_race(set: fields) do
+      if Keyword.has_key?(fields, :claimed_at) do
+        case Process.get(@race_key) do
+          {grant_id, claimed_by} ->
+            Process.delete(@race_key)
+            now = DateTime.utc_now(:microsecond)
+
+            Repo.update_all(
+              from(grant in AccessGrant, where: grant.id == ^grant_id and is_nil(grant.claimed_at)),
+              set: [claimed_at: now, claimed_by: claimed_by, updated_at: now]
+            )
+
+          _race ->
+            :ok
+        end
+      end
+    end
+
+    defp inject_claim_race(_updates), do: :ok
+  end
+
   test "tools list advertises Solo tools for unbound sessions only", %{repo: repo} do
     unbound_server = Server.new(Config.default(repo: repo), initialized: true)
 
@@ -42,6 +92,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     refute Map.has_key?(worker_tools_by_name, "solo_show")
     refute Map.has_key?(worker_tools_by_name, "solo_list")
     refute Map.has_key?(worker_tools_by_name, "solo_update_status")
+    assert Map.has_key?(worker_tools_by_name, "release_current_assignment")
 
     {_anchor, architect_session, _grant} = create_phase_architect_session(repo, "SYMPP-SOLO-ARCH-TOOLS", ["read:phase"])
 
@@ -61,6 +112,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     refute Map.has_key?(architect_tools_by_name, "solo_show")
     refute Map.has_key?(architect_tools_by_name, "solo_list")
     refute Map.has_key?(architect_tools_by_name, "solo_update_status")
+    assert Map.has_key?(architect_tools_by_name, "release_current_assignment")
   end
 
   test "Solo MCP tools attach append show list redact and replay idempotent appends", %{repo: repo} do
@@ -353,26 +405,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
   end
 
   test "Solo MCP calls from bound sessions fail before mutation", %{repo: repo} do
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SOLO-BOUND-DENY", kind: "mcp"))
-    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
-    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
-    worker_session = MCPHarness.session(worker_assignment, proof_hash: minted.grant.secret_hash)
+    {package, work_request, minted, _claim_response, claimed_server} = claim_local_bound_assignment!(repo, "SYMPP-SOLO-BOUND-DENY")
 
-    response =
-      mcp_tool(
-        repo,
-        worker_session,
-        "solo_attach",
+    {response, _server} =
+      Server.handle_response_state(
         %{
-          "repo" => "nextide/example",
-          "base_branch" => "main",
-          "workspace_path" => solo_workspace_path("bound"),
-          "caller_id" => "codex-local"
-        }
+          "jsonrpc" => "2.0",
+          "id" => "solo-bound-deny",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "solo_attach",
+            "arguments" => %{
+              "repo" => "nextide/example",
+              "base_branch" => "main",
+              "workspace_path" => solo_workspace_path("bound"),
+              "caller_id" => "codex-local"
+            }
+          }
+        },
+        claimed_server
       )
 
+    data = get_in(response, ["error", "data"])
+    context = data["current_assignment"]
+
     assert get_in(response, ["error", "code"]) == -32_001
-    assert get_in(response, ["error", "data", "reason"]) == "solo_tools_require_unbound_session"
+    assert data["reason"] == "solo_tools_require_unbound_session"
+    assert data["action"] == "release_current_assignment"
+    assert get_in(data, ["recovery", "tool"]) == "release_current_assignment"
+    assert get_in(data, ["recovery", "next_action"]) == "call_release_current_assignment_then_retry_solo_tool"
+    assert context["role"] == "worker"
+    assert context["repo"] == package.repo
+    assert context["base_branch"] == package.base_branch
+    assert context["work_package_id"] == package.id
+    assert context["work_request_id"] == work_request.id
+    assert context["claimed_by"] == "local-worker-1"
+    assert context["claim_lease_id"] =~ "claim_"
+    assert context["claim_lease_status"] == "active"
+    refute inspect(data) =~ minted.work_key.secret
+    refute inspect(data) =~ "private_handoff"
+    refute inspect(data) =~ "proof_hash"
+    refute inspect(data) =~ "secret_hash"
     assert repo.aggregate(SoloSession, :count, :id) == 0
 
     attach_response =
@@ -385,22 +458,455 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
 
     session_id = get_in(attach_response, ["result", "structuredContent", "solo_session", "id"])
 
-    update_response =
-      mcp_tool(
-        repo,
-        worker_session,
-        "solo_update_status",
+    {update_response, _server} =
+      Server.handle_response_state(
         %{
-          "session_id" => session_id,
-          "current_status" => "active",
-          "next_status" => "paused"
-        }
+          "jsonrpc" => "2.0",
+          "id" => "solo-update-bound-deny",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "solo_update_status",
+            "arguments" => %{
+              "session_id" => session_id,
+              "current_status" => "active",
+              "next_status" => "paused"
+            }
+          }
+        },
+        claimed_server
       )
 
     assert get_in(update_response, ["error", "code"]) == -32_001
     assert get_in(update_response, ["error", "data", "reason"]) == "solo_tools_require_unbound_session"
+    assert get_in(update_response, ["error", "data", "current_assignment", "work_package_id"]) == package.id
     assert {:ok, session} = SoloSessionRepository.get(repo, session_id)
     assert session.status == "active"
+  end
+
+  test "release_current_assignment releases the current lease and allows Solo tools in the same server", %{repo: repo} do
+    {package, _work_request, minted, claim_response, claimed_server} = claim_local_bound_assignment!(repo, "SYMPP-SOLO-RELEASE")
+    lease_id = get_in(claim_response, ["result", "structuredContent", "local_claim", "claim_lease_id"])
+
+    {release_response, released_server} =
+      Server.handle_response_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "release-current-assignment",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "release_current_assignment",
+            "arguments" => %{"reason" => "done; bearer abcdefghijkl"}
+          }
+        },
+        claimed_server
+      )
+
+    payload = get_in(release_response, ["result", "structuredContent"])
+
+    assert payload["action"] == "release_current_assignment"
+    assert payload["binding_cleared"] == true
+    assert payload["solo_tools_available"] == true
+    assert payload["fresh_mcp_session_required"] == false
+    assert get_in(payload, ["released_assignment", "work_package_id"]) == package.id
+    assert get_in(payload, ["released_assignment", "claim_lease_id"]) == lease_id
+    assert get_in(payload, ["released_assignment", "claim_lease_status"]) == "released"
+    assert payload["claim_lease_release"] == %{"status" => "released", "claim_lease_id" => lease_id, "claim_lease_status" => "released"}
+    assert released_server.session == nil
+    refute inspect(release_response) =~ minted.work_key.secret
+    refute inspect(release_response) =~ "abcdefghijkl"
+    refute inspect(release_response) =~ "private_handoff"
+    refute inspect(release_response) =~ "proof_hash"
+    refute inspect(release_response) =~ "secret_hash"
+
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    assert %ClaimLease{status: "released", release_reason: "done; [REDACTED]"} = repo.get(ClaimLease, lease_id)
+
+    solo_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "solo-after-release",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "solo_attach",
+            "arguments" => %{
+              "repo" => "nextide/example",
+              "base_branch" => "main",
+              "workspace_path" => solo_workspace_path("after-release"),
+              "caller_id" => "codex-local"
+            }
+          }
+        },
+        released_server
+      )
+
+    assert get_in(solo_response, ["result", "structuredContent", "action"]) == "solo_attach"
+
+    worker_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "worker-after-release", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        released_server
+      )
+
+    assert get_in(worker_response, ["error", "data", "reason"]) == "claim_required"
+  end
+
+  test "batched release_current_assignment updates the live server state", %{repo: repo} do
+    {package, _work_request, _minted, claim_response, claimed_server} = claim_local_bound_assignment!(repo, "SYMPP-SOLO-RELEASE-BATCH")
+    lease_id = get_in(claim_response, ["result", "structuredContent", "local_claim", "claim_lease_id"])
+
+    {batch_response, released_server} =
+      Server.handle_response_state(
+        [
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "release-current-assignment-batch",
+            "method" => "tools/call",
+            "params" => %{"name" => "release_current_assignment", "arguments" => %{"reason" => "done"}}
+          }
+        ],
+        claimed_server
+      )
+
+    assert [release_response] = batch_response
+    assert get_in(release_response, ["result", "structuredContent", "binding_cleared"]) == true
+    assert get_in(release_response, ["result", "structuredContent", "claim_lease_release", "claim_lease_id"]) == lease_id
+    assert released_server.session == nil
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    solo_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "solo-after-batch-release",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "solo_attach",
+            "arguments" => %{
+              "repo" => "nextide/example",
+              "base_branch" => "main",
+              "workspace_path" => solo_workspace_path("after-batch-release"),
+              "caller_id" => "codex-local"
+            }
+          }
+        },
+        released_server
+      )
+
+    assert get_in(solo_response, ["result", "structuredContent", "action"]) == "solo_attach"
+  end
+
+  test "release_current_assignment releases a claim_work_key lease and allows Solo tools in the same server", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SOLO-RELEASE-WORK-KEY", kind: "mcp"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {claim_response, claimed_server} =
+      Server.handle_response_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-work-key-release",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert {:ok, %ClaimLease{id: lease_id, access_grant_id: grant_id, actor_id: "work_key:" <> _hash}} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    assert grant_id == minted.grant.id
+
+    {release_response, released_server} =
+      Server.handle_response_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "release-work-key-current-assignment",
+          "method" => "tools/call",
+          "params" => %{"name" => "release_current_assignment", "arguments" => %{"reason" => "done"}}
+        },
+        claimed_server
+      )
+
+    payload = get_in(release_response, ["result", "structuredContent"])
+
+    assert payload["binding_cleared"] == true
+    assert payload["solo_tools_available"] == true
+    assert payload["fresh_mcp_session_required"] == false
+    assert get_in(payload, ["claim_lease_release", "status"]) == "released"
+    assert get_in(payload, ["claim_lease_release", "claim_lease_id"]) == lease_id
+    assert released_server.session == nil
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    refute inspect(release_response) =~ minted.work_key.secret
+
+    solo_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "solo-after-work-key-release",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "solo_attach",
+            "arguments" => %{
+              "repo" => "nextide/example",
+              "base_branch" => "main",
+              "workspace_path" => solo_workspace_path("after-work-key-release"),
+              "caller_id" => "codex-local"
+            }
+          }
+        },
+        released_server
+      )
+
+    assert get_in(solo_response, ["result", "structuredContent", "action"]) == "solo_attach"
+  end
+
+  test "claim_work_key lease conflicts do not revoke the grant", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SOLO-WORK-KEY-LEASE-CONFLICT", kind: "mcp"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    assert {:ok, %ClaimLease{id: lease_id}} =
+             ClaimLeaseService.claim(
+               repo,
+               package.id,
+               %{
+                 actor_kind: "agent",
+                 actor_id: "other-worker",
+                 actor_display_name: "other-worker"
+               },
+               access_grant_id: minted.grant.id,
+               stale_after_ms: 86_400_000
+             )
+
+    {conflict_response, conflict_server} =
+      Server.handle_response_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-work-key-lease-conflict",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(conflict_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
+    assert conflict_server.session == nil
+
+    assert {:ok, grant_after_conflict} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert grant_after_conflict.revoked_at == nil
+    assert grant_after_conflict.claimed_at == nil
+    assert grant_after_conflict.claimed_by == nil
+
+    assert {:ok, %ClaimLease{status: "released"}} = ClaimLeaseService.release(repo, lease_id, reason: "other_worker_done")
+
+    {claim_response, claimed_server} =
+      Server.handle_response_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-work-key-after-lease-conflict",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert claimed_server.session.assignment.grant_id == minted.grant.id
+    assert {:ok, %ClaimLease{access_grant_id: grant_id, actor_id: "work_key:" <> _hash}} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    assert grant_id == minted.grant.id
+  end
+
+  test "claim_work_key same-owner claim race keeps the shared lease active", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SOLO-WORK-KEY-SAME-OWNER-RACE", kind: "mcp"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    WorkKeyClaimRaceRepo.arm(minted.grant.id, "worker-1")
+
+    {claim_response, claimed_server} =
+      try do
+        Server.handle_response_state(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "claim-work-key-same-owner-race",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+          },
+          Server.new(Config.default(repo: WorkKeyClaimRaceRepo), initialized: true)
+        )
+      after
+        WorkKeyClaimRaceRepo.disarm()
+      end
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert claimed_server.session.assignment.grant_id == minted.grant.id
+    refute inspect(claim_response) =~ minted.work_key.secret
+
+    assert {:ok, claimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert claimed_grant.claimed_by == "worker-1"
+
+    claim_leases =
+      repo.all(
+        from(claim_lease in ClaimLease,
+          where: claim_lease.work_package_id == ^package.id,
+          order_by: [asc: claim_lease.inserted_at, asc: claim_lease.id]
+        )
+      )
+
+    assert [
+             %ClaimLease{
+               id: lease_id,
+               status: "active",
+               access_grant_id: grant_id,
+               actor_display_name: "worker-1"
+             }
+           ] = claim_leases
+
+    assert grant_id == minted.grant.id
+    assert claimed_server.session.claim_lease_id == lease_id
+
+    {release_response, released_server} =
+      Server.handle_response_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "release-after-same-owner-race",
+          "method" => "tools/call",
+          "params" => %{"name" => "release_current_assignment", "arguments" => %{"reason" => "done"}}
+        },
+        claimed_server
+      )
+
+    assert get_in(release_response, ["result", "structuredContent", "claim_lease_release", "status"]) == "released"
+    assert get_in(release_response, ["result", "structuredContent", "claim_lease_release", "claim_lease_id"]) == lease_id
+    assert released_server.session == nil
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, package.id)
+  end
+
+  test "release_current_assignment keeps binding when claim lease identity is unavailable", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SOLO-RELEASE-LEGACY", kind: "mcp"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {_claim_response, claimed_server} =
+      Server.handle_response_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-legacy-release",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert {:ok, %ClaimLease{}} = ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    legacy_session = %{
+      claimed_server.session
+      | claim_lease_id: nil,
+        claim_actor_kind: nil,
+        claim_actor_id: nil,
+        claim_actor_display_name: nil
+    }
+
+    {release_response, still_bound_server} =
+      Server.handle_response_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "release-legacy-current-assignment",
+          "method" => "tools/call",
+          "params" => %{"name" => "release_current_assignment", "arguments" => %{"reason" => "done"}}
+        },
+        %{claimed_server | session: legacy_session}
+      )
+
+    payload = get_in(release_response, ["result", "structuredContent"])
+
+    assert payload["binding_cleared"] == false
+    assert payload["solo_tools_available"] == false
+    assert payload["fresh_mcp_session_required"] == true
+    assert get_in(payload, ["claim_lease_release", "status"]) == "not_released"
+    assert get_in(payload, ["claim_lease_release", "reason"]) == "claim_lease_identity_unavailable"
+    assert get_in(payload, ["recovery", "next_action"]) == "start_fresh_mcp_session"
+    assert get_in(payload, ["recovery", "fresh_mcp_session_required"]) == true
+    assert still_bound_server.session.assignment.work_package_id == package.id
+    assert still_bound_server.session_refresh_required == true
+    assert {:ok, %ClaimLease{status: "active"}} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    refute inspect(release_response) =~ minted.work_key.secret
+  end
+
+  test "release_current_assignment does not clear the binding when the matched lease cannot be released", %{repo: repo} do
+    {package, _work_request, _minted, claim_response, claimed_server} = claim_local_bound_assignment!(repo, "SYMPP-SOLO-RELEASE-STALE")
+    lease_id = get_in(claim_response, ["result", "structuredContent", "local_claim", "claim_lease_id"])
+
+    assert {1, nil} =
+             repo.update_all(
+               from(claim_lease in ClaimLease, where: claim_lease.id == ^lease_id),
+               set: [last_seen_at: DateTime.add(DateTime.utc_now(:microsecond), -2, :second), stale_after_ms: 1]
+             )
+
+    stale_claimed_server = %{claimed_server | session_refresh_required: true}
+
+    {release_response, still_bound_server} =
+      Server.handle_response_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "release-stale-current-assignment",
+          "method" => "tools/call",
+          "params" => %{"name" => "release_current_assignment", "arguments" => %{"reason" => "done"}}
+        },
+        stale_claimed_server
+      )
+
+    payload = get_in(release_response, ["result", "structuredContent"])
+
+    assert payload["binding_cleared"] == false
+    assert payload["solo_tools_available"] == false
+    assert get_in(payload, ["claim_lease_release", "status"]) == "not_released"
+    assert get_in(payload, ["claim_lease_release", "reason"]) == "claim_stale"
+    assert get_in(payload, ["recovery", "next_action"]) == "start_fresh_mcp_session"
+    assert get_in(payload, ["recovery", "fresh_mcp_session_required"]) == true
+    assert still_bound_server.session != nil
+    assert still_bound_server.session_refresh_required == true
+    assert {:ok, %ClaimLease{id: ^lease_id, status: "active"}} = ClaimLeaseService.current_for_work_package(repo, package.id)
+  end
+
+  test "release_current_assignment never releases a newer active lease for a stale bound session", %{repo: repo} do
+    {package, _work_request, _minted, claim_response, claimed_server} = claim_local_bound_assignment!(repo, "SYMPP-SOLO-RELEASE-MISMATCH")
+    old_lease_id = get_in(claim_response, ["result", "structuredContent", "local_claim", "claim_lease_id"])
+    assert {:ok, %ClaimLease{status: "released"}} = ClaimLeaseService.release(repo, old_lease_id, reason: "simulate_reclaim")
+
+    assert {:ok, %ClaimLease{} = newer_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               package.id,
+               %{
+                 "actor_kind" => "agent",
+                 "actor_id" => "local:new-owner:new-actor",
+                 "actor_display_name" => "local-worker-1"
+               },
+               stale_after_ms: 86_400_000
+             )
+
+    newer_lease_id = newer_lease.id
+
+    {release_response, still_bound_server} =
+      Server.handle_response_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "release-mismatched-current-assignment",
+          "method" => "tools/call",
+          "params" => %{"name" => "release_current_assignment", "arguments" => %{"reason" => "done"}}
+        },
+        claimed_server
+      )
+
+    payload = get_in(release_response, ["result", "structuredContent"])
+
+    assert payload["binding_cleared"] == false
+    assert payload["solo_tools_available"] == false
+    assert payload["fresh_mcp_session_required"] == true
+    assert get_in(payload, ["claim_lease_release", "status"]) == "not_released"
+    assert get_in(payload, ["claim_lease_release", "reason"]) == "claim_lease_mismatch"
+    assert get_in(payload, ["recovery", "next_action"]) == "start_fresh_mcp_session"
+    assert still_bound_server.session.assignment.work_package_id == package.id
+    assert still_bound_server.session_refresh_required == true
+    assert {:ok, %ClaimLease{id: ^newer_lease_id, status: "active"}} = ClaimLeaseService.current_for_work_package(repo, package.id)
   end
 
   test "tools list advertises static architect schemas for architect sessions", %{repo: repo} do
@@ -811,5 +1317,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
 
     assert get_in(response, ["error", "data", "reason"]) == "unexpected_argument"
     assert get_in(response, ["error", "data", "arguments"]) == ["unexpected"]
+  end
+
+  defp claim_local_bound_assignment!(repo, id) do
+    package = create_local_claim_package!(repo, id, base_branch: "main")
+    work_request = create_work_request!(repo, id: "WR-#{id}", repo: package.repo, base_branch: package.base_branch, status: "ready_for_slicing")
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(id: "WRS-#{id}", target_base_branch: package.base_branch, branch_pattern: package.branch_pattern)
+             )
+
+    repo.update!(Ecto.Changeset.change(planned_slice, status: "dispatched", work_package_id: package.id))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-#{id}",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" => local_assignment_claim_args(package, %{"work_request_id" => work_request.id})
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "state-#{id}")
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    refute inspect(claim_response) =~ minted.work_key.secret
+    {package, work_request, minted, claim_response, claimed_server}
   end
 end

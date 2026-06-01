@@ -3,14 +3,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
 
   @enforce_keys [:assignment]
-  defstruct [:assignment, :proof_hash]
+  defstruct [:assignment, :proof_hash, :claim_lease_id, :claim_actor_kind, :claim_actor_id, :claim_actor_display_name]
 
-  @type t :: %__MODULE__{assignment: Assignment.t(), proof_hash: String.t() | nil}
+  @type t :: %__MODULE__{
+          assignment: Assignment.t(),
+          proof_hash: String.t() | nil,
+          claim_lease_id: String.t() | nil,
+          claim_actor_kind: String.t() | nil,
+          claim_actor_id: String.t() | nil,
+          claim_actor_display_name: String.t() | nil
+        }
 
   @spec new(Assignment.t(), keyword()) :: t()
-  def new(%Assignment{} = assignment, opts \\ []), do: %__MODULE__{assignment: assignment, proof_hash: Keyword.get(opts, :proof_hash)}
+  def new(%Assignment{} = assignment, opts \\ []) do
+    %__MODULE__{
+      assignment: assignment,
+      proof_hash: Keyword.get(opts, :proof_hash),
+      claim_lease_id: Keyword.get(opts, :claim_lease_id),
+      claim_actor_kind: Keyword.get(opts, :claim_actor_kind),
+      claim_actor_id: Keyword.get(opts, :claim_actor_id),
+      claim_actor_display_name: Keyword.get(opts, :claim_actor_display_name)
+    }
+  end
 
   @spec from_grant(AccessGrant.t(), DateTime.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def from_grant(%AccessGrant{} = grant, %DateTime{} = now, opts \\ []) do
@@ -44,6 +61,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
          {:ok, grant_role} <- required_string(attrs, "grant_role"),
          {:ok, capabilities} <- nullable_string_list(attrs, "capabilities"),
          {:ok, claimed_by} <- required_string(attrs, "claimed_by"),
+         {:ok, claim_lease_id} <- optional_string(attrs, "claim_lease_id"),
+         {:ok, claim_actor_kind} <- optional_string(attrs, "claim_actor_kind"),
+         {:ok, claim_actor_id} <- optional_string(attrs, "claim_actor_id"),
+         {:ok, claim_actor_display_name} <- optional_string(attrs, "claim_actor_display_name"),
          {:ok, claimed_at} <- optional_datetime(attrs, "claimed_at") do
       {:ok,
        new(
@@ -57,9 +78,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
            claimed_at: claimed_at,
            claimed_by: claimed_by
          },
-         proof_hash: Map.get(attrs, "proof_hash") || Map.get(attrs, :proof_hash)
+         proof_hash: Map.get(attrs, "proof_hash") || Map.get(attrs, :proof_hash),
+         claim_lease_id: claim_lease_id,
+         claim_actor_kind: claim_actor_kind,
+         claim_actor_id: claim_actor_id,
+         claim_actor_display_name: claim_actor_display_name
        )}
     end
+  end
+
+  @spec with_claim_lease(t(), ClaimLease.t()) :: t()
+  def with_claim_lease(%__MODULE__{} = session, %ClaimLease{} = lease) do
+    %{
+      session
+      | claim_lease_id: lease.id,
+        claim_actor_kind: lease.actor_kind,
+        claim_actor_id: lease.actor_id,
+        claim_actor_display_name: lease.actor_display_name
+    }
   end
 
   @spec public_assignment(t()) :: map()

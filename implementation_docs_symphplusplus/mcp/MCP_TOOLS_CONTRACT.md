@@ -29,6 +29,12 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | attach_review_suite_result | Attach canonical Review Suite result evidence for the current WorkPackage head. |
 | mark_ready | Move to ready state only if gates pass. |
 
+## Assignment release tool
+
+| Tool | Purpose |
+|---|---|
+| release_current_assignment | Release only the current MCP session assignment binding and its matching current claim lease when available, keep the binding active if that lease cannot be released safely or lease ownership cannot be proven, redact the release reason, and return the supported Solo-tool recovery path. |
+
 Valid current-head review package or passing Review Suite evidence may normalize
 stale active package statuses (`ready_for_worker`, `claimed`, `planning`, or
 `implementing`) to `reviewing`. `attach_review_suite_result` accepts passing
@@ -141,12 +147,14 @@ is predictable session-shape discovery, not authorization:
   additionally advertise the local operator note tools described above and
   WorkRequest read-only discovery tools: `list_work_requests`,
   `read_work_request`, and `read_work_request_delivery_board`.
-- Bound worker sessions advertise health, `get_current_assignment`, and bound
-  worker WorkPackage tools. They do not advertise Solo tools, architect-only
-  tool schemas, or claim/bootstrap tools.
-- Bound architect sessions advertise health, `get_current_assignment`, and the
-  static architect schema set. Target, capability, phase, and scope
-  authorization still runs when an architect tool is called.
+- Bound worker sessions advertise health, `get_current_assignment`,
+  `release_current_assignment`, and bound worker WorkPackage tools. They do
+  not advertise Solo tools, architect-only tool schemas, or claim/bootstrap
+  tools.
+- Bound architect sessions advertise health, `get_current_assignment`,
+  `release_current_assignment`, and the static architect schema set. Target,
+  capability, phase, and scope authorization still runs when an architect tool
+  is called.
 
 Claim calls still require trusted local HTTP state-key continuity and scope
 validation, and worker WorkPackage calls before a valid worker claim return a
@@ -470,6 +478,10 @@ recycle a stale local claim.
 worker or architect grant during explicit legacy bootstrap/recovery; it does
 not mint new grants and is not the normal worker planning surface. Reconnects
 are accepted only when the same owner identity presents the same secret proof.
+Successful work-package claims attach a non-secret claim lease identity to the
+live session so `release_current_assignment` can release the matching lease.
+Persisted HTTP state-key recovery remains nonrecoverable for secret-backed
+claims after runtime reset.
 
 `claim_private_handoff` is the legacy/recovery local-private-file bootstrap
 path. It accepts `claimed_by` plus either a `private_handoff` object or explicit
@@ -510,13 +522,16 @@ per-slice repo selection; future tools may expose repo-scope input only after
 their policy checks and denial tests cover service A/service B allow and
 service C deny behavior.
 
-Explicit `state_key` values retain initialized handshake continuity for
-stateless transports, but they do not restore claimed worker sessions. A
-reconnecting worker normally replays `claim_local_assignment` with the same
-ledger and local scope. Legacy/recovery workers must present the same secret
-proof and `claimed_by` identity again. The continuity namespace is the active
-ledger, so a reconnect to the same SQLite ledger can restore handshake state
-even when the dynamic repo process changes.
+Explicit HTTP `state_key` values retain initialized handshake continuity and
+may restore local claim-lease-backed sessions while the matching lease remains
+live.
+A reconnecting worker normally replays
+`claim_local_assignment` with the same ledger and local scope if recovery is no
+longer available. Legacy/recovery workers can also replay `claim_work_key` or
+`claim_private_handoff` with the same secret proof and `claimed_by` identity.
+The continuity namespace is the active ledger, so a reconnect to the same
+SQLite ledger can restore handshake state even when the dynamic repo process
+changes.
 Explicit state-key handshakes use a bounded retention window for transport
 continuity. They remain continuity metadata until overwritten,
 cleared by a failed explicit reconnect initialize, or expired by the explicit

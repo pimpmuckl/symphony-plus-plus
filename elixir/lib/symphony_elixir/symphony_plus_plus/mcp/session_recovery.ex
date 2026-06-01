@@ -12,8 +12,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
 
   @ttl_ms 86_400_000
   @lease_stale_after_ms 86_400_000
+  @release_current_assignment_tool "release_current_assignment"
   @local_claim_tools ["claim_local_assignment", "claim_local_architect_assignment"]
-  @session_claim_tools ["claim_work_key", "claim_private_handoff" | @local_claim_tools]
+  @secret_claim_tools ["claim_work_key", "claim_private_handoff"]
+  @session_claim_tools @secret_claim_tools ++ @local_claim_tools
 
   @spec remember(Config.t(), String.t(), String.t(), term(), Server.t(), term()) :: :ok
   def remember(%Config{mode: :http, repo: repo} = config, client_key, state_key, payload, %Server{} = server, response)
@@ -62,20 +64,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
 
   def rehydrate(%Config{}, _client_key, _state_key), do: :not_found
 
-  defp remember_action(_config, client_key, state_key, payload, %Server{initialized: true, session: nil}, _response) do
-    if initialize_request?(payload) do
-      remember_unbound_initialized(client_key, state_key, nil)
-    else
-      {:touch, SessionBinding.binding_id(client_key, state_key), now()}
+  defp remember_action(_config, client_key, state_key, payload, %Server{initialized: true, session: nil} = server, response) do
+    cond do
+      initialize_request?(payload) ->
+        remember_unbound_initialized(client_key, state_key, nil)
+
+      release_current_assignment_success?(payload, response, server) ->
+        remember_unbound_initialized(client_key, state_key, @release_current_assignment_tool)
+
+      true ->
+        {:touch, SessionBinding.binding_id(client_key, state_key), now()}
     end
   end
 
   defp remember_action(config, client_key, state_key, payload, %Server{initialized: true, session: %Session{} = session}, response) do
     case claim_tool_name(payload, response, session) do
       tool_name when tool_name in @local_claim_tools ->
-        remember_local_claim(config, client_key, state_key, session, response, tool_name)
+        remember_session_claim(config, client_key, state_key, session, response, tool_name)
 
-      tool_name when tool_name in @session_claim_tools ->
+      tool_name when tool_name in @secret_claim_tools ->
         remember_nonrecoverable_claim(client_key, state_key, session, tool_name)
 
       :ambiguous_claim ->
@@ -88,8 +95,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
 
   defp remember_action(_config, _client_key, _state_key, _payload, %Server{}, _response), do: :skip
 
-  defp remember_local_claim(%Config{repo: repo}, client_key, state_key, %Session{} = session, response, tool_name) do
-    case local_claim_lease(repo, session, response) do
+  defp remember_session_claim(%Config{repo: repo}, client_key, state_key, %Session{} = session, response, tool_name) do
+    case session_claim_lease(repo, session, response) do
       {:ok, %ClaimLease{} = lease} ->
         now = now()
 
@@ -107,16 +114,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
          })}
 
       _error ->
-        remember_unbound_initialized(client_key, state_key, tool_name)
+        if tool_name in @local_claim_tools do
+          remember_unbound_initialized(client_key, state_key, tool_name)
+        else
+          remember_nonrecoverable_claim(client_key, state_key, session, tool_name)
+        end
     end
   end
 
-  defp local_claim_lease(repo, %Session{} = session, _response), do: current_session_claim_lease(repo, session)
+  defp session_claim_lease(repo, %Session{} = session, _response), do: current_session_claim_lease(repo, session)
 
-  defp current_session_claim_lease(repo, %Session{assignment: %{work_package_id: work_package_id, claimed_by: claimed_by}})
-       when is_binary(work_package_id) and is_binary(claimed_by) do
+  defp current_session_claim_lease(
+         repo,
+         %Session{
+           assignment: %{work_package_id: work_package_id},
+           claim_lease_id: claim_lease_id,
+           claim_actor_kind: actor_kind,
+           claim_actor_id: actor_id,
+           claim_actor_display_name: actor_display_name
+         }
+       )
+       when is_binary(work_package_id) and is_binary(claim_lease_id) and is_binary(actor_kind) and is_binary(actor_id) do
     with {:ok, %ClaimLease{} = lease} <- ClaimLeaseService.current_for_work_package(repo, work_package_id),
-         :ok <- require_lease_claimed_by(lease, claimed_by) do
+         :ok <- require_session_lease_identity(lease, claim_lease_id, actor_kind, actor_id, actor_display_name) do
       {:ok, lease}
     end
   end
@@ -173,7 +193,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
          {:ok, %Session{} = session} <- Auth.session_from_grant(repo, grant, proof_hash: grant.secret_hash),
          :ok <- require_session_matches_binding(session, binding) do
       mark_rehydrated(repo, binding, lease)
-      {:ok, session}
+      {:ok, Session.with_claim_lease(session, lease)}
     else
       _error -> {:error, :reclaim_required}
     end
@@ -241,8 +261,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
     end
   end
 
-  defp require_lease_claimed_by(%ClaimLease{actor_display_name: claimed_by}, claimed_by) when is_binary(claimed_by), do: :ok
-  defp require_lease_claimed_by(%ClaimLease{}, _claimed_by), do: {:error, :claim_owner_mismatch}
+  defp require_session_lease_identity(
+         %ClaimLease{} = lease,
+         claim_lease_id,
+         actor_kind,
+         actor_id,
+         actor_display_name
+       ) do
+    cond do
+      lease.id != claim_lease_id -> {:error, :claim_lease_mismatch}
+      lease.actor_kind != actor_kind -> {:error, :actor_mismatch}
+      lease.actor_id != actor_id -> {:error, :actor_mismatch}
+      lease.actor_display_name != actor_display_name -> {:error, :actor_mismatch}
+      true -> :ok
+    end
+  end
 
   defp mark_rehydrated(repo, %SessionBinding{} = binding, %ClaimLease{} = lease) do
     now = now()
@@ -304,6 +337,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
       nil -> {:error, :not_found}
     end
   end
+
+  defp release_current_assignment_success?(payloads, responses, %Server{session: nil}) when is_list(payloads) do
+    Enum.any?(payloads, fn payload ->
+      release_current_assignment_payload?(payload) and release_current_assignment_response_success?(response_for_payload(payload, responses))
+    end)
+  end
+
+  defp release_current_assignment_success?(payload, response, %Server{session: nil}) do
+    release_current_assignment_payload?(payload) and release_current_assignment_response_success?(response)
+  end
+
+  defp release_current_assignment_success?(_payload, _response, %Server{}), do: false
+
+  defp release_current_assignment_payload?(%{"jsonrpc" => "2.0", "method" => "tools/call", "params" => %{"name" => @release_current_assignment_tool}}),
+    do: true
+
+  defp release_current_assignment_payload?(_payload), do: false
+
+  defp release_current_assignment_response_success?(%{"result" => %{"structuredContent" => %{"action" => @release_current_assignment_tool, "binding_cleared" => true}}}),
+    do: true
+
+  defp release_current_assignment_response_success?(nil), do: true
+  defp release_current_assignment_response_success?(_response), do: false
 
   defp cleanup_stale(repo) do
     cutoff = DateTime.add(now(), -@ttl_ms, :millisecond)
