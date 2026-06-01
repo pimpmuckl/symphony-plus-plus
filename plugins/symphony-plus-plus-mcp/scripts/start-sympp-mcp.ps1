@@ -14,7 +14,7 @@ function Write-Usage {
   Write-Host "Starts the Symphony++ Codex plugin MCP bridge and local operator servers."
   Write-Host ""
   Write-Host "Default behavior:"
-  Write-Host "  - Reuse a healthy Symphony++ backend on 127.0.0.1:$DefaultBackendPort, otherwise start one on $DefaultBackendPort or a safe fallback port."
+  Write-Host "  - Reuse a healthy Symphony++ backend on 127.0.0.1:$DefaultBackendPort, otherwise wait for that port to clear and start there."
   Write-Host "  - Reuse a matching healthy dashboard on 127.0.0.1:$DefaultDashboardPort, otherwise start Vite on $DefaultDashboardPort or a safe fallback port."
   Write-Host "  - Bridge Codex stdio MCP traffic into the HTTP backend /mcp endpoint."
   Write-Host ""
@@ -24,7 +24,7 @@ function Write-Usage {
   Write-Host "  SYMPP_LAUNCHER               Optional launcher: 'direct' or 'mise'. Defaults to 'direct'."
   Write-Host "  SYMPP_MIX                    Optional mix executable path or name for direct launcher. Defaults to 'mix'."
   Write-Host "  SYMPP_MISE                   Optional mise executable path or name for mise launcher. Defaults to 'mise'."
-  Write-Host "  SYMPP_BACKEND_PORT           Preferred backend/API port. Defaults to $DefaultBackendPort. Use 0 for any available port."
+  Write-Host "  SYMPP_BACKEND_PORT           Backend/API port. Defaults to $DefaultBackendPort. Use 0 for any available port."
   Write-Host "  SYMPP_BACKEND_URL            Reuse an already-running backend URL instead of starting mix sympp.cockpit."
   Write-Host "  SYMPP_DASHBOARD_PORT         Preferred dashboard port. Defaults to $DefaultDashboardPort. Use 0 for any available port."
   Write-Host "  SYMPP_DASHBOARD_ORIGIN       Reuse an external dashboard origin instead of starting Vite."
@@ -35,6 +35,7 @@ function Write-Usage {
   Write-Host "  SYMPP_RUNTIME_FILE           Optional runtime JSON output path. Defaults under %USERPROFILE%\.agents\splusplus\runtime."
   Write-Host "  SYMPP_LOG_DIR                Optional background server log directory. Defaults under %USERPROFILE%\.agents\splusplus\logs."
   Write-Host "  SYMPP_BACKEND_STARTUP_TIMEOUT_SEC    Backend startup wait. Defaults to 60."
+  Write-Host "  SYMPP_BACKEND_PORT_RELEASE_TIMEOUT_SEC  Preferred backend port stale-listener wait. Defaults to 15."
   Write-Host "  SYMPP_FRONTEND_STARTUP_TIMEOUT_SEC   Frontend startup wait. Defaults to 20."
   Write-Host "  SYMPP_MCP_HTTP_TIMEOUT_SEC           Per-request bridge timeout. Defaults to 300."
   Write-Host "  SYMPP_STARTUP_LOCK_TIMEOUT_SEC       Local startup lock wait. Defaults to the configured startup waits plus 30 seconds, with a 120-second floor."
@@ -354,6 +355,112 @@ function Test-PortAvailable([int]$Port) {
     if ($listener) {
       $listener.Stop()
     }
+  }
+}
+
+function New-PortOwner([int]$ProcessId, [string]$LocalAddress) {
+  $processName = "<unknown>"
+  try {
+    $process = Get-Process -Id $ProcessId -ErrorAction Stop
+    if (-not [string]::IsNullOrWhiteSpace($process.ProcessName)) {
+      $processName = [string]$process.ProcessName
+    }
+  } catch {
+  }
+
+  return [pscustomobject]@{
+    pid = $ProcessId
+    process = $processName
+    localAddress = $LocalAddress
+  }
+}
+
+function Add-PortOwner($Owners, $Seen, [int]$ProcessId, [string]$LocalAddress) {
+  $key = "$ProcessId|$LocalAddress"
+  if ($Seen.Contains($key)) {
+    return
+  }
+
+  [void]$Seen.Add($key)
+  [void]$Owners.Add((New-PortOwner $ProcessId $LocalAddress))
+}
+
+function Get-TcpPortOwners([int]$Port) {
+  $owners = [System.Collections.Generic.List[object]]::new()
+  $seen = [System.Collections.Generic.HashSet[string]]::new()
+
+  if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+    try {
+      $connections = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop)
+      foreach ($connection in $connections) {
+        $processId = [int]$connection.OwningProcess
+        if ($processId -gt 0) {
+          Add-PortOwner $owners $seen $processId ([string]$connection.LocalAddress)
+        }
+      }
+    } catch {
+    }
+  }
+
+  if ($owners.Count -eq 0 -and (Get-Command netstat -ErrorAction SilentlyContinue)) {
+    try {
+      $escapedPort = [regex]::Escape([string]$Port)
+      foreach ($line in @(& netstat -ano -p tcp 2>$null)) {
+        if ($line -match "^\s*TCP\s+(.+):$escapedPort\s+\S+\s+LISTENING\s+(\d+)\s*$") {
+          Add-PortOwner $owners $seen ([int]$matches[2]) $matches[1].Trim()
+        }
+      }
+    } catch {
+    }
+  }
+
+  return @($owners)
+}
+
+function Format-PortOwners([object[]]$Owners) {
+  if ($Owners.Count -eq 0) {
+    return "an unknown process"
+  }
+
+  return (@($Owners) | ForEach-Object {
+      "pid=$($_.pid) process=$($_.process) localAddress=$($_.localAddress)"
+    }) -join "; "
+}
+
+function New-BackendPortOccupiedMessage([int]$Port, [object[]]$Owners) {
+  $ownerSummary = Format-PortOwners $Owners
+  return "backend_port_occupied: configured Symphony++ backend port http://127.0.0.1:$Port is occupied by $ownerSummary. Wait for stale listeners to exit, stop the owning process, set SYMPP_BACKEND_PORT=0 or another explicit port, or set SYMPP_BACKEND_URL to a healthy backend."
+}
+
+function Wait-ForTcpPortRelease([int]$Port, [int]$TimeoutSec) {
+  if ($Port -eq 0 -or (Test-PortAvailable $Port)) {
+    return [pscustomobject]@{
+      released = $true
+      owners = @()
+    }
+  }
+
+  $owners = @(Get-TcpPortOwners $Port)
+  if ($TimeoutSec -gt 0) {
+    Write-Diagnostic "Configured Symphony++ backend port 127.0.0.1:$Port is occupied by $(Format-PortOwners $owners); waiting up to $TimeoutSec seconds for stale listeners to clear."
+  }
+
+  $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSec)
+  while ([DateTimeOffset]::UtcNow -lt $deadline) {
+    Start-Sleep -Milliseconds 500
+    if (Test-PortAvailable $Port) {
+      return [pscustomobject]@{
+        released = $true
+        owners = @()
+      }
+    }
+
+    $owners = @(Get-TcpPortOwners $Port)
+  }
+
+  return [pscustomobject]@{
+    released = $false
+    owners = $owners
   }
 }
 
@@ -694,6 +801,15 @@ function Get-PortFromOrigin([string]$Origin) {
   }
 }
 
+function Test-RuntimeBackendPortAllowed([int]$PreferredPort, [string]$RuntimeUrl) {
+  if ($PreferredPort -eq 0) {
+    return $true
+  }
+
+  $runtimePort = Get-PortFromOrigin $RuntimeUrl
+  return $runtimePort -eq $PreferredPort
+}
+
 function Read-RuntimeState([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path)) {
     return $null
@@ -773,7 +889,7 @@ function Wait-Until([scriptblock]$Predicate, [int]$TimeoutSec) {
   return $false
 }
 
-function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $RuntimeState) {
+function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $RuntimeState, [int]$PortReleaseTimeoutSec) {
   if (-not [string]::IsNullOrWhiteSpace($ConfiguredUrl)) {
     $url = $ConfiguredUrl.TrimEnd("/")
     Assert-LoopbackHttpOrigin $url "SYMPP_BACKEND_URL"
@@ -809,18 +925,32 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
     $runtimeUrl = [string]$RuntimeState.backend.url
     if (-not [string]::IsNullOrWhiteSpace($runtimeUrl) -and (Test-HealthySymppBackend $runtimeUrl)) {
       $runtimeUrl = $runtimeUrl.TrimEnd("/")
-      return [pscustomobject]@{
-        status = "reused"
-        url = $runtimeUrl
-        mcp_url = "$runtimeUrl/mcp"
-        port = Get-PortFromOrigin $runtimeUrl
-        should_start = $false
-        reused = $true
+      if (Test-RuntimeBackendPortAllowed $PreferredPort $runtimeUrl) {
+        return [pscustomobject]@{
+          status = "reused"
+          url = $runtimeUrl
+          mcp_url = "$runtimeUrl/mcp"
+          port = Get-PortFromOrigin $runtimeUrl
+          should_start = $false
+          reused = $true
+        }
       }
+
+      Write-Diagnostic "Ignoring healthy runtime backend $runtimeUrl because configured backend port is $PreferredPort. Set SYMPP_BACKEND_PORT=0 or SYMPP_BACKEND_URL=$runtimeUrl to reuse it explicitly."
     }
   }
 
-  $selectedPort = Select-AvailablePort $PreferredPort
+  if ($PreferredPort -gt 0) {
+    $portRelease = Wait-ForTcpPortRelease $PreferredPort $PortReleaseTimeoutSec
+    if (-not $portRelease.released) {
+      throw (New-BackendPortOccupiedMessage $PreferredPort @($portRelease.owners))
+    }
+
+    $selectedPort = $PreferredPort
+  } else {
+    $selectedPort = Select-AvailablePort $PreferredPort
+  }
+
   $url = "http://127.0.0.1:$selectedPort"
   return [pscustomobject]@{
     status = "starting"
@@ -901,12 +1031,14 @@ function Start-Backend($Plan, [string]$DashboardOrigin, [string]$ElixirDir, [str
   $launch = Start-LoggedProcess $command.file $command.args $ElixirDir @{} "backend-$($Plan.port)" $LogDir
   $ready = Wait-Until { Test-HealthySymppBackend $Plan.url } $TimeoutSec
   if (-not $ready) {
+    $portOwners = @(Get-TcpPortOwners ([int]$Plan.port))
+    $portDetail = "portOwners=$(Format-PortOwners $portOwners)"
     if ($launch.process.HasExited) {
-      throw "Symphony++ backend exited before becoming healthy. stderr: $($launch.stderr)"
+      throw "Symphony++ backend exited before becoming healthy at $($Plan.url). $portDetail stderr_log=$($launch.stderr)"
     }
 
     Stop-LoggedProcess $launch
-    throw "Symphony++ backend did not become healthy at $($Plan.url) within $TimeoutSec seconds. logs: $($launch.stderr)"
+    throw "Symphony++ backend did not become healthy at $($Plan.url) within $TimeoutSec seconds. $portDetail stderr_log=$($launch.stderr)"
   }
 
   return [pscustomobject]@{
@@ -1079,6 +1211,28 @@ function Invoke-SelfTest {
     throw "Assert-LoopbackHttpOrigin did not reject a remote backend URL."
   }
 
+  $freePortRelease = Wait-ForTcpPortRelease (Select-AvailablePort 0) 0
+  if (-not $freePortRelease.released) {
+    throw "Wait-ForTcpPortRelease did not recognize a free port."
+  }
+
+  $occupiedListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Parse("127.0.0.1"), 0)
+  try {
+    $occupiedListener.Start()
+    $occupiedPort = [int]$occupiedListener.LocalEndpoint.Port
+    $occupiedRelease = Wait-ForTcpPortRelease $occupiedPort 0
+    if ($occupiedRelease.released) {
+      throw "Wait-ForTcpPortRelease did not detect an occupied port."
+    }
+
+    $occupiedMessage = New-BackendPortOccupiedMessage $occupiedPort @($occupiedRelease.owners)
+    if ($occupiedMessage -notmatch "backend_port_occupied" -or $occupiedMessage -notmatch [string]$occupiedPort) {
+      throw "New-BackendPortOccupiedMessage did not include the status code and port."
+    }
+  } finally {
+    $occupiedListener.Stop()
+  }
+
   $processLogDir = Join-Path ([System.IO.Path]::GetTempPath()) "sympp-plugin-selftest-process-logs"
   $sleepLaunch = $null
   try {
@@ -1123,6 +1277,18 @@ function Invoke-SelfTest {
   $initializeResponse = '{"jsonrpc":"2.0","id":"init","result":{"protocolVersion":"2025-06-18"}}'
   if ((Get-ResponseProtocolVersion @($initializeResponse)) -ne "2025-06-18") {
     throw "Response protocol version extraction failed."
+  }
+
+  if (-not (Test-RuntimeBackendPortAllowed 0 "http://127.0.0.1:45678")) {
+    throw "Runtime backend reuse should be allowed when SYMPP_BACKEND_PORT=0."
+  }
+
+  if (-not (Test-RuntimeBackendPortAllowed 45678 "http://127.0.0.1:45678")) {
+    throw "Runtime backend reuse should be allowed on the configured backend port."
+  }
+
+  if (Test-RuntimeBackendPortAllowed 19998 "http://127.0.0.1:45678") {
+    throw "Runtime backend reuse should not bypass the configured backend port."
   }
 
   $runtimePath = Join-Path ([System.IO.Path]::GetTempPath()) "sympp-plugin-selftest-runtime.json"
@@ -1197,11 +1363,13 @@ $autostartFrontend = $autostartServers -and -not (Test-EnvDisabled "SYMPP_AUTOST
 $backendPort = Get-EnvInteger "SYMPP_BACKEND_PORT" $DefaultBackendPort 0 65535
 $dashboardPort = Get-EnvInteger "SYMPP_DASHBOARD_PORT" $DefaultDashboardPort 0 65535
 $backendTimeout = Get-EnvInteger "SYMPP_BACKEND_STARTUP_TIMEOUT_SEC" 60 1 600
+$backendPortReleaseTimeout = Get-EnvInteger "SYMPP_BACKEND_PORT_RELEASE_TIMEOUT_SEC" 15 0 600
 $frontendTimeout = Get-EnvInteger "SYMPP_FRONTEND_STARTUP_TIMEOUT_SEC" 20 1 600
 $bridgeTimeout = Get-EnvInteger "SYMPP_MCP_HTTP_TIMEOUT_SEC" 300 1 3600
 $startupLockMinimum = 30
 if ($autostartBackend) {
   $startupLockMinimum += $backendTimeout
+  $startupLockMinimum += $backendPortReleaseTimeout
 }
 if ($autostartFrontend) {
   $startupLockMinimum += $frontendTimeout
@@ -1220,7 +1388,7 @@ $dashboardPlan = $null
 $startupLock = Enter-FileLock (Resolve-StartupLockFile $runtimeFile) $startupLockTimeout
 try {
   $runtimeState = Read-RuntimeState $runtimeFile
-  $backendPlan = Resolve-BackendPlan $backendPort $env:SYMPP_BACKEND_URL $runtimeState
+  $backendPlan = Resolve-BackendPlan $backendPort $env:SYMPP_BACKEND_URL $runtimeState $backendPortReleaseTimeout
   if ($backendPlan.should_start -and -not $autostartBackend) {
     throw "Backend autostart is disabled and no reusable Symphony++ backend was found at $($backendPlan.url)."
   }
