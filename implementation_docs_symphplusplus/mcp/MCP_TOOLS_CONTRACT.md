@@ -137,9 +137,11 @@ Worker grants cannot be minted with architect-only MCP capabilities such as
 is predictable session-shape discovery, not authorization:
 
 - Healthy unbound generic sessions advertise health, Solo Session bootstrap
-  tools, `claim_work_key`, `claim_private_handoff`, and
-  `create_work_request`. They do not advertise architect schemas or bound
-  worker WorkPackage schemas.
+  tools, `release_current_assignment`, `claim_work_key`,
+  `claim_private_handoff`, `create_work_request`, architect schemas, and
+  worker WorkPackage schemas. The release schema is discoverable so
+  bound-session Solo denials point at a catalog-visible recovery tool, but
+  calling it still requires a bound assignment.
 - Unbound HTTP sessions additionally advertise `claim_local_assignment` and
   `claim_local_architect_assignment` so local worker and architect sessions can
   claim or reconnect without private handoff files.

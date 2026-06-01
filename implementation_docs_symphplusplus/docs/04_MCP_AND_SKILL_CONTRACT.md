@@ -547,12 +547,14 @@ grants cannot be minted with architect-only MCP capabilities, including
 unprefixed P3/P7 capability strings such as `read:phase` or
 `mint:child_worker_key`. `tools/list` uses static architect schema discovery:
 healthy unbound generic sessions advertise health, Solo Session tools,
-`claim_work_key`, `claim_private_handoff`, `create_work_request`, and architect
-tool schemas so fresh Codex sessions can discover WorkRequest and architect
-flows before claim. Unbound HTTP sessions also advertise
-`claim_local_assignment`, `claim_local_architect_assignment`, and the worker
-WorkPackage schemas needed by the MCP WorkPackage skill for first-claim/reclaim
-schema discovery, but schema visibility is not authorization. Claim calls still
+`release_current_assignment`, `claim_work_key`, `claim_private_handoff`,
+`create_work_request`, architect tool schemas, and worker WorkPackage schemas
+so fresh Codex sessions can discover WorkRequest, WorkPackage, architect flows,
+and the safe bound-session recovery tool before claim. Calling
+`release_current_assignment` still requires a bound assignment. Unbound HTTP sessions also advertise
+`claim_local_assignment` and `claim_local_architect_assignment` for
+first-claim/reclaim schema discovery, but schema visibility is not
+authorization. Claim calls still
 require trusted local HTTP state-key continuity and scope validation, and worker
 WorkPackage calls before a valid worker claim return a claim-required denial
 without mutating state. Architect calls still require a live claimed architect
