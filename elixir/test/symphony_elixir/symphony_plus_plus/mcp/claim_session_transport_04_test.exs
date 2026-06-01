@@ -3,6 +3,8 @@ Code.require_file("../../../support/symphony_plus_plus/mcp_case.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport04Test do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{HTTPStateStore, HTTPTransport}
+
   test "response-only handle supports explicit state keys for recreated servers", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STATELESS-HANDLE", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -333,6 +335,165 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport04Test do
 
     assert get_in(stale_duplicate_response, ["error", "data", "reason"]) == "already_initialized"
     assert get_in(stale_assignment_response, ["error", "data", "reason"]) == "claim_required"
+  end
+
+  test "HTTP claim_work_key live session release clears the current claim lease", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-HTTP-WORK-KEY-RELEASE", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    config = local_mcp_config(repo)
+    client_key = "client-http-work-key-release"
+
+    {:ok, init_result} =
+      HTTPTransport.handle(config, %{"jsonrpc" => "2.0", "id" => "init-work-key-release", "method" => "initialize", "params" => initialize_params()}, client_key: client_key)
+
+    {:ok, claim_result} =
+      HTTPTransport.handle(
+        config,
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-work-key-release",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        client_key: client_key,
+        state_key: init_result.state_key
+      )
+
+    assert get_in(claim_result.response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert {:ok, %ClaimLease{id: lease_id, actor_id: "work_key:" <> _hash}} = ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    {:ok, release_result} =
+      HTTPTransport.handle(
+        config,
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "release-live-work-key",
+          "method" => "tools/call",
+          "params" => %{"name" => "release_current_assignment", "arguments" => %{"reason" => "done"}}
+        },
+        client_key: client_key,
+        state_key: init_result.state_key
+      )
+
+    assert get_in(release_result.response, ["result", "structuredContent", "binding_cleared"]) == true
+    assert get_in(release_result.response, ["result", "structuredContent", "claim_lease_release", "claim_lease_id"]) == lease_id
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    refute inspect(release_result.response) =~ minted.work_key.secret
+  end
+
+  test "HTTP release_current_assignment notification persists unbound recovery state", %{repo: repo} do
+    {package, work_request} = create_http_local_claim_package!(repo, "SYMPP-HTTP-RELEASE-NOTIFY")
+    config = local_mcp_config(repo)
+    client_key = "client-http-release-notify"
+
+    {:ok, init_result} =
+      HTTPTransport.handle(config, %{"jsonrpc" => "2.0", "id" => "init-release-notify", "method" => "initialize", "params" => initialize_params()}, client_key: client_key)
+
+    {:ok, claim_result} =
+      HTTPTransport.handle(
+        config,
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-release-notify",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" => local_assignment_claim_args(package, %{"work_request_id" => work_request.id})
+          }
+        },
+        client_key: client_key,
+        state_key: init_result.state_key
+      )
+
+    lease_id = get_in(claim_result.response, ["result", "structuredContent", "local_claim", "claim_lease_id"])
+    assert get_in(claim_result.response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+
+    {:ok, release_result} =
+      HTTPTransport.handle(
+        config,
+        %{
+          "jsonrpc" => "2.0",
+          "method" => "tools/call",
+          "params" => %{"name" => "release_current_assignment", "arguments" => %{"reason" => "done"}}
+        },
+        client_key: client_key,
+        state_key: init_result.state_key
+      )
+
+    assert release_result.response == nil
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    assert %ClaimLease{id: ^lease_id, status: "released"} = repo.get(ClaimLease, lease_id)
+
+    HTTPStateStore.reset!()
+
+    {:ok, assignment_result} =
+      HTTPTransport.handle(
+        config,
+        %{"jsonrpc" => "2.0", "id" => "assignment-after-notify-release", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        client_key: client_key,
+        state_key: init_result.state_key
+      )
+
+    assert get_in(assignment_result.response, ["error", "data", "reason"]) == "claim_required"
+  end
+
+  test "HTTP batch release_current_assignment persists unbound recovery state", %{repo: repo} do
+    {package, work_request} = create_http_local_claim_package!(repo, "SYMPP-HTTP-RELEASE-BATCH")
+    config = local_mcp_config(repo)
+    client_key = "client-http-release-batch"
+
+    {:ok, init_result} =
+      HTTPTransport.handle(config, %{"jsonrpc" => "2.0", "id" => "init-release-batch", "method" => "initialize", "params" => initialize_params()}, client_key: client_key)
+
+    {:ok, claim_result} =
+      HTTPTransport.handle(
+        config,
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-release-batch",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" => local_assignment_claim_args(package, %{"work_request_id" => work_request.id})
+          }
+        },
+        client_key: client_key,
+        state_key: init_result.state_key
+      )
+
+    lease_id = get_in(claim_result.response, ["result", "structuredContent", "local_claim", "claim_lease_id"])
+    assert get_in(claim_result.response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+
+    {:ok, release_result} =
+      HTTPTransport.handle(
+        config,
+        [
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "release-batch",
+            "method" => "tools/call",
+            "params" => %{"name" => "release_current_assignment", "arguments" => %{"reason" => "done"}}
+          }
+        ],
+        client_key: client_key,
+        state_key: init_result.state_key
+      )
+
+    assert [release_response] = release_result.response
+    assert get_in(release_response, ["result", "structuredContent", "binding_cleared"]) == true
+    assert get_in(release_response, ["result", "structuredContent", "claim_lease_release", "claim_lease_id"]) == lease_id
+
+    HTTPStateStore.reset!()
+
+    {:ok, assignment_result} =
+      HTTPTransport.handle(
+        config,
+        %{"jsonrpc" => "2.0", "id" => "assignment-after-batch-release", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        client_key: client_key,
+        state_key: init_result.state_key
+      )
+
+    assert get_in(assignment_result.response, ["error", "data", "reason"]) == "claim_required"
   end
 
   test "failed explicit state key reinitialize clears prior handshake state", %{repo: repo} do
@@ -820,5 +981,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport04Test do
     assert Enum.map(responses, & &1["id"]) == ["assignment"]
     assert get_in(List.first(responses), ["error", "data", "reason"]) == "claim_required"
     assert server.session.assignment.work_package_id == "SYMPP-NOTIFY-CLAIM"
+  end
+
+  defp create_http_local_claim_package!(repo, id) do
+    package = create_local_claim_package!(repo, id, base_branch: "main")
+    work_request = create_work_request!(repo, id: "WR-#{id}", repo: package.repo, base_branch: package.base_branch, status: "ready_for_slicing")
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(id: "WRS-#{id}", target_base_branch: package.base_branch, branch_pattern: package.branch_pattern)
+             )
+
+    repo.update!(Ecto.Changeset.change(planned_slice, status: "dispatched", work_package_id: package.id))
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    {package, work_request}
   end
 end
