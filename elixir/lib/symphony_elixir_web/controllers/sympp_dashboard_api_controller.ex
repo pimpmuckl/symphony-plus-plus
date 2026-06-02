@@ -34,6 +34,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixirWeb.Endpoint
   alias SymphonyElixirWeb.SymppDashboardApi.ScopeProjection
 
@@ -53,6 +54,9 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @local_operator_nonmergeable_terminal_package_statuses ["merged_into_phase", "closed", "abandoned"]
   @local_operator_noncloseable_terminal_package_statuses ["merged", "merged_into_phase", "abandoned"]
   @local_operator_hideable_package_statuses ["merged", "merged_into_phase", "closed", "abandoned"]
+  @architect_handoff_anchor_id_prefix "SYMPP-WR-ARCH-"
+  @architect_handoff_anchor_id_like @architect_handoff_anchor_id_prefix <> "%"
+  @architect_handoff_anchor_kind "delegation"
 
   @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
   def authorize_board_browser(conn, _opts) do
@@ -1092,10 +1096,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
            WorkRequestService.retention_pass(repo,
              archive_after_days: settings.work_request_archive_after_days
            ),
-         {:ok, linked_work_package_ids} <- persisted_linked_work_package_ids(repo),
+         {:ok, linked_work_package_id_sets} <- linked_work_package_id_sets(repo),
+         {:ok, architect_handoff_anchor_work_package_ids} <- architect_handoff_anchor_work_package_ids(repo),
          {:ok, settings} <- dedupe_hidden_work_package_ids_for_local_operator(repo, settings),
          {:ok, expired_unlinked_work_package_ids} <-
-           expired_unlinked_work_package_ids_for_local_operator(repo, settings, linked_work_package_ids),
+           expired_unlinked_work_package_ids_for_local_operator(repo, settings, linked_work_package_id_sets.active),
          {:ok, board} <- Dashboard.operator_board(repo, opts),
          {:ok, work_requests} <- Dashboard.work_requests(repo, opts),
          {:ok, archived_work_requests} <- Dashboard.archived_work_requests(repo, opts),
@@ -1108,8 +1113,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
       hidden_work_package_ids =
         settings
-        |> effective_hidden_work_package_ids(linked_work_package_ids)
+        |> effective_hidden_work_package_ids(linked_work_package_id_sets.active)
         |> MapSet.union(expired_unlinked_work_package_ids)
+        |> MapSet.union(linked_work_package_id_sets.archived_only)
+        |> MapSet.union(architect_handoff_anchor_work_package_ids)
 
       board = hide_local_operator_work_packages(board, hidden_work_package_ids)
       active_blocking_edges = hide_local_operator_blocking_edges(active_blocking_edges, hidden_work_package_ids)
@@ -1121,7 +1128,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
          active_blocking_edges: active_blocking_edges,
          board: board,
          settings: operator_settings_payload(settings),
-         linked_work_package_ids: linked_work_package_ids |> MapSet.to_list() |> Enum.sort(),
+         linked_work_package_ids: linked_work_package_id_sets.persisted |> MapSet.to_list() |> Enum.sort(),
          work_requests: work_requests,
          archived_work_requests: archived_work_requests,
          work_request_details: work_request_details,
@@ -1202,16 +1209,60 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     )
   end
 
-  defp persisted_linked_work_package_ids(repo) do
-    linked_ids =
+  defp linked_work_package_id_sets(repo) do
+    rows =
       repo.all(
         from(planned_slice in PlannedSlice,
+          left_join: work_request in WorkRequest,
+          on: work_request.id == planned_slice.work_request_id,
           where: not is_nil(planned_slice.work_package_id),
-          select: planned_slice.work_package_id
+          select: {planned_slice.work_package_id, work_request.id, work_request.archived_at}
         )
       )
 
-    {:ok, MapSet.new(linked_ids)}
+    sets =
+      Enum.reduce(rows, %{persisted: MapSet.new(), active: MapSet.new(), archived: MapSet.new()}, fn
+        {work_package_id, nil, _archived_at}, sets ->
+          %{sets | persisted: MapSet.put(sets.persisted, work_package_id)}
+
+        {work_package_id, _work_request_id, nil}, sets ->
+          %{
+            sets
+            | persisted: MapSet.put(sets.persisted, work_package_id),
+              active: MapSet.put(sets.active, work_package_id)
+          }
+
+        {work_package_id, _work_request_id, _archived_at}, sets ->
+          %{
+            sets
+            | persisted: MapSet.put(sets.persisted, work_package_id),
+              archived: MapSet.put(sets.archived, work_package_id)
+          }
+      end)
+
+    {:ok,
+     %{
+       persisted: sets.persisted,
+       active: sets.active,
+       archived_only: MapSet.difference(sets.archived, sets.active)
+     }}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp architect_handoff_anchor_work_package_ids(repo) do
+    ids =
+      repo.all(
+        from(work_package in WorkPackage,
+          where: work_package.kind == @architect_handoff_anchor_kind,
+          where: like(work_package.id, ^@architect_handoff_anchor_id_like),
+          select: work_package.id
+        )
+      )
+
+    {:ok, MapSet.new(ids)}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   defp operator_work_request_details(repo, work_request_cards, repo_identity_catalog) when is_list(work_request_cards) do
