@@ -1,9 +1,9 @@
+export type MarkdownText = string;
 export type PackagePlanSummary = {
   completed_count?: number;
   total_count?: number;
   open_count?: number;
 };
-
 export type PackageBranchMetadata = {
   branch?: string;
   head_sha?: string;
@@ -162,7 +162,7 @@ export type ContextComment = {
   id: string;
   target_kind?: string | null;
   target_id?: string | null;
-  body?: string | null;
+  body?: MarkdownText | null;
   source_type?: string | null;
   author_name?: string | null;
   status?: string | null;
@@ -249,7 +249,7 @@ export type DecisionOption = {
 
 export type DecisionPrompt = {
   tl_dr?: string;
-  details?: string;
+  details?: MarkdownText;
   custom_redirect_label?: string;
   options?: DecisionOption[];
 };
@@ -259,12 +259,12 @@ export type ClarificationQuestion = {
   work_request_id: string;
   sequence?: number;
   category?: string | null;
-  question?: string | null;
-  why_needed?: string | null;
+  question?: MarkdownText | null;
+  why_needed?: MarkdownText | null;
   decision_prompt?: DecisionPrompt | null;
   status?: string | null;
   asked_by_agent_run_id?: string | null;
-  answer?: string | null;
+  answer?: MarkdownText | null;
   answered_by?: string | null;
   answered_at?: string | null;
   inserted_at?: string | null;
@@ -276,7 +276,7 @@ export type PlannedSlice = {
   work_request_id: string;
   sequence?: number;
   title?: string | null;
-  goal?: string | null;
+  goal?: MarkdownText | null;
   status?: string | null;
   work_package_id?: string | null;
   work_package_status?: string | null;
@@ -311,11 +311,11 @@ export type PlannedSliceDelivery = {
   pr_repository?: string | null;
   pr_merged_at?: string | null;
   merge_commit_sha?: string | null;
-  no_pr_evidence?: string | null;
+  no_pr_evidence?: MarkdownText | null;
   successor_planned_slice_id?: string | null;
   successor_work_package_id?: string | null;
-  superseded_reason?: string | null;
-  abandoned_rationale?: string | null;
+  superseded_reason?: MarkdownText | null;
+  abandoned_rationale?: MarkdownText | null;
 };
 
 export type PlannedSliceSuccessor = {
@@ -362,8 +362,8 @@ export type DecisionLogEntry = {
   source_type?: string | null;
   source_id?: string | null;
   decision?: string | null;
-  rationale?: string | null;
-  scope_impact?: string | null;
+  rationale?: MarkdownText | null;
+  scope_impact?: MarkdownText | null;
   created_by?: string | null;
   created_at?: string | null;
   inserted_at?: string | null;
@@ -372,7 +372,7 @@ export type DecisionLogEntry = {
 
 export type WorkRequestDetail = {
   work_request: WorkRequestCard & {
-    human_description?: string | null;
+    human_description?: MarkdownText | null;
     constraints?: Record<string, unknown>;
   };
   clarification_questions?: ClarificationQuestion[];
@@ -405,7 +405,7 @@ export type ActiveBlockingEdge = {
   from: ActiveBlockingEdgeEndpoint;
   to: ActiveBlockingEdgeEndpoint;
   summary?: string | null;
-  body?: string | null;
+  body?: MarkdownText | null;
   updated_at?: string | null;
   work_request_id?: string | null;
   planned_slice_id?: string | null;
@@ -419,10 +419,10 @@ export type GuidanceRequest = RepoIdentityFields & {
   package_kind?: string | null;
   base_branch?: string | null;
   summary?: string | null;
-  question?: string | null;
-  context?: string | null;
-  human_info_reason?: string | null;
-  recommended_language?: string | null;
+  question?: MarkdownText | null;
+  context?: MarkdownText | null;
+  human_info_reason?: MarkdownText | null;
+  recommended_language?: MarkdownText | null;
   decision_prompt?: DecisionPrompt | null;
   status?: string | null;
   blocker_id?: string | null;
@@ -479,7 +479,7 @@ export type SoloSession = RepoIdentityFields & {
     kind?: string | null;
     status?: string | null;
     title?: string | null;
-    body?: string | null;
+    body?: MarkdownText | null;
     kind_label?: string | null;
     created_at?: string | null;
   } | null;
@@ -493,7 +493,7 @@ export type SoloSessionEntry = {
   status?: string | null;
   status_label?: string | null;
   title?: string | null;
-  body?: string | null;
+  body?: MarkdownText | null;
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -510,8 +510,8 @@ export type SoloSessionDetailPayload = {
 export type WorkPackageDetailPayload = {
   work_package?: WorkPackageCard & {
     branch_pattern?: string | null;
-    product_description?: string | null;
-    engineering_scope?: string | null;
+    product_description?: MarkdownText | null;
+    engineering_scope?: MarkdownText | null;
     allowed_file_globs?: string[];
     policy_template?: string | null;
     acceptance_criteria?: string[];
@@ -536,7 +536,7 @@ export type WorkPackageDetailPayload = {
   plan?: Array<{
     id?: string;
     title?: string | null;
-    body?: string | null;
+    body?: MarkdownText | null;
     status?: string | null;
     position?: number | null;
     created_at?: string | null;
@@ -545,7 +545,7 @@ export type WorkPackageDetailPayload = {
   findings?: Array<{
     id?: string;
     title?: string | null;
-    body?: string | null;
+    body?: MarkdownText | null;
     severity?: string | null;
     sequence?: number | null;
     created_at?: string | null;
@@ -553,7 +553,7 @@ export type WorkPackageDetailPayload = {
   progress?: Array<{
     id?: string;
     summary?: string | null;
-    body?: string | null;
+    body?: MarkdownText | null;
     status?: string | null;
     sequence?: number | null;
     created_at?: string | null;
@@ -571,9 +571,9 @@ export type WorkPackageDetailPayload = {
     id?: string;
     active?: boolean;
     summary?: string | null;
-    body?: string | null;
+    body?: MarkdownText | null;
     status?: string | null;
-    resolution?: string | null;
+    resolution?: MarkdownText | null;
     updated_at?: string | null;
   }>;
   guidance_requests?: GuidanceRequest[];

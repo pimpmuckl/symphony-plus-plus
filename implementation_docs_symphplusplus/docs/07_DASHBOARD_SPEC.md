@@ -203,6 +203,11 @@ open; detail views show the scoped comment list and local operator add/resolve
 controls. The local operator mutation surface stamps operator provenance
 server-side, caps comment bodies at 4,000 characters and resolution notes at
 1,000 characters, and returns at most 100 comments per target in detail arrays.
+Dashboard detail views render human-facing long text as Markdown, including
+WorkRequest descriptions, comments, guidance context, decision rationale/scope
+impact, findings, progress bodies, blockers, and no-PR evidence. Raw HTML from
+Markdown is not rendered; compact labels, statuses, ids, branch names, PR URLs,
+and badges remain plain text.
 
 Local operator cockpit stream rail:
 

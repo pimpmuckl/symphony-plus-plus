@@ -3,6 +3,7 @@ import { sortedCopy } from "@/lib/collections";
 import { formatStatus } from "@/lib/status-labels";
 import type { SoloSession, SoloSessionEntry } from "@/types/dashboard";
 
+import { stripMarkdown } from "./dashboard-text";
 import { sortableTime } from "./workstream-data";
 
 export function soloSessionLane(session: SoloSession): "active" | "finished" {
@@ -147,20 +148,7 @@ function markdownSummary(value?: string | null) {
       .map((line) => line.trim())
       .find((line) => line && !line.startsWith("#") && !line.startsWith("```")) || "";
 
-  return stripMarkdown(meaningfulLine || value);
-}
-
-function stripMarkdown(value?: string | null) {
-  return (
-    value
-      ?.replace(/```[\s\S]*?```/g, " ")
-      .replace(/^#{1,6}\s+/gm, "")
-      .replace(/^\s*[-*]\s+/gm, "")
-      .replace(/^\s*\d+[.)]\s+/gm, "")
-      .replace(/[`*_]/g, "")
-      .replace(/\s+/g, " ")
-      .trim() || ""
-  );
+  return stripMarkdown(meaningfulLine || value).replace(/\s+/g, " ");
 }
 
 function firstSentence(value: string) {

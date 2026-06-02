@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
 import { BlockerItem, FinishedHighlight, FinishedHighlightKind } from "./dashboard-state";
 import { CardDetailSelect, CardDetailSelection, DashboardConnectionIssue, DashboardUpdateAnimations, isLocalOperatorAuthRequiredMessage } from "./runtime";
+import { stripMarkdown } from "./dashboard-text";
 import { blockerUpdateKey, finishedHighlightUpdateKey, finishedHighlightsListKey, guidanceUpdateKey } from "./update-animations";
 import { formatDate } from "./dashboard-persistence";
 import { interactiveCardProps } from "./card-helpers";
@@ -85,9 +86,9 @@ export function GuidancePreviewCard({
             <Badge variant="secondary">{item.source === "guidance" ? "Package" : "Request"}</Badge>
           </div>
           <p className="mt-4 text-sm font-medium">TL;DR</p>
-          <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{item.prompt?.tl_dr || item.title}</p>
+          <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{stripMarkdown(item.prompt?.tl_dr || item.title)}</p>
           <p className="mt-4 text-sm font-medium">Description</p>
-          <p className="mt-1 line-clamp-3 text-sm text-muted-foreground">{item.prompt?.details || item.detail}</p>
+          <p className="mt-1 line-clamp-3 text-sm text-muted-foreground">{stripMarkdown(item.prompt?.details || item.detail)}</p>
         </div>
         <AnimatedBadge
           label={item.source === "guidance" ? "Guidance Needed" : "Clarify"}
@@ -134,7 +135,7 @@ export function BlockerPreviewCard({
         </div>
         <AnimatedBadge label={blockerBadgeLabel(item)} variant="danger" className="shrink-0" />
       </div>
-      <p className="mt-4 line-clamp-3 text-sm text-muted-foreground">{item.detail}</p>
+      <p className="mt-4 line-clamp-3 text-sm text-muted-foreground">{stripMarkdown(item.detail)}</p>
       <div className="mt-4 flex items-center gap-2 text-xs text-amber-800 dark:text-amber-200">
         <AlertTriangle className="size-4" />
         {item.blockerCount} active blocker{item.blockerCount === 1 ? "" : "s"}

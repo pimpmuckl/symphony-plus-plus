@@ -8,6 +8,7 @@
     "dev": "vite",
     "lint": "eslint . --max-warnings 0",
     "quality": "npm run typecheck && npm run lint",
+    "test": "vitest run",
     "typecheck": "tsc -b",
     "preview": "vite preview"
   },
@@ -28,6 +29,8 @@
     "lucide-react": "^1.16.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
@@ -44,6 +47,7 @@
     "tailwindcss": "^4.3.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.4",
-    "vite": "^8.0.14"
+    "vite": "^8.0.14",
+    "vitest": "^4.1.8"
   }
 }

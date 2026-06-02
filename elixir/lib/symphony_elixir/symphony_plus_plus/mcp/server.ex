@@ -1838,8 +1838,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "repo" => string_schema(),
         "base_branch" => string_schema(),
         "title" => string_schema(),
-        "description" => string_schema(),
-        "human_description" => string_schema(),
+        "description" => markdown_string_schema("WorkRequest human-facing description in Markdown."),
+        "human_description" => markdown_string_schema("Deprecated alias for description; human-facing Markdown."),
         "request_kind" => string_enum_schema(WorkRequest.work_types()),
         "workflow_mode" => string_enum_schema(WorkRequest.dispatch_shapes()),
         "constraints" => object_schema(),
@@ -1861,7 +1861,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       %{
         "work_request_id" => described_string_schema("Target WorkRequest id."),
         "body" =>
-          described_string_schema("Non-secret comment body. Redacted before storage and response.")
+          markdown_string_schema("Non-secret Markdown comment body. Redacted before storage and response.")
           |> Map.put("maxLength", @local_operator_text_max_length),
         "created_by" =>
           described_string_schema("Local operator or agent provenance for audit display.")
@@ -1876,13 +1876,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       %{
         "work_request_id" => described_string_schema("Target WorkRequest id."),
         "decision" =>
-          described_string_schema("Non-secret decision text. Redacted before storage and response.")
+          described_string_schema("Non-secret decision summary text. Redacted before storage and response.")
           |> Map.put("maxLength", @local_operator_text_max_length),
         "rationale" =>
-          described_string_schema("Non-secret rationale for the decision.")
+          markdown_string_schema("Non-secret Markdown rationale for the decision.")
           |> Map.put("maxLength", @local_operator_text_max_length),
         "scope_impact" =>
-          described_string_schema("Non-secret note on scope or delivery impact.")
+          markdown_string_schema("Non-secret Markdown note on scope or delivery impact.")
           |> Map.put("maxLength", @local_operator_text_max_length),
         "created_by" =>
           described_string_schema("Local operator or agent provenance for audit display.")
@@ -1964,7 +1964,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_tool_input_schema("append_finding") do
     schema(
       scoped_properties(%{
-        "body" => string_schema(),
+        "body" => markdown_string_schema("Human-facing finding details in Markdown."),
         "id" => string_schema(),
         "idempotency_key" => string_schema(),
         "severity" => string_schema(),
@@ -1995,7 +1995,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       scoped_properties(%{
         "target_kind" => string_enum_schema(Comment.target_kinds()),
         "target_id" => string_schema(),
-        "body" => Map.put(string_schema(), "maxLength", Comment.max_body_length())
+        "body" => markdown_string_schema("Human-facing Markdown comment body.") |> Map.put("maxLength", Comment.max_body_length())
       }),
       ["target_kind", "target_id", "body"]
     )
@@ -2015,7 +2015,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(
       scoped_properties(%{
         "comment_id" => string_schema(),
-        "resolution_note" => Map.put(string_schema(), "maxLength", Comment.max_resolution_note_length())
+        "resolution_note" => markdown_string_schema("Optional Markdown resolution note.") |> Map.put("maxLength", Comment.max_resolution_note_length())
       }),
       ["comment_id"]
     )
@@ -2025,8 +2025,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(
       scoped_properties(%{
         "summary" => string_schema(),
-        "question" => string_schema(),
-        "context" => string_schema(),
+        "question" => markdown_string_schema("Human-facing guidance question in Markdown."),
+        "context" => markdown_string_schema("Human-facing guidance context in Markdown."),
         "idempotency_key" => string_schema()
       }),
       ["summary", "question", "context", "idempotency_key"]
@@ -2178,11 +2178,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "pr_repository" => described_string_schema("Optional owner/repository for outcome pr_merged."),
         "pr_merged_at" => described_string_schema("Required ISO-8601 timestamp for outcome pr_merged."),
         "merge_commit_sha" => described_string_schema("Required for linked-package pr_merged closeout strong evidence."),
-        "no_pr_evidence" => described_string_schema("Required for outcome completed_no_pr."),
+        "no_pr_evidence" => markdown_string_schema("Required Markdown evidence for outcome completed_no_pr."),
         "successor_planned_slice_id" => described_string_schema("Required for outcome superseded; must belong to the same WorkRequest."),
         "successor_work_package_id" => described_string_schema("Optional successor package id; when present it must be linked to the declared successor planned slice inside the same WorkRequest."),
-        "superseded_reason" => described_string_schema("Required for outcome superseded."),
-        "abandoned_rationale" => described_string_schema("Required for outcome abandoned.")
+        "superseded_reason" => markdown_string_schema("Required Markdown reason for outcome superseded."),
+        "abandoned_rationale" => markdown_string_schema("Required Markdown rationale for outcome abandoned.")
       },
       ["work_request_id", "planned_slice_id", "outcome", "idempotency_key"]
     )
@@ -2224,7 +2224,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(
       %{
         "guidance_request_id" => string_schema(),
-        "answer" => string_schema(),
+        "answer" => markdown_string_schema("Human-facing guidance answer in Markdown."),
         "answered_by" => string_schema()
       },
       ["guidance_request_id", "answer"]
@@ -2235,8 +2235,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(
       %{
         "guidance_request_id" => string_schema(),
-        "reason" => string_schema(),
-        "recommended_language" => string_schema(),
+        "reason" => markdown_string_schema("Human-facing escalation reason in Markdown."),
+        "recommended_language" => markdown_string_schema("Recommended human-facing Markdown language."),
         "decision_prompt" => decision_prompt_schema()
       },
       ["guidance_request_id", "reason", "recommended_language"]
@@ -2259,8 +2259,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       %{
         "work_request_id" => string_schema(),
         "category" => string_schema(),
-        "question" => string_schema(),
-        "why_needed" => string_schema(),
+        "question" => markdown_string_schema("Human-facing clarification question in Markdown."),
+        "why_needed" => markdown_string_schema("Human-facing Markdown explanation of why the answer is needed."),
         "decision_prompt" => decision_prompt_schema(),
         "asked_by_agent_run_id" => string_schema()
       },
@@ -2275,7 +2275,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "question_id" => string_schema(),
         "expected_question_status" => string_schema(),
         "current_status" => described_string_schema("Deprecated alias for expected_question_status."),
-        "answer" => string_schema(),
+        "answer" => markdown_string_schema("Human-facing clarification answer in Markdown."),
         "answered_by" => string_schema()
       },
       ["work_request_id", "question_id", "answer"]
@@ -2289,13 +2289,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "question_id" => string_schema(),
         "expected_question_status" => string_schema(),
         "current_status" => described_string_schema("Deprecated alias for expected_question_status."),
-        "answer" => string_schema(),
+        "answer" => markdown_string_schema("Human-facing clarification answer in Markdown."),
         "answered_by" => string_schema(),
         "source_type" => string_enum_schema(DecisionLogEntry.source_types()),
         "source_id" => string_schema(),
         "decision" => string_schema(),
-        "rationale" => string_schema(),
-        "scope_impact" => string_schema(),
+        "rationale" => markdown_string_schema("Human-facing decision rationale in Markdown."),
+        "scope_impact" => markdown_string_schema("Human-facing scope impact note in Markdown."),
         "created_by" => string_schema()
       },
       ["work_request_id", "question_id", "answer", "source_type", "decision", "rationale", "scope_impact"]
@@ -2320,8 +2320,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "work_request_id" => string_schema(),
         "source_type" => string_enum_schema(DecisionLogEntry.source_types()),
         "decision" => string_schema(),
-        "rationale" => string_schema(),
-        "scope_impact" => string_schema(),
+        "rationale" => markdown_string_schema("Human-facing decision rationale in Markdown."),
+        "scope_impact" => markdown_string_schema("Human-facing scope impact note in Markdown."),
         "created_by" => string_schema(),
         "source_id" => string_schema()
       },
@@ -2440,7 +2440,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "work_package_id" => string_schema(),
         "allowed_file_globs" => nonempty_string_array_schema(),
         "request_id" => string_schema(),
-        "rationale" => string_schema()
+        "rationale" => markdown_string_schema("Human-facing approval rationale in Markdown.")
       },
       ["work_package_id", "allowed_file_globs", "rationale"]
     )
@@ -2449,12 +2449,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_input_schema("read_phase_board"), do: schema(%{"phase_id" => string_schema()}, ["phase_id"])
 
   defp architect_tool_input_schema("request_child_replan") do
-    schema(%{"work_package_id" => string_schema(), "reason" => string_schema()}, ["work_package_id", "reason"])
+    schema(%{"work_package_id" => string_schema(), "reason" => markdown_string_schema("Human-facing replan reason in Markdown.")}, ["work_package_id", "reason"])
   end
 
   defp architect_tool_input_schema("approve_child_ready_state") do
     schema(
-      %{"work_package_id" => string_schema(), "rationale" => string_schema(), "request_id" => string_schema()},
+      %{"work_package_id" => string_schema(), "rationale" => markdown_string_schema("Human-facing merge approval rationale in Markdown."), "request_id" => string_schema()},
       ["work_package_id", "rationale"]
     )
   end
@@ -2602,7 +2602,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp progress_properties do
     scoped_properties(%{
       "summary" => string_schema(),
-      "body" => nullable_string_schema(),
+      "body" => markdown_nullable_string_schema("Optional human-facing Markdown body."),
       "status" => string_schema(),
       "idempotency_key" => string_schema(),
       "payload" => object_schema()
@@ -2612,7 +2612,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp metadata_properties(properties) do
     properties
     |> Map.merge(%{
-      "body" => nullable_string_schema(),
+      "body" => markdown_nullable_string_schema("Optional human-facing Markdown body."),
       "idempotency_key" => string_schema(),
       "payload" => object_schema(),
       "status" => string_schema(),
@@ -2623,6 +2623,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp string_schema, do: %{"type" => "string"}
   defp described_string_schema(description), do: Map.put(string_schema(), "description", description)
+  defp markdown_string_schema(description), do: described_string_schema(description)
   defp string_enum_schema(values) when is_list(values), do: %{"type" => "string", "enum" => values}
   defp nonblank_string_schema, do: %{"type" => "string", "minLength" => 1, "pattern" => "\\S"}
   defp boolean_schema, do: %{"type" => "boolean"}
@@ -2633,6 +2634,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp nullable_string_schema, do: %{"type" => ["string", "null"]}
+  defp markdown_nullable_string_schema(description), do: Map.put(nullable_string_schema(), "description", description)
   defp object_schema, do: %{"type" => "object", "additionalProperties" => true}
 
   defp decision_prompt_schema do
@@ -2641,7 +2643,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "additionalProperties" => false,
       "properties" => %{
         "tl_dr" => nonblank_string_schema(),
-        "details" => nonblank_string_schema(),
+        "details" => nonblank_string_schema() |> Map.put("description", "Human-facing decision prompt details in Markdown."),
         "options" => %{
           "type" => "array",
           "minItems" => 1,

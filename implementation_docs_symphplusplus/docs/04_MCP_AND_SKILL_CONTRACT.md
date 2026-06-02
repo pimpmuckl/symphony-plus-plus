@@ -230,6 +230,10 @@ caller input, and comment payloads are redacted before they are returned
 through MCP. Comment bodies are capped at 4,000 characters, resolution notes
 are capped at 1,000 characters, and list responses are capped at 100 comments
 per target.
+Human-facing long bodies passed through these tools are Markdown, including
+findings, progress bodies, blocker notes, comments, guidance context/answers,
+and decision rationale/scope impact. Compact titles, statuses, ids, branch
+names, PR metadata, and other machine-readable values remain plain text.
 
 ## Generic Solo Session MCP tools
 
@@ -249,7 +253,8 @@ existing Solo Session service/repository and use the MCP server's configured
 repo/database; they do not claim WorkKeys, mint grants, create WorkRequests,
 create WorkPackages, dispatch agents, write Linear state, or participate in
 merge-readiness gates. Returned structured content is redacted with the
-existing planning redactor. `solo_show` intentionally returns only the latest
+existing planning redactor. Solo entry bodies are Markdown; titles and statuses
+remain plain text. `solo_show` intentionally returns only the latest
 50 entries in this first slice; callers can use `entry_count`,
 `entries_returned`, and `entries_truncated` to detect when history was bounded.
 `solo_update_status` reuses the Solo Session lifecycle service contract for
@@ -259,8 +264,8 @@ pause, resume, complete, and archive transitions, including optimistic
 Agent-facing resource reads may include compact `text/vnd.toon` content. That
 TOON text is presentation context for agents only: MCP tool inputs remain
 JSON/schema-native, and tool `structuredContent` remains the canonical
-machine-readable response. Human-facing Markdown UI rendering is a separate
-follow-up slice, not part of this contract.
+machine-readable response. Human-facing Markdown rendering is a dashboard
+presentation rule, not the MCP input encoding.
 
 Solo MCP tools are deliberately not advertised to bound worker or architect
 WorkPackage sessions. Direct calls from a bound session fail with

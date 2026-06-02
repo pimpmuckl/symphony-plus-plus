@@ -61,6 +61,10 @@ Keep S++ current as the work changes:
 - `create_guidance_request` when product, architecture, dependency, or
   slice-boundary ambiguity would otherwise force guessing.
 
+Human-facing bodies, comments, blocker notes, findings, progress details, and
+guidance context are Markdown. Keep titles, ids, statuses, branch names, and
+other compact labels plain.
+
 Make guidance human-answerable: state the blocked decision, checked evidence,
 package impact, candidate answers if known, and the smallest answer that
 unblocks you. Treat architect escalation to `human_info_needed` as a blocker.

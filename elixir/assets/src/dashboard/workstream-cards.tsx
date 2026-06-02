@@ -14,7 +14,7 @@ import { useCallback } from "react";
 import { CommentCardSignal } from "./runtime";
 import { interactiveCardProps, stateCardBodyMotionKey } from "./card-helpers";
 import { clarificationGuidanceItem } from "./dashboard-data";
-import { firstParagraph } from "./dashboard-text";
+import { firstParagraph, stripMarkdown } from "./dashboard-text";
 import { useScopedHandoffCopy } from "./dashboard-state";
 import { sliceSuccessorLabel } from "./workstream-data";
 
@@ -156,7 +156,7 @@ export function RequestCard({
             ariaLabel={question ? `Answer open question for ${request.title || request.id}` : undefined}
           />
         ) : null}
-        {question ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{question.question}</p> : null}
+        {question ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{stripMarkdown(question.question)}</p> : null}
         {canCopyHandoff || commentSignal ? (
           <div className="mt-3 flex min-w-0 items-stretch gap-2">
             {canCopyHandoff ? (
@@ -301,7 +301,7 @@ function sliceCardSubtitle(
   if (slice.status === "skipped") return null;
   if (terminal) return null;
   if (pkg) return `Linked package: ${operationalLabel(pkg.operational_state, pkg.status)}.`;
-  return slice.goal || slice.work_package_kind;
+  return firstParagraph(slice.goal) || slice.work_package_kind;
 }
 
 function sliceDeliverySubtitle(slice: PlannedSlice, operational: WorkPackageCard["operational_state"]) {

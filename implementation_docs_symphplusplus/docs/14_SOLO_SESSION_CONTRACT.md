@@ -157,6 +157,9 @@ created_at
 updated_at
 ```
 
+`body` is human-facing Markdown. `title`, `status`, `entry_kind`, ids, and other
+compact fields remain plain text or machine-readable values.
+
 Initial entry kinds:
 
 ```text

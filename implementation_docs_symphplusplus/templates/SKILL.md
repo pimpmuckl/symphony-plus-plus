@@ -63,6 +63,10 @@ process aids when the operator explicitly asks for them.
 - Stay inside the assigned WorkPackage. Do not inspect or mutate sibling
   WorkPackages unless Symphony++ exposes a specific context slice.
 
+Human-facing bodies, comments, blocker notes, findings, progress details, and
+guidance context are Markdown. Keep titles, ids, statuses, branch names, and
+other compact labels plain.
+
 ## Branch, PR, And Review Evidence
 
 - Attach the implementation branch with `attach_branch(branch, head_sha)`.

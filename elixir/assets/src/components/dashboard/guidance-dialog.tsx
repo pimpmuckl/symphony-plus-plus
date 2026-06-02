@@ -3,6 +3,7 @@ import { useId, useMemo, useReducer } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
+import { MarkdownBlock } from "@/components/dashboard/markdown-block";
 import {
   Dialog,
   DialogContent,
@@ -161,7 +162,7 @@ function GuidanceDialogBody({
         </section>
         <section className="rounded-lg border p-4" data-guidance-section style={{ animationDelay: "95ms" }}>
           <p className="text-sm font-medium">Details</p>
-          <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">{item.prompt?.details || item.detail}</p>
+          <MarkdownBlock className="mt-2 text-sm" value={item.prompt?.details || item.detail} />
         </section>
         <fieldset className="m-0 grid gap-3 border-0 p-0" data-guidance-section style={{ animationDelay: "120ms" }}>
           <legend className="sr-only">Guidance options</legend>
@@ -220,7 +221,7 @@ function GuidanceDialogBody({
                         </Label>
                         <Textarea
                           className="mt-1 min-h-[72px]"
-                          placeholder={isCustom ? "Tell the architect what to do instead." : "Add optional context for this answer."}
+                          placeholder={isCustom ? "Tell the architect what to do instead." : "Add optional Markdown context for this answer."}
                           value={state.notes[option.id] || ""}
                           onFocus={() => focusNote(option.id)}
                           onChange={(event) => updateNote(option.id, event.target.value)}

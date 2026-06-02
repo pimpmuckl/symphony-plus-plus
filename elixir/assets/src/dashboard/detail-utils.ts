@@ -196,7 +196,6 @@ function deliveryFacts(delivery: PlannedSlice["delivery"]) {
     ["Merge Commit", delivery.merge_commit_sha],
     ["Recorded By", delivery.recorded_by],
     ["Recorded", delivery.recorded_at ? detailDate(delivery.recorded_at) : null],
-    ["Rationale", delivery.abandoned_rationale],
   ]);
 }
 

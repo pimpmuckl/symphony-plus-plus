@@ -1,5 +1,6 @@
 import type { PackageOperationalAttention, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
 import { DetailDisclosure } from "@/components/dashboard/detail-layout";
+import { MarkdownBlock } from "@/components/dashboard/markdown-block";
 import { cn } from "@/lib/utils";
 import { formatStatus } from "@/lib/status-labels";
 import {
@@ -42,7 +43,7 @@ export function DetailActivityList({ items }: { items: Array<{ title?: string | 
             <span className="min-w-0 text-sm font-medium">{item.title || "Update"}</span>
             {item.at ? <span className="shrink-0 text-xs text-muted-foreground">{detailDate(item.at)}</span> : null}
           </div>
-          {item.body ? <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.body}</p> : null}
+          {item.body ? <MarkdownBlock className="detail-markdown-compact mt-1 text-xs" value={item.body} /> : null}
         </div>
       ))}
     </div>
