@@ -12,7 +12,7 @@ import { RepoSummary } from "./dashboard-data";
 import { RepoSummaryPlate } from "./dashboard-settings";
 import { WorkstreamBoard } from "./workstream-board";
 import { defaultRepoWorkstreamOpen, readStoredFinishedRequestChildren, readStoredRepoWorkstreamOpen, repoWorkstreamStateKey, writeStoredFinishedRequestChildren, writeStoredRepoWorkstreamOpen } from "./dashboard-persistence";
-import { finishedRequestChildrenStorageKey, workstreamCategoryCounts } from "./workstream-data";
+import { finishedRequestChildrenStorageKey, packageHasActiveBlocker, workstreamCategoryCounts } from "./workstream-data";
 
 export function RepoWorkstream({
   repo,
@@ -60,6 +60,7 @@ export function RepoWorkstream({
     () => workstreamCategoryCounts(repoDetails, visiblePackages, unlinkedPackages, expandedFinishedRequests, stateKey),
     [expandedFinishedRequests, repoDetails, stateKey, unlinkedPackages, visiblePackages],
   );
+  const visibleBlockerCount = useMemo(() => visiblePackages.filter(packageHasActiveBlocker).length, [visiblePackages]);
   const [open, setOpen] = useState(() => readStoredRepoWorkstreamOpen(stateKey, defaultRepoWorkstreamOpen(repo)));
   const [openMotion, setOpenMotion] = useState(false);
   const previousOpenRef = useRef(open);
@@ -127,7 +128,7 @@ export function RepoWorkstream({
               </div>
             </div>
             <div className="flex min-w-0 flex-col gap-2 md:items-end">
-              <RepoSummaryStrip repo={repo} categoryCounts={categoryCounts} />
+              <RepoSummaryStrip repo={repo} categoryCounts={categoryCounts} blockerCount={visibleBlockerCount} />
             </div>
           </div>
         </CardHeader>
@@ -155,7 +156,15 @@ export function RepoWorkstream({
   );
 }
 
-export function RepoSummaryStrip({ repo, categoryCounts }: { repo: RepoSummary; categoryCounts: WorkstreamCategoryCounts }) {
+export function RepoSummaryStrip({
+  repo,
+  categoryCounts,
+  blockerCount,
+}: {
+  repo: RepoSummary;
+  categoryCounts: WorkstreamCategoryCounts;
+  blockerCount: number;
+}) {
   const progress = [
     { label: "Requests", value: categoryCounts.requests, tone: "requested" },
     { label: "Slices", value: categoryCounts.slices, tone: "active" },
@@ -163,7 +172,7 @@ export function RepoSummaryStrip({ repo, categoryCounts }: { repo: RepoSummary; 
   ] as const;
   const attention = [
     { label: "Guidance Needed", value: repo.guidanceCount, tone: "guidance" },
-    { label: "Active Blockers", value: repo.blockerCount, tone: "blocker" },
+    { label: "Active Blockers", value: blockerCount, tone: "blocker" },
   ] as const;
 
   return (
