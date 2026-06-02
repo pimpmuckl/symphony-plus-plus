@@ -1962,13 +1962,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                planned_slice_attrs(id: "WRS-DASH-SUCCESSOR", target_base_branch: anchor.base_branch)
              )
 
+    assert {:ok, successor_slice} =
+             WorkRequestRepository.approve_planned_slice(repo, work_request.id, successor_slice.id, "planned")
+
     successor_package =
-      create_work_package!(repo,
+      create_matching_work_package!(repo, work_request, successor_slice,
         id: "SYMPP-DASH-SUCCESSOR",
-        status: "ready_for_worker",
-        repo: work_request.repo,
-        base_branch: anchor.base_branch
+        status: "ready_for_worker"
       )
+
+    assert {:ok, _successor_dispatch} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, successor_slice.id, "approved", successor_package.id)
 
     assert {:ok, _superseded_delivery} =
              WorkRequestRepository.record_planned_slice_delivery(
@@ -2064,7 +2068,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         base_branch: "other-base"
       )
 
-    assert {:ok, _filtered_successor_delivery} =
+    assert {:error, :not_found} =
              WorkRequestRepository.record_planned_slice_delivery(
                repo,
                work_request.id,

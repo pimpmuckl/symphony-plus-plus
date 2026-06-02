@@ -196,11 +196,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSliceDeliveriesTest 
   end
 
   test "records superseded and abandoned outcomes with successor metadata", %{repo: repo} do
-    work_request = create_work_request!(repo)
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
     superseded_slice = create_planned_slice!(repo, work_request, id: "WRS-DELIVERY-SUPERSEDED")
     successor_slice = create_planned_slice!(repo, work_request, id: "WRS-DELIVERY-SUCCESSOR")
     abandoned_slice = create_planned_slice!(repo, work_request, id: "WRS-DELIVERY-ABANDONED")
-    successor_package = create_work_package!(repo, id: "SYMPP-DELIVERY-SUCCESSOR")
+
+    assert {:ok, approved_successor} = Repository.approve_planned_slice(repo, work_request.id, successor_slice.id, "planned")
+    successor_package = create_matching_work_package!(repo, work_request, approved_successor, id: "SYMPP-DELIVERY-SUCCESSOR")
+    assert {:ok, dispatched_successor} = Repository.dispatch_planned_slice(repo, work_request.id, approved_successor.id, "approved", successor_package.id)
 
     assert {:ok, superseded} =
              Repository.record_planned_slice_delivery(
@@ -210,7 +213,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSliceDeliveriesTest 
                delivery_attrs(%{
                  outcome: "superseded",
                  idempotency_key: "delivery-superseded",
-                 successor_planned_slice_id: successor_slice.id,
+                 successor_planned_slice_id: dispatched_successor.id,
                  successor_work_package_id: successor_package.id,
                  superseded_reason: "Recut with narrower owned files."
                })
@@ -235,7 +238,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSliceDeliveriesTest 
     assert abandoned.abandoned_rationale == "Package was no longer needed after architecture decision."
 
     assert {:ok, persisted_slices} = Service.list_planned_slices(repo, work_request.id)
-    assert Enum.map(persisted_slices, & &1.status) == ["planned", "planned", "planned"]
+    assert Enum.map(persisted_slices, & &1.status) == ["planned", "dispatched", "planned"]
   end
 
   test "delivery outcomes are scoped to their planned slice WorkRequest", %{repo: repo} do
@@ -267,6 +270,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSliceDeliveriesTest 
                  outcome: "superseded",
                  successor_planned_slice_id: successor_slice.id,
                  superseded_reason: "Wrong WorkRequest successor must not be linked."
+               })
+             )
+
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+  end
+
+  test "superseded delivery rejects successor packages outside the declared successor slice", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-DELIVERY-SUCCESSOR-PACKAGE-SCOPE", status: "ready_for_slicing")
+    planned_slice = create_planned_slice!(repo, work_request, id: "WRS-DELIVERY-SUCCESSOR-PACKAGE-SCOPED")
+
+    successor_slice = create_dispatched_successor_slice!(repo, work_request, "SUCCESSOR")
+    other_successor_slice = create_dispatched_successor_slice!(repo, work_request, "OTHER-SUCCESSOR")
+
+    assert {:error, :not_found} =
+             Repository.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               planned_slice.id,
+               delivery_attrs(%{
+                 outcome: "superseded",
+                 successor_planned_slice_id: successor_slice.id,
+                 successor_work_package_id: other_successor_slice.work_package_id,
+                 superseded_reason: "Wrong same-request package must not be linked."
                })
              )
 
@@ -319,16 +345,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSliceDeliveriesTest 
     planned_slice
   end
 
-  defp create_work_package!(repo, overrides) do
-    result =
-      overrides
+  defp create_matching_work_package!(repo, work_request, planned_slice, overrides) do
+    attrs =
+      [
+        kind: planned_slice.work_package_kind,
+        title: planned_slice.title,
+        repo: work_request.repo,
+        base_branch: planned_slice.target_base_branch,
+        branch_pattern: planned_slice.branch_pattern,
+        product_description: work_request.human_description,
+        allowed_file_globs: planned_slice.owned_file_globs,
+        acceptance_criteria: planned_slice.acceptance_criteria
+      ]
+      |> Keyword.merge(overrides)
       |> WorkPackageFactory.attrs()
-      |> then(&WorkPackageRepository.create(repo, &1))
 
-    case result do
-      {:ok, work_package} -> work_package
-      {:error, reason} -> flunk("failed to create WorkPackage: #{inspect(reason)}")
-    end
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, attrs)
+    work_package
+  end
+
+  defp create_dispatched_successor_slice!(repo, work_request, suffix) do
+    successor_slice = create_planned_slice!(repo, work_request, id: "WRS-DELIVERY-#{suffix}")
+    assert {:ok, approved_successor} = Repository.approve_planned_slice(repo, work_request.id, successor_slice.id, "planned")
+    successor_package = create_matching_work_package!(repo, work_request, approved_successor, id: "SYMPP-DELIVERY-#{suffix}")
+    assert {:ok, dispatched_successor} = Repository.dispatch_planned_slice(repo, work_request.id, approved_successor.id, "approved", successor_package.id)
+    dispatched_successor
   end
 
   defp work_request_attrs(overrides) do
