@@ -321,8 +321,12 @@ or worker claim.
 path for a linked no-code dispatch that failed before implementation, including
 a `ready_for_worker` package whose managed worktree has already been cleaned.
 It may retire unclaimed worker-grant and stale claim-lease evidence for that
-linked package only. It still rejects claimed worker authority, active agent
-runs, paused leases, active blockers, or an uncleared recorded worktree.
+linked package only. Active blockers do not block accepted abandoned or
+superseded terminal closeout; they remain historical evidence and are echoed in
+the closeout progress event. The closeout path still rejects claimed worker
+authority, active agent runs, paused leases, or an uncleared recorded worktree.
+For `outcome=superseded`, any `successor_work_package_id` must be linked to the
+declared `successor_planned_slice_id` inside the same WorkRequest.
 `revoke_planned_slice_worker_key` remains limited to closeout-ready packages and
 is not required before this abandoned no-code repair path.
 `dispatch_work_request_planned_slice` is separate from those mutation tools and

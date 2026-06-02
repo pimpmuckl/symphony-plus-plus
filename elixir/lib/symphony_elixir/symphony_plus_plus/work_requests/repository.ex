@@ -693,10 +693,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   end
 
   defp validate_planned_slice_delivery_scope(repo, work_request_id, planned_slice_id, candidate) do
-    cond do
-      not planned_slice_in_scope?(repo, work_request_id, planned_slice_id) -> {:error, :not_found}
-      not successor_planned_slice_in_scope?(repo, work_request_id, candidate) -> {:error, :not_found}
-      true -> :ok
+    with :ok <- require_planned_slice_in_scope(repo, work_request_id, planned_slice_id) do
+      validate_successor_delivery_scope(repo, work_request_id, candidate)
     end
   end
 
@@ -731,15 +729,57 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     )
   end
 
-  defp successor_planned_slice_in_scope?(_repo, _work_request_id, %PlannedSliceDelivery{outcome: outcome})
-       when outcome != "superseded",
-       do: true
-
-  defp successor_planned_slice_in_scope?(repo, work_request_id, %PlannedSliceDelivery{
-         successor_planned_slice_id: successor_planned_slice_id
-       }) do
-    planned_slice_in_scope?(repo, work_request_id, successor_planned_slice_id)
+  defp require_planned_slice_in_scope(repo, work_request_id, planned_slice_id) do
+    if planned_slice_in_scope?(repo, work_request_id, planned_slice_id), do: :ok, else: {:error, :not_found}
   end
+
+  defp validate_successor_delivery_scope(_repo, _work_request_id, %PlannedSliceDelivery{outcome: outcome})
+       when outcome != "superseded",
+       do: :ok
+
+  defp validate_successor_delivery_scope(
+         repo,
+         work_request_id,
+         %PlannedSliceDelivery{
+           successor_planned_slice_id: successor_planned_slice_id
+         } = candidate
+       ) do
+    with {:ok, successor_slice} <- scoped_planned_slice(repo, work_request_id, successor_planned_slice_id) do
+      validate_successor_work_package_scope(repo, work_request_id, successor_slice, candidate)
+    end
+  end
+
+  defp scoped_planned_slice(repo, work_request_id, planned_slice_id) do
+    query =
+      from(planned_slice in PlannedSlice,
+        where: planned_slice.id == ^planned_slice_id,
+        where: planned_slice.work_request_id == ^work_request_id,
+        limit: 1
+      )
+
+    case repo.one(query) do
+      %PlannedSlice{} = planned_slice -> {:ok, planned_slice}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp validate_successor_work_package_scope(_repo, _work_request_id, %PlannedSlice{}, %PlannedSliceDelivery{successor_work_package_id: nil}),
+    do: :ok
+
+  defp validate_successor_work_package_scope(
+         _repo,
+         _work_request_id,
+         %PlannedSlice{work_package_id: successor_work_package_id},
+         %PlannedSliceDelivery{successor_work_package_id: successor_work_package_id}
+       )
+       when is_binary(successor_work_package_id),
+       do: :ok
+
+  defp validate_successor_work_package_scope(_repo, _work_request_id, %PlannedSlice{}, %PlannedSliceDelivery{
+         successor_work_package_id: successor_work_package_id
+       })
+       when is_binary(successor_work_package_id),
+       do: {:error, :not_found}
 
   defp existing_planned_slice_delivery(repo, planned_slice_id) do
     repo.one(

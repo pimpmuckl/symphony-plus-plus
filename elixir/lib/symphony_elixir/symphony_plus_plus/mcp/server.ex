@@ -2180,7 +2180,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "merge_commit_sha" => described_string_schema("Required for linked-package pr_merged closeout strong evidence."),
         "no_pr_evidence" => described_string_schema("Required for outcome completed_no_pr."),
         "successor_planned_slice_id" => described_string_schema("Required for outcome superseded; must belong to the same WorkRequest."),
-        "successor_work_package_id" => described_string_schema("Optional successor package id; when present it must stay inside the scoped WorkRequest repo/base branch."),
+        "successor_work_package_id" => described_string_schema("Optional successor package id; when present it must be linked to the declared successor planned slice inside the same WorkRequest."),
         "superseded_reason" => described_string_schema("Required for outcome superseded."),
         "abandoned_rationale" => described_string_schema("Required for outcome abandoned.")
       },
