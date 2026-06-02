@@ -245,6 +245,256 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
     assert Scope.work_request(work_request.id) in reconnected_server.session.assignment.scopes
   end
 
+  test "claim_local_architect_assignment can read trusted same-repo WorkRequests without widening writes", %{repo: repo} do
+    store_dir = Path.join(test_handoff_store_dir(), "local-architect-cross-wr-read")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    previous_trusted_remotes = Application.get_env(:symphony_elixir, :sympp_repo_identity_trusted_remotes)
+
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+    Application.put_env(:symphony_elixir, :sympp_repo_identity_trusted_remotes, ["https://github.com/Pimpmuckl/symphony-plus-plus.git"])
+
+    on_exit(fn ->
+      restore_app_env(:sympp_worker_secret_store_dir, previous_store_dir)
+      restore_app_env(:sympp_repo_identity_trusted_remotes, previous_trusted_remotes)
+      File.rm_rf(store_dir)
+    end)
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-ALIAS",
+        repo: "symphony-plus-plus",
+        base_branch: "main",
+        status: "ready_for_slicing"
+      )
+
+    sibling =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-ALIAS-SIBLING",
+        repo: "Pimpmuckl/symphony-plus-plus",
+        base_branch: work_request.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    other_owner =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-ALIAS-OTHER-OWNER",
+        repo: "Elsewhere/symphony-plus-plus",
+        base_branch: work_request.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    other_base =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-ALIAS-OTHER-BASE",
+        repo: sibling.repo,
+        base_branch: "release/local-architect-alias",
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, board_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               sibling.id,
+               work_request_planned_slice_attrs(id: "WRS-MCP-LOCAL-ARCHITECT-ALIAS-BOARD", target_base_branch: sibling.base_branch)
+             )
+
+    assert {:ok, board_slice} = WorkRequestRepository.approve_planned_slice(repo, sibling.id, board_slice.id, "planned")
+
+    assert {:ok, sibling_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-MCP-LOCAL-ARCHITECT-ALIAS-PKG",
+                 kind: "mcp",
+                 repo: sibling.repo,
+                 base_branch: sibling.base_branch,
+                 branch_pattern: board_slice.branch_pattern,
+                 title: board_slice.title,
+                 product_description: sibling.human_description,
+                 engineering_scope: board_slice.goal,
+                 allowed_file_globs: board_slice.owned_file_globs,
+                 acceptance_criteria: board_slice.acceptance_criteria,
+                 status: "planning"
+               )
+             )
+
+    assert {:ok, _dispatched_board_slice} =
+             WorkRequestRepository.dispatch_planned_slice(repo, sibling.id, board_slice.id, "approved", sibling_package.id)
+
+    assert {:ok, mutation_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               sibling.id,
+               work_request_planned_slice_attrs(id: "WRS-MCP-LOCAL-ARCHITECT-ALIAS-MUTATION", target_base_branch: sibling.base_branch)
+             )
+
+    assert {:ok, mutation_slice} = WorkRequestRepository.approve_planned_slice(repo, sibling.id, mutation_slice.id, "planned")
+
+    assert {:ok, cross_base_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               sibling.id,
+               work_request_planned_slice_attrs(id: "WRS-MCP-LOCAL-ARCHITECT-ALIAS-CROSS-BASE", target_base_branch: other_base.base_branch)
+             )
+
+    assert {:ok, cross_base_slice} = WorkRequestRepository.approve_planned_slice(repo, sibling.id, cross_base_slice.id, "planned")
+
+    assert {:ok, cross_base_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-MCP-LOCAL-ARCHITECT-ALIAS-CROSS-BASE-PKG",
+                 kind: "mcp",
+                 repo: sibling.repo,
+                 base_branch: cross_base_slice.target_base_branch,
+                 branch_pattern: cross_base_slice.branch_pattern,
+                 title: cross_base_slice.title,
+                 product_description: sibling.human_description,
+                 engineering_scope: cross_base_slice.goal,
+                 allowed_file_globs: cross_base_slice.owned_file_globs,
+                 acceptance_criteria: cross_base_slice.acceptance_criteria,
+                 status: "planning"
+               )
+             )
+
+    assert {:ok, _dispatched_cross_base_slice} =
+             WorkRequestRepository.dispatch_planned_slice(repo, sibling.id, cross_base_slice.id, "approved", cross_base_package.id)
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: [
+                 mode: "local-private-file",
+                 repo_root: test_repo_root(),
+                 store_dir: store_dir,
+                 claimed_by: ArchitectHandoff.claimed_by()
+               ]
+             )
+
+    arguments = %{
+      "work_request_id" => work_request.id,
+      "architect_anchor_work_package_id" => handoff.anchor_package.id,
+      "repo" => work_request.repo,
+      "base_branch" => work_request.base_branch,
+      "caller_id" => "codex-local-architect-alias-test",
+      "claimed_by" => "local-architect-alias"
+    }
+
+    {claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-alias-claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-architect-alias-state")
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert Scope.work_request(work_request.id) in claimed_server.session.assignment.scopes
+
+    call = fn name, args ->
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => name,
+          "method" => "tools/call",
+          "params" => %{"name" => name, "arguments" => args}
+        },
+        claimed_server
+      )
+    end
+
+    list_response = call.("list_work_requests", %{"status" => "ready_for_slicing"})
+    listed_ids = list_response |> get_in(["result", "structuredContent", "work_requests"]) |> Enum.map(& &1["id"])
+
+    assert work_request.id in listed_ids
+    assert sibling.id in listed_ids
+    refute other_owner.id in listed_ids
+    refute other_base.id in listed_ids
+
+    read_response = call.("read_work_request", %{"work_request_id" => sibling.id})
+    read_payload = get_in(read_response, ["result", "structuredContent"])
+    read_slice_ids = Enum.map(read_payload["planned_slices"], & &1["id"])
+
+    assert read_payload["work_request"]["id"] == sibling.id
+    assert board_slice.id in read_slice_ids
+    assert mutation_slice.id in read_slice_ids
+    assert cross_base_slice.id in read_slice_ids
+
+    board_response = call.("read_work_request_delivery_board", %{"work_request_id" => sibling.id})
+    board_slices = get_in(board_response, ["result", "structuredContent", "delivery_board", "slices"])
+
+    assert get_in(board_response, ["result", "structuredContent", "work_request", "id"]) == sibling.id
+    assert Enum.any?(board_slices, &(get_in(&1, ["work_package", "id"]) == sibling_package.id))
+    refute Enum.any?(board_slices, &(get_in(&1, ["work_package", "id"]) == cross_base_package.id))
+
+    for out_of_scope <- [other_owner, other_base] do
+      out_of_scope_response = call.("read_work_request", %{"work_request_id" => out_of_scope.id})
+      assert get_in(out_of_scope_response, ["error", "code"]) == -32_004
+      assert get_in(out_of_scope_response, ["error", "data", "reason"]) == "not_found"
+      refute inspect(out_of_scope_response) =~ out_of_scope.id
+    end
+
+    sibling_status_response =
+      call.("set_work_request_status", %{
+        "work_request_id" => sibling.id,
+        "current_status" => "ready_for_slicing",
+        "next_status" => "sliced"
+      })
+
+    sibling_add_slice_response =
+      call.("add_work_request_planned_slice", %{
+        "work_request_id" => sibling.id,
+        "title" => "Sibling mutation",
+        "goal" => "This should be denied.",
+        "work_package_kind" => "mcp",
+        "target_base_branch" => sibling.base_branch,
+        "owned_file_globs" => ["elixir/lib/symphony_elixir/symphony_plus_plus/mcp/server.ex"],
+        "forbidden_file_globs" => [],
+        "acceptance_criteria" => ["Sibling mutation remains denied."],
+        "validation_steps" => ["mix test test/symphony_elixir/symphony_plus_plus/mcp"],
+        "review_lanes" => ["normal"],
+        "stop_conditions" => ["Stop before mutating siblings."]
+      })
+
+    sibling_dispatch_response =
+      call.("dispatch_work_request_planned_slice", %{
+        "work_request_id" => sibling.id,
+        "planned_slice_id" => mutation_slice.id,
+        "claimed_by" => "sibling-worker"
+      })
+
+    sibling_delivery_response =
+      call.("record_planned_slice_delivery", %{
+        "work_request_id" => sibling.id,
+        "planned_slice_id" => board_slice.id,
+        "outcome" => "completed_no_pr",
+        "no_pr_evidence" => "Sibling delivery mutation should be denied.",
+        "idempotency_key" => "local-architect-alias-delivery-denied"
+      })
+
+    for response <- [sibling_status_response, sibling_add_slice_response, sibling_dispatch_response, sibling_delivery_response] do
+      assert get_in(response, ["error", "code"]) == -32_004
+      assert get_in(response, ["error", "data", "reason"]) == "not_found"
+      refute inspect(response) =~ sibling.id
+    end
+
+    assert {:ok, persisted_sibling} = WorkRequestRepository.get(repo, sibling.id)
+    assert persisted_sibling.status == "ready_for_slicing"
+    assert {:ok, persisted_slices} = WorkRequestRepository.list_planned_slices(repo, sibling.id)
+
+    persisted_slices_by_id = Map.new(persisted_slices, &{&1.id, &1})
+    assert Map.keys(persisted_slices_by_id) |> Enum.sort() == [board_slice.id, cross_base_slice.id, mutation_slice.id] |> Enum.sort()
+    assert persisted_slices_by_id[board_slice.id].status == "dispatched"
+    assert persisted_slices_by_id[board_slice.id].work_package_id == sibling_package.id
+    assert persisted_slices_by_id[cross_base_slice.id].status == "dispatched"
+    assert persisted_slices_by_id[cross_base_slice.id].work_package_id == cross_base_package.id
+    assert persisted_slices_by_id[mutation_slice.id].status == "approved"
+    assert is_nil(persisted_slices_by_id[mutation_slice.id].work_package_id)
+  end
+
   test "claim_local_architect_assignment releases heartbeat leases when grant owner changes", %{repo: repo} do
     store_dir = Path.join(test_handoff_store_dir(), "local-architect-claim-owner-changed")
     previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)

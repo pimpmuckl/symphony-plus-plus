@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Policy do
   alias SymphonyElixir.SymphonyPlusPlus.Authorization.Decision
   alias SymphonyElixir.SymphonyPlusPlus.Authorization.Scope
   alias SymphonyElixir.SymphonyPlusPlus.Authorization.Target
+  alias SymphonyElixir.SymphonyPlusPlus.RepoIdentity
 
   @read_actions [
     :work_request_read,
@@ -225,19 +226,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Policy do
   defp scope_matches_target?(%Scope{}, %Target{}), do: false
 
   defp repo_scope_matches_target?(repo, base_branch, %Target{} = target) do
-    target_primary_repo_scope_matches?(repo, base_branch, target) or
-      Enum.any?(target.repo_scopes, &repo_scope_matches?(repo, base_branch, &1))
+    trusted_remotes = target.metadata |> Map.get(:repo_scope_trusted_remotes, []) |> List.wrap()
+
+    target_primary_repo_scope_matches?(repo, base_branch, target, trusted_remotes) or
+      Enum.any?(target.repo_scopes, &repo_scope_matches?(repo, base_branch, &1, trusted_remotes))
   end
 
-  defp target_primary_repo_scope_matches?(repo, base_branch, %Target{} = target) do
-    target.repo == repo and (is_nil(base_branch) or target.base_branch == base_branch)
+  defp target_primary_repo_scope_matches?(repo, base_branch, %Target{} = target, trusted_remotes) do
+    repo_scope_name_matches?(repo, target.repo, trusted_remotes) and (is_nil(base_branch) or target.base_branch == base_branch)
   end
 
-  defp repo_scope_matches?(repo, base_branch, %{repo: scope_repo, base_branch: scope_base_branch}) do
-    scope_repo == repo and (is_nil(base_branch) or scope_base_branch == base_branch)
+  defp repo_scope_matches?(repo, base_branch, %{repo: scope_repo, base_branch: scope_base_branch}, trusted_remotes) do
+    repo_scope_name_matches?(repo, scope_repo, trusted_remotes) and (is_nil(base_branch) or scope_base_branch == base_branch)
   end
 
-  defp repo_scope_matches?(_repo, _base_branch, _scope), do: false
+  defp repo_scope_matches?(_repo, _base_branch, _scope, _trusted_remotes), do: false
+
+  defp repo_scope_name_matches?(repo, repo, _trusted_remotes) when is_binary(repo), do: true
+
+  defp repo_scope_name_matches?(expected_repo, actual_repo, trusted_remotes)
+       when is_binary(expected_repo) and is_binary(actual_repo) do
+    RepoIdentity.scope_match?(expected_repo, actual_repo, trusted_remotes: trusted_remotes)
+  end
+
+  defp repo_scope_name_matches?(_expected_repo, _actual_repo, _trusted_remotes), do: false
 
   defp target_resolution_reason(%Target{resolution: :not_found}), do: :target_not_found
   defp target_resolution_reason(%Target{resolution: :ambiguous}), do: :target_ambiguous
