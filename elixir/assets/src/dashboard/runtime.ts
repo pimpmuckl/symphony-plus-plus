@@ -1,6 +1,4 @@
-import { AlertTriangle, CheckCircle2, MessageSquareText, RefreshCw } from "lucide-react";
 import type { ContextComment, DashboardPayload, HandoffCopyState, PlannedSlice, SoloSession, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
-import type * as React from "react";
 import type { UpdateMotion, UpdateMotionKind } from "@/components/dashboard/motion";
 import type { BoardLayoutMode as WorkstreamLayoutMode } from "@/components/dashboard/board-layout";
 
@@ -145,18 +143,6 @@ export const STATUS_TILE_TONES: Record<StatusTileTone, { card: string; icon: str
     value: "text-emerald-700 dark:text-emerald-200",
   },
 };
-
-export const UPDATE_SIMULATION_CONTROLS: Array<{
-  kind: UpdateMotionKind;
-  label: string;
-  icon: React.ReactNode;
-  tooltip: string;
-}> = [
-  { kind: "guidance", label: "G", icon: <MessageSquareText className="size-3.5" />, tooltip: "Simulate new human guidance" },
-  { kind: "blocker", label: "B", icon: <AlertTriangle className="size-3.5" />, tooltip: "Simulate a fresh blocker" },
-  { kind: "finished", label: "F", icon: <CheckCircle2 className="size-3.5" />, tooltip: "Simulate finished work" },
-  { kind: "changed", label: "U", icon: <RefreshCw className="size-3.5" />, tooltip: "Simulate a card update" },
-];
 
 export const REPO_SUMMARY_PLATE_TONES: Record<RepoSummaryPlateTone, string> = {
   requested: "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700/70 dark:bg-slate-900/70 dark:text-slate-200",

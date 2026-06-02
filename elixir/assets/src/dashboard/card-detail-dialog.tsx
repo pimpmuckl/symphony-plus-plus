@@ -12,7 +12,7 @@ import { PackageDetailContent, SliceDetailContent } from "./package-detail";
 import { RequestDetailContent } from "./request-detail";
 import { SoloSessionDetailContent } from "./solo-detail";
 import { repoDisplayName } from "./dashboard-persistence";
-import { soloSessionStatusVariant } from "./solo-sessions";
+import { soloSessionStatusVariant } from "./solo-session-utils";
 
 export type DetailResourceState<T> = {
   payload: T | null;
@@ -35,24 +35,24 @@ export type CardDetailDialogAction =
   | { type: "soloSuccess"; payload: SoloSessionDetailPayload }
   | { type: "soloError"; error: string };
 
-export const emptyPackageDetailState: DetailResourceState<WorkPackageDetailPayload> = {
+const emptyPackageDetailState: DetailResourceState<WorkPackageDetailPayload> = {
   payload: null,
   loading: false,
   error: null,
 };
 
-export const emptySoloDetailState: DetailResourceState<SoloSessionDetailPayload> = {
+const emptySoloDetailState: DetailResourceState<SoloSessionDetailPayload> = {
   payload: null,
   loading: false,
   error: null,
 };
 
-export const initialCardDetailDialogState: CardDetailDialogState = {
+const initialCardDetailDialogState: CardDetailDialogState = {
   package: emptyPackageDetailState,
   solo: emptySoloDetailState,
 };
 
-export function cardDetailDialogReducer(state: CardDetailDialogState, action: CardDetailDialogAction): CardDetailDialogState {
+function cardDetailDialogReducer(state: CardDetailDialogState, action: CardDetailDialogAction): CardDetailDialogState {
   switch (action.type) {
     case "resetPackage":
       return { ...state, package: emptyPackageDetailState };
@@ -73,7 +73,7 @@ export function cardDetailDialogReducer(state: CardDetailDialogState, action: Ca
   }
 }
 
-export async function loadOperatorPayload<T>(path: string, signal: AbortSignal, fallbackMessage: string): Promise<T> {
+async function loadOperatorPayload<T>(path: string, signal: AbortSignal, fallbackMessage: string): Promise<T> {
   return withLocalOperatorReconnect(async () => {
     await ensureDashboardRuntimeConfig();
     const response = await operatorFetch(operatorApiUrl(path), {
@@ -303,7 +303,7 @@ export function useDashboardReducedMotionPreference() {
   return prefersReducedMotion;
 }
 
-export function cardDetailSelectionIdentity(selection: CardDetailSelection | null) {
+function cardDetailSelectionIdentity(selection: CardDetailSelection | null) {
   if (!selection) return "closed";
 
   switch (selection.kind) {
@@ -318,7 +318,7 @@ export function cardDetailSelectionIdentity(selection: CardDetailSelection | nul
   }
 }
 
-export function cardDetailContentReady(selection: CardDetailSelection | null, state: CardDetailDialogState) {
+function cardDetailContentReady(selection: CardDetailSelection | null, state: CardDetailDialogState) {
   if (!selection) return false;
 
   switch (selection.kind) {
@@ -350,7 +350,7 @@ export function NaturalDetailBody({ motionKey, children }: { motionKey: string; 
   );
 }
 
-export function cardDetailMotionKey(
+function cardDetailMotionKey(
   selection: CardDetailSelection | null,
   state: {
     loadingPackage: boolean;
@@ -375,7 +375,7 @@ export function cardDetailMotionKey(
   }
 }
 
-export function detailLoadState(loading: boolean, payload: unknown, error: string | null) {
+function detailLoadState(loading: boolean, payload: unknown, error: string | null) {
   if (error) return "error";
   if (payload) return "loaded";
   return loading ? "loading" : "summary";

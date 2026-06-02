@@ -143,7 +143,7 @@ export function WorkstreamBoard({
   );
 }
 
-export function StackedWorkstreamColumns({
+function StackedWorkstreamColumns({
   requested,
   active,
   implementing,
@@ -266,7 +266,7 @@ export function StackedWorkstreamColumns({
   );
 }
 
-export function AlignedWorkstreamColumns({
+function AlignedWorkstreamColumns({
   rows,
   rowTemplate,
   slotTemplates,

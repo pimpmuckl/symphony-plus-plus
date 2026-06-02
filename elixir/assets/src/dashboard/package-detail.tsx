@@ -13,7 +13,8 @@ import { useCallback, useReducer } from "react";
 import { COMMENT_BODY_MAX_LENGTH, CardDetailSelection, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageStateAction, WorkPackageStateMutation } from "./runtime";
 import { CommentsPanel, useSyncedComments } from "./comments-panel";
 import { DangerousStateConfirmationDialog } from "./request-detail";
-import { DetailActivityList, DetailAttentionList, LineageDisclosure, RecentDecisionsDisclosure, activeAlertLabels, commentStatLabel, detailDate, latestPackageProgress, lineageHasSignal, packageOperationalFallbackText, packagePurpose, packageRuntimeText, planSummaryText, sliceDeliveryFacts, sliceDeliverySummary, sliceProgressText, targetCommentStats } from "./detail-extras";
+import { DetailActivityList, DetailAttentionList, LineageDisclosure, RecentDecisionsDisclosure } from "./detail-extras";
+import { activeAlertLabels, commentStatLabel, detailDate, latestPackageProgress, lineageHasSignal, packageOperationalFallbackText, packagePurpose, packageRuntimeText, planSummaryText, sliceDeliveryFacts, sliceDeliverySummary, sliceProgressText, targetCommentStats } from "./detail-utils";
 import { initialPackageDetailUiState, packageDetailUiReducer } from "./dashboard-state";
 import { repoDisplayName } from "./dashboard-persistence";
 

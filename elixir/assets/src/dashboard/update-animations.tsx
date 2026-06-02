@@ -5,7 +5,7 @@ import { packageLane, sliceLane, sliceOperationalState, workRequestLane } from "
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { BlockerItem, FinishedHighlight, updateMotionsReducer } from "./dashboard-state";
 import { DashboardUpdateAnimations, MAX_UPDATE_MOTION_ENTRIES, TopPanelKey, UpdateAnimationEntity } from "./runtime";
-import { soloSessionAttention, soloSessionLane, soloSessionUpdateKey } from "./solo-sessions";
+import { soloSessionAttention, soloSessionLane, soloSessionUpdateKey } from "./solo-session-utils";
 
 export function useDashboardUpdateAnimations({
   blockerItems,
