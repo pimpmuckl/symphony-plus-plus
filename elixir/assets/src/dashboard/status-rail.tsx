@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, ChevronDown, MessageSquareText } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, MessageSquareText, RefreshCw } from "lucide-react";
 import { AnimatedTopGrid, NumberWheel, TOP_PANEL_RESIZE_MS, TOP_PANEL_SLIDE_MS, useCountMotion } from "@/components/dashboard/motion";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { GuidanceItem } from "@/types/dashboard";
@@ -9,10 +9,17 @@ import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { BlockerItem, FinishedHighlight } from "./dashboard-state";
 import { BlockerPreviewCard, FinishedHighlightsBoard, GuidancePreviewCard } from "./status-cards";
-import { CardDetailSelect, CardDetailSelection, DashboardUpdateAnimations, STATUS_TILE_TONES, StatusTileTone, TopPanelDirection, TopPanelKey, TopPanelPhase, UPDATE_SIMULATION_CONTROLS } from "./runtime";
+import { CardDetailSelect, CardDetailSelection, DashboardUpdateAnimations, STATUS_TILE_TONES, StatusTileTone, TopPanelDirection, TopPanelKey, TopPanelPhase } from "./runtime";
 import { EmptyPanel } from "./detail-extras";
 import { blockerUpdateKey, guidanceUpdateKey } from "./update-animations";
 import { readStoredTopPanel, topPanelDirection, writeDashboardUiStateValue } from "./dashboard-persistence";
+
+const UPDATE_SIMULATION_CONTROLS = [
+  { kind: "guidance", label: "G", icon: <MessageSquareText className="size-3.5" />, tooltip: "Simulate new human guidance" },
+  { kind: "blocker", label: "B", icon: <AlertTriangle className="size-3.5" />, tooltip: "Simulate a fresh blocker" },
+  { kind: "finished", label: "F", icon: <CheckCircle2 className="size-3.5" />, tooltip: "Simulate finished work" },
+  { kind: "changed", label: "U", icon: <RefreshCw className="size-3.5" />, tooltip: "Simulate a card update" },
+] as const;
 
 export function StatusRail({
   guidanceItems,
@@ -177,7 +184,7 @@ export type TopPanelCarouselAction =
   | { type: "replace"; state: TopPanelCarouselState }
   | { type: "patch"; state: Partial<TopPanelCarouselState> };
 
-export function initialTopPanelCarouselState(activePanel: TopPanelKey | null): TopPanelCarouselState {
+function initialTopPanelCarouselState(activePanel: TopPanelKey | null): TopPanelCarouselState {
   return {
     visiblePanel: activePanel,
     previousPanel: null,
@@ -188,7 +195,7 @@ export function initialTopPanelCarouselState(activePanel: TopPanelKey | null): T
   };
 }
 
-export function topPanelCarouselReducer(state: TopPanelCarouselState, action: TopPanelCarouselAction): TopPanelCarouselState {
+function topPanelCarouselReducer(state: TopPanelCarouselState, action: TopPanelCarouselAction): TopPanelCarouselState {
   if (action.type === "replace") return action.state;
   return { ...state, ...action.state };
 }

@@ -5,7 +5,6 @@ import { CardSignal } from "@/components/dashboard/card-signal";
 import { CardSignalFrame } from "@/components/dashboard/card-signal-frame";
 import { ChevronRight, MessageSquareText } from "lucide-react";
 import type { CopyArchitectHandoff, GuidanceItem, PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
-import type * as React from "react";
 import { StateCard } from "@/components/dashboard/state-card";
 import type { UpdateMotion } from "@/components/dashboard/motion";
 import { architectHandoffEligibleRequest, isFinishedBoardStatus, operationalBadgeVariant, operationalLabel, packageAttentionSignal, packageBlockerSignal, packageCardTone, requestStateCardTone, sliceCardTone, sliceOperationalState } from "@/lib/operational-state";
@@ -13,31 +12,11 @@ import { cn } from "@/lib/utils";
 import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
 import { useCallback } from "react";
 import { CommentCardSignal } from "./runtime";
+import { interactiveCardProps, stateCardBodyMotionKey } from "./card-helpers";
 import { clarificationGuidanceItem } from "./dashboard-data";
 import { firstParagraph } from "./dashboard-text";
 import { useScopedHandoffCopy } from "./dashboard-state";
 import { sliceSuccessorLabel } from "./workstream-data";
-
-export function stateCardBodyMotionKey(...parts: Array<string | number | boolean | null | undefined>) {
-  return parts.map((part) => (part === null || part === undefined ? "" : String(part))).join("|");
-}
-
-export function interactiveCardProps(onActivate?: () => void): React.HTMLAttributes<HTMLDivElement> {
-  if (!onActivate) return {};
-
-  return {
-    role: "button",
-    tabIndex: 0,
-    onClick: onActivate,
-    onKeyDown: (event) => {
-      if (event.defaultPrevented || event.target !== event.currentTarget) return;
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        onActivate();
-      }
-    },
-  };
-}
 
 export function SequenceBadge({ sequence }: { sequence?: number | null }) {
   if (!sequence) return null;
@@ -309,7 +288,7 @@ export function SliceCard({
   );
 }
 
-export function sliceCardSubtitle(
+function sliceCardSubtitle(
   slice: PlannedSlice,
   pkg: WorkPackageCard | undefined,
   operational: WorkPackageCard["operational_state"],
@@ -325,7 +304,7 @@ export function sliceCardSubtitle(
   return slice.goal || slice.work_package_kind;
 }
 
-export function sliceDeliverySubtitle(slice: PlannedSlice, operational: WorkPackageCard["operational_state"]) {
+function sliceDeliverySubtitle(slice: PlannedSlice, operational: WorkPackageCard["operational_state"]) {
   const key = operational?.key;
 
   if (key === "needs_closeout") return "Delivery closeout needed.";
@@ -340,7 +319,7 @@ export function sliceDeliverySubtitle(slice: PlannedSlice, operational: WorkPack
   return null;
 }
 
-export function cardCommentSignal(openCount?: number | null, totalCount?: number | null): CommentCardSignal | null {
+function cardCommentSignal(openCount?: number | null, totalCount?: number | null): CommentCardSignal | null {
   const open = openCount ?? 0;
   if (open <= 0) return null;
 
@@ -380,12 +359,12 @@ export function CommentCardSignalButton({
   );
 }
 
-export function totalCommentSignalLabel(signal: CommentCardSignal) {
+function totalCommentSignalLabel(signal: CommentCardSignal) {
   const totalSuffix = signal.total > signal.open ? `, ${signal.total} total` : "";
   return `${signal.open} unresolved ${plural("comment", signal.open)}${totalSuffix}`;
 }
 
-export function plural(word: string, count: number) {
+function plural(word: string, count: number) {
   return count === 1 ? word : `${word}s`;
 }
 

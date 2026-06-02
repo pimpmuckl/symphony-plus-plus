@@ -5,9 +5,10 @@ import { DetailDisclosure, DetailFacts, DetailHeader, DetailStatGrid } from "@/c
 import { MarkdownBlock } from "@/components/dashboard/markdown-block";
 import type { SoloSession, SoloSessionDetailPayload, SoloSessionEntry } from "@/types/dashboard";
 import { formatStatus } from "@/lib/status-labels";
-import { DetailActivityList, detailDate } from "./detail-extras";
-import { latestSoloEntries, soloBlockerMeta, soloEntriesByKind, soloEntrySummary, soloPlanningGroups, soloPlanningMeta, soloProgressMeta, soloSessionAttention, soloSessionAttentionText, soloSessionPurpose, soloSessionStatusVariant, sortSoloEntries } from "./solo-sessions";
 import { repoDisplayName } from "./dashboard-persistence";
+import { DetailActivityList } from "./detail-extras";
+import { detailDate } from "./detail-utils";
+import { latestSoloEntries, soloBlockerMeta, soloEntriesByKind, soloEntrySummary, soloPlanningGroups, soloPlanningMeta, soloProgressMeta, soloSessionAttention, soloSessionAttentionText, soloSessionPurpose, soloSessionStatusVariant, sortSoloEntries } from "./solo-session-utils";
 
 export function SoloSessionDetailContent({
   session,

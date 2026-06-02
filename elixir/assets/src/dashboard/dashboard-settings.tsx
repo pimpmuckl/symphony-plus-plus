@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 import { sortedCopy } from "@/lib/collections";
 import { useMemo, useRef, useState } from "react";
 import { DashboardTheme, REPO_SUMMARY_PLATE_TONES, RepoSummaryPlateTone, WorkRequestMutation } from "./runtime";
-import { detailDate } from "./detail-extras";
+import { detailDate } from "./detail-utils";
 import { repoDisplayName } from "./dashboard-persistence";
 import { sortableTime } from "./workstream-data";
 
@@ -222,7 +222,7 @@ export function DashboardSettingsDialog({
   );
 }
 
-export function workstreamHiddenSummary(hiddenWorkstreamCount: number) {
+function workstreamHiddenSummary(hiddenWorkstreamCount: number) {
   if (hiddenWorkstreamCount <= 0) return "Only repos with requests, slices, or work packages appear.";
   return hiddenWorkstreamCount === 1 ? "1 empty repo hidden" : `${hiddenWorkstreamCount} empty repos hidden`;
 }

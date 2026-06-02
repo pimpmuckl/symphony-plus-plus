@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import { sortedCopy } from "@/lib/collections";
 import { useCallback, useMemo, useState } from "react";
 import { COMMENT_BODY_MAX_LENGTH, CommentTarget, ResolveContextComment, SubmitContextComment } from "./runtime";
-import { detailDate } from "./detail-extras";
+import { detailDate } from "./detail-utils";
 
 export function CommentsPanel({
   target,
@@ -151,7 +151,7 @@ export function useSyncedComments(sourceComments: ContextComment[]) {
   return [comments, setComments] as const;
 }
 
-export function commentsIdentity(comments: ContextComment[]) {
+function commentsIdentity(comments: ContextComment[]) {
   return comments
     .map((comment) =>
       [

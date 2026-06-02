@@ -13,7 +13,7 @@ import { BlockerItem, FinishedHighlight, FinishedHighlightKind } from "./dashboa
 import { CardDetailSelect, CardDetailSelection, DashboardConnectionIssue, DashboardUpdateAnimations, isLocalOperatorAuthRequiredMessage } from "./runtime";
 import { blockerUpdateKey, finishedHighlightUpdateKey, finishedHighlightsListKey, guidanceUpdateKey } from "./update-animations";
 import { formatDate } from "./dashboard-persistence";
-import { interactiveCardProps } from "./workstream-cards";
+import { interactiveCardProps } from "./card-helpers";
 
 export function LiveLedgerBadge({
   error,
@@ -98,11 +98,11 @@ export function GuidancePreviewCard({
   );
 }
 
-export function blockerBadgeLabel(item: BlockerItem) {
+function blockerBadgeLabel(item: BlockerItem) {
   return item.blockerCount > 1 ? `${item.blockerCount} blockers` : "Blocked";
 }
 
-export function cardDetailDataKind(selection: CardDetailSelection) {
+function cardDetailDataKind(selection: CardDetailSelection) {
   return selection.kind;
 }
 
@@ -143,7 +143,7 @@ export function BlockerPreviewCard({
   );
 }
 
-export const finishedHighlightLanes: { kind: FinishedHighlightKind; title: string; empty: string }[] = [
+const finishedHighlightLanes: { kind: FinishedHighlightKind; title: string; empty: string }[] = [
   { kind: "Request", title: "Requests", empty: "No finished requests" },
   { kind: "Slice", title: "Slices", empty: "No finished slices" },
   { kind: "Work Package", title: "Work Packages", empty: "No finished packages" },

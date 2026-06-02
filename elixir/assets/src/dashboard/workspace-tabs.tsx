@@ -70,7 +70,7 @@ export type WorkspaceTabCarouselAction =
   | { type: "height"; height: number | "auto" }
   | { type: "finish" };
 
-export function initialWorkspaceTabCarouselState(activeTab: WorkspaceTab): WorkspaceTabCarouselState {
+function initialWorkspaceTabCarouselState(activeTab: WorkspaceTab): WorkspaceTabCarouselState {
   return {
     visibleTab: activeTab,
     previousTab: null,
@@ -80,7 +80,7 @@ export function initialWorkspaceTabCarouselState(activeTab: WorkspaceTab): Works
   };
 }
 
-export function workspaceTabCarouselReducer(state: WorkspaceTabCarouselState, action: WorkspaceTabCarouselAction): WorkspaceTabCarouselState {
+function workspaceTabCarouselReducer(state: WorkspaceTabCarouselState, action: WorkspaceTabCarouselAction): WorkspaceTabCarouselState {
   switch (action.type) {
     case "start":
       return {

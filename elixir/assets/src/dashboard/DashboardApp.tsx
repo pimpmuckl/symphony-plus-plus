@@ -10,7 +10,7 @@ import { WorkstreamsPane } from "./workspace-tabs";
 import { activeBlockerItems, allGuidanceItems, allPackages, dashboardContentFingerprint, guidanceAnswerUrl, recentFinishedHighlights, repoSummaries } from "./dashboard-data";
 import { appDialogReducer, appStateReducer, createInitialAppState, initialAppDialogState } from "./dashboard-state";
 import { applyDashboardTheme, repoWorkstreamHasWorkItems, shouldShowUpdateSimulationControls, writeDashboardUiStateValue, writeStoredTheme } from "./dashboard-persistence";
-import { canMutateDashboardComments } from "./detail-extras";
+import { canMutateDashboardComments } from "./detail-utils";
 import { linkedPackageIdsForDetails, packageSelectionIndex, requestDetailsByRepoKey } from "./workstream-data";
 import { useDashboardUpdateAnimations } from "./update-animations";
 
