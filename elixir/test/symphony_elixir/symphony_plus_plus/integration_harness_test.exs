@@ -477,8 +477,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
       "summary" => "normal profile is green in the deterministic harness.",
       "status" => "passed",
       "verdict" => "green",
-      "lane" => "normal",
-      "round_id" => "phase_gate-p8-001-local"
+      "lane" => "normal"
     })
   end
 

@@ -44,6 +44,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.RepoIdentity
   alias SymphonyElixir.SymphonyPlusPlus.ReviewProfiles
+  alias SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Service, as: WorkPackageService
@@ -176,8 +177,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "split_work_package",
     "publish_phase_update"
   ]
-  @passing_review_suite_statuses ["passed", "pass", "green", "success", "completed"]
-  @passing_review_suite_verdicts ["green", "clean", "passed", "pass", "success", "approved"]
   @review_promotable_work_package_statuses ["ready_for_worker", "claimed", "planning", "implementing"]
   @child_work_package_keys [
     "acceptance_criteria",
@@ -2097,6 +2096,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "head_sha" => string_schema(),
         "idempotency_key" => string_schema(),
         "lane" => string_schema(),
+        "profile" => string_schema(),
         "reviewer" => string_schema(),
         "round_id" => string_schema(),
         "status" => string_schema(),
@@ -2104,8 +2104,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "summary" => string_schema(),
         "verdict" => string_schema()
       }),
-      ["work_package_id", "head_sha", "status", "verdict", "suite", "anchor", "summary"]
+      []
     )
+    |> always_validate(%{
+      "anyOf" => [
+        %{"required" => ["round_id"]},
+        %{"required" => ["head_sha", "status", "verdict", "suite", "anchor", "summary"]}
+      ]
+    })
   end
 
   defp architect_tool_input_schema("create_child_work_package"), do: schema(%{"package" => object_schema()}, ["package"])
@@ -10059,26 +10065,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_tool("attach_review_suite_result", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
          :ok <- authorize_current_package_policy(config.repo, session, :review_evidence_append, :review_evidence, "attach_review_suite_result"),
-         {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
-         {:ok, requested_head_sha} <- required_argument(arguments, "head_sha"),
-         {:ok, suite} <- required_argument(arguments, "suite"),
-         {:ok, anchor} <- required_argument(arguments, "anchor"),
-         {:ok, summary} <- required_argument(arguments, "summary"),
-         {:ok, status} <- required_argument(arguments, "status"),
-         {:ok, verdict} <- required_argument(arguments, "verdict"),
+         {:ok, arguments, payload} <- review_suite_result_arguments(arguments, session),
+         status = Map.get(payload, "status"),
+         verdict = Map.get(payload, "verdict"),
          :ok <- require_passing_review_suite_result(status, verdict),
          {:ok, result} <-
-           attach_review_suite_result_transaction(config.repo, session, arguments, %{
-             "type" => "review_suite_result",
-             "source_tool" => "attach_review_suite_result",
-             "work_package_id" => work_package_id,
-             "head_sha" => requested_head_sha,
-             "suite" => suite,
-             "anchor" => anchor,
-             "summary" => summary,
-             "status" => normalized_review_suite_status(status),
-             "verdict" => normalized_review_suite_verdict(verdict)
-           }) do
+           attach_review_suite_result_transaction(config.repo, session, arguments, payload) do
       {:ok, result}
     else
       {:tool_error, reason} -> invalid_params_error("attach_review_suite_result", reason)
@@ -12132,6 +12124,82 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if String.contains?(artifact, "://"), do: artifact, else: nil
   end
 
+  defp review_suite_result_arguments(arguments, %Session{} = session) do
+    cond do
+      review_suite_round_id_argument?(arguments) ->
+        resolved_review_suite_result_arguments(arguments, session)
+
+      explicit_review_suite_result_arguments?(arguments) ->
+        explicit_review_suite_result_arguments(arguments, session)
+
+      true ->
+        explicit_review_suite_result_arguments(arguments, session)
+    end
+  end
+
+  defp explicit_review_suite_result_arguments?(arguments) do
+    Enum.all?(["head_sha", "suite", "anchor", "summary", "status", "verdict"], fn key ->
+      case Map.get(arguments, key) do
+        value when is_binary(value) -> String.trim(value) != ""
+        _value -> false
+      end
+    end)
+  end
+
+  defp review_suite_round_id_argument?(arguments) do
+    case Map.get(arguments, "round_id") do
+      value when is_binary(value) -> String.trim(value) != ""
+      _value -> false
+    end
+  end
+
+  defp explicit_review_suite_result_arguments(arguments, %Session{} = session) do
+    with {:ok, work_package_id} <- optional_string_argument(arguments, "work_package_id", Session.work_package_id(session)),
+         {:ok, requested_head_sha} <- required_argument(arguments, "head_sha"),
+         {:ok, suite} <- required_argument(arguments, "suite"),
+         {:ok, anchor} <- required_argument(arguments, "anchor"),
+         {:ok, summary} <- required_argument(arguments, "summary"),
+         {:ok, status} <- required_argument(arguments, "status"),
+         {:ok, verdict} <- required_argument(arguments, "verdict") do
+      {:ok, arguments,
+       %{
+         "type" => "review_suite_result",
+         "source_tool" => "attach_review_suite_result",
+         "work_package_id" => work_package_id,
+         "head_sha" => requested_head_sha,
+         "suite" => suite,
+         "anchor" => anchor,
+         "summary" => summary,
+         "status" => normalized_review_suite_status(status),
+         "verdict" => normalized_review_suite_verdict(verdict)
+       }}
+    end
+  end
+
+  defp resolved_review_suite_result_arguments(arguments, %Session{} = session) do
+    with {:ok, work_package_id} <- optional_string_argument(arguments, "work_package_id", Session.work_package_id(session)),
+         {:ok, round_id} <- required_argument(arguments, "round_id"),
+         {:ok, resolved} <-
+           ReviewSuiteRounds.resolve(round_id,
+             lane: Map.get(arguments, "lane"),
+             profile: Map.get(arguments, "profile")
+           ) do
+      payload =
+        resolved
+        |> Map.merge(%{
+          "type" => "review_suite_result",
+          "source_tool" => "attach_review_suite_result",
+          "work_package_id" => work_package_id
+        })
+        |> Map.update!("status", &normalized_review_suite_status/1)
+        |> Map.update!("verdict", &normalized_review_suite_verdict/1)
+
+      {:ok, Map.put_new(arguments, "summary", Map.fetch!(payload, "summary")), payload}
+    else
+      {:error, reason} -> {:tool_error, reason}
+    end
+  end
+
   defp attach_review_suite_result_transaction(repo, %Session{} = session, arguments, payload) do
     case repo.transaction(fn ->
            attach_review_suite_result_transaction_body(repo, session, arguments, payload)
@@ -12222,11 +12290,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, head_sha} <- review_package_head_sha(requested_head_sha, state.progress_events, state.work_package),
          :ok <- reject_failed_review_suite_result_override(state.progress_events, work_package_id, head_sha),
          payload <- review_suite_payload(payload, arguments, head_sha),
+         :ok <- require_review_suite_round_identity(payload, state.work_package, state.progress_events),
          {:ok, result} <- append_metadata_event(repo, session, arguments, "attach_review_suite_result", "review_suite_passed", payload),
          :ok <- append_review_suite_artifact(repo, work_package_id, head_sha),
          :ok <- promote_stale_package_to_reviewing(repo, state.work_package) do
       result
     else
+      {:tool_error, {:review_suite_round_identity_mismatch, _field, _expected, _got} = reason} ->
+        {:error, code, message, data} = invalid_params_error("attach_review_suite_result", reason)
+        repo.rollback({:mcp_error, code, message, data})
+
       {:tool_error, reason} ->
         repo.rollback({:mcp_error, -32_602, "Invalid params", %{"tool" => "attach_review_suite_result", "reason" => reason}})
 
@@ -12242,6 +12315,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     payload
     |> Map.put("head_sha", head_sha)
     |> maybe_put_review_suite_field(arguments, "lane")
+    |> maybe_put_review_suite_field(arguments, "profile")
     |> maybe_put_review_suite_field(arguments, "reviewer")
     |> maybe_put_review_suite_field(arguments, "round_id")
   end
@@ -12250,10 +12324,72 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case Map.get(arguments, key) do
       value when is_binary(value) ->
         value = String.trim(value)
-        if value == "", do: payload, else: Map.put(payload, key, value)
+        if value == "" or Map.has_key?(payload, key), do: payload, else: Map.put(payload, key, value)
 
       _value ->
         payload
+    end
+  end
+
+  defp require_review_suite_round_identity(%{} = payload, %WorkPackage{} = work_package, progress_events) do
+    with :ok <- require_review_suite_identity_match(payload, "repo", work_package.repo),
+         :ok <- require_review_suite_identity_match(payload, "base_branch", work_package.base_branch),
+         :ok <- require_review_suite_identity_match(payload, "branch", latest_current_branch(progress_events)) do
+      :ok
+    end
+  end
+
+  defp require_review_suite_identity_match(payload, field, expected) do
+    case review_suite_identity_value(payload, field) do
+      nil ->
+        :ok
+
+      got ->
+        if review_suite_identity_matches?(field, got, expected) do
+          :ok
+        else
+          {:tool_error, {:review_suite_round_identity_mismatch, field, expected, got}}
+        end
+    end
+  end
+
+  defp review_suite_identity_matches?("repo", got, expected) do
+    filled_string?(expected) and
+      (repo_scope_name_matches?(got, expected, []) or String.downcase(String.trim(got)) == String.downcase(String.trim(expected)))
+  end
+
+  defp review_suite_identity_matches?(_field, got, expected) do
+    case {normalize_review_suite_ref(got), normalize_review_suite_ref(expected)} do
+      {got, expected} when is_binary(got) and is_binary(expected) -> got == expected
+      _refs -> false
+    end
+  end
+
+  defp normalize_review_suite_ref(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> remove_review_suite_ref_prefix("refs/heads/")
+    |> remove_review_suite_ref_prefix("origin/")
+    |> empty_string_to_nil()
+  end
+
+  defp normalize_review_suite_ref(_value), do: nil
+
+  defp remove_review_suite_ref_prefix(value, prefix) do
+    if String.starts_with?(value, prefix), do: String.replace_prefix(value, prefix, ""), else: value
+  end
+
+  defp empty_string_to_nil(""), do: nil
+  defp empty_string_to_nil(value), do: value
+
+  defp review_suite_identity_value(payload, field) do
+    case Map.get(payload, field) do
+      value when is_binary(value) ->
+        value = String.trim(value)
+        if value == "", do: nil, else: value
+
+      _value ->
+        nil
     end
   end
 
@@ -12285,17 +12421,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp normalized_review_suite_status(status) when is_binary(status), do: status |> String.trim() |> String.downcase()
-  defp normalized_review_suite_status(_status), do: ""
-  defp normalized_review_suite_verdict(verdict) when is_binary(verdict), do: verdict |> String.trim() |> String.downcase()
-  defp normalized_review_suite_verdict(_verdict), do: ""
+  defp normalized_review_suite_status(status), do: ReviewProfiles.normalize_status(status)
+  defp normalized_review_suite_verdict(verdict), do: ReviewProfiles.normalize_status(verdict)
 
   defp review_suite_status_passed?(status) do
-    normalized_review_suite_status(status) in @passing_review_suite_statuses
+    ReviewProfiles.passing_status?(status)
   end
 
   defp review_suite_verdict_passed?(verdict) do
-    normalized_review_suite_verdict(verdict) in @passing_review_suite_verdicts
+    ReviewProfiles.passing_verdict?(verdict)
   end
 
   defp append_review_suite_artifact(repo, work_package_id, head_sha) do
@@ -12414,6 +12548,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     ]
     |> Enum.flat_map(fn
       {true, @scope_guard_gate} -> ScopeGuard.failure_reasons(state.work_package, state.progress_events)
+      {true, "review_lanes_complete"} -> [readiness_failure_reason("review_lanes_complete", state, required_review_lanes)]
       {true, gate} -> [readiness_failure_reason(gate)]
       {false, _gate} -> []
     end)
@@ -12479,6 +12614,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
+  defp readiness_failure_reason("review_lanes_complete", state, required_lanes) do
+    "review_lanes_complete"
+    |> readiness_failure_reason()
+    |> Map.merge(%{
+      "required_lanes" => required_lanes,
+      "accepted_lane_aliases" => ReviewProfiles.accepted_lane_aliases(required_lanes),
+      "accepted_verdicts" => ReviewProfiles.passing_verdicts(),
+      "latest_attached_review_round" => latest_review_suite_round_summary(state)
+    })
+    |> drop_nil_values()
+  end
+
   defp readiness_failure_message("status_ci_waiting"), do: "Work package must be in ci_waiting before mark_ready."
   defp readiness_failure_message("status_reviewing"), do: "Work package must be in reviewing before mark_ready when CI is not required."
   defp readiness_failure_message("no_active_blockers"), do: "Active blockers must be resolved before mark_ready."
@@ -12491,7 +12638,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp readiness_failure_message("review_suite_result"), do: "Current-head review-suite result evidence is missing."
   defp readiness_failure_message("review_package_submitted"), do: "Current-head review package is missing."
   defp readiness_failure_message("review_artifacts_attached"), do: "Current-head review artifacts are missing."
-  defp readiness_failure_message("review_lanes_complete"), do: "Required review profiles are not green."
+
+  defp readiness_failure_message("review_lanes_complete"),
+    do: "Required review profiles are not satisfied by a current-head passing review. Passing verdict aliases include green, clean, passed, pass, success, and approved."
+
   defp readiness_failure_message("findings_documented"), do: "Investigation findings are missing."
   defp readiness_failure_message("recommendation_artifact_recorded"), do: "Investigation recommendation artifact is missing."
   defp readiness_failure_message("phase_active"), do: "Phase must be active before phase child readiness."
@@ -12542,9 +12692,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp latest_review_suite_result_event(progress_events, work_package_id, readiness_head_sha) do
     progress_events
+    |> current_head_review_suite_result_events(work_package_id, readiness_head_sha)
+    |> List.last()
+  end
+
+  defp current_head_review_suite_result_events(progress_events, work_package_id, readiness_head_sha) do
+    progress_events
     |> chronological_progress_events()
     |> Enum.filter(&(dedicated_review_suite_result_event?(&1, work_package_id) and review_head_matches?(&1.payload, readiness_head_sha)))
-    |> List.last()
   end
 
   defp dedicated_review_suite_result_event?(%ProgressEvent{idempotency_key: idempotency_key} = event, work_package_id) do
@@ -12553,16 +12708,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp valid_review_suite_result_payload?(%{} = payload, work_package_id, readiness_head_sha) do
+    review_suite_result_payload_in_scope?(payload, work_package_id, readiness_head_sha) and
+      ReviewProfiles.review_suite_payload_passes?(payload)
+  end
+
+  defp valid_review_suite_result_payload?(_payload, _work_package_id, _readiness_head_sha), do: false
+
+  defp review_suite_result_payload_in_scope?(%{} = payload, work_package_id, readiness_head_sha) do
     Map.get(payload, "work_package_id") == work_package_id and
       review_head_matches?(payload, readiness_head_sha) and
-      review_suite_status_passed?(Map.get(payload, "status")) and
-      review_suite_verdict_passed?(Map.get(payload, "verdict")) and
       filled_string?(Map.get(payload, "suite")) and
       filled_string?(Map.get(payload, "anchor")) and
       filled_string?(Map.get(payload, "summary"))
   end
 
-  defp valid_review_suite_result_payload?(_payload, _work_package_id, _readiness_head_sha), do: false
+  defp review_suite_result_payload_in_scope?(_payload, _work_package_id, _readiness_head_sha), do: false
 
   defp review_package_missing?(state, required_review_lanes) do
     readiness_head_sha = review_head_sha_for_readiness(state)
@@ -12607,9 +12767,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp review_lanes_present?(state, required_lanes) do
     if merge_required?(state.work_package) do
-      review_package_lanes_present?(state.progress_events, required_lanes)
+      review_package_lanes_present?(state.progress_events, required_lanes) or
+        review_suite_result_lanes_present?(state, required_lanes)
     else
       review_package_lanes_present?(state.progress_events, required_lanes, review_head_sha_for_readiness(state)) or
+        review_suite_result_lanes_present?(state, required_lanes) or
         progress_review_lanes_present?(state.progress_events, required_lanes)
     end
   end
@@ -12634,26 +12796,64 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
           %{}
       end
 
-    Enum.all?(required_lanes, fn lane ->
-      Map.get(latest_verdicts, lane) == "green"
-    end)
+    Enum.all?(required_lanes, &ReviewProfiles.profile_verdicts_pass?(&1, latest_verdicts))
+  end
+
+  defp review_suite_result_lanes_present?(state, required_lanes) do
+    readiness_head_sha = review_head_sha_for_readiness(state)
+
+    payloads =
+      state.progress_events
+      |> current_head_review_suite_result_events(state.work_package.id, readiness_head_sha)
+      |> Enum.map(& &1.payload)
+      |> Enum.filter(&review_suite_result_payload_in_scope?(&1, state.work_package.id, readiness_head_sha))
+      |> Enum.filter(&persisted_review_suite_artifact?(state.artifacts, state.work_package.id, Map.fetch!(&1, "head_sha")))
+
+    payloads != [] and
+      Enum.all?(required_lanes, &ReviewProfiles.review_suite_payloads_satisfy_required_profile?(payloads, &1))
+  end
+
+  defp latest_review_suite_round_summary(state) do
+    readiness_head_sha = review_head_sha_for_readiness(state)
+
+    event =
+      latest_review_suite_result_event(state.progress_events, state.work_package.id, readiness_head_sha) ||
+        latest_review_suite_result_event(state.progress_events, state.work_package.id, :any_head)
+
+    case event do
+      %ProgressEvent{payload: payload} when is_map(payload) ->
+        %{
+          "round_id" => Map.get(payload, "round_id"),
+          "review_suite_id" => Map.get(payload, "review_suite_id"),
+          "lane" => Map.get(payload, "lane"),
+          "profile" => Map.get(payload, "profile"),
+          "status" => Map.get(payload, "status"),
+          "verdict" => Map.get(payload, "verdict"),
+          "head_sha" => Map.get(payload, "head_sha")
+        }
+        |> drop_nil_values()
+
+      _event ->
+        nil
+    end
+  end
+
+  defp drop_nil_values(map) do
+    Map.reject(map, fn {_key, value} -> is_nil(value) end)
   end
 
   defp progress_review_lanes_present?(progress_events, required_lanes) do
     head_boundary_sequence = latest_branch_event_sequence(progress_events)
 
-    Enum.all?(required_lanes, fn lane ->
-      green_statuses = ReviewProfiles.green_statuses(lane)
+    Enum.all?(required_lanes, &progress_review_lane_present?(progress_events, head_boundary_sequence, &1))
+  end
 
-      latest_status =
-        latest_generic_progress_status(
-          progress_events,
-          head_boundary_sequence,
-          ReviewProfiles.statuses(lane)
-        )
+  defp progress_review_lane_present?(progress_events, head_boundary_sequence, required_lane) do
+    satisfying_profiles = ReviewProfiles.satisfying_profiles(required_lane)
+    statuses = Enum.flat_map(satisfying_profiles, &ReviewProfiles.statuses/1)
+    latest_status = latest_generic_progress_status(progress_events, head_boundary_sequence, statuses)
 
-      latest_status in green_statuses
-    end)
+    Enum.any?(satisfying_profiles, &(latest_status in ReviewProfiles.green_statuses(&1)))
   end
 
   defp generic_append_progress_event?(%ProgressEvent{payload: payload}) when is_map(payload) do
@@ -12772,6 +12972,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp latest_current_head_sha(progress_events) do
     latest_metadata_head_sha(progress_events, "branch", "attach_branch")
+  end
+
+  defp latest_current_branch(progress_events) do
+    progress_events
+    |> Enum.filter(&payload_type?(&1, "branch", "attach_branch"))
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %ProgressEvent{payload: payload} -> review_suite_identity_value(payload || %{}, "branch")
+      _event -> nil
+    end)
   end
 
   defp latest_metadata_head_sha(progress_events, type, source_tool) do
@@ -13196,8 +13406,119 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        "reason" => "non_passing_review_suite_result",
        "status_domain" => "review_suite_result",
        "got" => %{"status" => status, "verdict" => verdict},
-       "expected_statuses" => @passing_review_suite_statuses,
-       "expected_verdicts" => @passing_review_suite_verdicts
+       "expected_statuses" => ReviewProfiles.passing_statuses(),
+       "expected_verdicts" => ReviewProfiles.passing_verdicts()
+     }}
+  end
+
+  defp invalid_params_error(tool, {:review_suite_round_unavailable, round_id, missing, fallback_fields}) do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "review_suite_round_unavailable",
+       "round_id" => round_id,
+       "missing" => missing,
+       "fallback_explicit_fields" => fallback_fields,
+       "message" => "Local Review Suite state for this round is unavailable. Retry with a resolvable round_id, or pass the explicit review-suite fields listed in fallback_explicit_fields."
+     }}
+  end
+
+  defp invalid_params_error(tool, {:review_suite_round_ambiguous, round_id, cycle_keys, fallback_fields}) do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "review_suite_round_ambiguous",
+       "round_id" => round_id,
+       "matching_cycle_ids" => cycle_keys,
+       "fallback_explicit_fields" => fallback_fields,
+       "message" => "Local Review Suite round id matches multiple cycles. Retry with the Review Suite public id rvw_* or cycle id orc-*."
+     }}
+  end
+
+  defp invalid_params_error(tool, {:review_suite_round_not_green, round_id, stage, fallback_fields}) do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "review_suite_round_not_green",
+       "round_id" => round_id,
+       "stage" => stage,
+       "fallback_explicit_fields" => fallback_fields
+     }}
+  end
+
+  defp invalid_params_error(tool, {:review_suite_round_not_passing, round_id, fallback_fields}) do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "review_suite_round_not_passing",
+       "round_id" => round_id,
+       "expected_verdicts" => ReviewProfiles.passing_verdicts(),
+       "fallback_explicit_fields" => fallback_fields
+     }}
+  end
+
+  defp invalid_params_error(tool, {:review_suite_round_missing_head, round_id, fallback_fields}) do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "review_suite_round_missing_head",
+       "round_id" => round_id,
+       "fallback_explicit_fields" => fallback_fields
+     }}
+  end
+
+  defp invalid_params_error(tool, {:review_suite_round_missing_profile, round_id, fallback_fields}) do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "review_suite_round_missing_profile",
+       "round_id" => round_id,
+       "fallback_explicit_fields" => fallback_fields
+     }}
+  end
+
+  defp invalid_params_error(tool, {:review_suite_round_profile_mismatch, round_id, resolved_profile, requested_profile, fallback_fields}) do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "review_suite_round_profile_mismatch",
+       "round_id" => round_id,
+       "resolved_profile" => resolved_profile,
+       "requested_profile" => requested_profile,
+       "fallback_explicit_fields" => fallback_fields
+     }}
+  end
+
+  defp invalid_params_error(tool, {:review_suite_round_identity_mismatch, field, expected, got}) do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "review_suite_round_identity_mismatch",
+       "field" => field,
+       "expected" => expected,
+       "got" => got,
+       "message" => "Local Review Suite round identity does not match the current work package/session."
+     }}
+  end
+
+  defp invalid_params_error(tool, {:review_suite_round_blocked, round_id, fallback_fields}) do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "review_suite_round_blocked",
+       "round_id" => round_id,
+       "fallback_explicit_fields" => fallback_fields
+     }}
+  end
+
+  defp invalid_params_error(tool, {:review_suite_round_incomplete, round_id, status, fallback_fields}) do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "review_suite_round_incomplete",
+       "round_id" => round_id,
+       "status" => status,
+       "fallback_explicit_fields" => fallback_fields
      }}
   end
 

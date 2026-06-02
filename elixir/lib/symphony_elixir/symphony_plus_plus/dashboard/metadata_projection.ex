@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection do
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest
   alias SymphonyElixir.SymphonyPlusPlus.OperationalLineage
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
+  alias SymphonyElixir.SymphonyPlusPlus.ReviewProfiles
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
   @spec persisted_review_artifact?([term()], String.t(), String.t() | nil, String.t()) :: boolean()
@@ -17,9 +18,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection do
           ProgressEvent.t() | nil
   def latest_review_suite_result_event(progress_events, work_package_id, readiness_head_sha) do
     progress_events
+    |> current_head_review_suite_result_events(work_package_id, readiness_head_sha)
+    |> List.last()
+  end
+
+  @spec current_head_review_suite_result_events([ProgressEvent.t()], String.t(), String.t() | :any_head) :: [ProgressEvent.t()]
+  def current_head_review_suite_result_events(progress_events, work_package_id, readiness_head_sha) do
+    progress_events
     |> chronological_progress_events()
     |> Enum.filter(&(dedicated_review_suite_result_event?(&1, work_package_id) and review_head_matches?(&1.payload, readiness_head_sha)))
-    |> List.last()
   end
 
   defp dedicated_review_suite_result_event?(%ProgressEvent{idempotency_key: idempotency_key} = event, work_package_id) do
@@ -29,25 +36,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection do
 
   @spec valid_review_suite_result_payload?(term(), String.t(), String.t() | :any_head) :: boolean()
   def valid_review_suite_result_payload?(%{} = payload, work_package_id, readiness_head_sha) do
+    review_suite_result_payload_in_scope?(payload, work_package_id, readiness_head_sha) and
+      ReviewProfiles.review_suite_payload_passes?(payload)
+  end
+
+  def valid_review_suite_result_payload?(_payload, _work_package_id, _readiness_head_sha), do: false
+
+  @spec review_suite_result_payload_in_scope?(term(), String.t(), String.t() | :any_head) :: boolean()
+  def review_suite_result_payload_in_scope?(%{} = payload, work_package_id, readiness_head_sha) do
     Map.get(payload, "work_package_id") == work_package_id and
       review_head_matches?(payload, readiness_head_sha) and
-      review_suite_status_passed?(Map.get(payload, "status")) and
-      review_suite_verdict_passed?(Map.get(payload, "verdict")) and
       filled_string?(Map.get(payload, "suite")) and
       filled_string?(Map.get(payload, "anchor")) and
       filled_string?(Map.get(payload, "summary"))
   end
 
-  def valid_review_suite_result_payload?(_payload, _work_package_id, _readiness_head_sha), do: false
+  def review_suite_result_payload_in_scope?(_payload, _work_package_id, _readiness_head_sha), do: false
 
-  defp review_suite_status_passed?(status) when is_binary(status), do: normalized_status(status) in ["passed", "pass", "green", "success"]
-  defp review_suite_status_passed?(_status), do: false
+  def review_suite_status_passed?(status), do: ReviewProfiles.passing_status?(status)
 
-  defp review_suite_verdict_passed?(verdict) when is_binary(verdict) do
-    normalized_status(verdict) in ["green", "passed", "pass", "success", "approved"]
-  end
+  def review_suite_verdict_passed?(verdict), do: ReviewProfiles.passing_verdict?(verdict)
 
-  defp review_suite_verdict_passed?(_verdict), do: false
+  @spec review_suite_profile_satisfies?(map(), String.t()) :: boolean()
+  def review_suite_profile_satisfies?(payload, required_profile), do: ReviewProfiles.review_suite_payload_profile_satisfies?(payload, required_profile)
 
   @spec persisted_review_suite_artifact?([term()], String.t(), String.t()) :: boolean()
   def persisted_review_suite_artifact?(artifacts, work_package_id, head_sha) do

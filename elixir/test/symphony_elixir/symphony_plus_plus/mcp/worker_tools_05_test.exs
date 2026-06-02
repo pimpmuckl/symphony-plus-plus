@@ -447,8 +447,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools05Test do
         "summary" => "normal is green",
         "status" => "passed",
         "verdict" => "green",
-        "lane" => "normal",
-        "round_id" => "phase_gate-suite-head"
+        "lane" => "normal"
       })
 
     assert get_in(result_response, ["result", "structuredContent", "progress_event", "status"]) == "review_suite_passed"
