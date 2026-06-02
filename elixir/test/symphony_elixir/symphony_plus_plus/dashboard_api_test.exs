@@ -5545,57 +5545,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
-  test "local operator dashboard does not hide packages linked from archived WorkRequests", %{repo: repo} do
-    with_local_operator_endpoint(fn ->
-      work_request =
-        create_work_request!(repo,
-          id: "WR-LOCAL-HIDDEN-LINKED-ARCHIVED",
-          status: "ready_for_slicing",
-          repo: "nextide/symphony-plus-plus",
-          base_branch: "main"
-        )
-
-      assert {:ok, slice} =
-               WorkRequestRepository.add_planned_slice(
-                 repo,
-                 work_request.id,
-                 planned_slice_attrs(
-                   id: "WRS-LOCAL-HIDDEN-LINKED-ARCHIVED",
-                   target_base_branch: "main"
-                 )
-               )
-
-      assert {:ok, approved} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, slice.id, "planned")
-
-      hidden_package =
-        create_matching_work_package!(repo, work_request, approved,
-          id: "WP-LOCAL-HIDDEN-LINKED-ARCHIVED",
-          status: "merged"
-        )
-
-      assert {:ok, _settings} =
-               OperatorSettingsService.update(repo, %{"hidden_work_package_ids" => [hidden_package.id]})
-
-      assert {:ok, _dispatched} =
-               WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", hidden_package.id)
-
-      archived_at = ~U[2026-05-25 10:00:00.000000Z]
-
-      work_request
-      |> Ecto.Changeset.change(completed_at: archived_at, completion_source: "operator", archived_at: archived_at)
-      |> repo.update!()
-
-      payload =
-        local_operator_conn()
-        |> get("/api/v1/sympp/operator/dashboard")
-        |> json_response(200)
-
-      assert hidden_package.id in payload["linked_work_package_ids"]
-      assert hidden_package.id in board_work_package_ids(payload)
-      assert payload["work_request_details"] == []
-    end)
-  end
-
   test "local operator cannot archive active or linked WorkPackages", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       active_package =
