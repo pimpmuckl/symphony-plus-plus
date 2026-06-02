@@ -805,6 +805,11 @@
     contain-intrinsic-size: auto 34rem;
   }
 
+  .workstream-repo-card[data-layout="aligned"][data-open="true"] {
+    content-visibility: visible;
+    contain-intrinsic-size: none;
+  }
+
   .jira-board {
     display: grid;
     align-items: start;
