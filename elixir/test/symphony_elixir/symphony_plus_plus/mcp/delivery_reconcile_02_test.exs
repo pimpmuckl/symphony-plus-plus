@@ -103,6 +103,153 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile02Test do
     assert get_in(stale_cleanup_response, ["error", "data", "reason"]) == "not_found"
   end
 
+  test "WorkPackage worktree MCP prepare accepts linked package delivery base different from WorkRequest base", %{repo: repo} do
+    delivery_base = "feature/kraken-batch-service-redesign"
+    fixture = TestSupport.git_repo_fixture!(delivery_base, prefix: "sympp-mcp-delivery-base-worktree")
+    codex_home = Path.join(fixture.root, "codex-home")
+    config = Config.default(repo: repo, repo_root: test_repo_root())
+
+    {anchor, session, _grant} =
+      create_phase_architect_session(
+        repo,
+        "SYMPP-ARCHITECT-WORKTREE-DELIVERY-BASE",
+        ["dispatch:work_request"],
+        repo: fixture.origin
+      )
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WORKTREE-DELIVERY-BASE",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "sliced",
+        repo_scopes: [%{repo: fixture.origin, base_branch: delivery_base}]
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-WORKTREE-DELIVERY-BASE",
+                 title: "Prepare integration delivery-base worktree",
+                 target_base_branch: delivery_base,
+                 branch_pattern: "feat/delivery-base-worktree",
+                 owned_file_globs: ["elixir/lib/symphony_elixir/symphony_plus_plus/work_packages/**"],
+                 acceptance_criteria: ["Prepare from the package delivery base."]
+               )
+             )
+
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-WORKTREE-DELIVERY-BASE",
+                 kind: planned_slice.work_package_kind,
+                 title: planned_slice.title,
+                 repo: work_request.repo,
+                 base_branch: planned_slice.target_base_branch,
+                 branch_pattern: planned_slice.branch_pattern,
+                 product_description: work_request.human_description,
+                 allowed_file_globs: planned_slice.owned_file_globs,
+                 acceptance_criteria: planned_slice.acceptance_criteria,
+                 status: "ready_for_worker"
+               )
+             )
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+    assert {:ok, _linked_slice} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", package.id)
+
+    {_delivery_anchor, delivery_scoped_session, _grant} =
+      create_phase_architect_session(
+        repo,
+        "SYMPP-ARCHITECT-WORKTREE-DELIVERY-BASE-SCOPED",
+        ["dispatch:work_request"],
+        repo: fixture.origin,
+        base_branch: delivery_base
+      )
+
+    previous_codex_home = System.get_env("CODEX_HOME")
+
+    try do
+      System.put_env("CODEX_HOME", codex_home)
+
+      delivery_scoped_prepare_response =
+        mcp_tool(
+          repo,
+          delivery_scoped_session,
+          "prepare_work_package_worktree",
+          %{
+            "work_package_id" => package.id,
+            "target_repo_root" => fixture.repo_root,
+            "base_branch" => delivery_base,
+            "branch" => "feat/delivery-base-scoped-worktree"
+          },
+          config: config
+        )
+
+      assert get_in(delivery_scoped_prepare_response, ["error", "code"]) == -32_004
+      assert get_in(delivery_scoped_prepare_response, ["error", "data", "reason"]) == "not_found"
+
+      wrong_base_response =
+        mcp_tool(
+          repo,
+          session,
+          "prepare_work_package_worktree",
+          %{
+            "work_package_id" => package.id,
+            "target_repo_root" => fixture.repo_root,
+            "base_branch" => anchor.base_branch,
+            "branch" => "feat/wrong-delivery-base"
+          },
+          config: config
+        )
+
+      assert get_in(wrong_base_response, ["error", "code"]) == -32_602
+      assert get_in(wrong_base_response, ["error", "data", "reason"]) == "base_branch_scope_mismatch"
+
+      prepare_response =
+        mcp_tool(
+          repo,
+          session,
+          "prepare_work_package_worktree",
+          %{
+            "work_package_id" => package.id,
+            "target_repo_root" => fixture.repo_root,
+            "base_branch" => delivery_base,
+            "branch" => "feat/delivery-base-worktree"
+          },
+          config: config
+        )
+
+      prepare_payload = get_in(prepare_response, ["result", "structuredContent"])
+      assert prepare_payload["scope"] == %{"repo" => anchor.repo, "base_branch" => anchor.base_branch}
+      assert prepare_payload["worktree"]["status"] == "prepared"
+      assert prepare_payload["worktree"]["base_branch"] == delivery_base
+      assert prepare_payload["worker_launch"]["base_branch"] == delivery_base
+      assert comparable_path(prepare_payload["worktree"]["target_repo_root"]) == comparable_path(fixture.repo_root)
+      assert File.dir?(prepare_payload["worktree"]["path"])
+
+      cleanup_response =
+        mcp_tool(
+          repo,
+          session,
+          "cleanup_work_package_worktree",
+          %{
+            "work_package_id" => package.id,
+            "target_repo_root" => fixture.repo_root
+          },
+          config: config
+        )
+
+      cleanup_payload = get_in(cleanup_response, ["result", "structuredContent"])
+      assert cleanup_payload["worktree"]["status"] == "cleaned"
+      refute File.exists?(prepare_payload["worktree"]["path"])
+    after
+      restore_env("CODEX_HOME", previous_codex_home)
+    end
+  end
+
   test "WorkPackage worktree MCP prepare rejects same-name owner conflicts", %{repo: repo} do
     target_repo_root =
       TestSupport.git_repo_with_origin_fixture!("https://github.com/acme/frontend.git",

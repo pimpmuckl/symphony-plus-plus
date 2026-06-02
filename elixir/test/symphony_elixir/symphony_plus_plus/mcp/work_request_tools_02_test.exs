@@ -600,18 +600,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
       "stop_conditions" => ["Stop before dispatch."]
     }
 
-    out_of_scope_response =
-      mcp_tool(
-        repo,
-        session,
-        "add_work_request_planned_slice",
-        Map.put(add_args, "target_base_branch", "feature/out-of-scope")
-      )
-
-    assert get_in(out_of_scope_response, ["error", "code"]) == -32_602
-    assert get_in(out_of_scope_response, ["error", "data", "reason"]) == "target_base_branch_scope_mismatch"
-    assert {:ok, []} = WorkRequestRepository.list_planned_slices(repo, work_request.id)
-
     changeset_error_response =
       mcp_tool(
         repo,
@@ -754,6 +742,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
              repo.aggregate(ProgressEvent, :count),
              repo.aggregate(Artifact, :count)
            } == counts_before
+  end
+
+  test "architect WorkRequest planned-slice tools allow delivery base different from WorkRequest base", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-DELIVERY-BASE", [
+        "write:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-SLICE-DELIVERY-BASE",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    grant_work_request_scope!(repo, session, work_request.id)
+
+    delivery_base = "feature/integration-base"
+
+    add_response =
+      mcp_tool(repo, session, "add_work_request_planned_slice", %{
+        "work_request_id" => work_request.id,
+        "title" => "Integration branch delivery",
+        "goal" => "Prepare a worker from a delivery base different from the parent WorkRequest base.",
+        "work_package_kind" => "mcp",
+        "target_base_branch" => delivery_base,
+        "owned_file_globs" => ["elixir/lib/symphony_elixir/symphony_plus_plus/mcp/server.ex"],
+        "forbidden_file_globs" => [],
+        "acceptance_criteria" => ["Delivery base is preserved on the planned slice."],
+        "validation_steps" => ["mix test test/symphony_elixir/symphony_plus_plus/mcp"],
+        "review_lanes" => ["normal"],
+        "stop_conditions" => ["Stop before unrelated scope."]
+      })
+
+    add_payload = get_in(add_response, ["result", "structuredContent"])
+
+    assert add_payload["scope"] == %{"repo" => anchor.repo, "base_branch" => anchor.base_branch}
+    assert get_in(add_payload, ["planned_slice", "target_base_branch"]) == delivery_base
+    assert {:ok, [planned_slice]} = WorkRequestRepository.list_planned_slices(repo, work_request.id)
+    assert planned_slice.target_base_branch == delivery_base
   end
 
   test "WorkRequest MCP planned-slice validation rejects unsupported globstar at add and approve", %{repo: repo} do
