@@ -272,11 +272,62 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     create_claimed_worker_grant(repo, started.id, "worker-started")
 
     assert {:ok, started_card} = Dashboard.card(repo, started)
-    assert started_card.operational_state.key == "needs_attention"
+    assert started_card.operational_state.key == "active"
+    assert started_card.operational_state.label == "Active"
     assert started_card.operational_state.raw_status == "ready_for_worker"
     assert started_card.operational_state.has_started == true
     assert started_card.operational_state.has_active_worker == true
-    assert [%{key: "ready_for_worker_with_activity"}] = started_card.operational_state.attention_items
+    assert started_card.operational_state.attention_items == []
+
+    assert {:ok, prepared} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-OP-READY-PREPARED", status: "ready_for_worker"))
+
+    assert {:ok, _worktree_prepared} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: prepared.id,
+               summary: "Prepared WorkPackage worktree",
+               status: "prepared",
+               payload: %{
+                 type: "worktree_lifecycle",
+                 source_tool: "prepare_work_package_worktree",
+                 status: "prepared",
+                 worktree_path: "/tmp/sympp-worktree",
+                 branch: "agent/prepared"
+               },
+               created_at: ~U[2026-05-05 00:00:00Z]
+             })
+
+    assert {:ok, prepared_card} = Dashboard.card(repo, prepared)
+    assert prepared_card.operational_state.key == "prepared"
+    assert prepared_card.operational_state.label == "Prepared"
+    assert prepared_card.operational_state.attention_items == []
+    assert prepared_card.operational_state.has_started == false
+    assert prepared_card.operational_state.has_active_worker == false
+    assert prepared_card.operational_state.has_prepared_worktree == true
+    assert prepared_card.operational_state.is_stale == false
+
+    assert {:ok, failed_prepare} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-OP-READY-PREP-FAILED", status: "ready_for_worker"))
+
+    assert {:ok, _worktree_prepare_failed} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: failed_prepare.id,
+               summary: "Failed preparing WorkPackage worktree",
+               status: "failed",
+               payload: %{
+                 type: "worktree_lifecycle",
+                 source_tool: "prepare_work_package_worktree",
+                 status: "failed",
+                 worktree_path: "/tmp/sympp-worktree",
+                 branch: "agent/prepared"
+               },
+               created_at: ~U[2026-05-05 00:00:00Z]
+             })
+
+    assert {:ok, failed_prepare_card} = Dashboard.card(repo, failed_prepare)
+    assert failed_prepare_card.operational_state.key == "needs_attention"
+    assert failed_prepare_card.operational_state.has_started == true
+    assert failed_prepare_card.operational_state.has_prepared_worktree == false
 
     assert {:ok, ready_with_history} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-OP-READY-HISTORY", status: "ready_for_worker"))
@@ -1438,6 +1489,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     repo.update!(Ecto.Changeset.change(dispatched_idle, status: "approved"))
 
+    assert {:ok, approved_prepared_linked} =
+             WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-OP-PREPARED-LINKED"))
+
+    assert {:ok, approved_prepared_linked} =
+             WorkRequestRepository.approve_planned_slice(repo, work_request.id, approved_prepared_linked.id, "planned")
+
+    prepared_package =
+      create_matching_work_package!(repo, work_request, approved_prepared_linked,
+        id: "SYMPP-OP-PREPARED-LINKED",
+        status: "ready_for_worker"
+      )
+
+    assert {:ok, _prepared_progress} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: prepared_package.id,
+               summary: "Prepared WorkPackage worktree",
+               status: "prepared",
+               payload: %{
+                 type: "worktree_lifecycle",
+                 source_tool: "prepare_work_package_worktree",
+                 status: "prepared",
+                 worktree_path: "/tmp/sympp-worktree",
+                 branch: "agent/prepared"
+               },
+               created_at: ~U[2026-05-05 00:00:00Z]
+             })
+
+    assert {:ok, dispatched_prepared} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_prepared_linked.id, "approved", prepared_package.id)
+
+    repo.update!(Ecto.Changeset.change(dispatched_prepared, status: "approved"))
+
     assert {:ok, approved_linked} =
              WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-OP-LINKED"))
 
@@ -1476,6 +1559,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert get_in(slices_by_id, ["WRS-OP-READY", :operational_state, :key]) == "ready_for_worker"
     assert get_in(slices_by_id, ["WRS-OP-READY", :operational_state, :raw_status]) == "approved"
     assert get_in(slices_by_id, ["WRS-OP-IDLE-LINKED", :operational_state, :key]) == "ready_for_worker"
+
+    prepared_linked_slice = Map.fetch!(slices_by_id, "WRS-OP-PREPARED-LINKED")
+    assert prepared_linked_slice.work_package_status == "ready_for_worker"
+    assert prepared_linked_slice.operational_state.key == "prepared"
+    assert prepared_linked_slice.operational_state.raw_status == "approved"
+    assert prepared_linked_slice.operational_state.has_started == false
+    assert prepared_linked_slice.operational_state.has_prepared_worktree == true
+    refute Enum.any?(prepared_linked_slice.operational_state.attention_items, &(&1.key == "linked_package_started_while_slice_idle"))
 
     linked_slice = Map.fetch!(slices_by_id, "WRS-OP-LINKED")
     assert linked_slice.work_package_id == linked_package.id
@@ -1543,6 +1634,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert request_card.operational_state.raw_status == "ready_for_slicing"
     assert request_card.operational_state.has_started == true
     assert request_card.operational_state.has_active_worker == true
+
+    prepared_request = create_work_request!(repo, id: "WR-DASH-OP-REQUEST-PREPARED", status: "ready_for_slicing")
+
+    assert {:ok, prepared_slice} =
+             WorkRequestRepository.add_planned_slice(repo, prepared_request.id, planned_slice_attrs(id: "WRS-OP-REQUEST-PREPARED"))
+
+    assert {:ok, prepared_slice} = WorkRequestRepository.approve_planned_slice(repo, prepared_request.id, prepared_slice.id, "planned")
+
+    prepared_package =
+      create_matching_work_package!(repo, prepared_request, prepared_slice,
+        id: "SYMPP-OP-REQUEST-PREPARED",
+        status: "ready_for_worker"
+      )
+
+    assert {:ok, _prepared_progress} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: prepared_package.id,
+               summary: "Prepared WorkPackage worktree",
+               status: "prepared",
+               payload: %{
+                 type: "worktree_lifecycle",
+                 source_tool: "prepare_work_package_worktree",
+                 status: "prepared",
+                 worktree_path: "/tmp/sympp-worktree",
+                 branch: "agent/prepared"
+               },
+               created_at: ~U[2026-05-05 00:00:00Z]
+             })
+
+    assert {:ok, _dispatched_prepared} =
+             WorkRequestRepository.dispatch_planned_slice(repo, prepared_request.id, prepared_slice.id, "approved", prepared_package.id)
+
+    assert {:ok, prepared_payload} = Dashboard.work_requests(repo)
+    prepared_request_card = Enum.find(prepared_payload.work_requests, &(&1.id == prepared_request.id))
+
+    assert prepared_request_card.operational_state.key == "prepared"
+    assert prepared_request_card.operational_state.label == "Prepared"
+    assert prepared_request_card.operational_state.raw_status == "ready_for_slicing"
+    assert prepared_request_card.operational_state.has_prepared_worktree == true
   end
 
   test "WorkRequest completion shows needs closeout while dispatched slice preserves merged package truth", %{repo: repo} do

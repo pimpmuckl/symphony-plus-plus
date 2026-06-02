@@ -46,6 +46,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @merge_required_gates ["human_merge", "architect_merge"]
   @runtime_merge_required_kinds ["hotfix", "adapter", "mcp", "skill", "hooks", "phase_child"]
   @started_package_statuses ["claimed", "planning", "implementing"]
+  @prepared_worktree_statuses ["prepared", "already_prepared"]
   @work_request_slice_state_priority [
     "blocked",
     "active",
@@ -56,6 +57,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     "merge_ready",
     "merging",
     "needs_closeout",
+    "prepared",
     "ready_for_worker",
     "planned",
     "merged",
@@ -2806,6 +2808,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
+  defp pickup_operational_state("ready_for_worker" = status, %{has_active_worker: true}) do
+    operational_state("active", "Active", "info", "Worker grant or runtime evidence indicates work is active now.", status)
+  end
+
   defp pickup_operational_state("ready_for_worker" = status, %{has_started: true}) do
     operational_state(
       "needs_attention",
@@ -2814,6 +2820,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       "Raw status is ready_for_worker but worker, runtime, progress, PR, review, or merge activity is recorded.",
       status
     )
+  end
+
+  defp pickup_operational_state("ready_for_worker" = status, %{has_prepared_worktree: true}) do
+    operational_state("prepared", "Prepared", "neutral", "Worktree preparation is recorded and the package is awaiting worker claim.", status)
   end
 
   defp pickup_operational_state(status, %{has_active_worker: true}) when status != "ready_for_worker" do
@@ -2976,7 +2986,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     inherited_items = Map.get(linked_state, :attention_items, [])
 
     maybe_idle_slice_attention =
-      if planned_slice.status in ["planned", "approved"] and promoted_linked_operational_state?(linked_state) do
+      if planned_slice.status in ["planned", "approved"] and linked_package_started_while_slice_idle?(linked_state) do
         [
           %{
             key: "linked_package_started_while_slice_idle",
@@ -2999,6 +3009,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     key in [
       "blocked",
       "active",
+      "prepared",
       "needs_attention",
       "started_paused",
       "reviewing",
@@ -3012,6 +3023,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp promoted_linked_operational_state?(_state), do: false
+
+  defp linked_package_started_while_slice_idle?(%{key: "prepared"}), do: false
+  defp linked_package_started_while_slice_idle?(linked_state), do: promoted_linked_operational_state?(linked_state)
 
   defp work_package_attention_items(%WorkPackage{} = work_package, blockers, context) do
     missing_readiness = Map.fetch!(context, :missing_readiness)
@@ -3067,7 +3081,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp missing_readiness_attention_item(%WorkPackage{}, _missing_readiness), do: nil
 
   defp ready_status_with_activity_attention_item(%WorkPackage{status: "ready_for_worker"}, activity) do
-    if activity.has_started do
+    if activity.has_started and not activity.has_active_worker do
       %{
         key: "ready_for_worker_with_activity",
         label: "Ready Status With Activity",
@@ -3085,24 +3099,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     has_active_worker =
       active_worker_grant?(grants) or active_agent_run?(agent_runs) or runtime_current_activity?(runtime)
 
+    {has_prepared_worktree, has_meaningful_progress} = progress_activity(progress_events)
+
     has_started =
       status in @started_package_statuses or
         has_active_worker or
         agent_run_activity?(agent_runs) or
         runtime_activity?(runtime) or
-        progress_events != [] or
+        has_meaningful_progress or
         metadata_activity?(metadata)
+
+    has_activity = has_started or has_prepared_worktree
 
     %{
       has_started: has_started,
       has_active_worker: has_active_worker,
-      last_activity_at: latest_package_activity_at(work_package, progress_events, agent_runs, grants, has_started),
+      has_prepared_worktree: has_prepared_worktree,
+      last_activity_at: latest_package_activity_at(work_package, progress_events, agent_runs, grants, has_activity),
       is_stale: has_started and not has_active_worker
     }
   end
 
   defp operational_activity_fields(activity) do
-    Map.take(activity, [:has_started, :has_active_worker, :last_activity_at, :is_stale])
+    Map.take(activity, [:has_started, :has_active_worker, :has_prepared_worktree, :last_activity_at, :is_stale])
   end
 
   defp latest_package_activity_at(_work_package, _progress_events, _agent_runs, _grants, false), do: nil
@@ -3159,6 +3178,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp agent_run_activity?(agent_runs), do: agent_runs != []
+
+  defp progress_activity(progress_events) do
+    Enum.reduce(progress_events, {false, false}, fn %ProgressEvent{} = event, {prepared?, meaningful?} ->
+      if prepared_worktree_progress_event?(event) do
+        {true, meaningful?}
+      else
+        {prepared?, true}
+      end
+    end)
+  end
+
+  defp prepared_worktree_progress_event?(%ProgressEvent{status: status, payload: payload}) when is_map(payload) do
+    payload_status = map_value(payload, "status")
+
+    map_value(payload, "type") == "worktree_lifecycle" and
+      map_value(payload, "source_tool") == "prepare_work_package_worktree" and
+      status in @prepared_worktree_statuses and
+      (is_nil(payload_status) or payload_status in @prepared_worktree_statuses)
+  end
+
+  defp prepared_worktree_progress_event?(%ProgressEvent{}), do: false
 
   defp runtime_activity?(runtime) do
     Enum.any?([:active_count, :queued_count, :stopped_count, :failed_count, :completed_count, :terminal_count], &(safe_map_get(runtime, &1, 0) > 0))
