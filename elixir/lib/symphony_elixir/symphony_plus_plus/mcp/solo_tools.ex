@@ -43,7 +43,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloTools do
         "session_id" => string_schema(),
         "entry_kind" => string_schema(),
         "title" => string_schema(),
-        "body" => nullable_string_schema(),
+        "body" => markdown_nullable_string_schema("Optional human-facing Markdown body."),
         "status" => nullable_string_schema(),
         "idempotency_key" => nullable_string_schema(),
         "payload" => object_schema()
@@ -272,6 +272,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloTools do
 
   defp string_schema, do: %{"type" => "string"}
   defp nullable_string_schema, do: %{"type" => ["string", "null"]}
+  defp markdown_nullable_string_schema(description), do: Map.put(nullable_string_schema(), "description", description)
   defp object_schema, do: %{"type" => "object", "additionalProperties" => true}
 
   defp required_argument(arguments, key) do

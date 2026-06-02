@@ -2,6 +2,13 @@
 
 This document mirrors `mcp_tools_contract.json` in readable form.
 
+Human-facing long text fields are Markdown unless a field is explicitly a
+compact label, status, identifier, branch, PR URL, or other machine-readable
+value. This includes WorkRequest descriptions, comments, blockers, guidance
+questions/context/answers, decision rationale/scope impact, findings, progress
+bodies, no-PR evidence, and similar notes. Dashboard renderers must not turn
+raw Markdown HTML into executable or trusted HTML.
+
 ## Worker tools
 
 | Tool | Purpose |

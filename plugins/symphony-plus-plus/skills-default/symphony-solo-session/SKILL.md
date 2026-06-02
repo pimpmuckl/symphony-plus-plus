@@ -77,6 +77,7 @@ pwsh <plugin-root>/scripts/sympp-solo.ps1 attach `
 ## Append
 
 Append only meaningful state changes. Use non-secret idempotency keys.
+Entry bodies are human-facing Markdown; keep titles and status labels plain.
 
 Entry kinds:
 

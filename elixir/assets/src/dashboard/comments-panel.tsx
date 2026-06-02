@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CheckCircle2, Loader2, MessageSquareText } from "lucide-react";
+import { MarkdownBlock } from "@/components/dashboard/markdown-block";
 import type { ContextComment } from "@/types/dashboard";
 import type * as React from "react";
 import { Textarea } from "@/components/ui/textarea";
@@ -82,37 +83,16 @@ export function CommentsPanel({
       </div>
       {orderedComments.length > 0 ? (
         <div className="grid gap-2">
-          {orderedComments.map((comment) => {
-            const resolved = comment.status === "resolved";
-
-            return (
-              <div key={comment.id} className={cn("detail-list-item", resolved && "opacity-75")}>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-xs font-medium text-muted-foreground">
-                    {comment.author_name || comment.source_type || "comment"} / {detailDate(comment.inserted_at)}
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={resolved ? "secondary" : "info"}>{resolved ? "Resolved" : "Open"}</Badge>
-                    {canMutate && !resolved ? (
-                      <Button type="button" size="sm" variant="outline" onClick={() => void resolve(comment)} disabled={resolvingId === comment.id}>
-                        {resolvingId === comment.id ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-                        Resolve
-                      </Button>
-                    ) : null}
-                  </div>
-                </div>
-                <p className="mt-2 whitespace-pre-wrap text-sm">{comment.body || "No comment body recorded."}</p>
-                {resolved && comment.resolved_by ? <p className="mt-2 text-xs text-muted-foreground">Resolved by {comment.resolved_by}</p> : null}
-              </div>
-            );
-          })}
+          {orderedComments.map((comment) => (
+            <CommentRow key={comment.id} canMutate={canMutate} comment={comment} onResolve={resolve} resolvingId={resolvingId} />
+          ))}
         </div>
       ) : (
         <p>No comments yet.</p>
       )}
       {canMutate ? (
         <div className="grid gap-2">
-          <Textarea ref={textareaRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Add a note..." disabled={pending} maxLength={COMMENT_BODY_MAX_LENGTH} />
+          <Textarea ref={textareaRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Add a Markdown note..." disabled={pending} maxLength={COMMENT_BODY_MAX_LENGTH} />
           <div className="flex flex-wrap items-center justify-between gap-2">
             {error ? <p className="text-xs text-destructive">{error}</p> : <span />}
             <Button type="button" size="sm" onClick={() => void submit()} disabled={pending || draft.trim() === ""}>
@@ -123,6 +103,53 @@ export function CommentsPanel({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function CommentRow({
+  canMutate,
+  comment,
+  onResolve,
+  resolvingId,
+}: {
+  canMutate: boolean;
+  comment: ContextComment;
+  onResolve: (comment: ContextComment) => Promise<void>;
+  resolvingId: string | null;
+}) {
+  const resolved = comment.status === "resolved";
+  const resolving = resolvingId === comment.id;
+
+  return (
+    <div className={cn("detail-list-item", resolved && "opacity-75")}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-medium text-muted-foreground">
+          {comment.author_name || comment.source_type || "comment"} / {detailDate(comment.inserted_at)}
+        </span>
+        <div className="flex items-center gap-2">
+          <Badge variant={resolved ? "secondary" : "info"}>{resolved ? "Resolved" : "Open"}</Badge>
+          {canMutate && !resolved ? (
+            <Button type="button" size="sm" variant="outline" onClick={() => void onResolve(comment)} disabled={resolving}>
+              {resolving ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+              Resolve
+            </Button>
+          ) : null}
+        </div>
+      </div>
+      <MarkdownBlock className="mt-2 text-sm" value={comment.body} empty="No comment body recorded." />
+      <ResolutionMetadata comment={comment} resolved={resolved} />
+    </div>
+  );
+}
+
+function ResolutionMetadata({ comment, resolved }: { comment: ContextComment; resolved: boolean }) {
+  if (!resolved) return null;
+
+  return (
+    <>
+      {comment.resolution_note ? <MarkdownBlock className="detail-markdown-compact mt-2 text-xs" value={comment.resolution_note} /> : null}
+      {comment.resolved_by ? <p className="mt-2 text-xs text-muted-foreground">Resolved by {comment.resolved_by}</p> : null}
+    </>
   );
 }
 

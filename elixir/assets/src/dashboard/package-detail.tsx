@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DetailDisclosure, DetailFacts, DetailHeader, DetailList, DetailSection, DetailStatGrid } from "@/components/dashboard/detail-layout";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { MarkdownBlock } from "@/components/dashboard/markdown-block";
 import type { PlannedSlice, WorkPackageCard, WorkPackageDetailPayload, WorkRequestDetail } from "@/types/dashboard";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,7 +15,7 @@ import { COMMENT_BODY_MAX_LENGTH, CardDetailSelection, ResolveContextComment, Su
 import { CommentsPanel, useSyncedComments } from "./comments-panel";
 import { DangerousStateConfirmationDialog } from "./request-detail";
 import { DetailActivityList, DetailAttentionList, LineageDisclosure, RecentDecisionsDisclosure } from "./detail-extras";
-import { activeAlertLabels, commentStatLabel, detailDate, latestPackageProgress, lineageHasSignal, packageOperationalFallbackText, packagePurpose, packageRuntimeText, planSummaryText, sliceDeliveryFacts, sliceDeliverySummary, sliceProgressText, targetCommentStats } from "./detail-utils";
+import { activeAlertLabels, commentStatLabel, detailDate, latestPackageProgress, lineageHasSignal, packageOperationalFallbackText, packageRuntimeText, planSummaryText, sliceDeliveryFacts, sliceDeliverySummary, sliceProgressText, targetCommentStats } from "./detail-utils";
 import { initialPackageDetailUiState, packageDetailUiReducer } from "./dashboard-state";
 import { repoDisplayName } from "./dashboard-persistence";
 
@@ -42,6 +43,7 @@ export function SliceDetailContent({
   const currentCommentStats = targetCommentStats(slice, slice.comments || [], sliceComments);
   const deliveryFacts = sliceDeliveryFacts(slice);
   const deliverySummary = sliceDeliverySummary(slice, operational);
+  const deliveryMarkdown = sliceDeliveryMarkdown(slice);
 
   return (
     <>
@@ -62,7 +64,7 @@ export function SliceDetailContent({
           ]}
         />
         <DetailSection title="What It Does">
-          <p>{slice.goal || pkg?.kind || "No slice goal has been recorded yet."}</p>
+          <MarkdownBlock value={slice.goal} empty={pkg?.kind || "No slice goal has been recorded yet."} />
         </DetailSection>
         <DetailSection title="Progress">
           <div className="grid gap-2">
@@ -72,7 +74,11 @@ export function SliceDetailContent({
         </DetailSection>
         {deliverySummary || deliveryFacts.length > 0 ? (
           <DetailDisclosure title="Delivery" meta={slice.delivery?.outcome ? statusLabel(slice.delivery.outcome) : operationalLabel(operational, status)}>
-            {deliverySummary ? <p className="mb-3 text-sm text-muted-foreground">{deliverySummary}</p> : null}
+            {deliveryMarkdown ? (
+              <MarkdownDetail label={deliveryMarkdown.label} value={deliveryMarkdown.value} />
+            ) : deliverySummary ? (
+              <MarkdownBlock className="mb-3 text-sm" value={deliverySummary} />
+            ) : null}
             <DetailFacts facts={deliveryFacts} />
           </DetailDisclosure>
         ) : null}
@@ -168,8 +174,9 @@ export function PackageDetailContent({
   const plan = summary?.plan || pkg.plan;
   const operational = pkg.operational_state || null;
   const lineage = detailPayload?.lineage || pkg.lineage || null;
+  const purposeMarkdown = packagePurposeMarkdown(pkg);
   const attentionItems = operational?.attention_items || [];
-  const blockerCount = blockers.length || summary?.active_blocker_count || pkg.active_blocker_count || (operational?.key === "blocked" || pkg.status === "blocked" ? 1 : 0);
+  const blockerCount = packageBlockerCount(blockers.length, summary, pkg, operational);
   const currentCommentStats = targetCommentStats(summary || pkg, detailPayload?.comments || [], packageComments);
   const canMarkMerged = !isFinishedBoardStatus(operational?.key || pkg.status);
   const isLinkedPackage = linkedWorkPackageIds.has(pkg.id);
@@ -247,7 +254,7 @@ export function PackageDetailContent({
           ]}
         />
         <DetailSection title="What It Does">
-          <p>{packagePurpose(pkg)}</p>
+          <MarkdownBlock value={purposeMarkdown} empty={pkg.kind || "No package description has been recorded yet."} />
         </DetailSection>
         <DetailSection title="Operational Truth">
           <div className="grid gap-2">
@@ -375,7 +382,7 @@ export function PackageDetailContent({
             <Textarea
               value={noPrEvidence}
               onChange={(event) => setNoPrEvidence(event.target.value)}
-              placeholder="Evidence note..."
+              placeholder="Markdown evidence note..."
               disabled={statePending}
               maxLength={COMMENT_BODY_MAX_LENGTH}
             />
@@ -409,4 +416,42 @@ export function PackageDetailContent({
       />
     </>
   );
+}
+
+function MarkdownDetail({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="mb-3 grid gap-1">
+      <p className="text-xs font-semibold text-muted-foreground">{label}</p>
+      <MarkdownBlock className="text-sm" value={value} />
+    </div>
+  );
+}
+
+function sliceDeliveryMarkdown(slice: PlannedSlice) {
+  if (slice.delivery?.outcome === "completed_no_pr" && slice.delivery.no_pr_evidence) {
+    return { label: "Evidence", value: slice.delivery.no_pr_evidence };
+  }
+
+  if (slice.delivery?.outcome === "superseded" && slice.delivery.superseded_reason) {
+    return { label: "Reason", value: slice.delivery.superseded_reason };
+  }
+
+  if (slice.delivery?.outcome === "abandoned" && slice.delivery.abandoned_rationale) {
+    return { label: "Rationale", value: slice.delivery.abandoned_rationale };
+  }
+
+  return null;
+}
+
+function packagePurposeMarkdown(pkg: { engineering_scope?: string | null; product_description?: string | null }) {
+  return pkg.engineering_scope || pkg.product_description || "";
+}
+
+function packageBlockerCount(
+  visibleBlockerCount: number,
+  summary: WorkPackageDetailPayload["summary"] | undefined,
+  pkg: WorkPackageCard,
+  operational: WorkPackageCard["operational_state"] | null,
+) {
+  return visibleBlockerCount || summary?.active_blocker_count || pkg.active_blocker_count || (operational?.key === "blocked" || pkg.status === "blocked" ? 1 : 0);
 }

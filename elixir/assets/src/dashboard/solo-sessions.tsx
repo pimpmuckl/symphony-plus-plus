@@ -13,6 +13,7 @@ import { formatStatus } from "@/lib/status-labels";
 import { sortedCopy } from "@/lib/collections";
 import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
 import { CardDetailSelect, DashboardUpdateAnimations } from "./runtime";
+import { stripMarkdown } from "./dashboard-text";
 import { EmptyPanel } from "./detail-extras";
 import { detailDate } from "./detail-utils";
 import { RepoSummaryPlate } from "./dashboard-settings";
@@ -144,7 +145,7 @@ export function SoloSessionCard({
 }) {
   const attention = soloSessionAttention(session);
   const latest = session.latest_entry;
-  const latestText = latest?.title || latest?.body;
+  const latestText = latest?.title || stripMarkdown(latest?.body);
   const latestSignalValue = latest?.status ? formatStatus(latest.status) : latestText;
   const tone = soloSessionCardTone(session);
   const showLatest = latest && latestText && !soloSessionLatestIsRedundant(session, latestText);

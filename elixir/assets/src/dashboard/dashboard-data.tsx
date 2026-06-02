@@ -3,6 +3,7 @@ import { operationalLabel, packageLane, sliceLane, sliceOperationalState, workRe
 import { sortedCopy } from "@/lib/collections";
 import type { BlockerItem, FinishedHighlight } from "./dashboard-state";
 import type { CardDetailSelection } from "./runtime";
+import { stripMarkdown } from "./dashboard-text";
 import { operatorApiUrl } from "./runtime";
 import type { RepoIdentitySource } from "./dashboard-persistence";
 import { addBranch, repoDisplayName, repoIdentityKey, repoRemoteName } from "./dashboard-persistence";
@@ -43,7 +44,7 @@ export function allGuidanceItems(dashboard: DashboardPayload | null): GuidanceIt
     repo: repoDisplayName(item),
     repoKey: repoIdentityKey(item),
     repoRemote: repoRemoteName(item),
-    title: item.decision_prompt?.tl_dr || item.summary || item.question || item.id,
+    title: item.decision_prompt?.tl_dr || item.summary || stripMarkdown(item.question) || item.id,
     packageId: item.work_package_id,
     prompt: item.decision_prompt,
     detail: item.decision_prompt?.details || item.context || item.question || "",
@@ -69,7 +70,7 @@ export function clarificationGuidanceItem(detail: WorkRequestDetail, question: C
     repo: repoDisplayName(detail.work_request),
     repoKey: repoIdentityKey(detail.work_request),
     repoRemote: repoRemoteName(detail.work_request),
-    title: question.decision_prompt?.tl_dr || question.question || question.id,
+    title: question.decision_prompt?.tl_dr || stripMarkdown(question.question) || question.id,
     workRequestId: detail.work_request.id,
     prompt: question.decision_prompt,
     detail: question.decision_prompt?.details || question.why_needed || question.question || "",

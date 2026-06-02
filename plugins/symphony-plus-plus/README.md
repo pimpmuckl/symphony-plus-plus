@@ -444,6 +444,8 @@ orchestration. Use `symphony-plus-plus:symphony-worker` as the baseline worker
 contract in both ordinary and WorkPackage-backed assignments. Solo Session
 entries must not include raw secrets, tokens, worker handoff payloads, WorkKeys,
 or private grant material.
+Solo entry bodies are human-facing Markdown; titles, statuses, repo names, and
+other compact labels remain plain text.
 
 ## Worker And Coordinator Use
 
@@ -459,6 +461,10 @@ Symphony++ local HTTP daemon. The operator creates a WorkPackage, the
 create-work command stores the one-time secret in a private local handoff store,
 and the worker receives only non-secret handoff metadata plus a stable
 `claimed_by` identity.
+Human-facing WorkRequest descriptions, comments, findings, progress bodies,
+blocker notes, guidance context, and decision rationale/scope-impact text are
+Markdown. Identifiers, titles, statuses, branch names, PR metadata, and badges
+remain plain text.
 
 The MCP WorkPackage skill then instructs the worker to load the current
 assignment, read MCP-backed planning resources, update plan/findings/progress

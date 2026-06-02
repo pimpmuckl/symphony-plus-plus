@@ -316,8 +316,13 @@ export function NewRequestDialog({
                   </Select>
                 </Field>
               </div>
-              <Field label="Description">
-                <Textarea value={form.human_description} onChange={(event) => updateForm({ type: "patch", patch: { human_description: event.target.value } })} required />
+              <Field label="Description (Markdown)">
+                <Textarea
+                  value={form.human_description}
+                  onChange={(event) => updateForm({ type: "patch", patch: { human_description: event.target.value } })}
+                  placeholder="Problem, context, and expected outcome."
+                  required
+                />
               </Field>
               {error ? <p className="text-sm text-destructive">{error}</p> : null}
               <DialogFooter>

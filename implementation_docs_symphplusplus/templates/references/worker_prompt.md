@@ -49,6 +49,10 @@ During coding:
 7. Do not create local planning files as the WorkPackage source of truth.
 8. Do not use broad Linear/GitHub state as permission authority.
 
+Human-facing bodies, notes, findings, progress details, blockers, and guidance
+context are Markdown. Keep titles, ids, statuses, branch names, and PR metadata
+plain.
+
 Before ready:
 1. Run relevant validation.
 2. Attach branch metadata with `attach_branch(branch, head_sha)` when the policy

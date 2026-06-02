@@ -1867,6 +1867,41 @@
     list-style: decimal;
   }
 
+  .solo-markdown a {
+    color: hsl(var(--primary));
+    font-weight: 600;
+    text-decoration: underline;
+    text-underline-offset: 0.18em;
+    overflow-wrap: anywhere;
+  }
+
+  .solo-markdown blockquote {
+    border-left: 3px solid hsl(var(--border));
+    padding-left: 0.75rem;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .solo-markdown table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+    font-size: 0.78rem;
+  }
+
+  .solo-markdown th,
+  .solo-markdown td {
+    border: 1px solid hsl(var(--border));
+    padding: 0.35rem 0.5rem;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .solo-markdown th {
+    color: hsl(var(--foreground));
+    font-weight: 700;
+  }
+
   .solo-markdown code {
     border-radius: 0.25rem;
     background: hsl(var(--muted));
@@ -1891,6 +1926,15 @@
     margin-top: 0.75rem;
     color: hsl(var(--muted-foreground));
     font-size: 0.8125rem;
+  }
+
+  .detail-markdown-compact,
+  .detail-markdown-compact.solo-markdown-empty {
+    margin-top: 0.25rem;
+    gap: 0.35rem;
+    font-size: inherit;
+    max-height: 3em;
+    overflow: hidden;
   }
 
   .top-panel-measure .stagger-item,

@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import type { CopyArchitectHandoff, GuidanceItem, WorkRequestDetail } from "@/types/dashboard";
 import { DetailDisclosure, DetailFacts, DetailHeader, DetailList, DetailSection, DetailStatGrid, JsonDetail } from "@/components/dashboard/detail-layout";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { MarkdownBlock } from "@/components/dashboard/markdown-block";
 import { architectHandoffEligibleRequest, isFinishedBoardStatus, operationalBadgeVariant, operationalLabel } from "@/lib/operational-state";
 import { cn } from "@/lib/utils";
 import { formatStatus, statusLabel } from "@/lib/status-labels";
@@ -13,6 +14,7 @@ import { RecentDecisionsDisclosure } from "./detail-extras";
 import { commentStatLabel, commentStats, detailDate, requestCommentStats, requestOpenQuestions, requestProgressText, requestSliceCounts } from "./detail-utils";
 import { ResolveContextComment, SubmitContextComment, WorkRequestMutation, WorkRequestStateMutation } from "./runtime";
 import { clarificationGuidanceItem } from "./dashboard-data";
+import { stripMarkdown } from "./dashboard-text";
 import { initialRequestDetailUiState, requestDetailUiReducer, useScopedHandoffCopy } from "./dashboard-state";
 import { repoDisplayName } from "./dashboard-persistence";
 
@@ -142,7 +144,7 @@ export function RequestDetailContent({
           ]}
         />
         <DetailSection title="What It Does">
-          <p>{request.human_description || "No operator-facing description has been recorded yet."}</p>
+          <MarkdownBlock value={request.human_description} empty="No operator-facing description has been recorded yet." />
         </DetailSection>
         <DetailSection title="Progress">
           <p>{requestProgressText(detail)}</p>
@@ -157,8 +159,8 @@ export function RequestDetailContent({
                   className="detail-list-item text-left hover:border-primary/50 hover:bg-primary/5"
                   onClick={() => onSelectGuidance(clarificationGuidanceItem(detail, question))}
                 >
-                  <span className="text-sm font-medium">{question.decision_prompt?.tl_dr || question.question || "Open question"}</span>
-                  {question.why_needed ? <span className="mt-1 line-clamp-2 text-xs text-muted-foreground">{question.why_needed}</span> : null}
+                  <span className="text-sm font-medium">{question.decision_prompt?.tl_dr || stripMarkdown(question.question) || "Open question"}</span>
+                  {question.why_needed ? <span className="mt-1 line-clamp-2 text-xs text-muted-foreground">{stripMarkdown(question.why_needed)}</span> : null}
                 </button>
               ))}
               {openQuestions.length > 2 ? <p className="text-xs text-muted-foreground">+{openQuestions.length - 2} more open question{openQuestions.length - 2 === 1 ? "" : "s"}</p> : null}
