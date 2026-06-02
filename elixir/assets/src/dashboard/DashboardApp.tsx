@@ -1,4 +1,4 @@
-import type { ArchitectHandoffPayload, ContextComment, CopyArchitectHandoff, CreateWorkRequestPayload, DashboardPayload, GuidanceAnswerSubmission, GuidanceItem } from "@/types/dashboard";
+import type { ArchitectHandoffPayload, ContextComment, CopyArchitectHandoff, CreateWorkRequestPayload, DashboardPayload, GuidanceAnswerSubmission, GuidanceItem, WorkRequestDetail } from "@/types/dashboard";
 import type { NewRequestForm } from "@/components/dashboard/new-request-dialog";
 import type * as React from "react";
 import type { BoardLayoutMode as WorkstreamLayoutMode } from "@/components/dashboard/board-layout";
@@ -8,10 +8,11 @@ import { DashboardShell } from "./dashboard-shell";
 import { SoloSessions } from "./solo-sessions";
 import { WorkstreamsPane } from "./workspace-tabs";
 import { activeBlockerItems, allGuidanceItems, allPackages, dashboardContentFingerprint, guidanceAnswerUrl, recentFinishedHighlights, repoSummaries } from "./dashboard-data";
+import type { RepoSummary } from "./dashboard-data";
 import { appDialogReducer, appStateReducer, createInitialAppState, initialAppDialogState } from "./dashboard-state";
-import { applyDashboardTheme, repoWorkstreamHasWorkItems, shouldShowUpdateSimulationControls, writeDashboardUiStateValue, writeStoredTheme } from "./dashboard-persistence";
+import { applyDashboardTheme, shouldShowUpdateSimulationControls, writeDashboardUiStateValue, writeStoredTheme } from "./dashboard-persistence";
 import { canMutateDashboardComments } from "./detail-extras";
-import { linkedPackageIdsForDetails, packageSelectionIndex, requestDetailsByRepoKey } from "./workstream-data";
+import { packageSelectionIndex, requestDetailsByRepoKey } from "./workstream-data";
 import { useDashboardUpdateAnimations } from "./update-animations";
 
 export function DashboardApp() {
@@ -21,7 +22,7 @@ export function DashboardApp() {
 
 export function useDashboardController() {
   const [appState, dispatchApp] = useReducer(appStateReducer, null, createInitialAppState);
-  const { dashboard, error, hideEmptyWorkstreams, loading, refreshing, theme, workspaceTab, workstreamLayout } = appState;
+  const { dashboard, error, hideEmptyWorkstreams, hideUnlinkedWorkPackages, loading, refreshing, theme, workspaceTab, workstreamLayout } = appState;
   const [dialogState, dispatchDialog] = useReducer(appDialogReducer, initialAppDialogState);
   const [connectionIssue, setConnectionIssue] = useState<DashboardConnectionIssue | null>(null);
   const showUpdateSimulationControls = useMemo(() => shouldShowUpdateSimulationControls(), []);
@@ -57,6 +58,9 @@ export function useDashboardController() {
   }, []);
   const setHideEmptyWorkstreams = useCallback((nextHideEmptyWorkstreams: boolean) => {
     dispatchApp({ type: "patch", state: { hideEmptyWorkstreams: nextHideEmptyWorkstreams } });
+  }, []);
+  const setHideUnlinkedWorkPackages = useCallback((nextHideUnlinkedWorkPackages: boolean) => {
+    dispatchApp({ type: "patch", state: { hideUnlinkedWorkPackages: nextHideUnlinkedWorkPackages } });
   }, []);
   const setSelectedGuidance = useCallback((selectedGuidance: GuidanceItem | null) => {
     dispatchDialog({ type: "guidance", selectedGuidance });
@@ -418,6 +422,10 @@ export function useDashboardController() {
   }, [hideEmptyWorkstreams]);
 
   useEffect(() => {
+    writeDashboardUiStateValue("hideUnlinkedWorkPackages", hideUnlinkedWorkPackages);
+  }, [hideUnlinkedWorkPackages]);
+
+  useEffect(() => {
     applyDashboardTheme(theme);
   }, [theme]);
 
@@ -433,7 +441,10 @@ export function useDashboardController() {
   const requestDetails = useMemo(() => dashboard?.work_request_details ?? [], [dashboard]);
   const linkedWorkPackageIds = useMemo(() => new Set(dashboard?.linked_work_package_ids ?? []), [dashboard]);
   const requestDetailsByRepo = useMemo(() => requestDetailsByRepoKey(requestDetails), [requestDetails]);
-  const requestLinkedPackageIds = useMemo(() => linkedPackageIdsForDetails(requestDetails), [requestDetails]);
+  const hiddenUnlinkedWorkPackageCount = useMemo(
+    () => packages.filter((pkg) => !linkedWorkPackageIds.has(pkg.id)).length,
+    [linkedWorkPackageIds, packages],
+  );
   const packageSelections = useMemo(() => packageSelectionIndex(requestDetails, packages), [packages, requestDetails]);
   const archiveAfterDays = dashboard?.settings?.work_request_archive_after_days ?? 14;
   const guidanceItems = useMemo(() => allGuidanceItems(dashboard), [dashboard]);
@@ -453,8 +464,11 @@ export function useDashboardController() {
     requestDetails,
   ]);
   const workstreamRepos = useMemo(
-    () => (hideEmptyWorkstreams ? repos.filter(repoWorkstreamHasWorkItems) : repos),
-    [hideEmptyWorkstreams, repos],
+    () =>
+      hideEmptyWorkstreams
+        ? repos.filter((repo) => repoWorkstreamHasVisibleItems(repo, requestDetailsByRepo, linkedWorkPackageIds, hideUnlinkedWorkPackages))
+        : repos,
+    [hideEmptyWorkstreams, hideUnlinkedWorkPackages, linkedWorkPackageIds, repos, requestDetailsByRepo],
   );
   const hiddenWorkstreamCount = repos.length - workstreamRepos.length;
   const updateAnimations = useDashboardUpdateAnimations({
@@ -474,12 +488,13 @@ export function useDashboardController() {
           repos={workstreamRepos}
           hiddenRepoCount={hiddenWorkstreamCount}
           requestDetailsByRepo={requestDetailsByRepo}
-          requestLinkedPackageIds={requestLinkedPackageIds}
+          linkedWorkPackageIds={linkedWorkPackageIds}
           activeBlockingEdges={dashboard?.active_blocking_edges ?? []}
           onSelectGuidance={setSelectedGuidance}
           onSelectCard={setSelectedCardDetail}
           onCopyArchitectHandoff={copyArchitectHandoff}
           layoutMode={workstreamLayout}
+          hideUnlinkedWorkPackages={hideUnlinkedWorkPackages}
           updateAnimations={updateAnimations}
         />
       ),
@@ -489,12 +504,13 @@ export function useDashboardController() {
       copyArchitectHandoff,
       dashboard?.active_blocking_edges,
       hiddenWorkstreamCount,
+      linkedWorkPackageIds,
       requestDetailsByRepo,
-      requestLinkedPackageIds,
       setSelectedCardDetail,
       setSelectedGuidance,
       soloSessions,
       updateAnimations,
+      hideUnlinkedWorkPackages,
       workstreamRepos,
       workstreamLayout,
     ],
@@ -517,11 +533,14 @@ export function useDashboardController() {
     guidanceItems,
     hiddenWorkstreamCount,
     hideEmptyWorkstreams,
+    hideUnlinkedWorkPackages,
+    hiddenUnlinkedWorkPackageCount,
     linkedWorkPackageIds,
     loading,
     onArchiveWorkPackage: archiveWorkPackage,
     onArchiveWorkRequest: archiveWorkRequest,
     onHideEmptyWorkstreamsChange: setHideEmptyWorkstreams,
+    onHideUnlinkedWorkPackagesChange: setHideUnlinkedWorkPackages,
     onReconnectDashboard: reconnectDashboard,
     onRefreshDashboard: loadDashboard,
     onRestoreWorkRequest: restoreWorkRequest,
@@ -544,4 +563,18 @@ export function useDashboardController() {
     workspaceTab,
     workstreamLayout,
   };
+}
+
+function repoWorkstreamHasVisibleItems(
+  repo: RepoSummary,
+  requestDetailsByRepo: ReadonlyMap<string, WorkRequestDetail[]>,
+  linkedWorkPackageIds: ReadonlySet<string>,
+  hideUnlinkedWorkPackages: boolean,
+) {
+  const requestDetailCount = requestDetailsByRepo.get(repo.repoKey)?.length ?? 0;
+  const visiblePackageCount = hideUnlinkedWorkPackages
+    ? repo.packages.filter((pkg) => linkedWorkPackageIds.has(pkg.id)).length
+    : repo.packages.length;
+
+  return repo.requests.length + requestDetailCount + visiblePackageCount > 0;
 }

@@ -17,30 +17,36 @@ import { finishedRequestChildrenStorageKey, workstreamCategoryCounts } from "./w
 export function RepoWorkstream({
   repo,
   requestDetailsByRepo,
-  requestLinkedPackageIds,
+  linkedWorkPackageIds,
   activeBlockingEdges,
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
   layoutMode,
+  hideUnlinkedWorkPackages,
   updateAnimations,
 }: {
   repo: RepoSummary;
   requestDetailsByRepo: Map<string, WorkRequestDetail[]>;
-  requestLinkedPackageIds: ReadonlySet<string>;
+  linkedWorkPackageIds: ReadonlySet<string>;
   activeBlockingEdges: ActiveBlockingEdge[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
   layoutMode: WorkstreamLayoutMode;
+  hideUnlinkedWorkPackages: boolean;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const stateKey = repoWorkstreamStateKey(repo);
   const contentId = useId();
   const repoDetails = requestDetailsByRepo.get(repo.repoKey) ?? EMPTY_WORK_REQUEST_DETAILS;
+  const visiblePackages = useMemo(
+    () => (hideUnlinkedWorkPackages ? repo.packages.filter((pkg) => linkedWorkPackageIds.has(pkg.id)) : repo.packages),
+    [hideUnlinkedWorkPackages, linkedWorkPackageIds, repo.packages],
+  );
   const unlinkedPackages = useMemo(
-    () => repo.packages.filter((pkg) => !requestLinkedPackageIds.has(pkg.id)),
-    [repo.packages, requestLinkedPackageIds],
+    () => visiblePackages.filter((pkg) => !linkedWorkPackageIds.has(pkg.id)),
+    [linkedWorkPackageIds, visiblePackages],
   );
   const [expandedFinishedRequests, setExpandedFinishedRequests] = useState(() => readStoredFinishedRequestChildren());
   const setFinishedRequestChildrenOpen = useCallback((workRequestId: string, open: boolean) => {
@@ -51,8 +57,8 @@ export function RepoWorkstream({
     });
   }, [stateKey]);
   const categoryCounts = useMemo(
-    () => workstreamCategoryCounts(repoDetails, repo.packages, unlinkedPackages, expandedFinishedRequests, stateKey),
-    [expandedFinishedRequests, repo.packages, repoDetails, stateKey, unlinkedPackages],
+    () => workstreamCategoryCounts(repoDetails, visiblePackages, unlinkedPackages, expandedFinishedRequests, stateKey),
+    [expandedFinishedRequests, repoDetails, stateKey, unlinkedPackages, visiblePackages],
   );
   const [open, setOpen] = useState(() => readStoredRepoWorkstreamOpen(stateKey, defaultRepoWorkstreamOpen(repo)));
   const [openMotion, setOpenMotion] = useState(false);
@@ -129,7 +135,7 @@ export function RepoWorkstream({
           <CardContent className="p-3 sm:p-4" data-board-open-motion={openMotion ? "open" : "idle"}>
             <WorkstreamBoard
               repoDetails={repoDetails}
-              packages={repo.packages}
+              packages={visiblePackages}
               unlinkedPackages={unlinkedPackages}
               activeBlockingEdges={activeBlockingEdges}
               onSelectGuidance={onSelectGuidance}

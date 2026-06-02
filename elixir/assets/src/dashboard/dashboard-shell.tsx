@@ -37,11 +37,14 @@ export function DashboardShell({
   guidanceItems,
   hiddenWorkstreamCount,
   hideEmptyWorkstreams,
+  hideUnlinkedWorkPackages,
+  hiddenUnlinkedWorkPackageCount,
   linkedWorkPackageIds,
   loading,
   onArchiveWorkPackage,
   onArchiveWorkRequest,
   onHideEmptyWorkstreamsChange,
+  onHideUnlinkedWorkPackagesChange,
   onReconnectDashboard,
   onRefreshDashboard,
   onResolveComment,
@@ -80,11 +83,14 @@ export function DashboardShell({
   guidanceItems: GuidanceItem[];
   hiddenWorkstreamCount: number;
   hideEmptyWorkstreams: boolean;
+  hideUnlinkedWorkPackages: boolean;
+  hiddenUnlinkedWorkPackageCount: number;
   linkedWorkPackageIds: Set<string>;
   loading: boolean;
   onArchiveWorkPackage: WorkPackageArchiveMutation;
   onArchiveWorkRequest: WorkRequestMutation;
   onHideEmptyWorkstreamsChange: (hide: boolean) => void;
+  onHideUnlinkedWorkPackagesChange: (hide: boolean) => void;
   onReconnectDashboard: () => Promise<void>;
   onRefreshDashboard: () => Promise<void>;
   onResolveComment: ResolveContextComment;
@@ -143,9 +149,12 @@ export function DashboardShell({
               <DashboardSettingsDialog
                 archiveAfterDays={archiveAfterDays}
                 hideEmptyWorkstreams={hideEmptyWorkstreams}
+                hideUnlinkedWorkPackages={hideUnlinkedWorkPackages}
                 hiddenWorkstreamCount={hiddenWorkstreamCount}
+                hiddenUnlinkedWorkPackageCount={hiddenUnlinkedWorkPackageCount}
                 onArchiveAfterDaysChange={onUpdateArchiveAfterDays}
                 onHideEmptyWorkstreamsChange={onHideEmptyWorkstreamsChange}
+                onHideUnlinkedWorkPackagesChange={onHideUnlinkedWorkPackagesChange}
               />
               <ArchivedRequestsDialog requests={archivedRequests} onRestoreWorkRequest={onRestoreWorkRequest} />
               <Button variant="outline" size="sm" onClick={() => void onRefreshDashboard()} disabled={refreshing} className="button-lift">

@@ -3,7 +3,7 @@ import type { UpdateMotion } from "@/components/dashboard/motion";
 import type { BoardLayoutMode as WorkstreamLayoutMode } from "@/components/dashboard/board-layout";
 import { useCallback, useRef, useState } from "react";
 import { CardDetailSelection, DashboardTheme, PackageDetailUiAction, PackageDetailUiState, RequestDetailUiAction, RequestDetailUiState, ScopedHandoffCopy, UpdateMotionsAction, WorkspaceTab } from "./runtime";
-import { readStoredHideEmptyWorkstreams, readStoredTheme, readStoredWorkspaceTab, readStoredWorkstreamLayout } from "./dashboard-persistence";
+import { readStoredHideEmptyWorkstreams, readStoredHideUnlinkedWorkPackages, readStoredTheme, readStoredWorkspaceTab, readStoredWorkstreamLayout } from "./dashboard-persistence";
 
 export function useScopedHandoffCopy(identity: string) {
   const [copy, setCopy] = useState<ScopedHandoffCopy>({ error: null, identity, state: "idle" });
@@ -92,6 +92,7 @@ export type AppState = {
   workspaceTab: WorkspaceTab;
   workstreamLayout: WorkstreamLayoutMode;
   hideEmptyWorkstreams: boolean;
+  hideUnlinkedWorkPackages: boolean;
   theme: DashboardTheme;
 };
 
@@ -109,6 +110,7 @@ export function createInitialAppState(): AppState {
     workspaceTab: readStoredWorkspaceTab(),
     workstreamLayout: readStoredWorkstreamLayout(),
     hideEmptyWorkstreams: readStoredHideEmptyWorkstreams(),
+    hideUnlinkedWorkPackages: readStoredHideUnlinkedWorkPackages(),
     theme: readStoredTheme(),
   };
 }

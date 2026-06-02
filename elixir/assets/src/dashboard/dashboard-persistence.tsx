@@ -85,6 +85,11 @@ export function readStoredHideEmptyWorkstreams() {
   return typeof storedValue === "boolean" ? storedValue : true;
 }
 
+export function readStoredHideUnlinkedWorkPackages() {
+  const storedValue = readDashboardUiState().hideUnlinkedWorkPackages;
+  return typeof storedValue === "boolean" ? storedValue : true;
+}
+
 export function readStoredRepoWorkstreamOpen(stateKey: string, fallback: boolean) {
   const repoWorkstreams = readDashboardUiState().repoWorkstreams;
   const storedOpen = repoWorkstreams?.[stateKey];

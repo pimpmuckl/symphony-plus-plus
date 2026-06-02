@@ -249,6 +249,7 @@ export type DashboardUiState = {
   finishedRequestChildren?: Record<string, boolean>;
   workstreamLayout?: WorkstreamLayoutMode;
   hideEmptyWorkstreams?: boolean;
+  hideUnlinkedWorkPackages?: boolean;
   theme?: DashboardTheme;
 };
 

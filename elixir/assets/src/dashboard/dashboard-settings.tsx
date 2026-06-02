@@ -75,15 +75,21 @@ export function ThemeToggle({ theme, onToggle }: { theme: DashboardTheme; onTogg
 export function DashboardSettingsDialog({
   archiveAfterDays,
   hideEmptyWorkstreams,
+  hideUnlinkedWorkPackages,
   hiddenWorkstreamCount,
+  hiddenUnlinkedWorkPackageCount,
   onArchiveAfterDaysChange,
   onHideEmptyWorkstreamsChange,
+  onHideUnlinkedWorkPackagesChange,
 }: {
   archiveAfterDays: number;
   hideEmptyWorkstreams: boolean;
+  hideUnlinkedWorkPackages: boolean;
   hiddenWorkstreamCount: number;
+  hiddenUnlinkedWorkPackageCount: number;
   onArchiveAfterDaysChange: (value: number) => Promise<void>;
   onHideEmptyWorkstreamsChange: (value: boolean) => void;
+  onHideUnlinkedWorkPackagesChange: (value: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
   const initialFocusRef = useRef<HTMLDivElement | null>(null);
@@ -99,6 +105,9 @@ export function DashboardSettingsDialog({
   const visibilityLabel = hideEmptyWorkstreams
     ? workstreamHiddenSummary(hiddenWorkstreamCount)
     : "Showing repos even when they have no requests, slices, or work packages.";
+  const unlinkedVisibilityLabel = hideUnlinkedWorkPackages
+    ? unlinkedWorkPackageHiddenSummary(hiddenUnlinkedWorkPackageCount)
+    : "Showing unlinked work packages in the main board.";
   const archiveDaysDraft =
     archiveDaysDraftState.source === archiveAfterDays ? archiveDaysDraftState.value : String(archiveAfterDays);
   const archiveDaysError = archiveDaysErrorState.source === archiveAfterDays ? archiveDaysErrorState.message : null;
@@ -192,30 +201,19 @@ export function DashboardSettingsDialog({
             {archiveDaysError ? <p className="text-xs text-destructive">{archiveDaysError}</p> : null}
           </div>
 
-          <div className="flex items-center justify-between gap-4 rounded-md border bg-card/60 p-3">
-            <div className="min-w-0">
-              <span className="block text-sm font-medium">Hide empty workstreams</span>
-              <span className="mt-1 block text-xs text-muted-foreground">{visibilityLabel}</span>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={hideEmptyWorkstreams}
-              aria-label="Hide empty workstreams"
-              className={cn(
-                "relative h-6 w-11 shrink-0 rounded-full bg-muted transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                hideEmptyWorkstreams && "bg-primary",
-              )}
-              onClick={() => onHideEmptyWorkstreamsChange(!hideEmptyWorkstreams)}
-            >
-              <span
-                className={cn(
-                  "absolute left-1 top-1 size-4 rounded-full bg-background shadow transition-transform",
-                  hideEmptyWorkstreams && "translate-x-5",
-                )}
-              />
-            </button>
-          </div>
+          <SettingsSwitch
+            checked={hideEmptyWorkstreams}
+            label="Hide empty workstreams"
+            description={visibilityLabel}
+            onChange={onHideEmptyWorkstreamsChange}
+          />
+
+          <SettingsSwitch
+            checked={hideUnlinkedWorkPackages}
+            label="Hide unlinked work packages"
+            description={unlinkedVisibilityLabel}
+            onChange={onHideUnlinkedWorkPackagesChange}
+          />
         </DialogContent>
       </Dialog>
     </>
@@ -225,6 +223,52 @@ export function DashboardSettingsDialog({
 export function workstreamHiddenSummary(hiddenWorkstreamCount: number) {
   if (hiddenWorkstreamCount <= 0) return "Only repos with requests, slices, or work packages appear.";
   return hiddenWorkstreamCount === 1 ? "1 empty repo hidden" : `${hiddenWorkstreamCount} empty repos hidden`;
+}
+
+export function unlinkedWorkPackageHiddenSummary(hiddenUnlinkedWorkPackageCount: number) {
+  if (hiddenUnlinkedWorkPackageCount <= 0) return "No unlinked work packages are currently hidden.";
+  return hiddenUnlinkedWorkPackageCount === 1
+    ? "1 unlinked work package hidden from the main board."
+    : `${hiddenUnlinkedWorkPackageCount} unlinked work packages hidden from the main board.`;
+}
+
+function SettingsSwitch({
+  checked,
+  description,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  description: string;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-md border bg-card/60 p-3">
+      <div className="min-w-0">
+        <span className="block text-sm font-medium">{label}</span>
+        <span className="mt-1 block text-xs text-muted-foreground">{description}</span>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        className={cn(
+          "relative h-6 w-11 shrink-0 rounded-full bg-muted transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          checked && "bg-primary",
+        )}
+        onClick={() => onChange(!checked)}
+      >
+        <span
+          className={cn(
+            "absolute left-1 top-1 size-4 rounded-full bg-background shadow transition-transform",
+            checked && "translate-x-5",
+          )}
+        />
+      </button>
+    </div>
+  );
 }
 
 export function ArchivedRequestsDialog({ requests, onRestoreWorkRequest }: { requests: WorkRequestCard[]; onRestoreWorkRequest: WorkRequestMutation }) {

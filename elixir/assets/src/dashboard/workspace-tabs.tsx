@@ -14,23 +14,25 @@ export function WorkstreamsPane({
   repos,
   hiddenRepoCount,
   requestDetailsByRepo,
-  requestLinkedPackageIds,
+  linkedWorkPackageIds,
   activeBlockingEdges,
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
   layoutMode,
+  hideUnlinkedWorkPackages,
   updateAnimations,
 }: {
   repos: RepoSummary[];
   hiddenRepoCount: number;
   requestDetailsByRepo: Map<string, WorkRequestDetail[]>;
-  requestLinkedPackageIds: ReadonlySet<string>;
+  linkedWorkPackageIds: ReadonlySet<string>;
   activeBlockingEdges: ActiveBlockingEdge[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
   layoutMode: WorkstreamLayoutMode;
+  hideUnlinkedWorkPackages: boolean;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   if (repos.length === 0) {
@@ -44,12 +46,13 @@ export function WorkstreamsPane({
           key={repoWorkstreamStateKey(repo)}
           repo={repo}
           requestDetailsByRepo={requestDetailsByRepo}
-          requestLinkedPackageIds={requestLinkedPackageIds}
+          linkedWorkPackageIds={linkedWorkPackageIds}
           activeBlockingEdges={activeBlockingEdges}
           onSelectGuidance={onSelectGuidance}
           onSelectCard={onSelectCard}
           onCopyArchitectHandoff={onCopyArchitectHandoff}
           layoutMode={layoutMode}
+          hideUnlinkedWorkPackages={hideUnlinkedWorkPackages}
           updateAnimations={updateAnimations}
         />
       ))}
