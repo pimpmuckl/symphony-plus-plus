@@ -96,7 +96,11 @@ export function RepoWorkstream({
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <Card className="dashboard-glass-surface workstream-repo-card motion-card overflow-hidden">
+      <Card
+        className="dashboard-glass-surface workstream-repo-card motion-card overflow-hidden"
+        data-layout={layoutMode}
+        data-open={open ? "true" : "false"}
+      >
         <CardHeader className="dashboard-panel-header relative space-y-0 overflow-hidden border-b">
           <button
             type="button"
