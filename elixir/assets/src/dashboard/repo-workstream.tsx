@@ -12,7 +12,7 @@ import { RepoSummary } from "./dashboard-data";
 import { RepoSummaryPlate } from "./dashboard-settings";
 import { WorkstreamBoard } from "./workstream-board";
 import { defaultRepoWorkstreamOpen, readStoredFinishedRequestChildren, readStoredRepoWorkstreamOpen, repoWorkstreamStateKey, writeStoredFinishedRequestChildren, writeStoredRepoWorkstreamOpen } from "./dashboard-persistence";
-import { finishedRequestChildrenStorageKey, packageHasActiveBlocker, workstreamCategoryCounts } from "./workstream-data";
+import { finishedRequestChildrenStorageKey, linkedPackageIdsForDetails, packageHasActiveBlocker, workstreamCategoryCounts } from "./workstream-data";
 
 export function RepoWorkstream({
   repo,
@@ -44,9 +44,10 @@ export function RepoWorkstream({
     () => (hideUnlinkedWorkPackages ? repo.packages.filter((pkg) => linkedWorkPackageIds.has(pkg.id)) : repo.packages),
     [hideUnlinkedWorkPackages, linkedWorkPackageIds, repo.packages],
   );
+  const detailLinkedPackageIds = useMemo(() => linkedPackageIdsForDetails(repoDetails), [repoDetails]);
   const unlinkedPackages = useMemo(
-    () => visiblePackages.filter((pkg) => !linkedWorkPackageIds.has(pkg.id)),
-    [linkedWorkPackageIds, visiblePackages],
+    () => visiblePackages.filter((pkg) => !detailLinkedPackageIds.has(pkg.id)),
+    [detailLinkedPackageIds, visiblePackages],
   );
   const [expandedFinishedRequests, setExpandedFinishedRequests] = useState(() => readStoredFinishedRequestChildren());
   const setFinishedRequestChildrenOpen = useCallback((workRequestId: string, open: boolean) => {

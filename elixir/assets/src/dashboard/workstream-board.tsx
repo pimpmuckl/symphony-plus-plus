@@ -212,7 +212,7 @@ export function StackedWorkstreamColumns({
             motion={updateAnimations.motionFor(sliceUpdateKey(slice))}
           />
         ))}
-        {activePackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
+        {activePackages.length > 0 ? <LaneGroupLabel label="Standalone packages" /> : null}
         {activePackages.map((pkg, index) => (
           <PackageCard
             key={pkg.id}
@@ -238,7 +238,7 @@ export function StackedWorkstreamColumns({
             motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
           /> : null
         ))}
-        {implementingPackages.length + finishedPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
+        {implementingPackages.length + finishedPackages.length > 0 ? <LaneGroupLabel label="Standalone packages" /> : null}
         {implementingPackages.map((pkg, index) => (
           <PackageCard
             key={pkg.id}
@@ -346,7 +346,7 @@ export function AlignedWorkstreamColumns({
                   />
                 </AlignedCardSlot>
               ))}
-              {row.activePackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
+              {row.activePackages.length > 0 ? <LaneGroupLabel label="Standalone packages" /> : null}
               {row.activePackages.map((pkg, packageIndex) => (
                 <PackageCard
                   key={pkg.id}
@@ -389,7 +389,7 @@ export function AlignedWorkstreamColumns({
                   ) : null}
                 </AlignedCardSlot>
               ))}
-              {row.implementingPackages.length + row.finishedPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
+              {row.implementingPackages.length + row.finishedPackages.length > 0 ? <LaneGroupLabel label="Standalone packages" /> : null}
               {row.implementingPackages.map((pkg, packageIndex) => (
                 <PackageCard
                   key={pkg.id}
