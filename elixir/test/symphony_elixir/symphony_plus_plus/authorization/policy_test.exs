@@ -60,6 +60,61 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.PolicyTest do
              Policy.decide(actor, :work_request_update, sibling_target)
   end
 
+  test "architect repo read scope accepts trusted repo identity aliases without widening writes" do
+    actor = architect([Scope.work_request("wr-1"), Scope.repo("symphony-plus-plus", "main")])
+
+    trusted_alias_target =
+      Target.work_request("wr-2",
+        repo: "Pimpmuckl/symphony-plus-plus",
+        base_branch: "main",
+        metadata: %{repo_scope_trusted_remotes: ["https://github.com/Pimpmuckl/symphony-plus-plus.git"]}
+      )
+
+    trusted_alias_repo_target =
+      Target.repo("Pimpmuckl/symphony-plus-plus", "main", metadata: %{repo_scope_trusted_remotes: ["https://github.com/Pimpmuckl/symphony-plus-plus.git"]})
+
+    untrusted_alias_target =
+      Target.work_request("wr-2",
+        repo: "Pimpmuckl/symphony-plus-plus",
+        base_branch: "main"
+      )
+
+    other_owner_target =
+      Target.work_request("wr-3",
+        repo: "Elsewhere/symphony-plus-plus",
+        base_branch: "main",
+        metadata: %{repo_scope_trusted_remotes: ["https://github.com/Pimpmuckl/symphony-plus-plus.git"]}
+      )
+
+    other_base_target =
+      Target.work_request("wr-4",
+        repo: "Pimpmuckl/symphony-plus-plus",
+        base_branch: "release/wr-read",
+        metadata: %{repo_scope_trusted_remotes: ["https://github.com/Pimpmuckl/symphony-plus-plus.git"]}
+      )
+
+    assert %Decision{allowed?: true, matched_scope: %Scope{type: :repo}} =
+             Policy.decide(actor, :work_request_read, trusted_alias_target)
+
+    assert %Decision{allowed?: true, matched_scope: %Scope{type: :repo}} =
+             Policy.decide(actor, :work_request_read, trusted_alias_repo_target)
+
+    assert %Decision{allowed?: false, reason_code: "scope_mismatch"} =
+             Policy.decide(actor, :work_request_update, trusted_alias_target)
+
+    assert %Decision{allowed?: false, reason_code: "scope_mismatch"} =
+             Policy.decide(actor, :work_request_update, trusted_alias_repo_target)
+
+    assert %Decision{allowed?: false, reason_code: "scope_mismatch"} =
+             Policy.decide(actor, :work_request_read, untrusted_alias_target)
+
+    assert %Decision{allowed?: false, reason_code: "scope_mismatch"} =
+             Policy.decide(actor, :work_request_read, other_owner_target)
+
+    assert %Decision{allowed?: false, reason_code: "scope_mismatch"} =
+             Policy.decide(actor, :work_request_read, other_base_target)
+  end
+
   test "architect reads and external comments deny without a matching scope" do
     actor = architect([Scope.work_request("wr-1")])
     sibling_target = Target.work_request("wr-2")

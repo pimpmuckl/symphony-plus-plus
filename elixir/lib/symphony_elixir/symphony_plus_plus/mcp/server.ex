@@ -5256,14 +5256,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("list_work_requests", arguments, %__MODULE__{config: config, session: session}) do
+    repo_scope_opts = work_request_repo_scope_opts(config)
+
     with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, status} <- optional_work_request_status(arguments),
          {:ok, filters, scope} <-
            scoped_work_request_filters(config.repo, session, handoff_phase_scope?: false),
-         :ok <- authorize_work_request_list_policy(session, scope, "list_work_requests"),
+         :ok <- authorize_work_request_list_policy(session, scope, "list_work_requests", repo_scope_opts),
          filters = work_request_list_filters(filters, status),
          {:ok, work_requests} <- WorkRequestService.list(config.repo, work_request_repository_filters(filters)),
-         {:ok, work_requests} <- filter_scoped_work_requests(config.repo, work_requests, filters, session) do
+         {:ok, work_requests} <-
+           filter_scoped_work_requests(config.repo, work_requests, filters, session, repo_scope_opts) do
       cards = work_request_cards(work_requests)
 
       {:ok,
@@ -5300,7 +5303,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false),
          {:ok, work_request, _filters, scope} <-
-           authorized_work_request_scope(config.repo, session, work_request_id, :work_request_read, "read_work_request"),
+           authorized_work_request_scope(
+             config.repo,
+             session,
+             work_request_id,
+             :work_request_read,
+             "read_work_request",
+             work_request_repo_scope_opts(config)
+           ),
          {:ok, payload} <- work_request_detail_payload(config.repo, work_request, include_planning_scratch?: include_planning_scratch?) do
       payload = Map.put(payload, "scope", scope)
       {:ok, architect_agent_tool_result(payload, :work_request_read)}
@@ -5356,14 +5366,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("read_work_request_delivery_board", arguments, %__MODULE__{config: config, session: %Session{} = session}) do
+    repo_scope_opts = work_request_repo_scope_opts(config)
+
     with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false),
          {:ok, work_request, filters, scope} <-
-           authorized_work_request_scope(config.repo, session, work_request_id, :delivery_board_read, "read_work_request_delivery_board"),
+           authorized_work_request_scope(
+             config.repo,
+             session,
+             work_request_id,
+             :delivery_board_read,
+             "read_work_request_delivery_board",
+             repo_scope_opts
+           ),
          {:ok, planned_slices} <- WorkRequestService.list_planned_slices(config.repo, work_request_id),
          {:ok, delivery_board} <-
-           scoped_delivery_board(config.repo, work_request, planned_slices, filters, include_planning_scratch?: include_planning_scratch?) do
+           scoped_delivery_board(config.repo, work_request, planned_slices, filters, Keyword.put(repo_scope_opts, :include_planning_scratch?, include_planning_scratch?)) do
       payload = %{
         "work_request" => work_request_mutation_payload(work_request),
         "delivery_board" => delivery_board_payload(delivery_board),
@@ -6717,11 +6736,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     Map.take(filters, ["status"])
   end
 
-  defp filter_scoped_work_requests(repo, work_requests, filters, %Session{} = session) do
+  defp filter_scoped_work_requests(repo, work_requests, filters, %Session{} = session, opts) do
     Enum.reduce_while(work_requests, {:ok, []}, fn work_request, {:ok, scoped} ->
-      case work_request_matches_filters?(repo, work_request, filters) do
+      case work_request_matches_filters?(repo, work_request, filters, opts) do
         {:ok, true} ->
-          filter_policy_allowed_work_request(repo, session, work_request, scoped)
+          filter_policy_allowed_work_request(repo, session, work_request, scoped, opts)
 
         {:ok, false} ->
           {:cont, {:ok, scoped}}
@@ -6736,8 +6755,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp filter_policy_allowed_work_request(repo, %Session{} = session, %WorkRequest{} = work_request, scoped) do
-    case authorize_work_request_policy(repo, session, :work_request_read, work_request, "list_work_requests") do
+  defp filter_policy_allowed_work_request(repo, %Session{} = session, %WorkRequest{} = work_request, scoped, opts) do
+    case authorize_work_request_policy(repo, session, :work_request_read, work_request, "list_work_requests", opts) do
       :ok ->
         {:cont, {:ok, [work_request | scoped]}}
 
@@ -6893,15 +6912,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp session_claimed_by(%Session{}), do: "architect"
 
-  defp authorized_work_request_scope(repo, %Session{} = session, work_request_id, action, tool) do
+  defp authorized_work_request_scope(repo, %Session{} = session, work_request_id, action, tool, opts \\ []) do
     if architect_session?(session) do
-      authorized_architect_work_request_scope(repo, session, work_request_id, action, tool)
+      authorized_architect_work_request_scope(repo, session, work_request_id, action, tool, opts)
     else
       authorized_actor_work_request_scope(repo, session, work_request_id, action, tool)
     end
   end
 
-  defp authorized_architect_work_request_scope(repo, %Session{} = session, work_request_id, action, tool) do
+  defp authorized_architect_work_request_scope(repo, %Session{} = session, work_request_id, action, tool, opts) do
+    repo_scope_opts = if repo_scope_read_action?(action), do: opts, else: []
+
     with {:ok, filters, scope} <-
            scoped_work_request_filters(repo, session, handoff_phase_scope?: not repo_scope_read_action?(action)),
          {:ok, work_request} <-
@@ -6909,10 +6930,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              repo,
              work_request_id,
              filters,
-             repo_scopes?: repo_scope_read_action?(action)
+             Keyword.put(repo_scope_opts, :repo_scopes?, repo_scope_read_action?(action))
            ),
          :ok <-
-           authorize_work_request_policy(repo, session, action, work_request, tool)
+           authorize_work_request_policy(repo, session, action, work_request, tool, repo_scope_opts)
            |> mask_architect_scope_denial() do
       {:ok, work_request, filters, scope}
     end
@@ -6962,8 +6983,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp authorize_work_request_list_policy(%Session{} = session, scope, tool) do
-    case authorize_work_request_repo_policy(session, :work_request_read, scope, tool) do
+  defp authorize_work_request_list_policy(%Session{} = session, scope, tool, opts) do
+    case authorize_work_request_repo_policy(session, :work_request_read, scope, tool, opts) do
       :ok ->
         :ok
 
@@ -7007,20 +7028,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp repo_scope_read_action?(action), do: action in [:work_request_read, :delivery_board_read]
 
-  defp authorize_work_request_repo_policy(%Session{} = session, action, %{"repo" => repo, "base_branch" => base_branch} = scope, tool) do
-    target = Target.repo(repo, base_branch, phase_id: Map.get(scope, "phase_id"))
+  defp authorize_work_request_repo_policy(%Session{} = session, action, %{"repo" => repo, "base_branch" => base_branch} = scope, tool, opts) do
+    target =
+      Target.repo(repo, base_branch,
+        phase_id: Map.get(scope, "phase_id"),
+        metadata: work_request_repo_scope_metadata(opts)
+      )
 
     authorize_policy(session, action, target, tool)
   end
 
-  defp authorize_work_request_policy(repo, %Session{} = session, action, %WorkRequest{} = work_request, tool) do
+  defp authorize_work_request_policy(repo, %Session{} = session, action, %WorkRequest{} = work_request, tool, opts \\ []) do
     with {:ok, repo_scopes} <- work_request_repo_scope_payloads(repo, work_request) do
       target =
         Target.work_request(work_request.id,
           repo: work_request.repo,
           base_branch: work_request.base_branch,
           phase_id: ArchitectHandoff.phase_id_for_work_request(work_request),
-          repo_scopes: repo_scopes
+          repo_scopes: repo_scopes,
+          metadata: work_request_repo_scope_metadata(opts)
         )
 
       authorize_policy(session, action, target, tool)
@@ -7154,7 +7180,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp scoped_delivery_board(repo, %WorkRequest{} = work_request, planned_slices, filters, opts \\ []) when is_list(planned_slices) do
     {visible_work_package_ids, work_package_contexts} =
-      visible_delivery_board_work_package_contexts(repo, work_request, planned_slices, filters)
+      visible_delivery_board_work_package_contexts(repo, work_request, planned_slices, filters, opts)
 
     DeliveryBoard.project(repo, work_request.id,
       work_request: work_request,
@@ -7190,7 +7216,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp reconcile_work_request_mode(true), do: :apply
   defp reconcile_work_request_mode(false), do: :dry_run
 
-  defp visible_delivery_board_work_package_contexts(repo, %WorkRequest{} = work_request, planned_slices, filters) do
+  defp visible_delivery_board_work_package_contexts(repo, %WorkRequest{} = work_request, planned_slices, filters, opts \\ []) do
     planned_slice_ids = Enum.map(planned_slices, & &1.id)
 
     work_package_ids =
@@ -7207,16 +7233,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     work_package_contexts =
       work_package_ids
-      |> scoped_delivery_work_packages_by_id(repo, work_request, planned_slices, filters)
+      |> scoped_delivery_work_packages_by_id(repo, work_request, planned_slices, filters, opts)
       |> Map.new(fn {id, work_package} -> {id, %{work_package: work_package}} end)
 
     {Map.keys(work_package_contexts), work_package_contexts}
   end
 
-  defp scoped_delivery_work_packages_by_id([], _repo, %WorkRequest{}, _planned_slices, _filters), do: %{}
+  defp scoped_delivery_work_packages_by_id([], _repo, %WorkRequest{}, _planned_slices, _filters, _opts), do: %{}
 
-  defp scoped_delivery_work_packages_by_id(work_package_ids, repo, %WorkRequest{} = work_request, planned_slices, filters) do
+  defp scoped_delivery_work_packages_by_id(work_package_ids, repo, %WorkRequest{} = work_request, planned_slices, filters, opts) do
     primary_scope? = primary_work_request_scope?(repo, work_request, filters)
+    filter_opts = if primary_scope?, do: [], else: opts
 
     planned_slices_by_work_package_id =
       planned_slices
@@ -7228,7 +7255,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       case Map.fetch(planned_slices_by_work_package_id, work_package.id) do
         {:ok, planned_slice} ->
           require_delivery_work_package_scope(work_package, work_request, planned_slice) == :ok and
-            delivery_work_package_visible_to_filters?(work_package, primary_scope?, filters)
+            delivery_work_package_visible_to_filters?(work_package, primary_scope?, filters, filter_opts)
 
         :error ->
           false
@@ -7237,15 +7264,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> Map.new(&{&1.id, &1})
   end
 
-  defp primary_work_request_scope?(repo, %WorkRequest{} = work_request, filters) do
-    {:ok, matches?} = work_request_matches_primary_filters?(repo, work_request, filters)
+  defp primary_work_request_scope?(repo, %WorkRequest{} = work_request, filters, opts \\ []) do
+    {:ok, matches?} = work_request_matches_primary_filters?(repo, work_request, filters, opts)
     matches?
   end
 
-  defp delivery_work_package_visible_to_filters?(_work_package, true, _filters), do: true
+  defp delivery_work_package_visible_to_filters?(_work_package, true, _filters, _opts), do: true
 
-  defp delivery_work_package_visible_to_filters?(%WorkPackage{} = work_package, false, filters) do
-    work_package_matches_filters?(work_package, filters)
+  defp delivery_work_package_visible_to_filters?(%WorkPackage{} = work_package, false, filters, opts) do
+    work_package_matches_filters?(work_package, filters, opts)
   end
 
   defp require_planned_slice_delivery_scope(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, attrs, filters) do
@@ -7370,7 +7397,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp require_delivery_work_package_filter_scope(%WorkPackage{} = work_package, primary_scope?, filters) do
-    if delivery_work_package_visible_to_filters?(work_package, primary_scope?, filters) do
+    if delivery_work_package_visible_to_filters?(work_package, primary_scope?, filters, []) do
       :ok
     else
       {:error, :not_found}
@@ -7466,9 +7493,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp require_work_request_scope(repo, %WorkRequest{} = work_request, filters, opts \\ []) do
-    match_fun = if Keyword.get(opts, :repo_scopes?, false), do: &work_request_matches_filters?/3, else: &work_request_matches_primary_filters?/3
+    match_fun = if Keyword.get(opts, :repo_scopes?, false), do: &work_request_matches_filters?/4, else: &work_request_matches_primary_filters?/4
 
-    with {:ok, matches?} <- match_fun.(repo, work_request, filters) do
+    with {:ok, matches?} <- match_fun.(repo, work_request, filters, opts) do
       if matches?, do: :ok, else: {:error, :forbidden}
     end
   end
@@ -7488,10 +7515,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_planned_slice_authoring_status(status) when status in ["ready_for_slicing", "sliced"], do: :ok
   defp require_planned_slice_authoring_status(_status), do: {:tool_error, "invalid_status"}
 
-  defp work_request_matches_filters?(repo, %WorkRequest{} = work_request, filters) do
+  defp work_request_matches_filters?(repo, %WorkRequest{} = work_request, filters, opts) do
     with {:ok, repo_scopes} <- work_request_repo_scope_payloads(repo, work_request) do
       {:ok,
-       repo_scope_matches_filters?(repo_scopes, filters) and
+       repo_scope_matches_filters?(repo_scopes, filters, opts) and
          Enum.all?(filters, fn
            {"status", status} when is_binary(status) ->
              work_request.status == status
@@ -7505,10 +7532,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp work_request_matches_primary_filters?(_repo, %WorkRequest{} = work_request, filters) do
+  defp work_request_matches_primary_filters?(_repo, %WorkRequest{} = work_request, filters, opts) do
     {:ok,
      Enum.all?(filters, fn
-       {"repo", repo} when is_binary(repo) -> work_request.repo == repo
+       {"repo", repo} when is_binary(repo) -> repo_scope_name_matches?(repo, work_request.repo, opts)
        {"base_branch", base_branch} when is_binary(base_branch) -> work_request.base_branch == base_branch
        {"status", status} when is_binary(status) -> work_request.status == status
        {"phase_id", phase_id} when is_binary(phase_id) -> ArchitectHandoff.phase_id_for_work_request(work_request) == phase_id
@@ -7516,22 +7543,53 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
      end)}
   end
 
-  defp repo_scope_matches_filters?(repo_scopes, filters) do
+  defp repo_scope_matches_filters?(repo_scopes, filters, opts) do
     repo = Map.get(filters, "repo")
     base_branch = Map.get(filters, "base_branch")
 
     cond do
       is_binary(repo) and is_binary(base_branch) ->
-        Enum.any?(repo_scopes, &match?(%{repo: ^repo, base_branch: ^base_branch}, &1))
+        Enum.any?(repo_scopes, &(repo_scope_name_matches?(repo, &1.repo, opts) and &1.base_branch == base_branch))
 
       is_binary(repo) ->
-        Enum.any?(repo_scopes, &match?(%{repo: ^repo}, &1))
+        Enum.any?(repo_scopes, &repo_scope_name_matches?(repo, &1.repo, opts))
 
       is_binary(base_branch) ->
         Enum.any?(repo_scopes, &match?(%{base_branch: ^base_branch}, &1))
 
       true ->
         true
+    end
+  end
+
+  defp repo_scope_name_matches?(repo, repo, _opts) when is_binary(repo), do: true
+
+  defp repo_scope_name_matches?(expected_repo, actual_repo, opts) when is_binary(expected_repo) and is_binary(actual_repo) do
+    RepoIdentity.scope_match?(expected_repo, actual_repo, trusted_remotes: Keyword.get(opts, :repo_scope_trusted_remotes, []))
+  end
+
+  defp repo_scope_name_matches?(_expected_repo, _actual_repo, _opts), do: false
+
+  defp work_request_repo_scope_opts(%Config{} = config) do
+    [repo_scope_trusted_remotes: work_request_repo_scope_trusted_remotes(config)]
+  end
+
+  defp work_request_repo_scope_trusted_remotes(%Config{repo_root: repo_root} = config) when is_binary(repo_root) do
+    repo_scope_trusted_remotes(config, repo_root)
+  end
+
+  defp work_request_repo_scope_trusted_remotes(%Config{}) do
+    :symphony_elixir
+    |> Application.get_env(:sympp_repo_identity_trusted_remotes, [])
+    |> List.wrap()
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+  end
+
+  defp work_request_repo_scope_metadata(opts) do
+    case opts |> Keyword.get(:repo_scope_trusted_remotes, []) |> List.wrap() |> Enum.filter(&is_binary/1) |> Enum.uniq() do
+      [] -> %{}
+      trusted_remotes -> %{repo_scope_trusted_remotes: trusted_remotes}
     end
   end
 
@@ -7546,9 +7604,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp work_package_matches_filters?(%WorkPackage{} = work_package, filters) do
+  defp work_package_matches_filters?(%WorkPackage{} = work_package, filters, opts) do
     Enum.all?(filters, fn
-      {"repo", repo} when is_binary(repo) -> work_package.repo == repo
+      {"repo", repo} when is_binary(repo) -> repo_scope_name_matches?(repo, work_package.repo, opts)
       {"base_branch", base_branch} when is_binary(base_branch) -> work_package.base_branch == base_branch
       _filter -> true
     end)
