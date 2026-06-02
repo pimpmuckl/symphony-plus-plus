@@ -1,10 +1,14 @@
 Code.require_file("../../support/mcp_harness.exs", __DIR__)
+Code.require_file("../../support/symphony_plus_plus/mcp_session_helpers.exs", __DIR__)
 
 defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
   use ExUnit.Case, async: false
 
+  import SymphonyElixir.SymphonyPlusPlus.MCPCase.SessionHelpers, only: [create_phase_architect_session: 4]
+
   alias SymphonyElixir.MCPHarness
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.GrantScope
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Session}
@@ -36,6 +40,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
       PlannedSliceDelivery,
       PlannedSlice,
       ClaimLease,
+      GrantScope,
       AccessGrant,
       WorkRequest,
       WorkPackage,
@@ -97,6 +102,134 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     refute get_in(read_after_closeout, ["result", "structuredContent" | delivery_evidence_path]) =~ evidence_query_value
 
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 1
+  end
+
+  test "WR architect reads and closes linked package on planned-slice delivery base", %{repo: repo} do
+    delivery_base = "feature/integration-base"
+    work_request = create_work_request!(repo, id: "WR-MCP-DELIVERY-CROSS-BASE", base_branch: "main", status: "ready_for_slicing")
+
+    planned_slice =
+      create_planned_slice!(repo, work_request,
+        id: "WRS-MCP-DELIVERY-CROSS-BASE",
+        target_base_branch: delivery_base,
+        branch_pattern: "feat/integration-base"
+      )
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    linked_package =
+      create_matching_work_package!(repo, work_request, approved_slice,
+        id: "WP-MCP-DELIVERY-CROSS-BASE",
+        status: "reviewing"
+      )
+
+    assert {:ok, dispatched_slice} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", linked_package.id)
+
+    session = create_work_request_architect_session(repo, work_request, ArchitectHandoff.capabilities())
+    board_response = mcp_tool(repo, session, "read_work_request_delivery_board", %{"work_request_id" => work_request.id})
+    board_payload = get_in(board_response, ["result", "structuredContent"])
+
+    assert board_payload["scope"] == %{"repo" => work_request.repo, "base_branch" => work_request.base_branch}
+    assert get_in(board_payload, ["delivery_board", "slices", Access.at(0), "work_package", "id"]) == linked_package.id
+    assert get_in(board_payload, ["delivery_board", "slices", Access.at(0), "work_package", "base_branch"]) == delivery_base
+
+    closeout_response =
+      record_delivery(
+        repo,
+        session,
+        no_pr_args(work_request, dispatched_slice, "delivery-mcp-cross-base-no-pr", "Operator confirmed cross-base package completed without a PR.")
+      )
+
+    closeout_payload = get_in(closeout_response, ["result", "structuredContent"])
+    assert closeout_payload["planned_slice_delivery"]["outcome"] == "completed_no_pr"
+    assert get_in(closeout_payload, ["delivery_board", "counts", "completed_no_pr"]) == 1
+    assert get_in(closeout_payload, ["delivery_board", "slices", Access.at(0), "work_package", "base_branch"]) == delivery_base
+
+    closed_package = repo.get!(WorkPackage, linked_package.id)
+    assert closed_package.status == "closed"
+    assert closed_package.base_branch == delivery_base
+  end
+
+  test "repo-scoped delivery board only exposes packages on the matching delivery base", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-DELIVERY-REPO-SCOPE-CROSS-BASE",
+        base_branch: "main",
+        status: "ready_for_slicing",
+        repo_scopes: [
+          %{repo: "nextide/example", base_branch: "feature/a"},
+          %{repo: "nextide/example", base_branch: "feature/b"}
+        ]
+      )
+
+    feature_a_slice =
+      repo
+      |> create_planned_slice!(
+        work_request,
+        id: "WRS-MCP-DELIVERY-REPO-SCOPE-A",
+        target_base_branch: "feature/a",
+        branch_pattern: "feat/a"
+      )
+      |> approve_slice!(repo, work_request)
+
+    feature_b_slice =
+      repo
+      |> create_planned_slice!(
+        work_request,
+        id: "WRS-MCP-DELIVERY-REPO-SCOPE-B",
+        target_base_branch: "feature/b",
+        branch_pattern: "feat/b"
+      )
+      |> approve_slice!(repo, work_request)
+
+    feature_a_package =
+      create_matching_work_package!(repo, work_request, feature_a_slice,
+        id: "WP-MCP-DELIVERY-REPO-SCOPE-A",
+        status: "reviewing"
+      )
+
+    feature_b_package =
+      create_matching_work_package!(repo, work_request, feature_b_slice,
+        id: "WP-MCP-DELIVERY-REPO-SCOPE-B",
+        status: "reviewing"
+      )
+
+    assert {:ok, _feature_a_dispatched} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, feature_a_slice.id, "approved", feature_a_package.id)
+
+    assert {:ok, _feature_b_dispatched} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, feature_b_slice.id, "approved", feature_b_package.id)
+
+    primary_session = create_work_request_architect_session(repo, work_request, ["read:work_request"])
+    primary_payload = delivery_board_payload_for(repo, primary_session, work_request)
+
+    assert slice_work_package(primary_payload, feature_a_slice.id)["id"] == feature_a_package.id
+    assert slice_work_package(primary_payload, feature_b_slice.id)["id"] == feature_b_package.id
+
+    {_anchor, feature_a_session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-REPO-SCOPE-DELIVERY", ["read:work_request", "write:work_request"],
+        repo: work_request.repo,
+        base_branch: "feature/a"
+      )
+
+    scoped_payload = delivery_board_payload_for(repo, feature_a_session, work_request)
+
+    assert get_in(scoped_payload, ["scope", "repo"]) == work_request.repo
+    assert get_in(scoped_payload, ["scope", "base_branch"]) == "feature/a"
+    assert slice_work_package(scoped_payload, feature_a_slice.id)["id"] == feature_a_package.id
+    assert slice_by_id(scoped_payload, feature_b_slice.id)["work_package"] == nil
+    assert slice_by_id(scoped_payload, feature_b_slice.id)["work_package_hidden?"] == true
+    refute inspect(scoped_payload) =~ feature_b_package.id
+
+    hidden_closeout_response =
+      record_delivery(
+        repo,
+        feature_a_session,
+        no_pr_args(work_request, feature_b_slice, "delivery-mcp-repo-scope-hidden-no-pr", "Hidden delivery-base closeout.")
+      )
+
+    assert get_in(hidden_closeout_response, ["error", "code"]) == -32_004
+    assert get_in(hidden_closeout_response, ["error", "data", "reason"]) == "not_found"
   end
 
   test "WR architect reconciles merged PR evidence over stale package grant state", %{repo: repo} do
@@ -313,8 +446,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
   end
 
   test "WR architect can revoke a completed planned-slice worker grant before closeout", %{repo: repo} do
-    {work_request, planned_slice, linked_package} =
-      linked_slice!(repo, work_request_id: "WR-MCP-DELIVERY-GRANT-CLOSEOUT", work_package_status: "ready_for_human_merge")
+    delivery_base = "feature/revoke-delivery-base"
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-DELIVERY-GRANT-CLOSEOUT",
+        base_branch: "main",
+        status: "ready_for_slicing"
+      )
+
+    planned_slice =
+      create_planned_slice!(repo, work_request,
+        id: "WRS-MCP-DELIVERY-GRANT-CLOSEOUT",
+        target_base_branch: delivery_base,
+        branch_pattern: "feat/revoke-delivery-base"
+      )
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    linked_package =
+      create_matching_work_package!(repo, work_request, approved_slice,
+        id: "WP-MCP-DELIVERY-GRANT-CLOSEOUT",
+        status: "ready_for_human_merge"
+      )
+
+    assert {:ok, planned_slice} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", linked_package.id)
 
     session = create_work_request_architect_session(repo, work_request, ["write:work_request"])
 
@@ -337,6 +493,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
 
     revoke_payload = get_in(revoke_response, ["result", "structuredContent"])
     assert revoke_payload["work_package"]["id"] == linked_package.id
+    assert revoke_payload["work_package"]["base_branch"] == delivery_base
     assert revoke_payload["revoked_worker_grant"]["id"] == minted.grant.id
     assert revoke_payload["revoked_worker_grant"]["secret_in_response"] == false
     assert repo.get!(AccessGrant, minted.grant.id).revoked_at
@@ -559,6 +716,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     planned_slice
   end
 
+  defp approve_slice!(%PlannedSlice{} = planned_slice, repo, %WorkRequest{} = work_request) do
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+    approved_slice
+  end
+
   defp create_matching_work_package!(repo, work_request, planned_slice, overrides) do
     attrs =
       [
@@ -728,6 +890,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
   defp record_delivery(repo, session, arguments), do: mcp_tool(repo, session, "record_planned_slice_delivery", arguments)
   defp reconcile_request(repo, session, arguments), do: mcp_tool(repo, session, "reconcile_work_request", arguments)
   defp revoke_worker_key(repo, session, arguments), do: mcp_tool(repo, session, "revoke_planned_slice_worker_key", arguments)
+
+  defp delivery_board_payload_for(repo, session, %WorkRequest{} = work_request) do
+    response = mcp_tool(repo, session, "read_work_request_delivery_board", %{"work_request_id" => work_request.id})
+    assert response["error"] == nil
+    get_in(response, ["result", "structuredContent"])
+  end
+
+  defp slice_work_package(payload, planned_slice_id) do
+    payload
+    |> slice_by_id(planned_slice_id)
+    |> Map.get("work_package")
+  end
+
+  defp slice_by_id(payload, planned_slice_id) do
+    payload
+    |> get_in(["delivery_board", "slices"])
+    |> Enum.find(&(&1["id"] == planned_slice_id))
+  end
 
   defp insufficient_capability?(response) do
     get_in(response, ["error", "code"]) in [-32_001, -32_003] and get_in(response, ["error", "data", "reason"]) == "insufficient_capability" and

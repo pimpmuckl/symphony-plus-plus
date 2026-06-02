@@ -52,7 +52,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @local_operator_worker "local-operator-worker"
   @local_operator_nonmergeable_terminal_package_statuses ["merged_into_phase", "closed", "abandoned"]
   @local_operator_noncloseable_terminal_package_statuses ["merged", "merged_into_phase", "abandoned"]
-  @local_operator_hideable_package_statuses ["merged", "merged_into_phase", "closed"]
+  @local_operator_hideable_package_statuses ["merged", "merged_into_phase", "closed", "abandoned"]
 
   @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
   def authorize_board_browser(conn, _opts) do
@@ -1092,17 +1092,25 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
            WorkRequestService.retention_pass(repo,
              archive_after_days: settings.work_request_archive_after_days
            ),
+         {:ok, linked_work_package_ids} <- persisted_linked_work_package_ids(repo),
+         {:ok, settings} <- dedupe_hidden_work_package_ids_for_local_operator(repo, settings),
+         {:ok, expired_unlinked_work_package_ids} <-
+           expired_unlinked_work_package_ids_for_local_operator(repo, settings, linked_work_package_ids),
          {:ok, board} <- Dashboard.operator_board(repo, opts),
          {:ok, work_requests} <- Dashboard.work_requests(repo, opts),
          {:ok, archived_work_requests} <- Dashboard.archived_work_requests(repo, opts),
          {:ok, guidance_requests} <- Dashboard.human_guidance_requests(repo, opts),
          {:ok, solo_sessions} <- Dashboard.solo_sessions(repo, %{}, opts),
          {:ok, work_request_details} <-
-           operator_work_request_details(repo, Map.get(work_requests, :work_requests, []), repo_identity_catalog),
-         {:ok, linked_work_package_ids} <- persisted_linked_work_package_ids(repo) do
+           operator_work_request_details(repo, Map.get(work_requests, :work_requests, []), repo_identity_catalog) do
       active_blocking_edges = Map.get(board, :active_blocking_edges, [])
       board = Map.delete(board, :active_blocking_edges)
-      hidden_work_package_ids = effective_hidden_work_package_ids(settings, linked_work_package_ids)
+
+      hidden_work_package_ids =
+        settings
+        |> effective_hidden_work_package_ids(linked_work_package_ids)
+        |> MapSet.union(expired_unlinked_work_package_ids)
+
       board = hide_local_operator_work_packages(board, hidden_work_package_ids)
       active_blocking_edges = hide_local_operator_blocking_edges(active_blocking_edges, hidden_work_package_ids)
 
@@ -1153,6 +1161,45 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     settings.hidden_work_package_ids
     |> MapSet.new()
     |> MapSet.difference(linked_work_package_ids)
+  end
+
+  defp dedupe_hidden_work_package_ids_for_local_operator(repo, %OperatorSettings{} = settings) do
+    hidden_work_package_ids = Enum.uniq(settings.hidden_work_package_ids)
+
+    if hidden_work_package_ids == settings.hidden_work_package_ids do
+      {:ok, settings}
+    else
+      OperatorSettingsService.update(repo, %{"hidden_work_package_ids" => hidden_work_package_ids})
+    end
+  end
+
+  defp expired_unlinked_work_package_ids_for_local_operator(repo, %OperatorSettings{} = settings, linked_work_package_ids) do
+    cutoff = DateTime.add(DateTime.utc_now(:microsecond), -settings.work_request_archive_after_days * 24 * 60 * 60, :second)
+
+    WorkPackage
+    |> expired_terminal_work_package_query(cutoff)
+    |> repo.all()
+    |> MapSet.new(& &1.id)
+    |> MapSet.difference(linked_work_package_ids)
+    |> then(&{:ok, &1})
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp expired_terminal_work_package_query(queryable, cutoff) do
+    from(work_package in queryable,
+      left_join: planned_slice in PlannedSlice,
+      on: planned_slice.work_package_id == work_package.id,
+      left_join: child_work_package in WorkPackage,
+      on: child_work_package.parent_id == work_package.id,
+      where: work_package.status in ^@local_operator_hideable_package_statuses,
+      where: is_nil(work_package.parent_id),
+      where: is_nil(work_package.phase_id),
+      where: is_nil(planned_slice.id),
+      where: is_nil(child_work_package.id),
+      where: work_package.updated_at <= ^cutoff,
+      order_by: [asc: work_package.updated_at, asc: work_package.id]
+    )
   end
 
   defp persisted_linked_work_package_ids(repo) do
