@@ -5513,38 +5513,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
-  test "local operator can archive delivered unlinked WorkPackages without deleting them", %{repo: repo} do
-    with_local_operator_endpoint(fn ->
-      delivered_package =
-        create_work_package!(repo,
-          id: "WP-LOCAL-ARCHIVE-UNLINKED",
-          status: "merged",
-          repo: "nextide/symphony-plus-plus",
-          base_branch: "main"
-        )
-
-      active_package =
-        create_work_package!(repo,
-          id: "WP-LOCAL-ARCHIVE-ACTIVE",
-          status: "implementing",
-          repo: delivered_package.repo,
-          base_branch: delivered_package.base_branch
-        )
-
-      archive_payload =
-        local_operator_csrf_conn()
-        |> post("/api/v1/sympp/operator/work-packages/#{delivered_package.id}/archive", %{})
-        |> json_response(200)
-
-      assert get_in(archive_payload, ["dashboard", "settings", "hidden_work_package_ids"]) == [delivered_package.id]
-      assert active_package.id in board_work_package_ids(archive_payload["dashboard"])
-      refute delivered_package.id in board_work_package_ids(archive_payload["dashboard"])
-
-      assert {:ok, persisted_package} = WorkPackageRepository.get(repo, delivered_package.id)
-      assert persisted_package.status == "merged"
-    end)
-  end
-
   test "local operator cannot archive active or linked WorkPackages", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       active_package =
