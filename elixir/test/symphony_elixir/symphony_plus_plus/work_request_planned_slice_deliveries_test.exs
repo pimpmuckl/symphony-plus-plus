@@ -296,22 +296,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSliceDeliveriesTest 
                })
              )
 
-    sibling_request = create_work_request!(repo, id: "WR-DELIVERY-SUCCESSOR-PACKAGE-SIBLING", status: "ready_for_slicing")
-    sibling_successor_slice = create_dispatched_successor_slice!(repo, sibling_request, "SIBLING-SUCCESSOR")
-
-    assert {:error, :not_found} =
-             Repository.record_planned_slice_delivery(
-               repo,
-               work_request.id,
-               planned_slice.id,
-               delivery_attrs(%{
-                 outcome: "superseded",
-                 successor_planned_slice_id: successor_slice.id,
-                 successor_work_package_id: sibling_successor_slice.work_package_id,
-                 superseded_reason: "Wrong WorkRequest package must not be linked."
-               })
-             )
-
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
   end
 

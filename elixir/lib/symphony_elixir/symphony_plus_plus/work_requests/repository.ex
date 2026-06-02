@@ -692,10 +692,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     end
   end
 
-  defp validate_planned_slice_delivery_scope(repo, work_request_id, planned_slice_id, candidate) do
-    with :ok <- require_planned_slice_in_scope(repo, work_request_id, planned_slice_id) do
-      validate_successor_delivery_scope(repo, work_request_id, candidate)
+  defp validate_planned_slice_delivery_scope(
+         repo,
+         work_request_id,
+         planned_slice_id,
+         %PlannedSliceDelivery{outcome: "superseded"} = candidate
+       ) do
+    with true <- planned_slice_in_scope?(repo, work_request_id, planned_slice_id),
+         %PlannedSlice{work_request_id: ^work_request_id} = successor_slice <-
+           repo.get(PlannedSlice, candidate.successor_planned_slice_id) do
+      if candidate.successor_work_package_id in [nil, successor_slice.work_package_id], do: :ok, else: {:error, :not_found}
+    else
+      _ -> {:error, :not_found}
     end
+  end
+
+  defp validate_planned_slice_delivery_scope(repo, work_request_id, planned_slice_id, %PlannedSliceDelivery{}) do
+    if planned_slice_in_scope?(repo, work_request_id, planned_slice_id), do: :ok, else: {:error, :not_found}
   end
 
   defp insert_or_replay_scoped_planned_slice_delivery(repo, planned_slice_id, changeset, candidate) do
@@ -721,65 +734,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   defp planned_slice_in_scope?(repo, work_request_id, planned_slice_id) do
     repo.exists?(
       from(planned_slice in PlannedSlice,
-        where: planned_slice.id == ^planned_slice_id,
-        where: planned_slice.work_request_id == ^work_request_id,
-        select: 1,
-        limit: 1
+        where: planned_slice.id == ^planned_slice_id and planned_slice.work_request_id == ^work_request_id
       )
     )
   end
-
-  defp require_planned_slice_in_scope(repo, work_request_id, planned_slice_id) do
-    if planned_slice_in_scope?(repo, work_request_id, planned_slice_id), do: :ok, else: {:error, :not_found}
-  end
-
-  defp validate_successor_delivery_scope(_repo, _work_request_id, %PlannedSliceDelivery{outcome: outcome})
-       when outcome != "superseded",
-       do: :ok
-
-  defp validate_successor_delivery_scope(
-         repo,
-         work_request_id,
-         %PlannedSliceDelivery{
-           successor_planned_slice_id: successor_planned_slice_id
-         } = candidate
-       ) do
-    with {:ok, successor_slice} <- scoped_planned_slice(repo, work_request_id, successor_planned_slice_id) do
-      validate_successor_work_package_scope(repo, work_request_id, successor_slice, candidate)
-    end
-  end
-
-  defp scoped_planned_slice(repo, work_request_id, planned_slice_id) do
-    query =
-      from(planned_slice in PlannedSlice,
-        where: planned_slice.id == ^planned_slice_id,
-        where: planned_slice.work_request_id == ^work_request_id,
-        limit: 1
-      )
-
-    case repo.one(query) do
-      %PlannedSlice{} = planned_slice -> {:ok, planned_slice}
-      nil -> {:error, :not_found}
-    end
-  end
-
-  defp validate_successor_work_package_scope(_repo, _work_request_id, %PlannedSlice{}, %PlannedSliceDelivery{successor_work_package_id: nil}),
-    do: :ok
-
-  defp validate_successor_work_package_scope(
-         _repo,
-         _work_request_id,
-         %PlannedSlice{work_package_id: successor_work_package_id},
-         %PlannedSliceDelivery{successor_work_package_id: successor_work_package_id}
-       )
-       when is_binary(successor_work_package_id),
-       do: :ok
-
-  defp validate_successor_work_package_scope(_repo, _work_request_id, %PlannedSlice{}, %PlannedSliceDelivery{
-         successor_work_package_id: successor_work_package_id
-       })
-       when is_binary(successor_work_package_id),
-       do: {:error, :not_found}
 
   defp existing_planned_slice_delivery(repo, planned_slice_id) do
     repo.one(
