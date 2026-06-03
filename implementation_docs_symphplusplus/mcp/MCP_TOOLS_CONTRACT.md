@@ -33,7 +33,7 @@ raw Markdown HTML into executable or trusted HTML.
 | attach_pr | Attach PR metadata. |
 | sync_pr | Refresh metadata for the already attached PR. |
 | submit_review_package | Attach summary/tests/artifacts for the current head review package. |
-| attach_review_suite_result | Attach canonical Review Suite result evidence for the current WorkPackage head. |
+| attach_review_suite_result | Attach canonical Review Suite result evidence for the current WorkPackage head, deriving canonical fields from local Review Suite state when `round_id` is supplied. |
 | mark_ready | Move to ready state only if gates pass. |
 
 ## Assignment release tool
@@ -45,8 +45,16 @@ raw Markdown HTML into executable or trusted HTML.
 Valid current-head review package or passing Review Suite evidence may normalize
 stale active package statuses (`ready_for_worker`, `claimed`, `planning`, or
 `implementing`) to `reviewing`. `attach_review_suite_result` accepts passing
-status values `passed`, `pass`, `green`, `success`, `completed` and passing
-verdict values `green`, `clean`, `passed`, `pass`, `success`, `approved`.
+status values `passed`, `pass`, `green`, `success` and passing verdict values
+`green`, `clean`, `passed`, `pass`, `success`, `approved`. When `round_id` is
+supplied, Symphony++ resolves local Review Suite state and derives head,
+status, verdict, summary, anchor, lane, and profile. The value may be a Review
+Suite public id (`rvw_*`), cycle id (`orc-*`), or unique stored round id. If that
+local state is not available or the stored round id is ambiguous, the call fails
+clearly; explicit fallback fields are accepted only on calls that omit
+`round_id`. Current-head evidence must match the package head, and local round
+repo, base branch, and branch identity are validated when Review Suite records
+them.
 
 `claim_private_handoff` is intentionally not a bound worker mutation tool in
 this table. It is listed under Bootstrap tools for explicit legacy/recovery

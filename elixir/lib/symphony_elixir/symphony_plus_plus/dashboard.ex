@@ -3664,11 +3664,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         context.progress_events,
         required_lanes,
         review_head_sha_for_readiness(context)
-      )
+      ) or review_suite_result_lanes_present?(context, required_lanes)
     else
       progress_events = current_branch_progress_events(context.progress_events)
 
       review_package_lanes_present?(progress_events, required_lanes, review_head_sha_for_readiness(context)) or
+        review_suite_result_lanes_present?(context, required_lanes) or
         progress_review_lanes_present?(progress_events, required_lanes)
     end
   end
@@ -3687,15 +3688,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
           %{}
       end
 
-    Enum.all?(required_lanes, &(Map.get(latest_verdicts, &1) == "green"))
+    Enum.all?(required_lanes, &ReviewProfiles.profile_verdicts_pass?(&1, latest_verdicts))
+  end
+
+  defp review_suite_result_lanes_present?(context, required_lanes) do
+    readiness_head_sha = review_head_sha_for_readiness(context)
+
+    payloads =
+      context.progress_events
+      |> MetadataProjection.current_head_review_suite_result_events(context.work_package.id, readiness_head_sha)
+      |> Enum.map(& &1.payload)
+      |> Enum.filter(&review_suite_result_payload_in_scope?(&1, context.work_package.id, readiness_head_sha))
+      |> Enum.filter(&persisted_review_suite_artifact?(context.artifacts, context.work_package.id, Map.fetch!(&1, "head_sha")))
+
+    payloads != [] and
+      Enum.all?(required_lanes, &ReviewProfiles.review_suite_payloads_satisfy_required_profile?(payloads, &1))
   end
 
   defp progress_review_lanes_present?(progress_events, required_lanes) do
-    Enum.all?(required_lanes, fn lane ->
-      green_statuses = ReviewProfiles.green_statuses(lane)
+    Enum.all?(required_lanes, &progress_review_lane_present?(progress_events, &1))
+  end
 
-      latest_generic_progress_status(progress_events, ReviewProfiles.statuses(lane)) in green_statuses
-    end)
+  defp progress_review_lane_present?(progress_events, required_lane) do
+    satisfying_profiles = ReviewProfiles.satisfying_profiles(required_lane)
+    statuses = Enum.flat_map(satisfying_profiles, &ReviewProfiles.statuses/1)
+    latest_status = latest_generic_progress_status(progress_events, statuses)
+
+    Enum.any?(satisfying_profiles, &(latest_status in ReviewProfiles.green_statuses(&1)))
   end
 
   defp progress_status_recorded?(progress_events, expected_status) do
@@ -3801,6 +3820,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp valid_review_suite_result_payload?(payload, work_package_id, readiness_head_sha),
     do: MetadataProjection.valid_review_suite_result_payload?(payload, work_package_id, readiness_head_sha)
+
+  defp review_suite_result_payload_in_scope?(payload, work_package_id, readiness_head_sha),
+    do: MetadataProjection.review_suite_result_payload_in_scope?(payload, work_package_id, readiness_head_sha)
 
   defp persisted_review_suite_artifact?(artifacts, work_package_id, head_sha),
     do: MetadataProjection.persisted_review_suite_artifact?(artifacts, work_package_id, head_sha)

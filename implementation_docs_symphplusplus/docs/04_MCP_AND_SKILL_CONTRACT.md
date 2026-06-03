@@ -471,9 +471,17 @@ Valid current-head review evidence can normalize stale active package lifecycle
 bookkeeping to `reviewing`. This applies when `submit_review_package` or a
 passing `attach_review_suite_result` is accepted while the raw package status is
 `ready_for_worker`, `claimed`, `planning`, or `implementing`. Passing Review
-Suite status values are `passed`, `pass`, `green`, `success`, and `completed`;
-passing verdict values are `green`, `clean`, `passed`, `pass`, `success`, and
-`approved`.
+Suite status values are `passed`, `pass`, `green`, and `success`; passing
+verdict values are `green`, `clean`, `passed`, `pass`, `success`, and
+`approved`. When workers pass a Review Suite `round_id`, Symphony++ resolves
+local Review Suite state and derives head, status, verdict, summary, anchor,
+lane, and profile instead of trusting arbitrary prose. The value may be a
+Review Suite public id (`rvw_*`), cycle id (`orc-*`), or unique stored round id.
+If the local round is unavailable or the stored round id is ambiguous, the call
+fails clearly; workers may retry without `round_id` and provide explicit
+fallback fields. Current-head evidence must match the package head, and local
+round repo, base branch, and branch identity are validated when Review Suite
+records them.
 
 After `mark_ready` succeeds, worker evidence is frozen. Evidence-mutating tools
 such as progress, findings, blockers, branch/PR metadata, scope requests, and

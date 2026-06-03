@@ -96,11 +96,14 @@
     },
     {
       "name": "attach_review_suite_result",
-      "purpose": "Attach canonical Review Suite result evidence for the current WorkPackage head.",
+      "purpose": "Attach canonical Review Suite result evidence for the current WorkPackage head. When round_id is supplied, the server resolves local Review Suite state and derives the canonical evidence fields.",
+      "optional_arguments": ["round_id", "lane", "profile", "head_sha", "status", "verdict", "summary", "anchor"],
       "passing_vocabulary": {
-        "status": ["passed", "pass", "green", "success", "completed"],
+        "status": ["passed", "pass", "green", "success"],
         "verdict": ["green", "clean", "passed", "pass", "success", "approved"]
       },
+      "round_id_policy": "round_id is resolved only from local Review Suite state. It may be a Review Suite public id rvw_*, a cycle id orc-*, or a unique stored round id. Derived head, status, verdict, summary, anchor, lane, and profile are authoritative. When round_id is supplied and local state is missing, ambiguous, or non-passing, the call fails clearly; explicit fallback fields are accepted only on calls that omit round_id.",
+      "identity_policy": "Current-head Review Suite evidence must match the package head. Local round repo, base branch, and branch identity are validated when Review Suite records them; stale, wrong-head, failed, and identity-mismatched rounds fail closed.",
       "status_policy": "A valid passing current-head Review Suite result normalizes stale active package statuses such as ready_for_worker, claimed, planning, or implementing to reviewing."
     },
     {

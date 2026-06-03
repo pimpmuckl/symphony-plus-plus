@@ -2978,6 +2978,65 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute "branch_attached" in missing["missing"]
   end
 
+  test "dashboard generic review readiness uses latest satisfying profile status", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-LATEST-REVIEW-PROFILE",
+                 kind: "quick_fix",
+                 status: "ready_for_human_merge",
+                 policy_template: "quick_fix"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    timestamp = ~U[2026-05-05 00:00:00Z]
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "abc123"},
+               created_at: DateTime.add(timestamp, 1, :second)
+             })
+
+    assert {:ok, _tests} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Tests passed",
+               status: "tests_passed",
+               payload: %{},
+               created_at: DateTime.add(timestamp, 2, :second)
+             })
+
+    assert {:ok, _deep_review} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Deep review passed",
+               status: "review_deep_green",
+               payload: %{},
+               created_at: DateTime.add(timestamp, 3, :second)
+             })
+
+    assert {:ok, _brief_review} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Brief review failed",
+               status: "review_brief_failed",
+               payload: %{},
+               created_at: DateTime.add(timestamp, 4, :second)
+             })
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert missing["active"] == true
+    assert "review_lanes_complete" in missing["missing"]
+    refute "tests_passed" in missing["missing"]
+  end
+
   test "readiness remains anchored to the latest branch head after PR attach", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
