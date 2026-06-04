@@ -223,11 +223,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Repository do
   defp upsert_slice_link(repo, attrs) do
     work_request_id = Map.get(attrs, "work_request_id")
 
-    attrs =
-      attrs
-      |> Attrs.put_new_value("role", "implementation_slice")
-      |> Attrs.put_new_value("position", 0)
-
     case existing_slice_link(repo, Map.fetch!(attrs, "planned_slice_id")) do
       nil ->
         create_slice_link(repo, attrs)

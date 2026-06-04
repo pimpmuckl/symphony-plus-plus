@@ -275,22 +275,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTreeTest do
                work_request_id: work_request.id,
                product_tree_node_id: backend.id,
                planned_slice_id: slice.id,
+               role: "evidence",
                position: 1
              })
 
     assert backend_link.product_tree_node_id == backend.id
+    assert backend_link.role == "evidence"
+    assert backend_link.position == 1
 
     assert {:ok, frontend_link} =
              ProductTree.move_slice_link(repo, %{
                work_request_id: work_request.id,
                product_tree_node_id: frontend.id,
-               planned_slice_id: slice.id,
-               position: 4
+               planned_slice_id: slice.id
              })
 
     assert frontend_link.id == backend_link.id
     assert frontend_link.product_tree_node_id == frontend.id
-    assert frontend_link.position == 4
+    assert frontend_link.role == "evidence"
+    assert frontend_link.position == 1
 
     projected = ProductTree.project(repo, work_request.id, [%{"id" => slice.id, "status" => "planned"}])
     nodes_by_id = Map.new(projected.nodes, &{&1.id, &1})
