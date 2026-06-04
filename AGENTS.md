@@ -7,14 +7,19 @@
 - Use PR titles in the form `[SYMPP-...] <title>`.
 - Fill `.github/pull_request_template.md` concretely, including acceptance evidence, tests run, and any blocked validation.
 - Do not implement dependent packages or adjacent cleanup unless the architecture agent explicitly expands scope.
+- In the V3 product-tree cockpit, a WorkPackage is an execution/audit record,
+  not the product-facing logical unit. Product truth starts at the WorkRequest,
+  may include optional nested product plan nodes, and reaches workers through
+  planned slices.
 
 ## Planning Assets
 
 - Treat `implementation_docs_symphplusplus/` as the stable operator and
   product-contract location.
-- Use the current WorkPackage ledger, MCP resources, operator docs, and
-  package-specific assignment text as the source of truth for package scope,
-  acceptance criteria, and test plans.
+- Use the current WorkRequest/product-tree docs as product-facing planning
+  truth. Use the WorkPackage ledger, MCP resources, and package-specific
+  assignment text as the source of truth for worker execution scope,
+  acceptance criteria, test plans, and readiness evidence.
 - Keep `implementation_docs_symphplusplus/templates/WORKFLOW.symfony_pp.md` as
   an explicit-copy workflow template for Symphony++ lanes. It is not a runtime
   default; validate any copied workflow through the assigned package before use.

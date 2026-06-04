@@ -1,3 +1,4 @@
+import type { ProductTreeProjection } from "./product-tree";
 export type MarkdownText = string;
 export type PackagePlanSummary = {
   completed_count?: number;
@@ -10,7 +11,6 @@ export type PackageBranchMetadata = {
   type?: string;
   source_tool?: string;
 };
-
 export type PackagePrMetadata = {
   url?: string;
   number?: number | string;
@@ -18,7 +18,6 @@ export type PackagePrMetadata = {
   state?: string;
   head_sha?: string;
 };
-
 export type PackageReviewMetadata = {
   lane?: string;
   review_lane?: string;
@@ -378,6 +377,7 @@ export type WorkRequestDetail = {
   clarification_questions?: ClarificationQuestion[];
   decision_logs?: DecisionLogEntry[];
   planned_slices?: PlannedSlice[];
+  product_tree?: ProductTreeProjection | null;
   delivery_board?: WorkRequestDeliveryBoard;
   comments?: ContextComment[];
   summary?: {

@@ -10,8 +10,9 @@ labeled legacy/recovery WorkKey/private-handoff bootstrap. It is the MCP-backed
 WorkPackage state adapter, not the generic worker contract. Pair it with
 `symphony-plus-plus:symphony-worker`.
 
-The MCP server is the permission boundary and the WorkPackage is the scope
-boundary.
+The MCP server is the permission boundary and the WorkPackage is the worker
+scope boundary. V3 product progress lives on the WorkRequest/product tree;
+this skill handles only the dispatched execution/audit record.
 
 ## Start
 
@@ -19,7 +20,7 @@ boundary.
    dispatch.
    Trusted local HTTP sessions may show worker WorkPackage tool schemas before
    claim; schema visibility is not authority, so claim first.
-2. For planned-slice/ledger-dispatched V2.1 assignments, claim the package with
+2. For planned-slice ledger-dispatched assignments, claim the package with
    `claim_local_assignment` using the dispatch-provided ledger claim fields plus
    local runtime fields: `branch`, `worktree_path`, `caller_id`, and
    `claimed_by`.

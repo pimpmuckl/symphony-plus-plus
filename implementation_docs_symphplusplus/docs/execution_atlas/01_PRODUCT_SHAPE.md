@@ -1,5 +1,8 @@
 # Execution Atlas Product Shape
 
+Historical design context only. Execution Atlas was an earlier V3 brainstorm;
+the active V3 contract is `../V3_PRODUCT_TREE_REWORK.md`.
+
 ## Product Framing
 
 Execution Atlas is the human-readable product map for Symphony++.

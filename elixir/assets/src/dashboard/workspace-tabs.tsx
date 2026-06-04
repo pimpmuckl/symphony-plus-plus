@@ -14,7 +14,6 @@ export function WorkstreamsPane({
   repos,
   hiddenRepoCount,
   requestDetailsByRepo,
-  requestLinkedPackageIds,
   activeBlockingEdges,
   onSelectGuidance,
   onSelectCard,
@@ -25,7 +24,6 @@ export function WorkstreamsPane({
   repos: RepoSummary[];
   hiddenRepoCount: number;
   requestDetailsByRepo: Map<string, WorkRequestDetail[]>;
-  requestLinkedPackageIds: ReadonlySet<string>;
   activeBlockingEdges: ActiveBlockingEdge[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
@@ -34,7 +32,7 @@ export function WorkstreamsPane({
   updateAnimations: DashboardUpdateAnimations;
 }) {
   if (repos.length === 0) {
-    return <EmptyPanel title={hiddenRepoCount > 0 ? "No active workstreams" : "No workstreams yet"} />;
+    return <EmptyPanel title={hiddenRepoCount > 0 ? "No active repositories" : "No repositories yet"} />;
   }
 
   return (
@@ -44,7 +42,6 @@ export function WorkstreamsPane({
           key={repoWorkstreamStateKey(repo)}
           repo={repo}
           requestDetailsByRepo={requestDetailsByRepo}
-          requestLinkedPackageIds={requestLinkedPackageIds}
           activeBlockingEdges={activeBlockingEdges}
           onSelectGuidance={onSelectGuidance}
           onSelectCard={onSelectCard}

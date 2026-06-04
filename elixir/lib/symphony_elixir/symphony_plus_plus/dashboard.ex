@@ -19,6 +19,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
+  alias SymphonyElixir.SymphonyPlusPlus.ProductTree
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.RepoIdentity
@@ -433,6 +434,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            clarification_questions: Enum.map(questions, &clarification_question/1),
            decision_logs: Enum.map(decisions, &decision_log_entry/1),
            planned_slices: planned_slice_payloads,
+           product_tree: ProductTree.project(repo, work_request.id, planned_slice_payloads),
            comments: comments_for(comment_context, "work_request", work_request.id),
            summary: work_request_summary(questions, decisions, planned_slices, comment_context)
          }}
@@ -492,6 +494,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            clarification_questions: Enum.map(questions, &clarification_question/1),
            decision_logs: Enum.map(decisions, &decision_log_entry/1),
            planned_slices: planned_slice_payloads,
+           product_tree: ProductTree.project(repo, work_request.id, planned_slice_payloads),
            delivery_board: redacted_json(delivery_board),
            comments: comments_for(comment_context, "work_request", work_request.id),
            summary: work_request_summary(questions, decisions, planned_slices, comment_context)

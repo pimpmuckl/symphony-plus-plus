@@ -111,32 +111,20 @@ export function sortableTime(value?: string | null) {
   return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
-export function workstreamCategoryCounts(
-  details: WorkRequestDetail[],
-  packages: WorkPackageCard[],
-  unlinkedPackages: WorkPackageCard[],
-  expandedFinishedRequests: Record<string, boolean>,
-  finishedRequestScopeKey: string,
-): WorkstreamCategoryCounts {
-  // Mirrors the workstream board's lane-card counts for the collapsed repo header.
-  const packageIds = new Set(packages.map((pkg) => pkg.id));
+export function workstreamCategoryCounts(details: WorkRequestDetail[]): WorkstreamCategoryCounts {
+  let planNodes = 0;
   let slices = 0;
-  let linkedWorkPackages = 0;
 
   details.forEach((detail) => {
-    if (!requestChildrenVisible(detail, expandedFinishedRequests, finishedRequestScopeKey)) return;
-    (detail.planned_slices || []).forEach((slice) => {
-      slices += 1;
-      if (slice.work_package_id && packageIds.has(slice.work_package_id)) {
-        linkedWorkPackages += 1;
-      }
-    });
+    const summary = detail.product_tree?.summary;
+    planNodes += summary?.node_count ?? detail.product_tree?.nodes?.length ?? 0;
+    slices += summary?.slice_count ?? detail.planned_slices?.length ?? 0;
   });
 
   return {
     requests: details.length,
+    planNodes,
     slices,
-    workPackages: linkedWorkPackages + unlinkedPackages.length,
   };
 }
 
@@ -201,7 +189,7 @@ export function requestChildrenVisible(detail: WorkRequestDetail, expandedFinish
 export function requestChildCount(detail: WorkRequestDetail, packageById: Map<string, WorkPackageCard>) {
   const slices = detail.planned_slices || [];
   const linkedPackages = slices.filter((slice) => slice.work_package_id && packageById.has(slice.work_package_id)).length;
-  return slices.length + linkedPackages;
+  return (detail.product_tree?.summary?.node_count ?? detail.product_tree?.nodes?.length ?? 0) + slices.length + linkedPackages;
 }
 
 export function detailsWithVisibleSlices(details: WorkRequestDetail[], visibleEntries: SliceEntry[]) {

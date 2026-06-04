@@ -82,7 +82,7 @@ static URL.
 Do not refresh user-local plugin caches as part of normal feature-branch
 worker dispatch.
 
-Plugin installation is not worker package dispatch. Normal V2.1 worker dispatch
+Plugin installation is not worker package dispatch. Normal planned-slice worker dispatch
 emits a `worker_bootstrap` payload with `type: ledger_claim`, `mode:
 local_assignment`, and `claim.tool: claim_local_assignment`. The worker uses
 that ledger-backed claim plus local runtime `branch`, `worktree_path`, and

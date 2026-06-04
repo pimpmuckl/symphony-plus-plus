@@ -11,7 +11,7 @@ import { activeBlockerItems, allGuidanceItems, allPackages, dashboardContentFing
 import { appDialogReducer, appStateReducer, createInitialAppState, initialAppDialogState } from "./dashboard-state";
 import { applyDashboardTheme, repoWorkstreamHasWorkItems, shouldShowUpdateSimulationControls, writeDashboardUiStateValue, writeStoredTheme } from "./dashboard-persistence";
 import { canMutateDashboardComments } from "./detail-utils";
-import { linkedPackageIdsForDetails, packageSelectionIndex, requestDetailsByRepoKey } from "./workstream-data";
+import { packageSelectionIndex, requestDetailsByRepoKey } from "./workstream-data";
 import { useDashboardUpdateAnimations } from "./update-animations";
 
 export function DashboardApp() {
@@ -433,7 +433,6 @@ export function useDashboardController() {
   const requestDetails = useMemo(() => dashboard?.work_request_details ?? [], [dashboard]);
   const linkedWorkPackageIds = useMemo(() => new Set(dashboard?.linked_work_package_ids ?? []), [dashboard]);
   const requestDetailsByRepo = useMemo(() => requestDetailsByRepoKey(requestDetails), [requestDetails]);
-  const requestLinkedPackageIds = useMemo(() => linkedPackageIdsForDetails(requestDetails), [requestDetails]);
   const packageSelections = useMemo(() => packageSelectionIndex(requestDetails, packages), [packages, requestDetails]);
   const archiveAfterDays = dashboard?.settings?.work_request_archive_after_days ?? 14;
   const guidanceItems = useMemo(() => allGuidanceItems(dashboard), [dashboard]);
@@ -474,7 +473,6 @@ export function useDashboardController() {
           repos={workstreamRepos}
           hiddenRepoCount={hiddenWorkstreamCount}
           requestDetailsByRepo={requestDetailsByRepo}
-          requestLinkedPackageIds={requestLinkedPackageIds}
           activeBlockingEdges={dashboard?.active_blocking_edges ?? []}
           onSelectGuidance={setSelectedGuidance}
           onSelectCard={setSelectedCardDetail}
@@ -490,7 +488,6 @@ export function useDashboardController() {
       dashboard?.active_blocking_edges,
       hiddenWorkstreamCount,
       requestDetailsByRepo,
-      requestLinkedPackageIds,
       setSelectedCardDetail,
       setSelectedGuidance,
       soloSessions,

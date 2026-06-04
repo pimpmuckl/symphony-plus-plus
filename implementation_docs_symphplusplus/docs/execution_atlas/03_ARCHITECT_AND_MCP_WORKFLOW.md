@@ -1,5 +1,8 @@
 # Execution Atlas Architect And MCP Workflow
 
+Historical design context only. Execution Atlas was an earlier V3 brainstorm;
+the active V3 contract is `../V3_PRODUCT_TREE_REWORK.md`.
+
 Execution Atlas should be maintained primarily by the architect agent for work
 that benefits from human-readable organization.
 

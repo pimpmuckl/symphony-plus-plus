@@ -1,5 +1,8 @@
 # Execution Atlas Roadmap
 
+Historical design context only. Execution Atlas was an earlier V3 brainstorm;
+the active V3 contract is `../V3_PRODUCT_TREE_REWORK.md`.
+
 Execution Atlas should be built in small PR-sized slices. The V1 target is a
 useful nested progress view, not a complete graph product.
 

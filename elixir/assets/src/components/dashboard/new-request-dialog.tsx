@@ -219,7 +219,7 @@ export function NewRequestDialog({
                   </div>
                 </div>
                 <p className="mt-3 text-sm text-muted-foreground">
-                  The request is in the ledger. Copy the agent handoff and paste it into the architect Codex session that will own this WorkRequest.
+                  The request is in the ledger. Copy the architect handoff and paste it into the Codex session that will own this WorkRequest.
                 </p>
               </div>
               {error ? <p className="text-sm text-destructive">{error}</p> : null}
@@ -236,7 +236,7 @@ export function NewRequestDialog({
                   disabled={handoffCopyState === "copying" || !canCopyArchitectHandoff(createdRequest.work_request)}
                 >
                   {handoffCopyState === "copying" ? <Loader2 className="size-4 animate-spin" /> : handoffCopyState === "copied" ? <CheckCircle2 className="size-4" /> : <Copy className="size-4" />}
-                  {handoffCopyState === "copied" ? "Copied Agent Handoff" : "Copy Agent Handoff"}
+                  {handoffCopyState === "copied" ? "Copied Architect Handoff" : "Copy Architect Handoff"}
                 </Button>
               </DialogFooter>
             </div>

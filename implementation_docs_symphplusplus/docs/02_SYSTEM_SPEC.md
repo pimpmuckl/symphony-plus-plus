@@ -4,27 +4,60 @@
 
 ### WorkRequest
 
-A v2 pre-WorkPackage intake object. A WorkRequest captures the human's intended
-project or repo, base branch, work type, description, constraints, and desired
-dispatch shape before an architect slices the work into WorkPackages.
+A WorkRequest is the top-level product intent and default cockpit row. It
+captures the human's intended project or repo, base branch, work type,
+description, constraints, desired dispatch shape, clarification history,
+decisions, optional product plan tree, and planned slices.
 
 WorkRequests are persisted in the Symphony++ runtime ledger. The local operator
 dashboard can list, create, inspect, clarify, and prepare architect handoff for
 WorkRequests, while scoped board views can create and manage WorkRequests only
 inside their frozen repo/base-branch scope. Architect MCP sessions with explicit
 WorkRequest capabilities can read, clarify, record decisions, author planned
-slices, and dispatch approved planned slices through the existing private worker
-handoff flow.
+slices, and dispatch approved planned slices through the normal ledger-backed
+local assignment flow.
 
-This is still a manual architect-led flow. The installable Codex plugin now
-exposes Symphony++ skills and a generic `symphony_plus_plus` MCP wrapper, but
-MCP WorkRequest intake tools, automatic question generation, automatic
+Product-tree mutation tools for architect-authored plan nodes are still a V3
+follow-up. Until those land, the read projection and copied-ledger preview can
+be seeded by migration/helper flows. Automatic question generation, automatic
 slicing/planning, live Linear state creation, richer planner/intake plugin
 surfaces, and automatic Codex spawning remain future work.
 
+### ProductPlanNode
+
+A product-facing grouping inside one WorkRequest. Nodes are optional and may be
+nested as deeply as the architect needs. The schema does not require a fixed
+hierarchy such as `layer -> capability`; `node_kind` is only a label.
+
+Important fields:
+
+```text
+id
+work_request_id
+parent_id
+title
+description
+node_kind
+completion_mark
+metadata
+position
+created_by
+created_at
+updated_at
+```
+
+### PlannedSlice
+
+The architect-to-worker execution unit. A planned slice belongs to one
+WorkRequest and may link to one product plan node or sit directly under the
+WorkRequest. Approved slices can dispatch into WorkPackages.
+
 ### WorkPackage
 
-The atomic unit of agent work. It can represent a phase PR, hotfix PR, quick issue, investigation, review-only task, or architect-created child package.
+The scoped execution/audit unit for agent work. A WorkPackage can represent a
+phase PR, hotfix PR, quick issue, investigation, review-only task, or
+architect-created child package. It is not the product-facing logical unit in
+the V3 cockpit.
 
 Important fields:
 
@@ -247,15 +280,15 @@ Codex/Symphony
   execution of isolated agent runs
 ```
 
-## v2 intake boundary
+## WorkRequest Product-Tree Boundary
 
-A clarified WorkRequest becomes one architect-owned plan plus one or more
-planned slices. Approved slices can then be dispatched into WorkPackages through
-the local operator dashboard, the planned-slice dispatch CLI, or the architect
-MCP dispatch tool when the session has explicit dispatch scope. Existing
-WorkPackage status, grants, virtual planning resources, readiness gates, review
-evidence, and human merge rules remain authoritative after packages are
-created.
+A clarified WorkRequest may have no extra product structure, or it may become
+an optional nested product plan tree plus one or more planned slices. Approved
+slices can then be dispatched into WorkPackages through the local operator
+dashboard, the planned-slice dispatch CLI, or the architect MCP dispatch tool
+when the session has explicit dispatch scope. Existing WorkPackage status,
+grants, virtual planning resources, readiness gates, review evidence, and
+human merge rules remain authoritative after packages are created.
 
 If a worker hits ambiguity after dispatch, it asks the architect first. The
 architect may consult ask-pro for hard architecture or product calls. If the

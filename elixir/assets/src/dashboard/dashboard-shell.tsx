@@ -213,7 +213,7 @@ export function DashboardShell({
               <TabsList className="dashboard-tabs-list">
                 <span className="dashboard-tabs-indicator" data-tab={workspaceTab} aria-hidden="true" />
                 <TabsTrigger value="workstreams" className="dashboard-tabs-trigger">
-                  Workstreams
+                  Repositories
                 </TabsTrigger>
                 <TabsTrigger value="solo" className="dashboard-tabs-trigger">
                   Solo Sessions

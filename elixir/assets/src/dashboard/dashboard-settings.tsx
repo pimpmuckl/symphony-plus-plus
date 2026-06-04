@@ -19,9 +19,9 @@ import { sortableTime } from "./workstream-data";
 export function WorkstreamLayoutToggle({ value, onChange }: { value: WorkstreamLayoutMode; onChange: (mode: WorkstreamLayoutMode) => void }) {
   return (
     <fieldset className="workstream-layout-toggle">
-      <legend className="sr-only">Workstream layout</legend>
+      <legend className="sr-only">Repository layout</legend>
       {[
-        { value: "jira", label: "Jira" },
+        { value: "jira", label: "Compact" },
         { value: "aligned", label: "Aligned" },
       ].map((option) => (
         <button
@@ -98,7 +98,7 @@ export function DashboardSettingsDialog({
   });
   const visibilityLabel = hideEmptyWorkstreams
     ? workstreamHiddenSummary(hiddenWorkstreamCount)
-    : "Showing repos even when they have no requests, slices, or work packages.";
+    : "Showing repos even when they have no requests, plan nodes, or slices.";
   const archiveDaysDraft =
     archiveDaysDraftState.source === archiveAfterDays ? archiveDaysDraftState.value : String(archiveAfterDays);
   const archiveDaysError = archiveDaysErrorState.source === archiveAfterDays ? archiveDaysErrorState.message : null;
@@ -194,14 +194,14 @@ export function DashboardSettingsDialog({
 
           <div className="flex items-center justify-between gap-4 rounded-md border bg-card/60 p-3">
             <div className="min-w-0">
-              <span className="block text-sm font-medium">Hide empty workstreams</span>
+              <span className="block text-sm font-medium">Hide empty repositories</span>
               <span className="mt-1 block text-xs text-muted-foreground">{visibilityLabel}</span>
             </div>
             <button
               type="button"
               role="switch"
               aria-checked={hideEmptyWorkstreams}
-              aria-label="Hide empty workstreams"
+              aria-label="Hide empty repositories"
               className={cn(
                 "relative h-6 w-11 shrink-0 rounded-full bg-muted transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 hideEmptyWorkstreams && "bg-primary",
@@ -223,7 +223,7 @@ export function DashboardSettingsDialog({
 }
 
 function workstreamHiddenSummary(hiddenWorkstreamCount: number) {
-  if (hiddenWorkstreamCount <= 0) return "Only repos with requests, slices, or work packages appear.";
+  if (hiddenWorkstreamCount <= 0) return "Only repos with requests, plan nodes, or slices appear.";
   return hiddenWorkstreamCount === 1 ? "1 empty repo hidden" : `${hiddenWorkstreamCount} empty repos hidden`;
 }
 
@@ -322,10 +322,12 @@ export function ArchivedRequestsDialog({ requests, onRestoreWorkRequest }: { req
 }
 
 export function RepoSummaryPlate({
+  icon,
   label,
   value,
   tone,
 }: {
+  icon?: React.ReactNode;
   label: string;
   value: number;
   tone: RepoSummaryPlateTone;
@@ -334,6 +336,7 @@ export function RepoSummaryPlate({
 
   return (
     <div className={cn("inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium", REPO_SUMMARY_PLATE_TONES[tone])}>
+      {icon ? <span className="repo-summary-plate-icon">{icon}</span> : null}
       <span className="font-semibold tabular-nums">
         <NumberWheel value={value} motion={countMotion} compact />
       </span>

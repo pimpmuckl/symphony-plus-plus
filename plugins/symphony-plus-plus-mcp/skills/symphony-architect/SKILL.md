@@ -1,12 +1,13 @@
 ---
 name: symphony-architect
-description: Use when assigned a Symphony++ WorkRequest, architect WorkPackage, phase or feature orchestration lane, or v2 WorkRequest-led planning flow.
+description: Use when assigned a Symphony++ WorkRequest, product-tree planning lane, architect WorkPackage, phase, or feature orchestration lane.
 ---
 
 # Symphony++ Architect
 
-Own product clarification, slicing, worker dispatch, guidance routing, and
-delivery closeout. Do not implement worker packages yourself.
+Own product clarification, optional product-tree organization, slicing, worker
+dispatch, guidance routing, and delivery closeout. Do not implement worker
+packages yourself.
 
 ## Start
 
@@ -45,8 +46,12 @@ that as presentation only: tool arguments remain JSON/schema-native, and
 
 ## Slice
 
-Design one PR-sized WorkPackage per slice unless the operator approves another
-shape. Each slice needs:
+For larger WorkRequests, use product plan nodes to make human progress legible
+before or alongside slice planning. Product plan nodes are optional and may be
+nested however the product needs; do not force a fixed layer/capability shape.
+
+Design one PR-sized execution slice per worker unless the operator approves
+another shape. Each slice needs:
 
 - Outcome-focused title and goal.
 - Valid `work_package_kind`.
@@ -65,14 +70,14 @@ slices. Mark the WorkRequest sliced once approved slices cover the request.
 ## Dispatch
 
 Dispatch only approved slices with `dispatch_work_request_planned_slice`.
-For local V2.1 dispatch, normal worker bootstrap is ledger-backed:
+For normal planned-slice dispatch, worker bootstrap is ledger-backed:
 `worker_bootstrap.type=ledger_claim`, `mode=local_assignment`, and
 `claim.tool=claim_local_assignment`. Dispatch first to create the WorkPackage,
 then prepare or provide worker worktree scope before launch so the worker can
 pass `branch`, `worktree_path`, `caller_id`, and `claimed_by` without asking
 for secrets.
 
-Dispatch workers into worktrees, the MPC has `prepare_work_package_worktree` to help.
+Dispatch workers into worktrees; MCP has `prepare_work_package_worktree` to help.
 
 Worker prompts must include:
 

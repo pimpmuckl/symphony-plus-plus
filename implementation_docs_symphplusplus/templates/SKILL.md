@@ -15,7 +15,7 @@ WorkKey/private-handoff bootstrap.
    dispatch.
    Trusted local HTTP sessions may show worker WorkPackage tool schemas before
    claim; schema visibility is not authority, so claim first.
-2. For planned-slice/ledger-dispatched V2.1 assignments, claim with
+2. For planned-slice ledger-dispatched assignments, claim with
    `claim_local_assignment` using the dispatch fields plus runtime `branch`,
    `worktree_path`, `caller_id`, and `claimed_by`.
 3. Replay the same local claim after reconnects. The server heartbeats the

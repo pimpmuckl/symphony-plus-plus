@@ -1,5 +1,8 @@
 # Execution Atlas Dashboard UX
 
+Historical design context only. Execution Atlas was an earlier V3 brainstorm;
+the active V3 contract is `../V3_PRODUCT_TREE_REWORK.md`.
+
 The Execution Atlas dashboard should be the default human cockpit for
 architect-led feature work.
 

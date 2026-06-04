@@ -17,8 +17,8 @@ Dedicated S++ workflows can copy or reference that package's generic
 command-backed `symphony_plus_plus` launcher when they explicitly need MCP.
 
 MCP discovery is loaded by the Codex host, not by the skill text in an
-already-running thread. During feature-branch development, do not refresh or
-sync user-local plugin caches just to test repo skill edits; local
+already-running thread. During normal feature-branch development, do not
+refresh or sync user-local plugin caches just to test repo skill edits; local
 cache/plugin adoption happens only at final feature-branch cutover. After that
 cutover, restart or reload Codex and open a new session before treating stale
 skill metadata as a repo packaging failure.
@@ -82,7 +82,7 @@ static URL.
 Do not refresh user-local plugin caches as part of normal feature-branch
 worker dispatch.
 
-Plugin installation is not worker package dispatch. Normal V2.1 worker dispatch
+Plugin installation is not worker package dispatch. Normal planned-slice worker dispatch
 emits a `worker_bootstrap` payload with `type: ledger_claim`, `mode:
 local_assignment`, and `claim.tool: claim_local_assignment`. The worker uses
 that ledger-backed claim plus local runtime `branch`, `worktree_path`, and

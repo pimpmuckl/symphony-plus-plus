@@ -66,8 +66,8 @@ export type SliceEntry = {
 
 export type WorkstreamCategoryCounts = {
   requests: number;
+  planNodes: number;
   slices: number;
-  workPackages: number;
 };
 
 export type WorkstreamRow = {

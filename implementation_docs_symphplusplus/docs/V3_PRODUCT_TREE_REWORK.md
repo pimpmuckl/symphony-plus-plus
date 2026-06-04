@@ -1,0 +1,171 @@
+# Symphony++ V3 Product Tree Rework
+
+## North Star
+
+V3 makes the cockpit answer the product-progress question first:
+
+```text
+Can a human open the board, glance at one WorkRequest row, expand it, and see
+what product work is done, partial, blocked, or still missing?
+```
+
+The v2 board exposes real state, but its top-level model is too technical:
+
+```text
+Requests | Slices | Work Packages
+```
+
+That reads like a dispatch ledger. V3 keeps the ledger authoritative, but the
+default cockpit becomes:
+
+```text
+WorkRequest
+|-- optional product plan node
+|   |-- optional product plan node
+|   |   `-- planned slices
+|   `-- planned slices
+`-- planned slices
+```
+
+The tree is optional. A simple hotfix can be a single WorkRequest with direct
+slices and no extra product structure. A larger implementation can use as much
+nesting as the architect thinks is useful.
+
+## Product Contract
+
+### WorkRequest
+
+The WorkRequest remains the top-level product intent, operator surface, and
+human-facing row on the cockpit.
+
+The cockpit renders one collapsed line per WorkRequest. Expanding the line
+shows the WorkRequest's optional product plan tree and planned slices.
+
+### Product Plan Node
+
+A product plan node is an architect-authored product grouping. It is not locked
+to names such as layer, capability, topic, epic, or milestone.
+
+Recommended examples:
+
+```text
+Backend
+Kraken P1.1 contract alignment
+VOD Intelligence serving substrate
+Dashboard UX
+Cutover and migration
+```
+
+Fields:
+
+```text
+id
+work_request_id
+parent_id nullable
+title
+description nullable
+node_kind nullable
+completion_mark
+metadata
+position
+created_by
+created_at
+```
+
+`node_kind` is only a label. The schema must not require a fixed hierarchy such
+as `layer -> capability`.
+
+### Planned Slice
+
+A planned slice remains the architect-to-worker execution unit.
+
+In V3, slices can link to one product plan node or remain direct children of
+the WorkRequest. Direct slices are valid and expected for simple work.
+
+### WorkPackage
+
+WorkPackages remain execution and audit records:
+
+- worker claim scope
+- grant ownership
+- branch and PR metadata
+- findings, progress, artifacts, reviews, readiness evidence
+- lifecycle and recovery state
+
+They are no longer a primary logical row in the product board. The cockpit can
+still open package detail from a linked slice when a human needs evidence.
+
+## Completion Marks
+
+Product plan nodes use `completion_mark`, not `status`.
+
+```text
+done
+partial
+not_done
+deferred
+unknown
+```
+
+The projection also returns a computed mark from linked slices. Explicit marks
+can encode product decisions; computed marks keep the board grounded in ledger
+truth.
+
+## Dependency Model
+
+Dependency edges are explicit and optional.
+
+Supported endpoints:
+
+```text
+product_node
+planned_slice
+```
+
+Supported edge kinds:
+
+```text
+depends_on
+blocks
+enables
+validates
+replaces
+supersedes
+recut_from
+related
+```
+
+Hard edges such as `depends_on` and `blocks` require a reason or decision
+reference. This keeps the board from inventing blockers from vague proximity.
+
+## Current Implementation Slice
+
+This branch introduces the v3 foundation:
+
+- `sympp_product_tree_nodes`
+- `sympp_product_tree_slice_links`
+- `sympp_product_tree_dependency_edges`
+- `sympp_product_tree_revisions`
+- backend repository and projection modules
+- `product_tree` on WorkRequest detail payloads
+- cockpit WorkRequest rows collapsed by default
+- expanded arbitrary nested plan-node tree with linked slice rows
+- Vite port override for isolated preview servers
+
+Architect-facing MCP mutation tools for maintaining product trees are a follow-up
+slice. Until then, migrated preview databases or direct repository helpers can
+seed product trees for validation.
+
+## Cutover Shape
+
+1. Land schema and read projection behind the existing local cockpit.
+2. Migrate a copy of the current local SQLite DB and preview the v3 cockpit.
+3. Seed representative WorkRequests with product plan nodes and slice links.
+4. Add MCP tools for architect-authored product tree maintenance.
+5. Backfill existing large WorkRequests opportunistically; leave simple work as
+   direct-slice WorkRequests.
+6. Make the product-tree cockpit the default board once the copied-DB preview
+   proves stable.
+
+The live ledger should not be rewritten in-place until the copied-DB preview is
+validated.

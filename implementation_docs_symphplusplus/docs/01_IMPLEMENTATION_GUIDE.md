@@ -6,28 +6,31 @@ in the ledger, and when a package is ready for human merge.
 
 ## What Symphony++ Is
 
-Symphony++ is a permissioned work-package layer on top of the upstream Symphony
-Elixir runtime. Operators create bounded `WorkPackage` records, mint scoped
-worker or architect grants, and expose package state as MCP resources that look
-like planning files. Workers update those virtual resources through MCP tools,
-attach branch/PR/review evidence, and can mark a package ready only when
-server-side readiness gates pass.
+Symphony++ is a product-tree cockpit plus a permissioned execution layer on top
+of the upstream Symphony Elixir runtime. Operators and architects manage
+`WorkRequest` records as the human-facing product unit. Larger requests can add
+optional nested product plan nodes so progress is visible by product area.
+Architects dispatch planned slices to workers. The resulting `WorkPackage`
+records remain scoped execution/audit units for grants, worktrees, virtual
+planning resources, branch/PR/review evidence, and readiness gates.
 
 The source-of-truth split is:
 
-- Symphony++ ledger: package state, permissions, virtual planning files,
-  blockers, findings, progress, readiness evidence, and audit events.
+- Symphony++ ledger: WorkRequests, product plan nodes, planned slices,
+  WorkPackages, permissions, virtual planning files, blockers, findings,
+  progress, readiness evidence, and audit events.
 - GitHub: code, branches, commits, pull requests, CI, and review status.
 - Linear: optional human/project mirror when configured.
 - Codex/Symphony: execution of isolated agent runs.
 
 ## Choose The Work Shape
 
-Use a `WorkRequest` before creating WorkPackages when the human has a product
-goal, target repo/project, branch guidance, constraints, and a desired dispatch
-shape but still needs architect clarification and slicing. The WorkRequest is a
-pre-WorkPackage runtime intake object backed by the Symphony++ ledger; see
-`13_WORKREQUEST_CONTRACT.md` and `09_OPERATIONAL_RUNBOOK.md`.
+Use a `WorkRequest` for product-facing work. It captures the product goal,
+target repo/project, branch guidance, constraints, and desired dispatch shape.
+For small hotfixes it may stay as one direct request with one slice. For larger
+implementations, the architect can organize it with optional product plan nodes
+before dispatching slices. See `V3_PRODUCT_TREE_REWORK.md`,
+`13_WORKREQUEST_CONTRACT.md`, and `09_OPERATIONAL_RUNBOOK.md`.
 
 The normal human flow is: create the WorkRequest in the local operator cockpit,
 choose `Start agent questions` on the WorkRequest detail page, prepare the
@@ -42,11 +45,12 @@ human decisions should use the structured `decision_prompt` shape so the
 operator sees a TL;DR, details, concrete options with pros/cons, and the always
 available freeform redirect path.
 
-Use a standalone package for one bounded quick fix, hotfix, investigation, or
-review-only task. Standalone packages do not need a phase branch or architect.
-On this feature branch, standalone `mix sympp.create_work` remains a
-legacy/recovery private-store bootstrap path; use planned-slice dispatch for
-normal ledger-backed local claims.
+Use a standalone execution package only for one already-bounded quick fix,
+hotfix, investigation, or review-only task that does not need product-tree
+planning. Standalone packages do not need a phase branch or architect.
+Standalone `mix sympp.create_work` remains a legacy/recovery private-store
+bootstrap path; use planned-slice dispatch for normal ledger-backed local
+claims.
 
 Use an architect-led package when the work must be split across multiple child
 packages, dependency order matters, or one operator wants an architect agent to
@@ -104,10 +108,11 @@ WorkPackage ledger, and the operator-approved scope. It may create same-phase
 child packages, mint narrower child worker grants, inspect child progress, and
 approve ready children for phase integration when gates still pass.
 
-For v2 WorkRequest-led work, the architect first turns the clarified request
-into an architect plan and slice plan. Feature work defaults to one feature
-branch with smaller PRs targeting that feature branch. Narrow fixes may target
-`main` directly when the plan records why a feature branch would add no value.
+For WorkRequest-led work, the architect clarifies product intent, adds optional
+product plan nodes when they improve one-glance progress, and turns the result
+into a slice plan. Feature work defaults to one feature branch with smaller PRs
+targeting that feature branch. Narrow fixes may target `main` directly when the
+plan records why a feature branch would add no value.
 
 Architect tools record local Symphony++ state; `merge_child_into_phase` records
 a merge artifact and lifecycle transition but does not perform a live Git

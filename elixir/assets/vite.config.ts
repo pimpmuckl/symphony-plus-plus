@@ -5,7 +5,7 @@ import path from "node:path";
 import { defineConfig } from "vite";
 
 const apiOrigin = process.env.SYMPP_API_ORIGIN || "http://127.0.0.1:19998";
-const dashboardPort = 19999;
+const dashboardPort = Number(process.env.SYMPP_DASHBOARD_PORT || 19999);
 const boardPath = "/sympp/board";
 const operatorProxy = {
   "/api": apiOrigin,

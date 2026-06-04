@@ -1,7 +1,13 @@
 # Symphony++ V3: Execution Atlas
 
-Execution Atlas is the V3 product direction for the human-facing Symphony++
-cockpit.
+Execution Atlas was the first V3 product brainstorm for the human-facing
+Symphony++ cockpit. Treat it as useful design context, not the binding V3
+schema.
+
+The current V3 implementation contract is now
+`implementation_docs_symphplusplus/docs/V3_PRODUCT_TREE_REWORK.md`: optional,
+arbitrarily nested WorkRequest product plan nodes with planned slices as the
+execution units and WorkPackages kept as execution/audit evidence.
 
 It turns WorkRequests, planned slices, WorkPackages, PRs, blockers, reviews,
 lineage, and decisions into a human-readable product progress map. The goal is
@@ -118,5 +124,6 @@ V3 makes Symphony++ understandable:
 - The operator can see done, partial, missing, deferred, blocked, stale, active,
   and next work without reading transcripts.
 
-The raw board remains useful for audit and operations. Execution Atlas becomes
-the default view for feature/product supervision.
+The raw board remains useful for audit and operations. The active V3
+product-tree cockpit supersedes this Atlas brainstorm as the default view for
+feature/product supervision.

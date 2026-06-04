@@ -106,7 +106,7 @@ keep generic worker, review-suite, and
 The doctor checks source/cache/config and the local HTTP daemon; it does not
 inspect the tool list already registered inside an open Codex model session.
 After enablement or cache changes, the operator must restart or reload the
-dedicated MCP-enabled session before expecting tools to appear. During V2.1
+dedicated MCP-enabled session before expecting tools to appear. During normal
 feature-branch work, local plugin/cache sync is not part of the normal loop;
 perform cache adoption only at final feature-branch cutover.
 For source-only repair commands such as cockpit startup and HTTP smoke
@@ -140,7 +140,7 @@ uses the claimed `Mcp-Session-Id` for `tools/list`, `get_current_assignment`,
 `resources/read sympp://assignment/current`, and `resources/list`. Text and
 JSON output redact claimed session ids and the raw work key. Do not use pasted
 logs from a custom debug path that prints the environment value or claimed
-`Mcp-Session-Id`. Normal V2.1 worker dispatch validates through
+`Mcp-Session-Id`. Normal planned-slice worker dispatch validates through
 `claim_local_assignment` instead.
 
 This slice intentionally does not add browser CORS/preflight support, cookies,
@@ -317,7 +317,7 @@ version/source, mode, ledger reachability, and a redacted ledger identity; it
 does not expose WorkPackage data, raw worker secrets, bearer tokens, database
 passwords, or private-store handoff contents.
 
-`claim_local_assignment` is the normal V2.1 WorkPackage worker claim. It
+`claim_local_assignment` is the normal planned-slice WorkPackage worker claim. It
 requires `repo`, `base_branch`, `work_package_id`, `branch`, `worktree_path`,
 `caller_id`, and `claimed_by`; `work_request_id` is accepted when dispatch
 linked the package to a planned slice. It is available only on trusted local
@@ -842,9 +842,8 @@ same child, ignores unrelated normal worker grants, and caps child capabilities
 to the current grant. Expiry is also capped when the architect grant has an
 explicit expiry: child expiry defaults to the architect expiry and cannot exceed
 it. When the architect grant is non-expiring, child worker grants default to
-non-expiring and may specify a future explicit expiry. This is the
-pre-production v1 contract and is not a backwards-compatible replacement/remint
-promise. The raw child worker
+non-expiring and may specify a future explicit expiry. This contract is not a
+backwards-compatible replacement/remint promise. The raw child worker
 secret is stored through the private SecretHandoff path and is not returned in
 tool content; the response uses `worker_grant.secret_handoff` plus
 `worker_grant.secret_in_response` set to `false`, and omits `secret` and

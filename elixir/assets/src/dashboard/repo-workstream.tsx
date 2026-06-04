@@ -1,6 +1,6 @@
 import type { ActiveBlockingEdge, CopyArchitectHandoff, GuidanceItem, WorkRequestDetail } from "@/types/dashboard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ChevronRight, GitBranch } from "lucide-react";
+import { AlertTriangle, ChevronRight, GitBranch, GitPullRequest, Layers3, MessageSquareText, Split } from "lucide-react";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import type { BoardLayoutMode as WorkstreamLayoutMode } from "@/components/dashboard/board-layout";
 import { cn } from "@/lib/utils";
@@ -12,12 +12,11 @@ import { RepoSummary } from "./dashboard-data";
 import { RepoSummaryPlate } from "./dashboard-settings";
 import { WorkstreamBoard } from "./workstream-board";
 import { defaultRepoWorkstreamOpen, readStoredFinishedRequestChildren, readStoredRepoWorkstreamOpen, repoWorkstreamStateKey, writeStoredFinishedRequestChildren, writeStoredRepoWorkstreamOpen } from "./dashboard-persistence";
-import { finishedRequestChildrenStorageKey, workstreamCategoryCounts } from "./workstream-data";
+import { finishedRequestChildrenStorageKey, linkedPackageIdsForDetails, workstreamCategoryCounts } from "./workstream-data";
 
 export function RepoWorkstream({
   repo,
   requestDetailsByRepo,
-  requestLinkedPackageIds,
   activeBlockingEdges,
   onSelectGuidance,
   onSelectCard,
@@ -27,7 +26,6 @@ export function RepoWorkstream({
 }: {
   repo: RepoSummary;
   requestDetailsByRepo: Map<string, WorkRequestDetail[]>;
-  requestLinkedPackageIds: ReadonlySet<string>;
   activeBlockingEdges: ActiveBlockingEdge[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
@@ -38,10 +36,8 @@ export function RepoWorkstream({
   const stateKey = repoWorkstreamStateKey(repo);
   const contentId = useId();
   const repoDetails = requestDetailsByRepo.get(repo.repoKey) ?? EMPTY_WORK_REQUEST_DETAILS;
-  const unlinkedPackages = useMemo(
-    () => repo.packages.filter((pkg) => !requestLinkedPackageIds.has(pkg.id)),
-    [repo.packages, requestLinkedPackageIds],
-  );
+  const linkedPackageIds = useMemo(() => linkedPackageIdsForDetails(repoDetails), [repoDetails]);
+  const unlinkedPackages = useMemo(() => repo.packages.filter((pkg) => !linkedPackageIds.has(pkg.id)), [repo.packages, linkedPackageIds]);
   const [expandedFinishedRequests, setExpandedFinishedRequests] = useState(() => readStoredFinishedRequestChildren());
   const setFinishedRequestChildrenOpen = useCallback((workRequestId: string, open: boolean) => {
     setExpandedFinishedRequests(() => {
@@ -50,10 +46,7 @@ export function RepoWorkstream({
       return next;
     });
   }, [stateKey]);
-  const categoryCounts = useMemo(
-    () => workstreamCategoryCounts(repoDetails, repo.packages, unlinkedPackages, expandedFinishedRequests, stateKey),
-    [expandedFinishedRequests, repo.packages, repoDetails, stateKey, unlinkedPackages],
-  );
+  const categoryCounts = useMemo(() => workstreamCategoryCounts(repoDetails), [repoDetails]);
   const [open, setOpen] = useState(() => readStoredRepoWorkstreamOpen(stateKey, defaultRepoWorkstreamOpen(repo)));
   const [openMotion, setOpenMotion] = useState(false);
   const previousOpenRef = useRef(open);
@@ -97,7 +90,7 @@ export function RepoWorkstream({
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <Card
-        className="dashboard-glass-surface workstream-repo-card motion-card overflow-hidden"
+        className="dashboard-glass-surface workstream-repo-card motion-card"
         data-layout={layoutMode}
         data-open={open ? "true" : "false"}
       >
@@ -129,7 +122,11 @@ export function RepoWorkstream({
             </div>
           </div>
         </CardHeader>
-        <CollapsibleContent id={contentId} className="collapsible-content">
+        <CollapsibleContent
+          id={contentId}
+          className="collapsible-content workstream-repo-content"
+          data-board-open-motion={openMotion ? "open" : "idle"}
+        >
           <CardContent className="p-3 sm:p-4" data-board-open-motion={openMotion ? "open" : "idle"}>
             <WorkstreamBoard
               repoDetails={repoDetails}
@@ -155,26 +152,26 @@ export function RepoWorkstream({
 
 export function RepoSummaryStrip({ repo, categoryCounts }: { repo: RepoSummary; categoryCounts: WorkstreamCategoryCounts }) {
   const progress = [
-    { label: "Requests", value: categoryCounts.requests, tone: "requested" },
-    { label: "Slices", value: categoryCounts.slices, tone: "active" },
-    { label: "Work Packages", value: categoryCounts.workPackages, tone: "implementing" },
+    { icon: <GitPullRequest className="size-3.5" />, label: "Requests", value: categoryCounts.requests, tone: "requested" },
+    { icon: <Layers3 className="size-3.5" />, label: "Plan Nodes", value: categoryCounts.planNodes, tone: "implementing" },
+    { icon: <Split className="size-3.5" />, label: "Slices", value: categoryCounts.slices, tone: "active" },
   ] as const;
   const attention = [
-    { label: "Guidance Needed", value: repo.guidanceCount, tone: "guidance" },
-    { label: "Active Blockers", value: repo.blockerCount, tone: "blocker" },
+    { icon: <MessageSquareText className="size-3.5" />, label: "Guidance Needed", value: repo.guidanceCount, tone: "guidance" },
+    { icon: <AlertTriangle className="size-3.5" />, label: "Active Blockers", value: repo.blockerCount, tone: "blocker" },
   ] as const;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2 md:justify-end">
       <div className="flex flex-wrap items-center gap-1.5">
         {progress.map((item) => (
-          <RepoSummaryPlate key={item.label} label={item.label} value={item.value} tone={item.tone} />
+          <RepoSummaryPlate key={item.label} icon={item.icon} label={item.label} value={item.value} tone={item.tone} />
         ))}
       </div>
       <div className="hidden h-6 w-px bg-border md:block" />
       <div className="flex flex-wrap items-center gap-1.5">
         {attention.map((item) => (
-          <RepoSummaryPlate key={item.label} label={item.label} value={item.value} tone={item.tone} />
+          <RepoSummaryPlate key={item.label} icon={item.icon} label={item.label} value={item.value} tone={item.tone} />
         ))}
       </div>
     </div>

@@ -147,7 +147,7 @@ export function BlockerPreviewCard({
 const finishedHighlightLanes: { kind: FinishedHighlightKind; title: string; empty: string }[] = [
   { kind: "Request", title: "Requests", empty: "No finished requests" },
   { kind: "Slice", title: "Slices", empty: "No finished slices" },
-  { kind: "Work Package", title: "Work Packages", empty: "No finished packages" },
+  { kind: "Work Package", title: "Execution", empty: "No finished execution records" },
 ];
 
 export function FinishedHighlightsBoard({

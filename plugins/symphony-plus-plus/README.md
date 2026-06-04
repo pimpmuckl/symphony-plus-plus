@@ -99,9 +99,10 @@ architect skills from the default plugin. Those skills ship only in the sibling
 opt-in MCP plugin.
 
 The default plugin source and refreshed default cache must not contain root
-`.mcp.json`. WorkPackage workers should use the scoped `run-mcp` command emitted
-by Symphony++ dispatch. Dedicated plugin-based S++ MCP sessions can install the
-sibling `plugins/symphony-plus-plus-mcp` package in an explicit Codex config or
+`.mcp.json`. Planned-slice WorkPackage workers should use the ledger-backed
+`claim_local_assignment` metadata emitted by Symphony++ dispatch. Dedicated
+plugin-based S++ MCP sessions can install the sibling
+`plugins/symphony-plus-plus-mcp` package in an explicit Codex config or
 alternate Codex home. Do not enable that opt-in MCP plugin in a generic/global
 config unless every session on that config should start S++ MCP.
 
@@ -472,11 +473,12 @@ through MCP, attach branch/PR/review evidence, and mark ready only after package
 gates pass. Do not paste raw worker secrets into prompts, command lines, PR
 bodies, review text, or durable logs.
 
-Plugin install is not a substitute for a per-worker private handoff. Worker
-package dispatch should still use the `run-mcp` command emitted
-by `mix sympp.create_work` or planned-slice dispatch, because that command
-connects the MCP process to the private worker-secret store and stable
-`claimed_by` identity for exactly one WorkPackage.
+Plugin install is not a substitute for a per-worker claim. Planned-slice worker
+package dispatch should use the emitted ledger-backed
+`claim_local_assignment` bootstrap plus the prepared branch, worktree path,
+caller id, and stable `claimed_by` identity for exactly one WorkPackage.
+`mix sympp.create_work` and `run-mcp` private-store bootstrap remain
+legacy/recovery paths only.
 
 Worker-secret bootstrap metadata is emitted by `mix sympp.create_work` after it
 stores the one-time secret in a private local store. In `auto` mode, local
@@ -501,8 +503,8 @@ options, tradeoffs, and the freeform redirect path. Plain questions remain
 appropriate for simple missing facts.
 
 Use `symphony-plus-plus-mcp:symphony-architect` when assigned a Symphony++
-WorkRequest, an architect WorkPackage, phase or feature orchestration, or v2
-WorkRequest-led planning. Dispatch worker prompts should name
+WorkRequest, product-tree planning lane, an architect WorkPackage, phase, or
+feature orchestration. Dispatch worker prompts should name
 `symphony-plus-plus:symphony-worker`; WorkPackage-backed workers should also use
 `symphony-plus-plus-mcp:symphony-work-package`.
 

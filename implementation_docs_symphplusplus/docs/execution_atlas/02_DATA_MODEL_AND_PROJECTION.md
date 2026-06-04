@@ -1,5 +1,8 @@
 # Execution Atlas Data Model And Projection
 
+Historical design context only. Execution Atlas was an earlier V3 brainstorm;
+the active V3 contract is `../V3_PRODUCT_TREE_REWORK.md`.
+
 Execution Atlas should be a small persisted semantic map plus a backend-derived
 projection over the existing Symphony++ ledger.
 

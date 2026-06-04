@@ -25,6 +25,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.{Client, DryClient, PullRequest, PullRequestArtifact}
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
@@ -12125,25 +12126,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp review_suite_result_arguments(arguments, %Session{} = session) do
-    cond do
-      review_suite_round_id_argument?(arguments) ->
-        resolved_review_suite_result_arguments(arguments, session)
-
-      explicit_review_suite_result_arguments?(arguments) ->
-        explicit_review_suite_result_arguments(arguments, session)
-
-      true ->
-        explicit_review_suite_result_arguments(arguments, session)
+    if review_suite_round_id_argument?(arguments) do
+      resolved_review_suite_result_arguments(arguments, session)
+    else
+      explicit_review_suite_result_arguments(arguments, session)
     end
-  end
-
-  defp explicit_review_suite_result_arguments?(arguments) do
-    Enum.all?(["head_sha", "suite", "anchor", "summary", "status", "verdict"], fn key ->
-      case Map.get(arguments, key) do
-        value when is_binary(value) -> String.trim(value) != ""
-        _value -> false
-      end
-    end)
   end
 
   defp review_suite_round_id_argument?(arguments) do
@@ -12440,7 +12427,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp maybe_append_review_suite_artifact(repo, work_package_id, head_sha, artifacts) do
-    if persisted_review_suite_artifact?(artifacts, work_package_id, head_sha) do
+    if MetadataProjection.persisted_review_suite_artifact?(artifacts, work_package_id, head_sha) do
       :ok
     else
       insert_review_suite_artifact(repo, work_package_id, head_sha)
@@ -12471,7 +12458,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp replay_review_suite_artifact_result(work_package_id, head_sha, artifacts) do
-    if persisted_review_suite_artifact?(artifacts, work_package_id, head_sha) do
+    if MetadataProjection.persisted_review_suite_artifact?(artifacts, work_package_id, head_sha) do
       :ok
     else
       {:error, :id_already_exists}
@@ -12481,15 +12468,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp review_suite_artifact_id(work_package_id, head_sha) do
     material = [work_package_id, head_sha, "review-suite-result.json"] |> Enum.join(":")
     "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
-  end
-
-  defp persisted_review_suite_artifact?(artifacts, work_package_id, head_sha) do
-    expected_id = review_suite_artifact_id(work_package_id, head_sha)
-
-    Enum.any?(
-      artifacts,
-      &(&1.id == expected_id and &1.work_package_id == work_package_id and &1.kind == "review_suite" and &1.path == "review-suite-result.json")
-    )
   end
 
   defp scoped_progress_idempotency_key("submit_review_package", idempotency_key, %Session{} = session) do
@@ -12680,49 +12658,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp review_suite_result_present?(_progress_events, _artifacts, _work_package_id, nil), do: false
 
   defp review_suite_result_present?(progress_events, artifacts, work_package_id, readiness_head_sha) do
-    case latest_review_suite_result_event(progress_events, work_package_id, readiness_head_sha) do
+    case MetadataProjection.latest_review_suite_result_event(progress_events, work_package_id, readiness_head_sha) do
       %ProgressEvent{payload: payload} ->
-        valid_review_suite_result_payload?(payload, work_package_id, readiness_head_sha) and
-          persisted_review_suite_artifact?(artifacts, work_package_id, Map.fetch!(payload, "head_sha"))
+        MetadataProjection.valid_review_suite_result_payload?(payload, work_package_id, readiness_head_sha) and
+          MetadataProjection.persisted_review_suite_artifact?(artifacts, work_package_id, Map.fetch!(payload, "head_sha"))
 
       nil ->
         false
     end
   end
 
-  defp latest_review_suite_result_event(progress_events, work_package_id, readiness_head_sha) do
-    progress_events
-    |> current_head_review_suite_result_events(work_package_id, readiness_head_sha)
-    |> List.last()
-  end
-
-  defp current_head_review_suite_result_events(progress_events, work_package_id, readiness_head_sha) do
-    progress_events
-    |> chronological_progress_events()
-    |> Enum.filter(&(dedicated_review_suite_result_event?(&1, work_package_id) and review_head_matches?(&1.payload, readiness_head_sha)))
-  end
-
   defp dedicated_review_suite_result_event?(%ProgressEvent{idempotency_key: idempotency_key} = event, work_package_id) do
     payload_type?(event, "review_suite_result", "attach_review_suite_result") and
       is_binary(idempotency_key) and String.starts_with?(idempotency_key, "attach_review_suite_result:#{work_package_id}:")
   end
-
-  defp valid_review_suite_result_payload?(%{} = payload, work_package_id, readiness_head_sha) do
-    review_suite_result_payload_in_scope?(payload, work_package_id, readiness_head_sha) and
-      ReviewProfiles.review_suite_payload_passes?(payload)
-  end
-
-  defp valid_review_suite_result_payload?(_payload, _work_package_id, _readiness_head_sha), do: false
-
-  defp review_suite_result_payload_in_scope?(%{} = payload, work_package_id, readiness_head_sha) do
-    Map.get(payload, "work_package_id") == work_package_id and
-      review_head_matches?(payload, readiness_head_sha) and
-      filled_string?(Map.get(payload, "suite")) and
-      filled_string?(Map.get(payload, "anchor")) and
-      filled_string?(Map.get(payload, "summary"))
-  end
-
-  defp review_suite_result_payload_in_scope?(_payload, _work_package_id, _readiness_head_sha), do: false
 
   defp review_package_missing?(state, required_review_lanes) do
     readiness_head_sha = review_head_sha_for_readiness(state)
@@ -12804,10 +12753,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     payloads =
       state.progress_events
-      |> current_head_review_suite_result_events(state.work_package.id, readiness_head_sha)
+      |> MetadataProjection.current_head_review_suite_result_events(state.work_package.id, readiness_head_sha)
       |> Enum.map(& &1.payload)
-      |> Enum.filter(&review_suite_result_payload_in_scope?(&1, state.work_package.id, readiness_head_sha))
-      |> Enum.filter(&persisted_review_suite_artifact?(state.artifacts, state.work_package.id, Map.fetch!(&1, "head_sha")))
+      |> Enum.filter(&MetadataProjection.review_suite_result_payload_in_scope?(&1, state.work_package.id, readiness_head_sha))
+      |> Enum.filter(&MetadataProjection.persisted_review_suite_artifact?(state.artifacts, state.work_package.id, Map.fetch!(&1, "head_sha")))
 
     payloads != [] and
       Enum.all?(required_lanes, &ReviewProfiles.review_suite_payloads_satisfy_required_profile?(payloads, &1))
@@ -12817,8 +12766,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     readiness_head_sha = review_head_sha_for_readiness(state)
 
     event =
-      latest_review_suite_result_event(state.progress_events, state.work_package.id, readiness_head_sha) ||
-        latest_review_suite_result_event(state.progress_events, state.work_package.id, :any_head)
+      MetadataProjection.latest_review_suite_result_event(state.progress_events, state.work_package.id, readiness_head_sha) ||
+        MetadataProjection.latest_review_suite_result_event(state.progress_events, state.work_package.id, :any_head)
 
     case event do
       %ProgressEvent{payload: payload} when is_map(payload) ->

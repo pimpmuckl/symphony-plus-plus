@@ -1,14 +1,16 @@
 # Symphony++
 
-Symphony++ is a permissioned work-package control plane built on the OpenAI
-Symphony Elixir runtime. Operators create bounded WorkPackages, mint scoped
-worker or architect grants, expose package state as virtual planning files
-through MCP, attach GitHub/review evidence, and gate readiness before human
-merge.
+Symphony++ is a product-tree cockpit and permissioned execution control plane
+built on the OpenAI Symphony Elixir runtime. Operators and architects manage
+WorkRequests as the product-facing unit, optionally organize them with nested
+product plan nodes, dispatch planned slices to workers, and keep WorkPackages
+as scoped execution/audit records with grants, evidence, reviews, and readiness
+gates.
 
 The upstream Symphony runtime remains in `elixir/`. Symphony++ extends it with
-WorkPackage ledger, access grant, MCP, dashboard, GitHub/review, and release
-readiness surfaces without replacing the base Linear-oriented runtime docs.
+WorkRequest/product-tree projections, WorkPackage ledger records, access
+grants, MCP, dashboard, GitHub/review, and release readiness surfaces without
+replacing the base Linear-oriented runtime docs.
 
 ## Start Here
 
@@ -17,7 +19,9 @@ readiness surfaces without replacing the base Linear-oriented runtime docs.
 - Runtime setup and workflow configuration: `elixir/README.md`
 - Operator/product guide:
   `implementation_docs_symphplusplus/docs/01_IMPLEMENTATION_GUIDE.md`
-- Current product and architecture contract:
+- V3 product-tree cockpit contract:
+  `implementation_docs_symphplusplus/docs/V3_PRODUCT_TREE_REWORK.md`
+- Current system and architecture contract:
   `implementation_docs_symphplusplus/docs/02_SYSTEM_SPEC.md`
 - Solo Session local ledger contract:
   `implementation_docs_symphplusplus/docs/14_SOLO_SESSION_CONTRACT.md`
@@ -28,7 +32,7 @@ readiness surfaces without replacing the base Linear-oriented runtime docs.
   `plugins/symphony-plus-plus/README.md`
 - Opt-in MCP plugin for WorkPackage/architect sessions:
   `plugins/symphony-plus-plus-mcp/README.md`
-- V2.1 ledger-claim and local cache cutover notes:
+- Symphony++ operator documentation index:
   `implementation_docs_symphplusplus/README.md`
 - Release validation:
   `implementation_docs_symphplusplus/docs/11_RELEASE_VALIDATION.md`
@@ -38,12 +42,16 @@ readiness surfaces without replacing the base Linear-oriented runtime docs.
   `implementation_docs_symphplusplus/docs/04_MCP_AND_SKILL_CONTRACT.md`
 - Dashboard/operator cockpit:
   `implementation_docs_symphplusplus/docs/07_DASHBOARD_SPEC.md`
-- V3 Execution Atlas product direction:
+- V3 copied-ledger preview and cutover:
+  `implementation_docs_symphplusplus/runbooks/V3_PRODUCT_TREE_CUTOVER.md`
+- Execution Atlas brainstorm/design context:
   `implementation_docs_symphplusplus/docs/execution_atlas/README.md`
 
-For new Symphony++ work, start from a live WorkPackage or operator-approved
-package request. Do not treat historical implementation phase notes as current
-assignment scope.
+For new Symphony++ product work, start from a WorkRequest and use optional
+product plan nodes only when they make progress clearer. For assigned worker
+execution, start from the live WorkPackage claim. Do not treat historical
+implementation phase notes or Execution Atlas brainstorms as current assignment
+scope.
 
 ## Validation
 
@@ -78,13 +86,14 @@ rules.
 - `plugins/symphony-plus-plus/` contains the Codex-local skill-only plugin
   package; `plugins/symphony-plus-plus-mcp/` contains the opt-in MCP skill
   package for dedicated S++ sessions.
-- V2.1 worker dispatch uses ledger-backed `claim_local_assignment`. The
+- Planned-slice worker dispatch uses ledger-backed `claim_local_assignment`. The
   worker-secret helper scripts remain explicit legacy/recovery bootstrap
   support after the ledger-claim cutover; they are not the normal worker path.
 - Do not sync or refresh user-local plugin/cache installs during feature-branch
   work; local cache adoption happens at final feature-branch cutover.
-- `implementation_docs_symphplusplus/docs/` contains the product, permission,
-  MCP, dashboard, GitHub, operator, release, and V3 Execution Atlas contracts.
+- `implementation_docs_symphplusplus/docs/` contains the product-tree,
+  permission, MCP, dashboard, GitHub, operator, release, and historical design
+  context docs.
 - `implementation_docs_symphplusplus/runbooks/` contains operator runbooks.
 - `implementation_docs_symphplusplus/review/` contains readiness and reviewer
   checklists.
