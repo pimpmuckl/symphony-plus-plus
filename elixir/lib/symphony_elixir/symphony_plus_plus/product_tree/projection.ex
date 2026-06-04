@@ -53,7 +53,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
         slice_links,
         dependency_edges,
         visible_slice_ids,
-        Keyword.get(opts, :visible_only?, false)
+        opts
       )
 
     linked_slice_ids = slice_links |> Enum.map(& &1.planned_slice_id) |> MapSet.new()
@@ -81,17 +81,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
     }
   end
 
-  defp scope_tree_records(nodes, slice_links, dependency_edges, visible_slice_ids, true) do
-    slice_links = Enum.filter(slice_links, &MapSet.member?(visible_slice_ids, &1.planned_slice_id))
+  defp scope_tree_records(nodes, slice_links, dependency_edges, visible_slice_ids, opts) when is_list(opts) do
+    if Keyword.get(opts, :visible_only?, false) do
+      scope_visible_tree_records(nodes, slice_links, dependency_edges, visible_slice_ids, opts)
+    else
+      {nodes, slice_links, dependency_edges}
+    end
+  end
+
+  defp scope_visible_tree_records(nodes, slice_links, dependency_edges, visible_slice_ids, opts) do
+    visible_slice_links = Enum.filter(slice_links, &MapSet.member?(visible_slice_ids, &1.planned_slice_id))
     node_ids_by_id = Map.new(nodes, &{&1.id, &1})
 
     visible_node_ids =
-      slice_links
+      visible_slice_links
       |> Enum.reduce(MapSet.new(), fn link, node_ids ->
         add_node_with_ancestors(node_ids, node_ids_by_id, link.product_tree_node_id)
       end)
+      |> maybe_add_unlinked_node_ids(nodes, slice_links, node_ids_by_id, opts)
 
     nodes = Enum.filter(nodes, &MapSet.member?(visible_node_ids, &1.id))
+    slice_links = Enum.filter(visible_slice_links, &MapSet.member?(visible_node_ids, &1.product_tree_node_id))
 
     dependency_edges =
       Enum.filter(dependency_edges, fn edge ->
@@ -102,8 +112,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
     {nodes, slice_links, dependency_edges}
   end
 
-  defp scope_tree_records(nodes, slice_links, dependency_edges, _visible_slice_ids, _visible_only?) do
-    {nodes, slice_links, dependency_edges}
+  defp maybe_add_unlinked_node_ids(node_ids, nodes, slice_links, nodes_by_id, opts) do
+    if Keyword.get(opts, :include_unlinked_nodes?, false) do
+      linked_node_ids = slice_links |> Enum.map(& &1.product_tree_node_id) |> MapSet.new()
+
+      nodes
+      |> Enum.reject(&MapSet.member?(linked_node_ids, &1.id))
+      |> Enum.reduce(node_ids, fn node, acc -> add_node_with_ancestors(acc, nodes_by_id, node.id) end)
+    else
+      node_ids
+    end
   end
 
   defp add_node_with_ancestors(node_ids, _nodes_by_id, nil), do: node_ids

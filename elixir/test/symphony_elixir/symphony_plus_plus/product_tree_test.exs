@@ -206,6 +206,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTreeTest do
     refute Map.has_key?(visible_nodes_by_id, hidden_unlinked_node.id)
     refute inspect(visible_projection) =~ hidden_slice.id
 
+    visible_with_empty_nodes =
+      ProductTree.project(
+        repo,
+        work_request.id,
+        [
+          %{"id" => visible_slice.id, "status" => "planned"},
+          %{"id" => direct_visible_slice.id, "status" => "planned"}
+        ],
+        visible_only?: true,
+        include_unlinked_nodes?: true
+      )
+
+    visible_empty_nodes_by_id = Map.new(visible_with_empty_nodes.nodes, &{&1.id, &1})
+    assert Map.has_key?(visible_empty_nodes_by_id, hidden_unlinked_node.id)
+    refute Map.has_key?(visible_empty_nodes_by_id, hidden_node.id)
+    refute inspect(visible_with_empty_nodes) =~ hidden_slice.id
+
     full_projection =
       ProductTree.project(repo, work_request.id, [
         %{"id" => visible_slice.id, "status" => "planned"},
