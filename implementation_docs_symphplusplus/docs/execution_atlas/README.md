@@ -1,129 +1,39 @@
-# Symphony++ V3: Execution Atlas
+# Symphony++ V3: Execution Atlas Archive
 
 Execution Atlas was the first V3 product brainstorm for the human-facing
-Symphony++ cockpit. Treat it as useful design context, not the binding V3
-schema.
+Symphony++ cockpit. It is archived design context, not the binding V3
+contract.
 
-The current V3 implementation contract is now
-`implementation_docs_symphplusplus/docs/V3_PRODUCT_TREE_REWORK.md`: optional,
-arbitrarily nested WorkRequest product plan nodes with planned slices as the
-execution units and WorkPackages kept as execution/audit evidence.
+Use these current documents instead:
 
-It turns WorkRequests, planned slices, WorkPackages, PRs, blockers, reviews,
-lineage, and decisions into a human-readable product progress map. The goal is
-not another ticket board. The goal is a local operator command center that lets
-the human answer, at a glance:
+- `implementation_docs_symphplusplus/docs/V3_PRODUCT_TREE_REWORK.md`
+- `implementation_docs_symphplusplus/runbooks/V3_PRODUCT_TREE_CUTOVER.md`
+- `implementation_docs_symphplusplus/docs/13_WORKREQUEST_CONTRACT.md`
+- `implementation_docs_symphplusplus/mcp/MCP_TOOLS_CONTRACT.md`
 
-- What is the product trying to become?
-- Which areas are done, partial, missing, or deliberately deferred?
-- What is actively happening?
-- What needs human guidance?
-- What is blocked, stale, recut, superseded, or merge-ready?
-- What is the next safe move?
-
-The key product split is:
+The current V3 model is:
 
 ```text
-Raw ledger state
-  Audit, control, permissions, grants, lifecycle, dispatch, readiness gates.
-
-Operational projection
-  Backend-derived delivery truth from lifecycle, activity, blockers, PRs,
-  review evidence, merge evidence, and lineage.
-
-Execution Atlas
-  Human-readable product truth: topics, capability items, dependency edges,
-  attention, and next moves.
+WorkRequest
+|-- optional product plan node
+|   |-- optional product plan node
+|   `-- planned slices
+`-- planned slices
 ```
 
-Execution Atlas does not replace the existing Symphony++ control plane. It sits
-above it, keeping the raw lifecycle and grant model authoritative while making
-the overall work legible.
+Product plan nodes are optional and arbitrarily nested. They are not a fixed
+Topic -> Capability, Layer -> Capability, or Atlas hierarchy. Simple WorkRequests
+can stay as direct-slice rows.
 
-## Why This Exists
+Planned slices remain architect-to-worker execution units. WorkPackages remain
+internal execution and audit records: worker claim scope, grants, branches, PRs,
+progress, findings, review evidence, readiness, and recovery state. They are no
+longer a primary human-facing product board unit.
 
-The current S++ dashboard already exposes a lot of real state, but raw state is
-not always the same thing as human truth. A planned slice can still have raw
-status `dispatched` after its linked package has merged. A WorkRequest can read
-`ready_for_slicing` while several packages are already active. A package can be
-preserved as an oracle after a recut, but still look like delivery work unless
-the dashboard explains the story.
+Reorganization is agent-driven through MCP tools:
 
-Execution Atlas turns those records into a product map that reads more like:
+- `upsert_work_request_product_plan_node`
+- `move_work_request_planned_slice_to_product_node`
 
-```text
-Creator Data Service
-|-- Core Platform
-|   |-- [x] Rust workspace and health scaffold
-|   |-- [x] Database pool and transaction substrate
-|   |-- [~] Idempotency and outbox repository split
-|   |-- [ ] Production CI and deploy shape
-|
-|-- Scheduler
-|   |-- [~] Target selection contract
-|   |-- [ ] Locking and backoff model
-|   |-- [ ] Provider gating
-|
-|-- Attention
-|   |-- [!] Human guidance needed: outbox cursor safety
-|   |-- [!] Recut cleanup: original repository oracle still open
-|
-`-- Next Moves
-    |-- [1] Merge repository split 2B
-    |-- [2] Answer outbox cursor product guidance
-    `-- [3] Dispatch scheduler target-selection slice
-```
-
-That view is not just prettier. It is the missing supervision layer for
-multi-package agent work.
-
-## Document Set
-
-- `01_PRODUCT_SHAPE.md` defines the product framing, entities, relationships,
-  and human-facing vocabulary.
-- `02_DATA_MODEL_AND_PROJECTION.md` defines what should be persisted, what
-  should be derived, and the proposed `progress_map.v1` payload.
-- `03_ARCHITECT_AND_MCP_WORKFLOW.md` defines how architect agents maintain the
-  map and which MCP tools should exist.
-- `04_DASHBOARD_UX.md` defines the cockpit surfaces, nested tree view,
-  attention center, dependency view, and detail drawers.
-- `05_ROADMAP.md` breaks the work into PR-sized implementation slices and
-  lists anti-patterns to avoid.
-
-## Product Principles
-
-- Keep raw lifecycle state authoritative for control and audit.
-- Let the backend derive operational truth; do not make React guess.
-- Store only semantic curation that cannot be inferred safely.
-- Treat stale maps as first-class attention, not as hidden failure.
-- Make maps optional for tiny tasks and natural for multi-slice product work.
-- Link every pretty row back to real ledger evidence.
-- Never expose work keys, private handoff payloads, secret hashes, tokens, or
-  secret-bearing commands in Atlas views.
-- Preserve explicit lineage instead of inventing recut or oracle stories from
-  prose.
-- Optimize for local-first operator delight before enterprise workflow
-  generality.
-
-## Relationship To V2
-
-V2 makes Symphony++ operational:
-
-- WorkRequests capture intent.
-- Architect handoffs clarify and slice work.
-- Planned slices dispatch into WorkPackages.
-- Workers record planning, findings, progress, branches, PRs, reviews, and
-  readiness evidence.
-- The local cockpit gives the operator visibility and action controls.
-
-V3 makes Symphony++ understandable:
-
-- The architect organizes the work into topics and capability items.
-- The backend reconciles map curation with live ledger truth.
-- The dashboard renders progress as a nested human-readable atlas.
-- The operator can see done, partial, missing, deferred, blocked, stale, active,
-  and next work without reading transcripts.
-
-The raw board remains useful for audit and operations. The active V3
-product-tree cockpit supersedes this Atlas brainstorm as the default view for
-feature/product supervision.
+Do not add human-facing reorganize UI for V3 cutover unless a later product
+decision explicitly reopens that scope.

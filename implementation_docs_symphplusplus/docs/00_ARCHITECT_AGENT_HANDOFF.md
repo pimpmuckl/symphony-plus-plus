@@ -12,7 +12,7 @@ For Codex, use the plugin-installed
 practical playbook for WorkRequest-led product planning. It complements the
 `symphony-plus-plus-mcp:symphony-work-package` worker skill: architects clarify,
 decide, slice, dispatch, and route guidance; workers implement one dispatched
-package.
+planned slice through its linked WorkPackage execution record.
 
 V3 product-tree note: the cockpit is WorkRequest-first. Product plan nodes are
 optional, architect-authored product groupings for larger requests. Planned
@@ -22,8 +22,8 @@ progress, reviews, and readiness evidence.
 
 ## Operating Model
 
-- Keep one worker PR per WorkPackage unless the operator explicitly approves a
-  split or combined scope.
+- Keep one worker PR per dispatched planned slice/WorkPackage unless the
+  operator explicitly approves a split or combined scope.
 - Use the WorkRequest and optional product tree as the product-facing source of
   truth. Use the WorkPackage ledger and MCP resources as the source of truth
   for worker execution state, virtual planning files, findings, progress,
@@ -50,8 +50,8 @@ progress, reviews, and readiness evidence.
 
 For each worker, send:
 
-1. The WorkPackage id, target branch, base branch, owned paths, acceptance
-   criteria, and required review-suite lanes.
+1. The planned-slice goal plus linked WorkPackage id, target branch, base
+   branch, owned paths, acceptance criteria, and required review-suite lanes.
 2. The verbatim prompt in `templates/worker_agent_prompt.md`.
 3. The `symphony-plus-plus-mcp:symphony-work-package` skill package from the
    `plugins/symphony-plus-plus-mcp/` Codex plugin, `.codex/skills/symphony-work-package/`,

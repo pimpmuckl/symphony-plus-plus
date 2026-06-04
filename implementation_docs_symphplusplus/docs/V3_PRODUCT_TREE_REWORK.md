@@ -164,6 +164,21 @@ These tools are intentionally small rearrangement primitives. They do not
 dispatch slices, create WorkPackages, mutate Linear, or force every WorkRequest
 to use product plan nodes.
 
+## Cutover Non-Goals And Follow-Ups
+
+Do not add a human-facing reorganize UI for the V3 cutover. Reorganization is
+agent-driven through the architect MCP tools above. The cockpit only needs to
+make the resulting product tree readable and drillable for humans.
+
+Do not rename or remove WorkPackage as part of this cutover. WorkPackage remains
+the internal execution/audit record until a later, explicit migration decides
+whether a name such as worker assignment or execution unit is worth the churn.
+
+Do not fold the top-panel Finished-list performance redesign into the V3
+cutover unless it becomes a blocker. The follow-up PR should cap, paginate, or
+otherwise redesign Finished query/display behavior so repeated dashboard
+polling cannot hold up the server.
+
 ## Cutover Shape
 
 1. Land schema and read projection behind the existing local cockpit.

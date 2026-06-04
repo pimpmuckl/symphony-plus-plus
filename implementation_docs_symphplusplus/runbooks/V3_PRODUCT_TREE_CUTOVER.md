@@ -66,6 +66,44 @@ http://127.0.0.1:20001/sympp/board
 - No work keys, raw grants, private handoff payloads, tokens, or secret-bearing
   commands appear in the payload or UI.
 
+## Dogfood Checks
+
+Exercise three WorkRequest shapes before live cutover:
+
+1. Simple hotfix: no product plan nodes, direct planned slices only.
+2. Medium implementation: a WorkRequest with direct slices and no forced extra
+   hierarchy.
+3. Large implementation: nested product plan nodes with planned slices moved
+   under the nodes through architect MCP tools.
+
+The preview passes only when all three read correctly in the cockpit and the
+large implementation can be rearranged by agents without needing a human
+reorganize UI.
+
+## PR And Review Gates
+
+Before live cutover:
+
+1. Push the `v3` branch and open a draft PR against `main`.
+2. Keep local Review Suite green on the final PR head.
+3. Run GitHub review for the PR, or record an explicit waiver if no PR review is
+   available.
+4. Wait for CI/checks when present, or record that no checks are configured.
+5. Confirm plugin and MCP adoption from the final checkout:
+
+```powershell
+.\scripts\refresh-local-plugin.ps1 -ValidateInstalledCache
+.\scripts\smoke-sympp-mcp-http.ps1 -RepoRoot .
+```
+
+After plugin cache refresh, restart or reload the dedicated MCP-enabled Codex
+session before treating its tool palette as current. A still-running session may
+keep the old MCP tool list even when the source server and smoke test are
+correct.
+
+6. Confirm `git status --short` is clean and no copied SQLite preview database
+   is tracked.
+
 ## Live Cutover
 
 After preview acceptance:
@@ -74,9 +112,11 @@ After preview acceptance:
 2. Back up the live ledger.
 3. Run the same migration against the live ledger through `mix sympp.cockpit`.
 4. Start Vite/API with the standard operator ports.
-5. Seed product plan nodes only for large WorkRequests that benefit from the
+5. Refresh local plugin caches and restart/reload dedicated MCP-enabled Codex
+   sessions so architect agents can discover the V3 product-tree tools.
+6. Seed product plan nodes only for large WorkRequests that benefit from the
    product tree.
-6. Leave small hotfix WorkRequests as direct-slice rows.
+7. Leave small hotfix WorkRequests as direct-slice rows.
 
 ## Rollback
 

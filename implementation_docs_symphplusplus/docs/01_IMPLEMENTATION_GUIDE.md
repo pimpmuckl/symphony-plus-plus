@@ -62,8 +62,9 @@ package explicitly requires it.
 
 ## Branch And PR Model
 
-Each worker owns one branch and one PR per WorkPackage unless the overseeing
-architect explicitly splits or combines scope. PR titles use:
+Each worker owns one branch and one PR per dispatched planned slice/WorkPackage
+unless the overseeing architect explicitly splits or combines scope. PR titles
+use:
 
 ```text
 [SYMPP-...] <package title>
@@ -104,9 +105,10 @@ and package readiness evidence.
 ## Architect Lifecycle
 
 An architect agent starts from `00_ARCHITECT_AGENT_HANDOFF.md`, the live
-WorkPackage ledger, and the operator-approved scope. It may create same-phase
-child packages, mint narrower child worker grants, inspect child progress, and
-approve ready children for phase integration when gates still pass.
+WorkRequest, optional product plan tree, linked WorkPackage execution records,
+and the operator-approved scope. It may create same-phase child packages, mint
+narrower child worker grants, inspect child progress, and approve ready
+children for phase integration when gates still pass.
 
 For WorkRequest-led work, the architect clarifies product intent, adds optional
 product plan nodes when they improve one-glance progress, and turns the result
