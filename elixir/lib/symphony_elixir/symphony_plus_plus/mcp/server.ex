@@ -4469,9 +4469,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, grant} <- AccessGrantRepository.get(repo, session.assignment.grant_id),
          :ok <- AccessGrantService.require_live_package_authority(repo, grant),
          {:ok, session} <- Auth.session_from_grant(repo, grant, proof_hash: proof_hash),
-         :ok <- require_mcp_claimable_assignment(session.assignment),
-         {:ok, session} <- attach_secret_claim_lease(repo, session, claimed_by) do
-      {:ok, session}
+         :ok <- require_mcp_claimable_assignment(session.assignment) do
+      attach_secret_claim_lease(repo, session, claimed_by)
     end
   end
 
@@ -4486,11 +4485,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, reason} ->
         {:error, reason}
     end
-  end
-
-  defp claim_access_grant(repo, secret, opts) do
-    claim = &AccessGrantService.claim/3
-    claim.(repo, secret, opts)
   end
 
   defp unclaimed_access_grant_for_secret(repo, secret, proof_hash, claimed_by) do
@@ -4528,8 +4522,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_unclaimed_live_grant(%AccessGrant{}), do: {:error, :expired}
-
   defp validated_claim_owner(claimed_by) when is_binary(claimed_by) do
     if String.trim(claimed_by) == "" do
       {:error, :claimed_by_required}
@@ -4538,32 +4530,59 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp validated_claim_owner(_claimed_by), do: {:error, :claimed_by_required}
-
   defp claim_unclaimed_session_with_claim_lease(repo, secret, proof_hash, %AccessGrant{} = grant, claimed_by) do
     with {:ok, session} <- provisional_secret_claim_session(repo, grant, proof_hash, claimed_by),
          {:ok, leased_session, lease_action} <- attach_secret_claim_lease_with_action(repo, session, claimed_by) do
-      case claim_access_grant(repo, secret, claimed_by: claimed_by) do
-        {:ok, assignment} ->
-          with :ok <- require_mcp_claimable_assignment(assignment) do
-            {:ok, claimed_session_with_lease(assignment, proof_hash, leased_session)}
-          end
-
-        {:error, :already_claimed} ->
-          case reconnect_claimed_session(repo, proof_hash, claimed_by) do
-            {:ok, %Session{} = session} ->
-              {:ok, session}
-
-            {:error, reason} ->
-              release_provisional_claim_lease(repo, leased_session, lease_action)
-              {:error, reason}
-          end
-
-        {:error, reason} ->
-          release_provisional_claim_lease(repo, leased_session, lease_action)
-          {:error, reason}
-      end
+      AccessGrantService.claim(repo, secret, claimed_by: claimed_by)
+      |> finalize_unclaimed_session_claim(repo, proof_hash, claimed_by, leased_session, lease_action)
     end
+  end
+
+  defp finalize_unclaimed_session_claim(
+         {:ok, %Assignment{} = assignment},
+         _repo,
+         proof_hash,
+         _claimed_by,
+         %Session{} = leased_session,
+         _lease_action
+       ) do
+    case require_mcp_claimable_assignment(assignment) do
+      :ok -> {:ok, claimed_session_with_lease(assignment, proof_hash, leased_session)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp finalize_unclaimed_session_claim(
+         {:error, :already_claimed},
+         repo,
+         proof_hash,
+         claimed_by,
+         %Session{} = leased_session,
+         lease_action
+       ) do
+    repo
+    |> reconnect_claimed_session(proof_hash, claimed_by)
+    |> release_lease_on_claim_failure(repo, leased_session, lease_action)
+  end
+
+  defp finalize_unclaimed_session_claim(
+         {:error, reason},
+         repo,
+         _proof_hash,
+         _claimed_by,
+         %Session{} = leased_session,
+         lease_action
+       ) do
+    release_provisional_claim_lease(repo, leased_session, lease_action)
+    {:error, reason}
+  end
+
+  defp release_lease_on_claim_failure({:ok, %Session{} = session}, _repo, _leased_session, _lease_action),
+    do: {:ok, session}
+
+  defp release_lease_on_claim_failure({:error, reason}, repo, %Session{} = leased_session, lease_action) do
+    release_provisional_claim_lease(repo, leased_session, lease_action)
+    {:error, reason}
   end
 
   defp provisional_secret_claim_session(repo, %AccessGrant{} = grant, proof_hash, claimed_by) do
@@ -4607,9 +4626,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- require_same_claim_owner(grant, claimed_by),
          :ok <- AccessGrantService.require_live_package_authority(repo, grant),
          {:ok, session} <- Auth.session_from_grant(repo, grant, proof_hash: proof_hash),
-         :ok <- require_mcp_claimable_assignment(session.assignment),
-         {:ok, session} <- attach_secret_claim_lease(repo, session, claimed_by) do
-      {:ok, session}
+         :ok <- require_mcp_claimable_assignment(session.assignment) do
+      attach_secret_claim_lease(repo, session, claimed_by)
     end
   end
 
@@ -4682,9 +4700,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     requested_actor_id = actor["actor_id"]
 
     case ClaimLeaseService.current_for_work_package(repo, assignment.work_package_id) do
-      {:ok, %ClaimLease{actor_id: ^requested_actor_id} = lease} -> renew_secret_claim_lease(repo, assignment, lease, actor)
-      {:ok, %ClaimLease{}} -> {:error, :claim_lease_active_for_other_actor}
-      {:error, reason} -> {:error, reason}
+      {:ok, %ClaimLease{actor_id: ^requested_actor_id} = lease} ->
+        renew_secret_claim_lease(repo, assignment, lease, actor)
+
+      {:ok, %ClaimLease{}} ->
+        {:error, :claim_lease_active_for_other_actor}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -5950,12 +5973,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              work_request_id,
              "add_work_request_planned_slice",
              session_claimed_by(session),
-             fn ->
-               with {:ok, planned_slice} <- WorkRequestService.add_planned_slice(config.repo, work_request_id, attrs),
-                    {:ok, updated_work_request} <- scoped_work_request(config.repo, work_request_id, filters) do
-                 {:ok, {planned_slice, updated_work_request}}
-               end
-             end
+             fn -> add_planned_slice_and_reload_work_request(config.repo, work_request_id, attrs, filters) end
            ) do
       {:ok,
        tool_result(%{
@@ -5968,10 +5986,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          }
        })}
     else
-      {:tool_error, reason} -> invalid_params_error("add_work_request_planned_slice", reason)
-      {:error, %Ecto.Changeset{}} -> {:error, -32_602, "Invalid params", %{"tool" => "add_work_request_planned_slice", "reason" => "invalid_planned_slice"}}
-      {:error, :not_found} -> not_found_error("add_work_request_planned_slice")
-      {:error, reason} -> architect_error(reason, "add_work_request_planned_slice")
+      {:tool_error, reason} ->
+        invalid_params_error("add_work_request_planned_slice", reason)
+
+      {:error, %Ecto.Changeset{}} ->
+        {:error, -32_602, "Invalid params", %{"tool" => "add_work_request_planned_slice", "reason" => "invalid_planned_slice"}}
+
+      {:error, :not_found} ->
+        not_found_error("add_work_request_planned_slice")
+
+      {:error, reason} ->
+        architect_error(reason, "add_work_request_planned_slice")
     end
   end
 
@@ -6312,6 +6337,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp add_planned_slice_and_reload_work_request(repo, work_request_id, attrs, filters) do
+    with {:ok, planned_slice} <- WorkRequestService.add_planned_slice(repo, work_request_id, attrs),
+         {:ok, updated_work_request} <- scoped_work_request(repo, work_request_id, filters) do
+      {:ok, {planned_slice, updated_work_request}}
+    end
+  end
+
   defp mutate_work_request_planned_slice_status(tool, arguments, repo, session, next_status, action) do
     with {:ok, session} <- Auth.require_session(session, repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
@@ -6329,17 +6361,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              tool,
              session_claimed_by(session),
              fn ->
-               with {:ok, planned_slice} <-
-                      update_work_request_planned_slice_status(
-                        repo,
-                        work_request_id,
-                        planned_slice_id,
-                        current_status,
-                        next_status
-                      ),
-                    {:ok, updated_work_request} <- scoped_work_request(repo, work_request_id, filters) do
-                 {:ok, {planned_slice, updated_work_request}}
-               end
+               update_planned_slice_and_work_request(
+                 repo,
+                 work_request_id,
+                 planned_slice_id,
+                 current_status,
+                 next_status,
+                 filters
+               )
              end
            ) do
       {:ok,
@@ -6357,6 +6386,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:tool_error, reason} -> invalid_params_error(tool, reason)
       {:error, :not_found} -> not_found_error(tool)
       {:error, reason} -> architect_error(reason, tool)
+    end
+  end
+
+  defp update_planned_slice_and_work_request(
+         repo,
+         work_request_id,
+         planned_slice_id,
+         current_status,
+         next_status,
+         filters
+       ) do
+    with {:ok, planned_slice} <-
+           update_work_request_planned_slice_status(
+             repo,
+             work_request_id,
+             planned_slice_id,
+             current_status,
+             next_status
+           ),
+         {:ok, updated_work_request} <- scoped_work_request(repo, work_request_id, filters) do
+      {:ok, {planned_slice, updated_work_request}}
     end
   end
 
@@ -7578,7 +7628,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_linked_delivery_work_package_scope(_repo, %WorkRequest{}, %PlannedSlice{work_package_id: work_package_id}, _primary_scope?, _filters)
+  defp require_linked_delivery_work_package_scope(
+         _repo,
+         %WorkRequest{},
+         %PlannedSlice{work_package_id: work_package_id},
+         _primary_scope?,
+         _filters
+       )
        when work_package_id in [nil, ""],
        do: :ok
 
@@ -7590,7 +7646,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          filters
        ) do
     with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id) do
-      require_scoped_delivery_work_package_visibility(work_package, work_request, planned_slice, primary_scope?, filters)
+      require_scoped_delivery_work_package_visibility(
+        work_package,
+        work_request,
+        planned_slice,
+        primary_scope?,
+        filters
+      )
     end
   end
 
@@ -7601,8 +7663,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
       successor_work_package_id ->
         with {:ok, successor_work_package} <- WorkPackageRepository.get(repo, successor_work_package_id),
-             {:ok, successor_slice} <- scoped_work_request_work_package_planned_slice(repo, work_request.id, successor_work_package_id) do
-          require_scoped_delivery_work_package_visibility(successor_work_package, work_request, successor_slice, primary_scope?, filters)
+             {:ok, successor_slice} <-
+               scoped_work_request_work_package_planned_slice(repo, work_request.id, successor_work_package_id) do
+          require_scoped_delivery_work_package_visibility(
+            successor_work_package,
+            work_request,
+            successor_slice,
+            primary_scope?,
+            filters
+          )
         else
           {:error, :not_found} -> {:tool_error, "successor_work_package_out_of_scope"}
           {:error, reason} -> {:error, reason}
@@ -7618,9 +7687,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         {:tool_error, "missing_successor_planned_slice_id"}
 
       successor_planned_slice_id ->
-        with {:ok, successor_slice} <- scoped_work_request_planned_slice(repo, work_request.id, successor_planned_slice_id) do
-          require_successor_work_package_matches_slice(successor_slice, attrs)
-        else
+        case scoped_work_request_planned_slice(repo, work_request.id, successor_planned_slice_id) do
+          {:ok, successor_slice} -> require_successor_work_package_matches_slice(successor_slice, attrs)
           {:error, :not_found} -> {:tool_error, "successor_planned_slice_out_of_scope"}
           {:error, reason} -> {:error, reason}
         end
@@ -8210,7 +8278,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- lock_work_package(repo, work_package_id),
          :ok <- lock_access_grant(repo, grant_id),
          {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
-         :ok <- require_scoped_delivery_work_package_visibility(work_package, work_request, planned_slice, primary_scope?, filters),
+         :ok <-
+           require_scoped_delivery_work_package_visibility(
+             work_package,
+             work_request,
+             planned_slice,
+             primary_scope?,
+             filters
+           ),
          :ok <- require_planned_slice_worker_revoke_status(work_package),
          {:ok, grant} <- scoped_planned_slice_worker_grant_for_revoke(repo, grant_id, work_package_id, now),
          {:ok, revoked_grant} <- revoke_live_planned_slice_worker_grant(repo, grant, now),
@@ -10005,7 +10080,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       lease.work_package_id != assignment.work_package_id ->
         {:error, :claim_lease_mismatch}
 
-      is_binary(lease.access_grant_id) and is_binary(assignment.grant_id) and lease.access_grant_id != assignment.grant_id ->
+      claim_lease_assignment_mismatch?(lease, assignment) ->
         {:error, :claim_lease_mismatch}
 
       lease.actor_kind != actor_kind ->
@@ -10020,6 +10095,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       true ->
         {:ok, lease}
     end
+  end
+
+  defp claim_lease_assignment_mismatch?(%ClaimLease{} = lease, assignment) do
+    is_binary(lease.access_grant_id) and
+      is_binary(assignment.grant_id) and
+      lease.access_grant_id != assignment.grant_id
   end
 
   defp solo_tool(name, arguments, %__MODULE__{config: config}) do
@@ -12507,9 +12588,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_review_suite_round_identity(%{} = payload, %WorkPackage{} = work_package, progress_events) do
     with :ok <- require_review_suite_identity_match(payload, "repo", work_package.repo),
-         :ok <- require_review_suite_identity_match(payload, "base_branch", work_package.base_branch),
-         :ok <- require_review_suite_identity_match(payload, "branch", latest_current_branch(progress_events)) do
-      :ok
+         :ok <- require_review_suite_identity_match(payload, "base_branch", work_package.base_branch) do
+      require_review_suite_identity_match(payload, "branch", latest_current_branch(progress_events))
     end
   end
 
@@ -12846,12 +12926,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp review_suite_result_present?(progress_events, artifacts, work_package_id, readiness_head_sha) do
     case MetadataProjection.latest_review_suite_result_event(progress_events, work_package_id, readiness_head_sha) do
-      %ProgressEvent{payload: payload} -> valid_persisted_review_suite_result?(payload, artifacts, work_package_id, readiness_head_sha)
-      nil -> false
+      %ProgressEvent{payload: payload} ->
+        valid_persisted_review_suite_result?(payload, artifacts, work_package_id, readiness_head_sha)
+
+      nil ->
+        false
     end
   end
 
-  defp valid_persisted_review_suite_result?(%{"head_sha" => head_sha} = payload, artifacts, work_package_id, readiness_head_sha) when is_binary(head_sha) do
+  defp valid_persisted_review_suite_result?(
+         %{"head_sha" => head_sha} = payload,
+         artifacts,
+         work_package_id,
+         readiness_head_sha
+       )
+       when is_binary(head_sha) do
     MetadataProjection.valid_review_suite_result_payload?(payload, work_package_id, readiness_head_sha) and
       MetadataProjection.persisted_review_suite_artifact?(artifacts, work_package_id, head_sha)
   end
@@ -12945,8 +13034,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       state.progress_events
       |> MetadataProjection.current_head_review_suite_result_events(state.work_package.id, readiness_head_sha)
       |> Enum.map(& &1.payload)
-      |> Enum.filter(&MetadataProjection.review_suite_result_payload_in_scope?(&1, state.work_package.id, readiness_head_sha))
-      |> Enum.filter(&MetadataProjection.persisted_review_suite_artifact?(state.artifacts, state.work_package.id, Map.fetch!(&1, "head_sha")))
+      |> Enum.filter(
+        &(MetadataProjection.review_suite_result_payload_in_scope?(&1, state.work_package.id, readiness_head_sha) and
+            MetadataProjection.persisted_review_suite_artifact?(
+              state.artifacts,
+              state.work_package.id,
+              Map.fetch!(&1, "head_sha")
+            ))
+      )
 
     payloads != [] and
       Enum.all?(required_lanes, &ReviewProfiles.review_suite_payloads_satisfy_required_profile?(payloads, &1))

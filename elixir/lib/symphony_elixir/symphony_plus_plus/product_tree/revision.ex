@@ -11,6 +11,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Revision do
   @primary_key {:id, :string, autogenerate: false}
   @foreign_key_type :string
 
+  @type t :: %__MODULE__{
+          id: String.t() | nil,
+          work_request_id: String.t() | nil,
+          revision_number: pos_integer() | nil,
+          tree_snapshot: map() | nil,
+          reason: String.t() | nil,
+          decision_ref: map() | nil,
+          created_by: String.t() | nil,
+          created_at: DateTime.t() | nil,
+          inserted_at: DateTime.t() | nil,
+          updated_at: DateTime.t() | nil
+        }
+
   schema "sympp_product_tree_revisions" do
     field(:work_request_id, :string)
     field(:revision_number, :integer)
@@ -34,11 +47,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Revision do
       |> Attrs.put_new_value("created_at", DateTime.utc_now(:microsecond))
 
     %__MODULE__{}
-    |> cast(attrs, [:id, :work_request_id, :revision_number, :tree_snapshot, :reason, :decision_ref, :created_by, :created_at])
+    |> cast(attrs, [
+      :id,
+      :work_request_id,
+      :revision_number,
+      :tree_snapshot,
+      :reason,
+      :decision_ref,
+      :created_by,
+      :created_at
+    ])
     |> validate_required([:id, :work_request_id, :revision_number, :tree_snapshot, :reason, :created_at])
     |> validate_number(:revision_number, greater_than: 0)
     |> unique_constraint(:id, name: :sympp_product_tree_revisions_id_unique_index)
-    |> unique_constraint([:work_request_id, :revision_number], name: :sympp_product_tree_revisions_work_request_revision_unique_index)
+    |> unique_constraint([:work_request_id, :revision_number],
+      name: :sympp_product_tree_revisions_work_request_revision_unique_index
+    )
     |> foreign_key_constraint(:work_request_id)
   end
 

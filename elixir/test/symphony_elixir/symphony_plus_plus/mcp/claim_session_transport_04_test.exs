@@ -985,13 +985,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport04Test do
 
   defp create_http_local_claim_package!(repo, id) do
     package = create_local_claim_package!(repo, id, base_branch: "main")
-    work_request = create_work_request!(repo, id: "WR-#{id}", repo: package.repo, base_branch: package.base_branch, status: "ready_for_slicing")
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-#{id}",
+        repo: package.repo,
+        base_branch: package.base_branch,
+        status: "ready_for_slicing"
+      )
 
     assert {:ok, planned_slice} =
              WorkRequestRepository.add_planned_slice(
                repo,
                work_request.id,
-               work_request_planned_slice_attrs(id: "WRS-#{id}", target_base_branch: package.base_branch, branch_pattern: package.branch_pattern)
+               work_request_planned_slice_attrs(
+                 id: "WRS-#{id}",
+                 target_base_branch: package.base_branch,
+                 branch_pattern: package.branch_pattern
+               )
              )
 
     repo.update!(Ecto.Changeset.change(planned_slice, status: "dispatched", work_package_id: package.id))

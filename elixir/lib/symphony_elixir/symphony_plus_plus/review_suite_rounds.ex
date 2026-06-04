@@ -74,39 +74,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds do
   defp load_cycle_for_round_id(state_dir, round_id), do: load_cycle_for_actual_round_id(state_dir, round_id)
 
   defp load_cycle_for_actual_round_id(state_dir, round_id) do
-    with {:ok, matches} <- matching_cycles_for_round_id(state_dir, round_id) do
-      case matches do
-        [{cycle, _cycle_key}] ->
-          {:ok, cycle, :round}
-
-        [] ->
-          unavailable(round_id, ["Review Suite round #{round_id}"])
-
-        matches ->
-          cycle_keys = matches |> Enum.map(fn {_cycle, cycle_key} -> cycle_key end) |> Enum.sort()
-          {:error, {:review_suite_round_ambiguous, round_id, cycle_keys, @fallback_explicit_fields}}
-      end
+    case matching_cycles_for_round_id(state_dir, round_id) do
+      {:ok, matches} -> cycle_for_round_matches(matches, round_id)
+      {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp cycle_for_round_matches([{cycle, _cycle_key}], _round_id), do: {:ok, cycle, :round}
+
+  defp cycle_for_round_matches([], round_id) do
+    unavailable(round_id, ["Review Suite round #{round_id}"])
+  end
+
+  defp cycle_for_round_matches(matches, round_id) do
+    cycle_keys = matches |> Enum.map(fn {_cycle, cycle_key} -> cycle_key end) |> Enum.sort()
+    {:error, {:review_suite_round_ambiguous, round_id, cycle_keys, @fallback_explicit_fields}}
   end
 
   defp matching_cycles_for_round_id(state_dir, round_id) do
     with {:ok, paths} <- cycle_paths(state_dir) do
       matches =
-        Enum.reduce(paths, [], fn path, matches ->
-          case read_json_file(path) do
-            {:ok, %{} = cycle} ->
-              if cycle_has_round_id?(cycle, round_id) do
-                [{cycle, Path.basename(path, ".json")} | matches]
-              else
-                matches
-              end
-
-            {:error, _reason} ->
-              matches
-          end
-        end)
+        Enum.reduce(paths, [], &prepend_cycle_match(&1, &2, round_id))
 
       {:ok, Enum.reverse(matches)}
+    end
+  end
+
+  defp prepend_cycle_match(path, matches, round_id) do
+    case read_json_file(path) do
+      {:ok, %{} = cycle} -> maybe_prepend_cycle_match(cycle, path, round_id, matches)
+      {:error, _reason} -> matches
+    end
+  end
+
+  defp maybe_prepend_cycle_match(cycle, path, round_id, matches) do
+    if cycle_has_round_id?(cycle, round_id) do
+      [{cycle, Path.basename(path, ".json")} | matches]
+    else
+      matches
     end
   end
 
@@ -175,8 +180,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds do
       unavailable(cycle_key, ["safe Review Suite cycle id orc-*"])
     end
   end
-
-  defp validate_cycle_key(cycle_key), do: unavailable(cycle_key, ["safe Review Suite cycle id orc-*"])
 
   defp cycle_path(state_dir, cycle_key) do
     cycles_dir = Path.expand(Path.join([state_dir, "orchestrator", "cycles"]))
@@ -340,8 +343,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds do
       |> Enum.reject(&is_nil/1)
 
     case Enum.reject(hints, &ReviewProfiles.profile_satisfies?(profile, &1)) do
-      [] -> :ok
-      [mismatch | _rest] -> {:error, {:review_suite_round_profile_mismatch, requested_id, profile, mismatch, @fallback_explicit_fields}}
+      [] ->
+        :ok
+
+      [mismatch | _rest] ->
+        {:error, {:review_suite_round_profile_mismatch, requested_id, profile, mismatch, @fallback_explicit_fields}}
     end
   end
 
@@ -366,8 +372,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds do
 
   defp required_text(value, field) do
     case text(value) do
-      value when is_binary(value) -> {:ok, value}
-      nil -> {:error, {:review_suite_round_unavailable, Atom.to_string(field), [Atom.to_string(field)], @fallback_explicit_fields}}
+      value when is_binary(value) ->
+        {:ok, value}
+
+      nil ->
+        field_text = Atom.to_string(field)
+        {:error, {:review_suite_round_unavailable, field_text, [field_text], @fallback_explicit_fields}}
     end
   end
 

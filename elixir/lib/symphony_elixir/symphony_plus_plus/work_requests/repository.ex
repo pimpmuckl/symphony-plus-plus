@@ -701,7 +701,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     with true <- planned_slice_in_scope?(repo, work_request_id, planned_slice_id),
          %PlannedSlice{work_request_id: ^work_request_id} = successor_slice <-
            repo.get(PlannedSlice, candidate.successor_planned_slice_id) do
-      if candidate.successor_work_package_id in [nil, successor_slice.work_package_id], do: :ok, else: {:error, :not_found}
+      if candidate.successor_work_package_id in [nil, successor_slice.work_package_id] do
+        :ok
+      else
+        {:error, :not_found}
+      end
     else
       _ -> {:error, :not_found}
     end

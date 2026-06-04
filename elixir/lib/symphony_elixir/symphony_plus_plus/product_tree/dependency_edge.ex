@@ -15,6 +15,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.DependencyEdge do
   @edge_kinds ["depends_on", "blocks", "enables", "validates", "replaces", "supersedes", "recut_from", "related"]
   @hard_edge_kinds ["depends_on", "blocks"]
 
+  @type t :: %__MODULE__{
+          id: String.t() | nil,
+          work_request_id: String.t() | nil,
+          source_kind: String.t() | nil,
+          source_id: String.t() | nil,
+          target_kind: String.t() | nil,
+          target_id: String.t() | nil,
+          kind: String.t() | nil,
+          reason: String.t() | nil,
+          decision_ref: map() | nil,
+          created_by: String.t() | nil,
+          created_at: DateTime.t() | nil,
+          inserted_at: DateTime.t() | nil,
+          updated_at: DateTime.t() | nil
+        }
+
   schema "sympp_product_tree_dependency_edges" do
     field(:work_request_id, :string)
     field(:source_kind, :string)
@@ -56,7 +72,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.DependencyEdge do
       :created_by,
       :created_at
     ])
-    |> validate_required([:id, :work_request_id, :source_kind, :source_id, :target_kind, :target_id, :kind, :created_at])
+    |> validate_required([
+      :id,
+      :work_request_id,
+      :source_kind,
+      :source_id,
+      :target_kind,
+      :target_id,
+      :kind,
+      :created_at
+    ])
     |> validate_inclusion(:source_kind, @ref_kinds)
     |> validate_inclusion(:target_kind, @ref_kinds)
     |> validate_inclusion(:kind, @edge_kinds)

@@ -20,7 +20,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Repository do
           | Changeset.t()
 
   @spec tree_for_work_request(repo(), String.t()) ::
-          {:ok, %{nodes: [Node.t()], slice_links: [SliceLink.t()], dependency_edges: [DependencyEdge.t()], latest_revision: Revision.t() | nil}}
+          {:ok,
+           %{
+             nodes: [Node.t()],
+             slice_links: [SliceLink.t()],
+             dependency_edges: [DependencyEdge.t()],
+             latest_revision: Revision.t() | nil
+           }}
           | {:error, error()}
   def tree_for_work_request(repo, work_request_id) when is_atom(repo) and is_binary(work_request_id) do
     {:ok,
@@ -245,7 +251,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Repository do
   defp validate_parent_cycle(_repo, _node, %{"parent_id" => parent_id}) when parent_id in [nil, ""], do: :ok
 
   defp validate_parent_cycle(repo, %Node{id: id}, %{"parent_id" => parent_id}) do
-    if parent_reaches_node?(repo, parent_id, id, MapSet.new()) do
+    if parent_reaches_node?(repo, parent_id, id, []) do
       {:error, {:constraint_failed, "product_tree_node_parent_cycle"}}
     else
       :ok
@@ -254,16 +260,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Repository do
 
   defp validate_parent_cycle(_repo, _node, _attrs), do: :ok
 
+  @spec parent_reaches_node?(repo(), String.t() | nil, String.t(), [String.t()]) :: boolean()
   defp parent_reaches_node?(_repo, current_id, target_id, _visited) when current_id in [nil, ""], do: current_id == target_id
   defp parent_reaches_node?(_repo, target_id, target_id, _visited), do: true
 
   defp parent_reaches_node?(repo, current_id, target_id, visited) do
-    if MapSet.member?(visited, current_id) do
+    if current_id in visited do
       false
     else
       case repo.get(Node, current_id) do
-        %Node{parent_id: parent_id} -> parent_reaches_node?(repo, parent_id, target_id, MapSet.put(visited, current_id))
-        _record -> false
+        %Node{parent_id: parent_id} ->
+          parent_reaches_node?(repo, parent_id, target_id, [current_id | visited])
+
+        _record ->
+          false
       end
     end
   end
@@ -347,9 +357,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Repository do
   end
 
   defp normalize_constraint_error(%Ecto.ConstraintError{constraint: constraint}) when is_binary(constraint) do
-    cond do
-      String.contains?(constraint, "_id_unique_index") -> {:error, :id_already_exists}
-      true -> {:error, {:constraint_failed, constraint}}
+    if String.contains?(constraint, "_id_unique_index") do
+      {:error, :id_already_exists}
+    else
+      {:error, {:constraint_failed, constraint}}
     end
   end
 
@@ -359,9 +370,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Repository do
     message = Exception.message(error)
     normalized_message = String.downcase(message)
 
-    cond do
-      String.contains?(normalized_message, "busy") or String.contains?(normalized_message, "locked") -> {:error, :database_busy}
-      true -> {:error, {:storage_failed, message}}
+    if String.contains?(normalized_message, "busy") or String.contains?(normalized_message, "locked") do
+      {:error, :database_busy}
+    else
+      {:error, {:storage_failed, message}}
     end
   end
 end

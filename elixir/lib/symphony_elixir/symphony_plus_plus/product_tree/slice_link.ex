@@ -53,8 +53,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.SliceLink do
       |> Attrs.put_new_value("created_at", DateTime.utc_now(:microsecond))
 
     %__MODULE__{}
-    |> cast(attrs, [:id, :work_request_id, :product_tree_node_id, :planned_slice_id, :role, :position, :created_by, :created_at])
-    |> validate_required([:id, :work_request_id, :product_tree_node_id, :planned_slice_id, :role, :position, :created_at])
+    |> cast(attrs, [
+      :id,
+      :work_request_id,
+      :product_tree_node_id,
+      :planned_slice_id,
+      :role,
+      :position,
+      :created_by,
+      :created_at
+    ])
+    |> validate_required([
+      :id,
+      :work_request_id,
+      :product_tree_node_id,
+      :planned_slice_id,
+      :role,
+      :position,
+      :created_at
+    ])
     |> validate_inclusion(:role, @roles)
     |> validate_number(:position, greater_than_or_equal_to: 0)
     |> unique_constraint(:id, name: :sympp_product_tree_slice_links_id_unique_index)
@@ -72,8 +89,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.SliceLink do
       |> redact_present_text_field("created_by")
 
     slice_link
-    |> cast(attrs, [:work_request_id, :product_tree_node_id, :planned_slice_id, :role, :position, :created_by])
-    |> validate_required([:id, :work_request_id, :product_tree_node_id, :planned_slice_id, :role, :position, :created_at])
+    |> cast(attrs, [
+      :work_request_id,
+      :product_tree_node_id,
+      :planned_slice_id,
+      :role,
+      :position,
+      :created_by
+    ])
+    |> validate_required([
+      :id,
+      :work_request_id,
+      :product_tree_node_id,
+      :planned_slice_id,
+      :role,
+      :position,
+      :created_at
+    ])
     |> validate_inclusion(:role, @roles)
     |> validate_number(:position, greater_than_or_equal_to: 0)
     |> foreign_key_constraint(:work_request_id)

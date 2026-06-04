@@ -46,9 +46,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
       |> Enum.map(&put_child_counts(&1, nodes))
 
     root_slice_ids =
-      planned_slice_ids
-      |> Enum.reject(&is_nil/1)
-      |> Enum.reject(&MapSet.member?(linked_slice_ids, &1))
+      Enum.reject(planned_slice_ids, &(is_nil(&1) or MapSet.member?(linked_slice_ids, &1)))
 
     %{
       available: true,
@@ -98,14 +96,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
   defp rollup_node_completion(nodes) do
     children_by_parent_id = Enum.group_by(nodes, & &1.parent_id)
 
-    Enum.map(nodes, &rollup_node(&1, children_by_parent_id, MapSet.new()))
+    Enum.map(nodes, &rollup_node(&1, children_by_parent_id, []))
   end
 
+  @spec rollup_node(map(), map(), [String.t()]) :: map()
   defp rollup_node(%{id: id} = node, children_by_parent_id, ancestors) when is_binary(id) do
-    if MapSet.member?(ancestors, id) do
+    if id in ancestors do
       node
     else
-      children = children_by_parent_id |> Map.get(id, []) |> Enum.map(&rollup_node(&1, children_by_parent_id, MapSet.put(ancestors, id)))
+      ancestors = [id | ancestors]
+      children = children_by_parent_id |> Map.get(id, []) |> Enum.map(&rollup_node(&1, children_by_parent_id, ancestors))
       child_marks = Enum.map(children, & &1.computed_completion_mark)
       mark = rollup_completion_mark(node, child_marks)
 
@@ -307,11 +307,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
   defp map_value(_map, _key), do: nil
 
   defp maybe_atom(key) when is_binary(key) do
-    try do
-      String.to_existing_atom(key)
-    rescue
-      ArgumentError -> key
-    end
+    String.to_existing_atom(key)
+  rescue
+    ArgumentError -> key
   end
 
   defp timestamp(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)

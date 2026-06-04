@@ -134,7 +134,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
            claim_actor_display_name: actor_display_name
          }
        )
-       when is_binary(work_package_id) and is_binary(claim_lease_id) and is_binary(actor_kind) and is_binary(actor_id) do
+       when is_binary(work_package_id) and is_binary(claim_lease_id) and is_binary(actor_kind) and
+              is_binary(actor_id) do
     with {:ok, %ClaimLease{} = lease} <- ClaimLeaseService.current_for_work_package(repo, work_package_id),
          :ok <- require_session_lease_identity(lease, claim_lease_id, actor_kind, actor_id, actor_display_name) do
       {:ok, lease}
@@ -340,7 +341,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
 
   defp release_current_assignment_success?(payloads, responses, %Server{session: nil}) when is_list(payloads) do
     Enum.any?(payloads, fn payload ->
-      release_current_assignment_payload?(payload) and release_current_assignment_response_success?(response_for_payload(payload, responses))
+      release_current_assignment_payload?(payload) and
+        release_current_assignment_response_success?(response_for_payload(payload, responses))
     end)
   end
 
@@ -348,10 +350,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
     release_current_assignment_payload?(payload) and release_current_assignment_response_success?(response)
   end
 
-  defp release_current_assignment_success?(_payload, _response, %Server{}), do: false
-
-  defp release_current_assignment_payload?(%{"jsonrpc" => "2.0", "method" => "tools/call", "params" => %{"name" => @release_current_assignment_tool}}),
-    do: true
+  defp release_current_assignment_payload?(%{
+         "jsonrpc" => "2.0",
+         "method" => "tools/call",
+         "params" => %{"name" => @release_current_assignment_tool}
+       }),
+       do: true
 
   defp release_current_assignment_payload?(_payload), do: false
 

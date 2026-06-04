@@ -3,6 +3,9 @@ Code.require_file("../../../support/symphony_plus_plus/mcp_case.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
+  alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.ProductTree.Revision
+
   test "WorkRequest MCP read tools for handoff phases include same repo/base siblings", %{repo: repo} do
     handoff_work_request =
       create_work_request!(repo,
@@ -1043,9 +1046,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
 
     assert add_payload["scope"] == %{"repo" => anchor.repo, "base_branch" => anchor.base_branch}
     assert get_in(add_payload, ["planned_slice", "target_base_branch"]) == delivery_base
-    assert {:ok, detail} = SymphonyElixir.SymphonyPlusPlus.Dashboard.work_request_detail(repo, work_request.id)
+    assert {:ok, detail} = Dashboard.work_request_detail(repo, work_request.id)
     assert detail.product_tree.latest_revision.revision_number == 1
-    assert [revision] = repo.all(SymphonyElixir.SymphonyPlusPlus.ProductTree.Revision) |> Enum.filter(&(&1.work_request_id == work_request.id))
+
+    assert [revision] =
+             Revision
+             |> repo.all()
+             |> Enum.filter(&(&1.work_request_id == work_request.id))
+
     refute Map.has_key?(revision.tree_snapshot, "latest_revision")
     assert {:ok, [planned_slice]} = WorkRequestRepository.list_planned_slices(repo, work_request.id)
     assert planned_slice.target_base_branch == delivery_base

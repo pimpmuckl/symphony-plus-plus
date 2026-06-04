@@ -22,16 +22,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection do
     |> List.last()
   end
 
-  @spec current_head_review_suite_result_events([ProgressEvent.t()], String.t(), String.t() | :any_head) :: [ProgressEvent.t()]
+  @spec current_head_review_suite_result_events([ProgressEvent.t()], String.t(), String.t() | :any_head) :: [
+          ProgressEvent.t()
+        ]
   def current_head_review_suite_result_events(progress_events, work_package_id, readiness_head_sha) do
     progress_events
     |> chronological_progress_events()
-    |> Enum.filter(&(dedicated_review_suite_result_event?(&1, work_package_id) and review_head_matches?(&1.payload, readiness_head_sha)))
+    |> Enum.filter(
+      &(dedicated_review_suite_result_event?(&1, work_package_id) and
+          review_head_matches?(&1.payload, readiness_head_sha))
+    )
   end
 
   defp dedicated_review_suite_result_event?(%ProgressEvent{idempotency_key: idempotency_key} = event, work_package_id) do
     payload_type?(event, "review_suite_result", "attach_review_suite_result") and
-      is_binary(idempotency_key) and String.starts_with?(idempotency_key, "attach_review_suite_result:#{work_package_id}:")
+      is_binary(idempotency_key) and
+      String.starts_with?(idempotency_key, "attach_review_suite_result:#{work_package_id}:")
   end
 
   @spec valid_review_suite_result_payload?(term(), String.t(), String.t() | :any_head) :: boolean()
