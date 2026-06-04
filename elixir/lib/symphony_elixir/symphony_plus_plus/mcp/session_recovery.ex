@@ -78,22 +78,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
   end
 
   defp remember_action(config, client_key, state_key, payload, %Server{initialized: true, session: %Session{} = session} = server, response) do
-    if release_current_assignment_success?(payload, response, server) do
-      remember_unbound_initialized(client_key, state_key, @release_current_assignment_tool)
-    else
-      case claim_tool_name(payload, response, session) do
-        tool_name when tool_name in @local_claim_tools ->
-          remember_session_claim(config, client_key, state_key, session, response, tool_name)
+    case claim_tool_name(payload, response, session) do
+      tool_name when tool_name in @local_claim_tools ->
+        remember_session_claim(config, client_key, state_key, session, response, tool_name)
 
-        tool_name when tool_name in @secret_claim_tools ->
-          remember_nonrecoverable_claim(client_key, state_key, session, tool_name)
+      tool_name when tool_name in @secret_claim_tools ->
+        remember_nonrecoverable_claim(client_key, state_key, session, tool_name)
 
-        :ambiguous_claim ->
-          remember_nonrecoverable_claim(client_key, state_key, session, "ambiguous_claim")
+      :ambiguous_claim ->
+        remember_nonrecoverable_claim(client_key, state_key, session, "ambiguous_claim")
 
-        _tool_name ->
+      _tool_name ->
+        if release_current_assignment_success?(payload, response, server) do
+          remember_unbound_initialized(client_key, state_key, @release_current_assignment_tool)
+        else
           {:touch, SessionBinding.binding_id(client_key, state_key), now()}
-      end
+        end
     end
   end
 

@@ -405,8 +405,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport04Test do
         state_key: init_result.state_key
       )
 
-    lease_id = get_in(claim_result.response, ["result", "structuredContent", "local_claim", "claim_lease_id"])
     assert get_in(claim_result.response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert {:ok, %ClaimLease{id: lease_id}} = ClaimLeaseService.current_for_work_package(repo, package.id)
 
     {:ok, release_result} =
       HTTPTransport.handle(
