@@ -30,6 +30,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds do
          "round_id" => Map.fetch!(decision, "round_id")
        }
        |> put_if_present("review_suite_id", public_id(cycle))
+       |> put_if_present("work_package_id", text(get_in(cycle, ["identity", "work_package_id"])))
        |> put_if_present("repo", text(get_in(cycle, ["identity", "repo"])))
        |> put_if_present("base_branch", text(get_in(cycle, ["identity", "base"])))
        |> put_if_present("branch", text(get_in(cycle, ["identity", "branch"])))}
@@ -90,23 +91,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds do
 
   defp matching_cycles_for_round_id(state_dir, round_id) do
     with {:ok, paths} <- cycle_paths(state_dir) do
-      Enum.reduce_while(paths, {:ok, []}, fn path, {:ok, matches} ->
-        case read_json_file(path) do
-          {:ok, %{} = cycle} ->
-            if cycle_has_round_id?(cycle, round_id) do
-              {:cont, {:ok, [{cycle, Path.basename(path, ".json")} | matches]}}
-            else
-              {:cont, {:ok, matches}}
-            end
+      matches =
+        Enum.reduce(paths, [], fn path, matches ->
+          case read_json_file(path) do
+            {:ok, %{} = cycle} ->
+              if cycle_has_round_id?(cycle, round_id) do
+                [{cycle, Path.basename(path, ".json")} | matches]
+              else
+                matches
+              end
 
-          {:error, reason} ->
-            {:halt, {:error, reason}}
-        end
-      end)
-      |> case do
-        {:ok, matches} -> {:ok, Enum.reverse(matches)}
-        {:error, reason} -> {:error, reason}
-      end
+            {:error, _reason} ->
+              matches
+          end
+        end)
+
+      {:ok, Enum.reverse(matches)}
     end
   end
 

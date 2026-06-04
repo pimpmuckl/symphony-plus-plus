@@ -55,10 +55,11 @@ organizes product plan nodes, and slices the work for execution.
 
 This flow preserves existing WorkPackage grants, virtual planning resources,
 readiness gates, review evidence, PR evidence, and human merge controls.
-Product-tree editing MCP tools, automatic slicing/planning, automatic question
-generation, Linear state creation, richer planner surfaces, and automatic Codex
-spawning remain separate future work unless an assigned slice explicitly
-implements them.
+Automatic slicing/planning, automatic question generation, Linear state
+creation, richer planner surfaces, and automatic Codex spawning remain separate
+future work unless an assigned slice explicitly implements them. Product-tree
+editing exists as explicit architect rearrangement tools rather than automatic
+planner behavior.
 
 Runtime WorkRequest persistence, the read API, the dashboard list/detail view,
 scoped dashboard intake, architect MCP WorkRequest reads, clarification and
@@ -146,7 +147,10 @@ Explicit phase-scoped architect MCP sessions with `write:work_request` can call
 frozen repo/base-branch scope. The same sessions can call
 `add_work_request_planned_slice`,
 `approve_work_request_planned_slice`, `skip_work_request_planned_slice`, and
-`mark_work_request_sliced`. Each mutation requires a scoped `work_request_id`;
+`mark_work_request_sliced`, and can rearrange V3 product plan trees with
+`upsert_work_request_product_plan_node` and
+`move_work_request_planned_slice_to_product_node`. Each mutation requires a
+scoped `work_request_id`;
 answer and close calls also prove the `question_id` belongs to that WorkRequest
 before mutating and default the expected question status to `open`, while
 approve and skip prove the `planned_slice_id` belongs to that WorkRequest before

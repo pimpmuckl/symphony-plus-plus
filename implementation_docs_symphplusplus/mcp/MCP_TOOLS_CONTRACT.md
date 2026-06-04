@@ -129,6 +129,8 @@ ledger identity for operator diagnosis:
 | close_work_request_question | Close an open clarification question that belongs to a scoped WorkRequest without recording an answer. |
 | record_work_request_decision | Record a durable decision log entry on a scoped WorkRequest. |
 | add_work_request_planned_slice | Add a planned slice to a scoped WorkRequest. |
+| upsert_work_request_product_plan_node | Create, update, or reparent a V3 product plan node inside a scoped WorkRequest. |
+| move_work_request_planned_slice_to_product_node | Move a planned slice under a V3 product plan node, or unlink it back to the WorkRequest's direct slice list. |
 | approve_work_request_planned_slice | Approve a planned slice that belongs to a scoped WorkRequest. |
 | skip_work_request_planned_slice | Skip a planned slice that belongs to a scoped WorkRequest. |
 | mark_work_request_sliced | Mark a scoped WorkRequest sliced using the existing approved-slice requirement. |

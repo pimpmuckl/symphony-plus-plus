@@ -8,11 +8,10 @@ import type { NewRequestForm } from "@/components/dashboard/new-request-dialog";
 import type * as React from "react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import type { BoardLayoutMode as WorkstreamLayoutMode } from "@/components/dashboard/board-layout";
 import { architectHandoffEligibleRequest } from "@/lib/operational-state";
 import { cn } from "@/lib/utils";
 import { AppDialogState, BlockerItem, FinishedHighlight } from "./dashboard-state";
-import { ArchivedRequestsDialog, DashboardSettingsDialog, ThemeToggle, WorkstreamLayoutToggle } from "./dashboard-settings";
+import { ArchivedRequestsDialog, DashboardSettingsDialog, ThemeToggle } from "./dashboard-settings";
 import { CardDetailDialog } from "./card-detail-dialog";
 import { CardDetailSelection, DASHBOARD_LOGO_URL, DashboardConnectionIssue, DashboardTheme, DashboardUpdateAnimations, LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageStateMutation, WorkRequestMutation, WorkRequestStateMutation, WorkspaceTab, isLocalOperatorAuthRequiredMessage } from "./runtime";
 import { LiveLedgerBadge } from "./status-cards";
@@ -53,7 +52,6 @@ export function DashboardShell({
   onSubmitGuidanceAnswer,
   onUpdateArchiveAfterDays,
   onWorkspaceTabChange,
-  onWorkstreamLayoutChange,
   refreshing,
   repos,
   showUpdateSimulationControls,
@@ -62,7 +60,6 @@ export function DashboardShell({
   updateAnimations,
   workspacePanes,
   workspaceTab,
-  workstreamLayout,
 }: {
   archiveAfterDays: number;
   archivedRequests: WorkRequestCard[];
@@ -96,7 +93,6 @@ export function DashboardShell({
   onSubmitGuidanceAnswer: (item: GuidanceItem, submission: GuidanceAnswerSubmission) => Promise<void>;
   onUpdateArchiveAfterDays: (archiveAfterDays: number) => Promise<void>;
   onWorkspaceTabChange: (tab: WorkspaceTab) => void;
-  onWorkstreamLayoutChange: (mode: WorkstreamLayoutMode) => void;
   refreshing: boolean;
   repos: RepoSummary[];
   showUpdateSimulationControls: boolean;
@@ -105,7 +101,6 @@ export function DashboardShell({
   updateAnimations: DashboardUpdateAnimations;
   workspacePanes: Record<WorkspaceTab, React.ReactNode>;
   workspaceTab: WorkspaceTab;
-  workstreamLayout: WorkstreamLayoutMode;
 }) {
   const localOperatorReconnectIssue = isLocalOperatorAuthRequiredMessage(error) || connectionIssue?.reconnectableLocalSession === true;
   const dashboardAlertMessage = error || (localOperatorReconnectIssue ? connectionIssue?.message || LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE : null);
@@ -219,7 +214,6 @@ export function DashboardShell({
                   Solo Sessions
                 </TabsTrigger>
               </TabsList>
-              {workspaceTab === "workstreams" ? <WorkstreamLayoutToggle value={workstreamLayout} onChange={onWorkstreamLayoutChange} /> : null}
             </div>
             <WorkspaceTabCarousel activeTab={workspaceTab} paneContent={workspacePanes} />
           </Tabs>

@@ -90,6 +90,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Node do
     |> validate_json_safe(:metadata)
   end
 
+  @spec update_changeset(t(), map()) :: Ecto.Changeset.t()
+  def update_changeset(%__MODULE__{} = node, attrs) do
+    node
+    |> changeset(redact_present_attrs(attrs))
+    |> foreign_key_constraint(:work_request_id)
+    |> foreign_key_constraint(:parent_id)
+  end
+
   defp redact_attrs(attrs) do
     attrs
     |> redact_text_field("title")
@@ -100,6 +108,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Node do
   end
 
   defp redact_text_field(attrs, key), do: Map.update(attrs, key, nil, &Redactor.redact_text/1)
+
+  defp redact_present_attrs(attrs) do
+    attrs
+    |> Attrs.normalize_keys()
+    |> redact_present_text_field("title")
+    |> redact_present_text_field("description")
+    |> redact_present_text_field("node_kind")
+    |> redact_present_text_field("created_by")
+    |> redact_present_json_field("metadata")
+  end
+
+  defp redact_present_text_field(attrs, key) do
+    if Map.has_key?(attrs, key), do: Map.update!(attrs, key, &Redactor.redact_text/1), else: attrs
+  end
+
+  defp redact_present_json_field(attrs, key) do
+    if Map.has_key?(attrs, key), do: Map.update!(attrs, key, &(Redactor.redact(&1) |> Redactor.json_safe())), else: attrs
+  end
 
   defp validate_parent_not_self(changeset) do
     validate_change(changeset, :parent_id, fn :parent_id, parent_id ->

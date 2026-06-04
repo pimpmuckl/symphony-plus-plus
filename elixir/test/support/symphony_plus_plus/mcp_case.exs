@@ -44,6 +44,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase do
     "close_work_request_question",
     "record_work_request_decision",
     "add_work_request_planned_slice",
+    "upsert_work_request_product_plan_node",
+    "move_work_request_planned_slice_to_product_node",
     "approve_work_request_planned_slice",
     "skip_work_request_planned_slice",
     "mark_work_request_sliced",

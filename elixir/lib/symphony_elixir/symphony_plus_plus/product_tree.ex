@@ -10,8 +10,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree do
   @spec create_node(module(), map()) :: {:ok, term()} | {:error, term()}
   defdelegate create_node(repo, attrs), to: Repository
 
+  @spec upsert_node(module(), map()) :: {:ok, term()} | {:error, term()}
+  defdelegate upsert_node(repo, attrs), to: Repository
+
   @spec create_slice_link(module(), map()) :: {:ok, term()} | {:error, term()}
   defdelegate create_slice_link(repo, attrs), to: Repository
+
+  @spec move_slice_link(module(), map()) :: {:ok, term() | nil} | {:error, term()}
+  defdelegate move_slice_link(repo, attrs), to: Repository
 
   @spec create_dependency_edge(module(), map()) :: {:ok, term()} | {:error, term()}
   defdelegate create_dependency_edge(repo, attrs), to: Repository

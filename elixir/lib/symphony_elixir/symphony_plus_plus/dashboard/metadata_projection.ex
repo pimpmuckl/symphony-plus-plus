@@ -53,13 +53,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection do
 
   def review_suite_result_payload_in_scope?(_payload, _work_package_id, _readiness_head_sha), do: false
 
-  def review_suite_status_passed?(status), do: ReviewProfiles.passing_status?(status)
-
-  def review_suite_verdict_passed?(verdict), do: ReviewProfiles.passing_verdict?(verdict)
-
-  @spec review_suite_profile_satisfies?(map(), String.t()) :: boolean()
-  def review_suite_profile_satisfies?(payload, required_profile), do: ReviewProfiles.review_suite_payload_profile_satisfies?(payload, required_profile)
-
   @spec persisted_review_suite_artifact?([term()], String.t(), String.t()) :: boolean()
   def persisted_review_suite_artifact?(artifacts, work_package_id, head_sha) do
     expected_id = review_suite_artifact_id(work_package_id, head_sha)

@@ -365,6 +365,32 @@
       "response_policy": "Returns safe JSON with the redacted created planned slice, a minimal parent WorkRequest status projection, scope, and status metadata. It excludes read_work_request detail fields, work-key secrets, API tokens, private handoff payloads, and worker secret material."
     },
     {
+      "name": "upsert_work_request_product_plan_node",
+      "purpose": "Create, update, or reparent a V3 product plan node inside a scoped WorkRequest.",
+      "required_capabilities": ["write:work_request"],
+      "required_arguments": ["work_request_id", "title"],
+      "optional_arguments": ["product_tree_node_id", "parent_id", "description", "node_kind", "completion_mark", "position", "created_by"],
+      "argument_constraints": {
+        "completion_mark": ["done", "partial", "not_done", "deferred", "unknown"],
+        "position": "nonnegative integer when supplied"
+      },
+      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope and verifies the target WorkRequest is in scope before creating or updating a product plan node. Existing product_tree_node_id values must belong to that WorkRequest. parent_id may be omitted, null, or empty for a root node; non-root parent_id must belong to the same WorkRequest and must not create a parent cycle.",
+      "response_policy": "Returns safe JSON with the redacted product_plan_node, refreshed product_tree projection, minimal parent WorkRequest status projection, scope, and status metadata. It does not dispatch planned slices, create WorkPackages, alter SecretHandoff, mutate Linear, or require simple WorkRequests to use product plan nodes."
+    },
+    {
+      "name": "move_work_request_planned_slice_to_product_node",
+      "purpose": "Move a planned slice under a V3 product plan node, or unlink it back to the WorkRequest's direct slice list.",
+      "required_capabilities": ["write:work_request"],
+      "required_arguments": ["work_request_id", "planned_slice_id"],
+      "optional_arguments": ["product_tree_node_id", "role", "position", "created_by"],
+      "argument_constraints": {
+        "role": ["implementation_slice", "evidence", "oracle", "successor"],
+        "position": "nonnegative integer when supplied"
+      },
+      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope and verifies the target WorkRequest is in scope before moving the planned slice. planned_slice_id must belong to the WorkRequest. product_tree_node_id may be omitted, null, or empty to move the slice back to direct WorkRequest scope; otherwise the target node must belong to the same WorkRequest.",
+      "response_policy": "Returns safe JSON with the redacted product_tree_slice_link or null when unlinked, refreshed product_tree projection, minimal parent WorkRequest status projection, scope, and status metadata. It does not approve, skip, dispatch, or create planned slices and does not create WorkPackages."
+    },
+    {
       "name": "approve_work_request_planned_slice",
       "purpose": "Approve a planned slice that belongs to a scoped WorkRequest.",
       "required_capabilities": ["write:work_request"],

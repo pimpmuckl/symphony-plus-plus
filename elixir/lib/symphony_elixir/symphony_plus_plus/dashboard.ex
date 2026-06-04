@@ -3714,10 +3714,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp progress_review_lane_present?(progress_events, required_lane) do
     satisfying_profiles = ReviewProfiles.satisfying_profiles(required_lane)
-    statuses = Enum.flat_map(satisfying_profiles, &ReviewProfiles.statuses/1)
-    latest_status = latest_generic_progress_status(progress_events, statuses)
 
-    Enum.any?(satisfying_profiles, &(latest_status in ReviewProfiles.green_statuses(&1)))
+    latest_statuses =
+      satisfying_profiles
+      |> Enum.map(&{&1, latest_generic_progress_status(progress_events, ReviewProfiles.statuses(&1))})
+      |> Enum.reject(fn {_profile, status} -> is_nil(status) end)
+
+    latest_statuses != [] and
+      Enum.all?(latest_statuses, fn {profile, status} -> status in ReviewProfiles.green_statuses(profile) end)
   end
 
   defp progress_status_recorded?(progress_events, expected_status) do

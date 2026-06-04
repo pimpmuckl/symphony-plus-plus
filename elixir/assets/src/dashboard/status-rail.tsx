@@ -83,10 +83,7 @@ export function StatusRail({
         {tileConfigs.map((tile) => (
           <div key={tile.panel} className="top-panel-inline grid gap-3">
             <StatusTile {...tile} openPanel={openPanel} onToggle={setOpenPanel} />
-            <TopPanelCarousel
-              activePanel={openPanel === tile.panel ? tile.panel : null}
-              {...panelContentProps}
-            />
+            <MobileTopPanel active={openPanel === tile.panel} panel={tile.panel} {...panelContentProps} />
           </div>
         ))}
       </div>
@@ -101,6 +98,28 @@ export function StatusRail({
         <TopPanelCarousel activePanel={openPanel} {...panelContentProps} />
       </div>
     </section>
+  );
+}
+
+function MobileTopPanel({
+  active,
+  panel,
+  ...contentProps
+}: Omit<TopPanelContentProps, "interactive"> & {
+  active: boolean;
+}) {
+  if (!active) return null;
+
+  return (
+    <div className="top-panel-viewport" data-phase="idle" data-resize="steady" data-has-content="true">
+      <div className="top-panel-static" data-motion="idle">
+        <div className="top-panel-motion-frame">
+          <div className="top-panel-pane-inner">
+            <TopPanelContent {...contentProps} panel={panel} />
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

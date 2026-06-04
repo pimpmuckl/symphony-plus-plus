@@ -5,7 +5,7 @@ import path from "node:path";
 import { defineConfig } from "vite";
 
 const apiOrigin = process.env.SYMPP_API_ORIGIN || "http://127.0.0.1:19998";
-const dashboardPort = Number(process.env.SYMPP_DASHBOARD_PORT || 19999);
+const dashboardPort = parseDashboardPort(process.env.SYMPP_DASHBOARD_PORT);
 const boardPath = "/sympp/board";
 const operatorProxy = {
   "/api": apiOrigin,
@@ -13,6 +13,11 @@ const operatorProxy = {
   "/sympp/board/session": apiOrigin,
   "/sympp/work-packages": apiOrigin,
 };
+
+function parseDashboardPort(value: string | undefined) {
+  const port = Number(value);
+  return Number.isInteger(port) && port > 0 ? port : 19999;
+}
 
 function redirectBoardRoot(req: IncomingMessage, res: ServerResponse, next: () => void) {
   const url = new URL(req.url || "/", "http://spp.localhost");

@@ -17,8 +17,8 @@ Dedicated S++ workflows can copy or reference that package's generic
 command-backed `symphony_plus_plus` launcher when they explicitly need MCP.
 
 MCP discovery is loaded by the Codex host, not by the skill text in an
-already-running thread. During feature-branch development, do not refresh or
-sync user-local plugin caches just to test repo skill edits; local
+already-running thread. During normal feature-branch development, do not
+refresh or sync user-local plugin caches just to test repo skill edits; local
 cache/plugin adoption happens only at final feature-branch cutover. After that
 cutover, restart or reload Codex and open a new session before treating stale
 skill metadata as a repo packaging failure.

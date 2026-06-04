@@ -1,7 +1,6 @@
 import type { ActiveBlockingEdge, CopyArchitectHandoff, GuidanceItem, PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
 import type { ProductTreeCompletionMark, ProductTreeNode } from "@/types/product-tree";
 import { AlertTriangle, CheckCircle2, ChevronRight, Circle, CircleDashed, ClipboardCopy, GitBranch, Info, Layers3, MessageSquareText, Package, Split } from "lucide-react";
-import type { BoardLayoutMode as WorkstreamLayoutMode } from "@/components/dashboard/board-layout";
 import type { CSSProperties } from "react";
 import { AnimatedBadge } from "@/components/dashboard/motion";
 import { Button } from "@/components/ui/button";
@@ -31,12 +30,10 @@ export function WorkstreamBoard({
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
-  layoutMode,
   expandedFinishedRequests,
   finishedRequestScopeKey,
   onSetFinishedRequestChildrenOpen,
   updateAnimations,
-  measureKey,
 }: {
   repoDetails: WorkRequestDetail[];
   packages: WorkPackageCard[];
@@ -45,12 +42,10 @@ export function WorkstreamBoard({
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
-  layoutMode: WorkstreamLayoutMode;
   expandedFinishedRequests: Record<string, boolean>;
   finishedRequestScopeKey: string;
   onSetFinishedRequestChildrenOpen: (workRequestId: string, open: boolean) => void;
   updateAnimations: DashboardUpdateAnimations;
-  measureKey: string;
 }) {
   const sortedDetails = useMemo(() => sortWorkRequestDetails(repoDetails), [repoDetails]);
   const sortedUnlinkedPackages = useMemo(() => sortPackages(unlinkedPackages), [unlinkedPackages]);
@@ -59,7 +54,7 @@ export function WorkstreamBoard({
 
   return (
     <div className="workstream-board-shell">
-      <div className="v3-workstream-board" data-layout={layoutMode} data-measure-key={measureKey}>
+      <div className="v3-workstream-board">
         {sortedDetails.map((detail, index) => {
           const stateKey = finishedRequestChildrenStorageKey(finishedRequestScopeKey, detail.work_request.id);
           const expanded = expandedFinishedRequests[stateKey] === true;

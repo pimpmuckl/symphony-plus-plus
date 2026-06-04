@@ -118,12 +118,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewProfiles do
         false
 
       profile ->
-        case latest_review_suite_payload_for_satisfying_profile(payloads, profile) do
-          nil ->
-            false
-
-          payload ->
-            review_suite_payload_passes?(payload)
+        payloads
+        |> latest_review_suite_payloads_by_profile()
+        |> Enum.filter(fn {provided_profile, _payload} -> profile_satisfies?(provided_profile, profile) end)
+        |> case do
+          [] -> false
+          satisfying_payloads -> Enum.all?(satisfying_payloads, fn {_provided_profile, payload} -> review_suite_payload_passes?(payload) end)
         end
     end
   end
@@ -169,10 +169,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewProfiles do
     |> Enum.reject(&is_nil/1)
   end
 
-  defp latest_review_suite_payload_for_satisfying_profile(payloads, profile) do
-    payloads
-    |> Enum.filter(&review_suite_payload_profile_satisfies?(&1, profile))
-    |> List.last()
+  defp latest_review_suite_payloads_by_profile(payloads) do
+    Enum.reduce(payloads, %{}, fn payload, latest ->
+      payload
+      |> review_suite_payload_profiles()
+      |> Enum.reduce(latest, fn profile, latest -> Map.put(latest, profile, payload) end)
+    end)
   end
 
   defp legacy_green_statuses(profile), do: Enum.map(legacy_status_prefixes(profile), &"#{&1}_green")

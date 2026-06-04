@@ -155,6 +155,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     assert get_in(unbound_tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
     assert get_in(unbound_tools_by_name, ["append_progress", "inputSchema", "required"]) == ["summary", "idempotency_key"]
 
+    assert get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node", "inputSchema", "required"]) == [
+             "work_request_id",
+             "title"
+           ]
+
+    assert get_in(unbound_tools_by_name, ["move_work_request_planned_slice_to_product_node", "inputSchema", "required"]) == [
+             "work_request_id",
+             "planned_slice_id"
+           ]
+
     assert get_in(unbound_tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == [
              "blocker_id",
              "resolution",

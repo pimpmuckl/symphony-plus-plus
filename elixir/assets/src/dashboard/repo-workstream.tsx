@@ -2,7 +2,6 @@ import type { ActiveBlockingEdge, CopyArchitectHandoff, GuidanceItem, WorkReques
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AlertTriangle, ChevronRight, GitBranch, GitPullRequest, Layers3, MessageSquareText, Split } from "lucide-react";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
-import type { BoardLayoutMode as WorkstreamLayoutMode } from "@/components/dashboard/board-layout";
 import { cn } from "@/lib/utils";
 import { dashboardPrefersReducedMotion } from "@/components/dashboard/motion-utils";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -21,7 +20,6 @@ export function RepoWorkstream({
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
-  layoutMode,
   updateAnimations,
 }: {
   repo: RepoSummary;
@@ -30,7 +28,6 @@ export function RepoWorkstream({
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
-  layoutMode: WorkstreamLayoutMode;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const stateKey = repoWorkstreamStateKey(repo);
@@ -91,7 +88,6 @@ export function RepoWorkstream({
     <Collapsible open={open} onOpenChange={setOpen}>
       <Card
         className="dashboard-glass-surface workstream-repo-card motion-card"
-        data-layout={layoutMode}
         data-open={open ? "true" : "false"}
       >
         <CardHeader className="dashboard-panel-header relative space-y-0 overflow-hidden border-b">
@@ -136,12 +132,10 @@ export function RepoWorkstream({
               onSelectGuidance={onSelectGuidance}
               onSelectCard={onSelectCard}
               onCopyArchitectHandoff={onCopyArchitectHandoff}
-              layoutMode={layoutMode}
               expandedFinishedRequests={expandedFinishedRequests}
               finishedRequestScopeKey={stateKey}
               onSetFinishedRequestChildrenOpen={setFinishedRequestChildrenOpen}
               updateAnimations={updateAnimations}
-              measureKey={`${stateKey}:${open ? "open" : "closed"}:${openMotion ? "opening" : "settled"}`}
             />
           </CardContent>
         </CollapsibleContent>

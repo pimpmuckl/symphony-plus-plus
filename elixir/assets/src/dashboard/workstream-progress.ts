@@ -94,7 +94,10 @@ function sliceProgressMarkCounts(slices: PlannedSlice[], packageById: Map<string
 }
 
 function sliceProgressMark(slice: PlannedSlice, packageById: Map<string, WorkPackageCard>): ProductTreeCompletionMark {
-  return sliceLane(slice, packageById.get(slice.work_package_id || "")) === "finished" ? "done" : "not_done";
+  const lane = sliceLane(slice, packageById.get(slice.work_package_id || ""));
+  if (lane === "finished") return "done";
+  if (lane === "implementing") return "partial";
+  return "not_done";
 }
 
 function completionMarkCounts(marks: ProductTreeCompletionMark[]) {

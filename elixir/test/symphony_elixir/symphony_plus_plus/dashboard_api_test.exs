@@ -3011,20 +3011,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                created_at: DateTime.add(timestamp, 2, :second)
              })
 
-    assert {:ok, _deep_review} =
-             PlanningRepository.append_progress_event(repo, %{
-               work_package_id: work_package.id,
-               summary: "Deep review passed",
-               status: "review_deep_green",
-               payload: %{},
-               created_at: DateTime.add(timestamp, 3, :second)
-             })
-
     assert {:ok, _brief_review} =
              PlanningRepository.append_progress_event(repo, %{
                work_package_id: work_package.id,
                summary: "Brief review failed",
                status: "review_brief_failed",
+               payload: %{},
+               created_at: DateTime.add(timestamp, 3, :second)
+             })
+
+    assert {:ok, _deep_review} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Deep review passed",
+               status: "review_deep_green",
                payload: %{},
                created_at: DateTime.add(timestamp, 4, :second)
              })

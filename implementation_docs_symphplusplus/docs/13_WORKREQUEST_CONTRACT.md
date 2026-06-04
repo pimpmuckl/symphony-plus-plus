@@ -179,7 +179,10 @@ mutate the same scoped clarification and decision surface through
 `close_work_request_question`, and `record_work_request_decision`, and can mutate
 planned slices through
 `add_work_request_planned_slice`, `approve_work_request_planned_slice`,
-`skip_work_request_planned_slice`, and `mark_work_request_sliced`. Each
+`skip_work_request_planned_slice`, and `mark_work_request_sliced`, and can
+rearrange V3 product plan trees through
+`upsert_work_request_product_plan_node` and
+`move_work_request_planned_slice_to_product_node`. Each
 mutation requires `work_request_id` and first verifies the target WorkRequest
 is inside the frozen repo/base-branch scope. Answer and close calls also
 require `question_id`, verify the question belongs to that scoped WorkRequest,
@@ -197,6 +200,14 @@ service primitives: status movement is explicit through
 `set_work_request_status`, `mark_work_request_sliced` keeps the existing
 approved-slice requirement, and the question/decision tools do not apply
 dashboard-only auto-transition or lifecycle helper policy.
+
+`upsert_work_request_product_plan_node` creates, updates, or reparents an
+optional product-facing plan node. `move_work_request_planned_slice_to_product_node`
+links a planned slice to one product plan node, or moves it back to the direct
+WorkRequest slice list when the product node id is omitted, null, or empty.
+These product-tree tools are rearrangement/control-plane primitives: they do not
+dispatch planned slices, create WorkPackages, alter SecretHandoff, mutate
+Linear, or require simple WorkRequests to add product plan nodes.
 
 `ask_work_request_question` accepts an optional `decision_prompt` JSON object so
 architects can persist human-readable answer cards without replacing the
@@ -554,7 +565,6 @@ replace the implementing worker's normal review-suite responsibility.
 
 This contract does not implement or require:
 
-- Product-tree authoring MCP tools or richer architect-planner tools.
 - Plugin packaging changes.
 - Automatic question generation.
 - Automatic WorkPackage slicing/planning.

@@ -1,7 +1,6 @@
 import type { ActiveBlockingEdge, CopyArchitectHandoff, GuidanceItem, WorkRequestDetail } from "@/types/dashboard";
 import type * as React from "react";
 import { WORKSPACE_TAB_SLIDE_MS } from "@/components/dashboard/motion";
-import type { BoardLayoutMode as WorkstreamLayoutMode } from "@/components/dashboard/board-layout";
 import { clearMotionTimers, later, measureElementHeight, nextFrame } from "@/components/dashboard/motion-utils";
 import { useEffect, useLayoutEffect, useReducer, useRef } from "react";
 import { CardDetailSelect, DashboardUpdateAnimations, TopPanelDirection, WorkspaceTab, WorkspaceTabPhase } from "./runtime";
@@ -18,7 +17,6 @@ export function WorkstreamsPane({
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
-  layoutMode,
   updateAnimations,
 }: {
   repos: RepoSummary[];
@@ -28,7 +26,6 @@ export function WorkstreamsPane({
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
-  layoutMode: WorkstreamLayoutMode;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   if (repos.length === 0) {
@@ -46,7 +43,6 @@ export function WorkstreamsPane({
           onSelectGuidance={onSelectGuidance}
           onSelectCard={onSelectCard}
           onCopyArchitectHandoff={onCopyArchitectHandoff}
-          layoutMode={layoutMode}
           updateAnimations={updateAnimations}
         />
       ))}

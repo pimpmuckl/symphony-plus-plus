@@ -1,6 +1,5 @@
 import type { ContextComment, DashboardPayload, HandoffCopyState, PlannedSlice, SoloSession, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
 import type { UpdateMotion, UpdateMotionKind } from "@/components/dashboard/motion";
-import type { BoardLayoutMode as WorkstreamLayoutMode } from "@/components/dashboard/board-layout";
 
 declare global {
   interface Window {
@@ -233,7 +232,6 @@ export type DashboardUiState = {
   topPanel?: TopPanelKey | null;
   repoWorkstreams?: Record<string, boolean>;
   finishedRequestChildren?: Record<string, boolean>;
-  workstreamLayout?: WorkstreamLayoutMode;
   hideEmptyWorkstreams?: boolean;
   theme?: DashboardTheme;
 };

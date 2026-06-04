@@ -558,15 +558,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
     })
 
     attach_tool(repo, session, "append_progress", %{
-      "summary" => "Deep review passed",
-      "status" => "review_deep_green",
-      "idempotency_key" => "generic-review-deep-green"
+      "summary" => "Deep review failed",
+      "status" => "review_deep_failed",
+      "idempotency_key" => "generic-review-deep-failed"
     })
 
     attach_tool(repo, session, "append_progress", %{
-      "summary" => "Later brief review failed",
-      "status" => "review_brief_failed",
-      "idempotency_key" => "generic-review-brief-failed"
+      "summary" => "Later brief review passed",
+      "status" => "review_brief_green",
+      "idempotency_key" => "generic-review-brief-green"
     })
 
     ready_response =
@@ -688,10 +688,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
     assert payload["profile"] == "normal"
   end
 
-  test "minimal Review Suite round id accepts unique stored round ids", %{repo: repo} do
+  test "minimal Review Suite round id accepts unique stored round ids despite unrelated corrupt cycles", %{repo: repo} do
     head_sha = "actual-round-id-head"
     branch = "agent/SYMPP-REVIEW-SUITE-ACTUAL-ROUND/worker"
-    put_review_suite_state!("rvw_actual_round", "orc-actual-round", head_sha, "normal", branch: branch)
+    state_dir = put_review_suite_state!("rvw_actual_round", "orc-actual-round", head_sha, "normal", branch: branch)
+    File.write!(Path.join([state_dir, "orchestrator", "cycles", "orc-corrupt.json"]), "{")
 
     assert {:ok, package} =
              WorkPackageRepository.create(
@@ -800,9 +801,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
     assert get_in(wrong_branch_response, ["error", "data", "field"]) == "branch"
     assert get_in(wrong_branch_response, ["error", "data", "expected"]) == branch
     assert get_in(wrong_branch_response, ["error", "data", "got"]) == "agent/other-package/worker"
+
+    put_review_suite_state!("rvw_wrong_package", "orc-wrong-package", head_sha, "normal", branch: branch, work_package_id: "SYMPP-OTHER-PACKAGE")
+    wrong_package_response = review_suite_round_response(repo, session, "wrong-package-round", "rvw_wrong_package")
+
+    assert get_in(wrong_package_response, ["error", "data", "reason"]) == "review_suite_round_identity_mismatch"
+    assert get_in(wrong_package_response, ["error", "data", "field"]) == "work_package_id"
+    assert get_in(wrong_package_response, ["error", "data", "expected"]) == package.id
+    assert get_in(wrong_package_response, ["error", "data", "got"]) == "SYMPP-OTHER-PACKAGE"
   end
 
-  test "review-suite lane readiness considers all current-head passing results", %{repo: repo} do
+  test "review-suite readiness blocks when latest current-head rerun failed", %{repo: repo} do
     head_sha = "multi-round-head"
 
     assert {:ok, package} =
@@ -848,6 +857,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
       "profile" => "brief"
     })
 
+    assert {:ok, _later_failed_event} =
+             PlanningRepository.append_progress_event(repo, %{
+               "work_package_id" => package.id,
+               "idempotency_key" => "attach_review_suite_result:#{package.id}:later-brief-fail",
+               "summary" => "Later brief review-suite result failed",
+               "status" => "review_suite_failed",
+               "payload" => %{
+                 "type" => "review_suite_result",
+                 "source_tool" => "attach_review_suite_result",
+                 "work_package_id" => package.id,
+                 "head_sha" => head_sha,
+                 "suite" => "review-suite",
+                 "anchor" => "brief-round-failed",
+                 "summary" => "Later brief review failed",
+                 "status" => "failed",
+                 "verdict" => "red",
+                 "profile" => "brief"
+               }
+             })
+
     ready_response =
       MCPHarness.request(
         %{"jsonrpc" => "2.0", "id" => "ready-multi-round", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
@@ -855,7 +884,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
         session: session
       )
 
-    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+    assert get_in(ready_response, ["error", "data", "reason"]) == "readiness_failed"
+    assert "review_suite_result" in get_in(ready_response, ["error", "data", "missing"])
   end
 
   test "exact failed Review Suite lane blocks stronger passing aliases", %{repo: repo} do
@@ -888,34 +918,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
                "kind" => "review_suite"
              })
 
-    assert {:ok, _deep_passed_event} =
-             PlanningRepository.append_progress_event(repo, %{
-               "work_package_id" => package.id,
-               "idempotency_key" => "attach_review_suite_result:#{package.id}:deep-pass",
-               "summary" => "Deep review-suite result passed",
-               "status" => "review_suite_passed",
-               "created_at" => ~U[2026-05-05 00:00:00Z],
-               "payload" => %{
-                 "type" => "review_suite_result",
-                 "source_tool" => "attach_review_suite_result",
-                 "work_package_id" => package.id,
-                 "head_sha" => head_sha,
-                 "suite" => "review-suite",
-                 "anchor" => "deep-pass",
-                 "summary" => "Deep review suite passed",
-                 "status" => "passed",
-                 "verdict" => "clean",
-                 "profile" => "deep"
-               }
-             })
-
     assert {:ok, _brief_failed_event} =
              PlanningRepository.append_progress_event(repo, %{
-               "work_package_id" => package.id,
+               "created_at" => ~U[2026-05-05 00:00:00Z],
                "idempotency_key" => "attach_review_suite_result:#{package.id}:brief-fail",
-               "summary" => "Brief review-suite result failed",
                "status" => "review_suite_failed",
-               "created_at" => ~U[2026-05-05 00:00:10Z],
+               "summary" => "Brief review-suite result failed",
+               "work_package_id" => package.id,
                "payload" => %{
                  "type" => "review_suite_result",
                  "source_tool" => "attach_review_suite_result",
@@ -927,6 +936,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
                  "status" => "failed",
                  "verdict" => "red",
                  "profile" => "brief"
+               }
+             })
+
+    assert {:ok, _deep_passed_event} =
+             PlanningRepository.append_progress_event(repo, %{
+               "created_at" => ~U[2026-05-05 00:00:10Z],
+               "idempotency_key" => "attach_review_suite_result:#{package.id}:deep-pass",
+               "status" => "review_suite_passed",
+               "summary" => "Deep review-suite result passed",
+               "work_package_id" => package.id,
+               "payload" => %{
+                 "type" => "review_suite_result",
+                 "source_tool" => "attach_review_suite_result",
+                 "work_package_id" => package.id,
+                 "head_sha" => head_sha,
+                 "suite" => "review-suite",
+                 "anchor" => "deep-pass",
+                 "summary" => "Deep review suite passed",
+                 "status" => "passed",
+                 "verdict" => "clean",
+                 "profile" => "deep"
                }
              })
 
@@ -1385,6 +1415,90 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
   end
 
+  test "review-suite readiness blocks when the current-head latest result failed", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-REVIEW-SUITE-LATEST-FAIL", kind: "mcp", status: "ci_waiting", policy_template: "mcp_review_suite_artifact")
+             )
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-REVIEW-SUITE-LATEST-FAIL/worker", "head_sha" => "head-a"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/902", "head_sha" => "head-a"})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready review package",
+      "tests" => ["mix test"],
+      "artifacts" => ["review.txt"],
+      "head_sha" => "head-a",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
+    })
+
+    assert {:ok, _artifact} =
+             PlanningRepository.append_artifact(repo, %{
+               "id" => review_suite_artifact_id(package.id, "head-a"),
+               "work_package_id" => package.id,
+               "path" => "review-suite-result.json",
+               "title" => "Review-suite result",
+               "kind" => "review_suite"
+             })
+
+    assert {:ok, _older_passed_event} =
+             PlanningRepository.append_progress_event(repo, %{
+               "work_package_id" => package.id,
+               "idempotency_key" => "attach_review_suite_result:#{package.id}:latest-fail-pass",
+               "summary" => "Older review-suite result passed",
+               "status" => "review_suite_passed",
+               "created_at" => ~U[2026-05-05 00:00:00Z],
+               "payload" => %{
+                 "type" => "review_suite_result",
+                 "source_tool" => "attach_review_suite_result",
+                 "work_package_id" => package.id,
+                 "head_sha" => "head-a",
+                 "suite" => "review-suite",
+                 "anchor" => "phase_gate-head-a-pass",
+                 "summary" => "Older review suite passed",
+                 "status" => "passed",
+                 "verdict" => "green"
+               }
+             })
+
+    assert {:ok, _newer_failed_event} =
+             PlanningRepository.append_progress_event(repo, %{
+               "work_package_id" => package.id,
+               "idempotency_key" => "attach_review_suite_result:#{package.id}:latest-fail-fail",
+               "summary" => "Newer review-suite result failed",
+               "status" => "review_suite_failed",
+               "created_at" => ~U[2026-05-05 00:00:10Z],
+               "payload" => %{
+                 "type" => "review_suite_result",
+                 "source_tool" => "attach_review_suite_result",
+                 "work_package_id" => package.id,
+                 "head_sha" => "head-a",
+                 "suite" => "review-suite",
+                 "anchor" => "phase_gate-head-a-fail",
+                 "summary" => "Newer review suite failed",
+                 "status" => "failed",
+                 "verdict" => "red"
+               }
+             })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-review-suite-latest-fail", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["error", "data", "reason"]) == "readiness_failed"
+    assert "review_suite_result" in get_in(ready_response, ["error", "data", "missing"])
+  end
+
   test "stale and spoofed review-suite evidence cannot satisfy required readiness", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(
@@ -1741,6 +1855,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
   defp review_suite_cycle_identity(head_sha, opts) do
     %{"base" => Keyword.get(opts, :base_branch, "main"), "branch" => Keyword.get(opts, :branch, "hotfix/review-suite-round-ux"), "head" => head_sha}
     |> put_identity("repo", Keyword.get(opts, :repo))
+    |> put_identity("work_package_id", Keyword.get(opts, :work_package_id))
   end
 
   defp put_identity(identity, _key, nil), do: identity

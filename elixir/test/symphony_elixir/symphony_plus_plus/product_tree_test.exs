@@ -84,9 +84,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTreeTest do
 
     nodes_by_id = Map.new(detail.product_tree.nodes, &{&1.id, &1})
     assert nodes_by_id[backend.id].child_node_count == 2
-    assert nodes_by_id[backend.id].computed_completion_mark == "partial"
+    assert nodes_by_id[backend.id].computed_completion_mark == "not_done"
     assert nodes_by_id[kraken.id].slice_ids == [contract_slice.id]
-    assert nodes_by_id[kraken.id].computed_completion_mark == "partial"
+    assert nodes_by_id[kraken.id].computed_completion_mark == "not_done"
     assert nodes_by_id[serving.id].slice_ids == [serving_slice.id]
 
     override_node = create_node!(repo, work_request, id: "ptn_override", title: "Manual done with planned slice", completion_mark: "done")
@@ -101,7 +101,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTreeTest do
              })
 
     assert %{nodes: override_nodes} = ProductTree.project(repo, work_request.id, [%{"id" => override_slice.id, "operational_state" => %{"key" => "planned"}}])
-    assert Map.new(override_nodes, &{&1.id, &1})[override_node.id].computed_completion_mark == "partial"
+    assert Map.new(override_nodes, &{&1.id, &1})[override_node.id].computed_completion_mark == "not_done"
 
     projected =
       ProductTree.project(repo, work_request.id, [
@@ -112,6 +112,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTreeTest do
 
     projected_nodes_by_id = Map.new(projected.nodes, &{&1.id, &1})
     assert projected_nodes_by_id[kraken.id].attention_count == 1
+    assert projected_nodes_by_id[backend.id].computed_completion_mark == "partial"
+    assert projected_nodes_by_id[serving.id].computed_completion_mark == "partial"
     assert projected_nodes_by_id[backend.id].attention_count == 1
     assert projected_nodes_by_id[kraken.id].blocker_count == 1
     assert projected_nodes_by_id[backend.id].blocker_count == 1
@@ -190,6 +192,96 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTreeTest do
     assert detail.product_tree.root_slice_ids == [slice.id]
     assert detail.product_tree.summary.node_count == 0
     assert detail.product_tree.summary.slice_count == 1
+  end
+
+  test "upserts product nodes without allowing parent cycles", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-V3-UPSERT", title: "Re-sort implementation plan")
+
+    assert {:ok, backend} =
+             ProductTree.upsert_node(repo, %{
+               work_request_id: work_request.id,
+               title: "Backend",
+               node_kind: "layer",
+               position: 1
+             })
+
+    assert {:ok, runtime} =
+             ProductTree.upsert_node(repo, %{
+               work_request_id: work_request.id,
+               parent_id: backend.id,
+               title: "Runtime cleanup",
+               position: 2
+             })
+
+    assert {:error, {:constraint_failed, "product_tree_node_parent_cycle"}} =
+             ProductTree.upsert_node(repo, %{
+               work_request_id: work_request.id,
+               product_tree_node_id: backend.id,
+               parent_id: runtime.id,
+               title: "Backend"
+             })
+
+    assert {:ok, renamed} =
+             ProductTree.upsert_node(repo, %{
+               work_request_id: work_request.id,
+               product_tree_node_id: runtime.id,
+               parent_id: nil,
+               title: "Runtime and storage cleanup",
+               completion_mark: "partial",
+               position: 0
+             })
+
+    assert renamed.id == runtime.id
+    assert renamed.parent_id == nil
+    assert renamed.title == "Runtime and storage cleanup"
+    assert renamed.completion_mark == "partial"
+    assert renamed.position == 0
+  end
+
+  test "moves planned slices between product nodes and direct WorkRequest scope", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-V3-MOVE-SLICE", title: "Sort converted slices")
+    backend = create_node!(repo, work_request, id: "ptn_move_backend", title: "Backend")
+    frontend = create_node!(repo, work_request, id: "ptn_move_frontend", title: "Frontend")
+    slice = add_slice!(repo, work_request, id: "wrs_move_slice", title: "Move me")
+
+    assert {:ok, backend_link} =
+             ProductTree.move_slice_link(repo, %{
+               work_request_id: work_request.id,
+               product_tree_node_id: backend.id,
+               planned_slice_id: slice.id,
+               position: 1
+             })
+
+    assert backend_link.product_tree_node_id == backend.id
+
+    assert {:ok, frontend_link} =
+             ProductTree.move_slice_link(repo, %{
+               work_request_id: work_request.id,
+               product_tree_node_id: frontend.id,
+               planned_slice_id: slice.id,
+               position: 4
+             })
+
+    assert frontend_link.id == backend_link.id
+    assert frontend_link.product_tree_node_id == frontend.id
+    assert frontend_link.position == 4
+
+    projected = ProductTree.project(repo, work_request.id, [%{"id" => slice.id, "status" => "planned"}])
+    nodes_by_id = Map.new(projected.nodes, &{&1.id, &1})
+    assert nodes_by_id[backend.id].slice_ids == []
+    assert nodes_by_id[frontend.id].slice_ids == [slice.id]
+    assert projected.root_slice_ids == []
+
+    assert {:ok, nil} =
+             ProductTree.move_slice_link(repo, %{
+               work_request_id: work_request.id,
+               product_tree_node_id: nil,
+               planned_slice_id: slice.id
+             })
+
+    moved_back = ProductTree.project(repo, work_request.id, [%{"id" => slice.id, "status" => "planned"}])
+    assert moved_back.root_slice_ids == [slice.id]
+    assert Enum.all?(moved_back.nodes, &(&1.slice_ids == []))
   end
 
   defp create_work_request!(repo, overrides) do

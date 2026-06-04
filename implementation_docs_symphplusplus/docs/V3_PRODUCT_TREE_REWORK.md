@@ -152,19 +152,27 @@ This branch introduces the v3 foundation:
 - expanded arbitrary nested plan-node tree with linked slice rows
 - Vite port override for isolated preview servers
 
-Architect-facing MCP mutation tools for maintaining product trees are a follow-up
-slice. Until then, migrated preview databases or direct repository helpers can
-seed product trees for validation.
+Architect-facing MCP mutation tools maintain product trees:
+
+- `upsert_work_request_product_plan_node` creates, updates, and reparents
+  product plan nodes inside a scoped WorkRequest.
+- `move_work_request_planned_slice_to_product_node` moves a planned slice under
+  a product plan node, or unlinks it back to the WorkRequest's direct slice
+  list.
+
+These tools are intentionally small rearrangement primitives. They do not
+dispatch slices, create WorkPackages, mutate Linear, or force every WorkRequest
+to use product plan nodes.
 
 ## Cutover Shape
 
 1. Land schema and read projection behind the existing local cockpit.
 2. Migrate a copy of the current local SQLite DB and preview the v3 cockpit.
 3. Seed representative WorkRequests with product plan nodes and slice links.
-4. Add MCP tools for architect-authored product tree maintenance.
-5. Backfill existing large WorkRequests opportunistically; leave simple work as
+4. Backfill existing large WorkRequests opportunistically with the architect
+   product-tree tools; leave simple work as
    direct-slice WorkRequests.
-6. Make the product-tree cockpit the default board once the copied-DB preview
+5. Make the product-tree cockpit the default board once the copied-DB preview
    proves stable.
 
 The live ledger should not be rewritten in-place until the copied-DB preview is

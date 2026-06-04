@@ -7,7 +7,6 @@ import type * as React from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { WorkRequestCard } from "@/types/dashboard";
-import type { BoardLayoutMode as WorkstreamLayoutMode } from "@/components/dashboard/board-layout";
 import { cn } from "@/lib/utils";
 import { sortedCopy } from "@/lib/collections";
 import { useMemo, useRef, useState } from "react";
@@ -15,28 +14,6 @@ import { DashboardTheme, REPO_SUMMARY_PLATE_TONES, RepoSummaryPlateTone, WorkReq
 import { detailDate } from "./detail-utils";
 import { repoDisplayName } from "./dashboard-persistence";
 import { sortableTime } from "./workstream-data";
-
-export function WorkstreamLayoutToggle({ value, onChange }: { value: WorkstreamLayoutMode; onChange: (mode: WorkstreamLayoutMode) => void }) {
-  return (
-    <fieldset className="workstream-layout-toggle">
-      <legend className="sr-only">Repository layout</legend>
-      {[
-        { value: "jira", label: "Compact" },
-        { value: "aligned", label: "Aligned" },
-      ].map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          className="workstream-layout-toggle-button"
-          data-active={value === option.value}
-          onClick={() => onChange(option.value as WorkstreamLayoutMode)}
-        >
-          {option.label}
-        </button>
-      ))}
-    </fieldset>
-  );
-}
 
 export function ThemeToggle({ theme, onToggle }: { theme: DashboardTheme; onToggle: () => void }) {
   const dark = theme === "dark";

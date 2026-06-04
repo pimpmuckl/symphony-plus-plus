@@ -6,9 +6,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
   alias SymphonyElixir.SymphonyPlusPlus.ProductTree.{DependencyEdge, Node, Revision}
 
   @terminal_completion_keys ["merged", "merged_into_phase", "delivered", "completed_no_pr", "closed", "completed"]
+  @not_started_completion_keys ["approved", "planned", "planning", "ready_for_worker"]
   @partial_completion_keys [
     "active",
-    "approved",
     "blocked",
     "ci_waiting",
     "claimed",
@@ -19,11 +19,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
     "merging",
     "needs_attention",
     "needs_closeout",
-    "planned",
-    "planning",
     "ready_for_architect_merge",
     "ready_for_human_merge",
-    "ready_for_worker",
     "reviewing",
     "started_paused"
   ]
@@ -165,11 +162,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
     states = Enum.map(linked_slices, &slice_state/1)
 
     cond do
-      Enum.all?(states, &(&1 in @terminal_completion_keys or &1 == "skipped")) -> "done"
-      Enum.any?(states, &(&1 in @partial_completion_keys)) -> "partial"
+      Enum.all?(states, &terminal_completion_state?/1) -> "done"
+      Enum.any?(states, &partial_completion_state?/1) -> "partial"
+      Enum.any?(states, &terminal_completion_state?/1) and Enum.any?(states, &not_started_completion_state?/1) -> "partial"
+      Enum.any?(states, &not_started_completion_state?/1) -> "not_done"
       true -> "unknown"
     end
   end
+
+  defp terminal_completion_state?(state), do: state in @terminal_completion_keys or state == "skipped"
+  defp partial_completion_state?(state), do: state in @partial_completion_keys
+  defp not_started_completion_state?(state), do: state in @not_started_completion_keys
 
   defp dependency_edge_payload(%DependencyEdge{} = edge) do
     %{

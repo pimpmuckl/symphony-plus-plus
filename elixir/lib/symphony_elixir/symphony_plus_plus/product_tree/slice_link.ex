@@ -13,6 +13,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.SliceLink do
 
   @roles ["implementation_slice", "evidence", "oracle", "successor"]
 
+  @type t :: %__MODULE__{
+          id: String.t() | nil,
+          work_request_id: String.t() | nil,
+          product_tree_node_id: String.t() | nil,
+          planned_slice_id: String.t() | nil,
+          role: String.t() | nil,
+          position: non_neg_integer() | nil,
+          created_by: String.t() | nil,
+          created_at: DateTime.t() | nil,
+          inserted_at: DateTime.t() | nil,
+          updated_at: DateTime.t() | nil
+        }
+
   schema "sympp_product_tree_slice_links" do
     field(:work_request_id, :string)
     field(:product_tree_node_id, :string)
@@ -49,5 +62,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.SliceLink do
     |> foreign_key_constraint(:work_request_id)
     |> foreign_key_constraint(:product_tree_node_id)
     |> foreign_key_constraint(:planned_slice_id)
+  end
+
+  @spec update_changeset(t(), map()) :: Ecto.Changeset.t()
+  def update_changeset(%__MODULE__{} = slice_link, attrs) do
+    attrs =
+      attrs
+      |> Attrs.normalize_keys()
+      |> redact_present_text_field("created_by")
+
+    slice_link
+    |> cast(attrs, [:work_request_id, :product_tree_node_id, :planned_slice_id, :role, :position, :created_by])
+    |> validate_required([:id, :work_request_id, :product_tree_node_id, :planned_slice_id, :role, :position, :created_at])
+    |> validate_inclusion(:role, @roles)
+    |> validate_number(:position, greater_than_or_equal_to: 0)
+    |> foreign_key_constraint(:work_request_id)
+    |> foreign_key_constraint(:product_tree_node_id)
+    |> foreign_key_constraint(:planned_slice_id)
+  end
+
+  defp redact_present_text_field(attrs, key) do
+    if Map.has_key?(attrs, key), do: Map.update!(attrs, key, &Redactor.redact_text/1), else: attrs
   end
 end
