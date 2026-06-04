@@ -25,6 +25,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree do
   @spec record_revision(module(), String.t(), map()) :: {:ok, term()} | {:error, term()}
   defdelegate record_revision(repo, work_request_id, attrs), to: Repository
 
-  @spec project(module(), String.t(), [map()]) :: map()
-  defdelegate project(repo, work_request_id, planned_slice_payloads), to: Projection
+  @spec project(module(), String.t(), [map()], keyword()) :: map()
+  defdelegate project(repo, work_request_id, planned_slice_payloads, opts \\ []), to: Projection
 end

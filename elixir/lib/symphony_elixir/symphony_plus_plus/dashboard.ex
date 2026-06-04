@@ -434,7 +434,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            clarification_questions: Enum.map(questions, &clarification_question/1),
            decision_logs: Enum.map(decisions, &decision_log_entry/1),
            planned_slices: planned_slice_payloads,
-           product_tree: ProductTree.project(repo, work_request.id, planned_slice_payloads),
+           product_tree: ProductTree.project(repo, work_request.id, planned_slice_payloads, visible_only?: true),
            comments: comments_for(comment_context, "work_request", work_request.id),
            summary: work_request_summary(questions, decisions, planned_slices, comment_context)
          }}

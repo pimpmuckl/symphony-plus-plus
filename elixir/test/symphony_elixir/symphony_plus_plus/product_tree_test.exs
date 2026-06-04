@@ -122,6 +122,102 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTreeTest do
     assert projected.summary.blocker_count == 1
   end
 
+  test "visible-only projection keeps scoped slice paths without leaking hidden tree records", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-V3-SCOPED-PROJECTION", title: "Scoped projection")
+    root = create_node!(repo, work_request, id: "ptn_scoped_root", title: "Backend")
+    visible_node = create_node!(repo, work_request, id: "ptn_scoped_visible", parent_id: root.id, title: "Visible work")
+    hidden_node = create_node!(repo, work_request, id: "ptn_scoped_hidden", parent_id: root.id, title: "Hidden work")
+    hidden_unlinked_node = create_node!(repo, work_request, id: "ptn_scoped_unlinked", title: "Hidden unlinked work")
+    visible_slice = add_slice!(repo, work_request, id: "wrs_scoped_visible", title: "Visible slice")
+    hidden_slice = add_slice!(repo, work_request, id: "wrs_scoped_hidden", title: "Hidden slice")
+    direct_visible_slice = add_slice!(repo, work_request, id: "wrs_scoped_direct", title: "Visible direct slice")
+
+    assert {:ok, _link} =
+             ProductTree.create_slice_link(repo, %{
+               work_request_id: work_request.id,
+               product_tree_node_id: visible_node.id,
+               planned_slice_id: visible_slice.id,
+               position: 1
+             })
+
+    assert {:ok, _link} =
+             ProductTree.create_slice_link(repo, %{
+               work_request_id: work_request.id,
+               product_tree_node_id: hidden_node.id,
+               planned_slice_id: hidden_slice.id,
+               position: 2
+             })
+
+    assert {:ok, visible_edge} =
+             ProductTree.create_dependency_edge(repo, %{
+               id: "ptde_scoped_visible",
+               work_request_id: work_request.id,
+               source_kind: "product_node",
+               source_id: visible_node.id,
+               target_kind: "planned_slice",
+               target_id: visible_slice.id,
+               kind: "validates"
+             })
+
+    assert {:ok, _hidden_node_edge} =
+             ProductTree.create_dependency_edge(repo, %{
+               id: "ptde_scoped_hidden_node",
+               work_request_id: work_request.id,
+               source_kind: "product_node",
+               source_id: hidden_node.id,
+               target_kind: "planned_slice",
+               target_id: visible_slice.id,
+               kind: "depends_on",
+               reason: "Hidden node endpoint must not leak."
+             })
+
+    assert {:ok, _hidden_slice_edge} =
+             ProductTree.create_dependency_edge(repo, %{
+               id: "ptde_scoped_hidden_slice",
+               work_request_id: work_request.id,
+               source_kind: "planned_slice",
+               source_id: visible_slice.id,
+               target_kind: "planned_slice",
+               target_id: hidden_slice.id,
+               kind: "blocks",
+               reason: "Hidden slice endpoint must not leak."
+             })
+
+    visible_projection =
+      ProductTree.project(
+        repo,
+        work_request.id,
+        [
+          %{"id" => visible_slice.id, "status" => "planned"},
+          %{"id" => direct_visible_slice.id, "status" => "planned"}
+        ],
+        visible_only?: true
+      )
+
+    visible_nodes_by_id = Map.new(visible_projection.nodes, &{&1.id, &1})
+    assert Map.keys(visible_nodes_by_id) |> Enum.sort() == Enum.sort([root.id, visible_node.id])
+    assert visible_nodes_by_id[root.id].child_node_count == 1
+    assert visible_nodes_by_id[visible_node.id].slice_ids == [visible_slice.id]
+    assert visible_projection.root_node_ids == [root.id]
+    assert visible_projection.root_slice_ids == [direct_visible_slice.id]
+    assert visible_projection.dependency_edges |> Enum.map(& &1.id) == [visible_edge.id]
+
+    refute Map.has_key?(visible_nodes_by_id, hidden_node.id)
+    refute Map.has_key?(visible_nodes_by_id, hidden_unlinked_node.id)
+    refute inspect(visible_projection) =~ hidden_slice.id
+
+    full_projection =
+      ProductTree.project(repo, work_request.id, [
+        %{"id" => visible_slice.id, "status" => "planned"},
+        %{"id" => direct_visible_slice.id, "status" => "planned"}
+      ])
+
+    full_nodes_by_id = Map.new(full_projection.nodes, &{&1.id, &1})
+    assert Map.has_key?(full_nodes_by_id, hidden_node.id)
+    assert Map.has_key?(full_nodes_by_id, hidden_unlinked_node.id)
+    assert full_nodes_by_id[hidden_node.id].slice_ids == [hidden_slice.id]
+  end
+
   test "rejects cross-WorkRequest product tree relationships", %{repo: repo} do
     left = create_work_request!(repo, id: "WR-V3-SCOPE-LEFT", title: "Left")
     right = create_work_request!(repo, id: "WR-V3-SCOPE-RIGHT", title: "Right")

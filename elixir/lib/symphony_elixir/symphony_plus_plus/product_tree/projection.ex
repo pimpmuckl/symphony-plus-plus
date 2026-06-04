@@ -25,17 +25,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
     "started_paused"
   ]
 
-  @spec project(module(), String.t(), [map()]) :: map()
-  def project(repo, work_request_id, planned_slice_payloads)
-      when is_atom(repo) and is_binary(work_request_id) and is_list(planned_slice_payloads) do
+  @spec project(module(), String.t(), [map()], keyword()) :: map()
+  def project(repo, work_request_id, planned_slice_payloads, opts \\ [])
+      when is_atom(repo) and is_binary(work_request_id) and is_list(planned_slice_payloads) and is_list(opts) do
     case ProductTree.tree_for_work_request(repo, work_request_id) do
-      {:ok, tree} -> project_tree(tree, planned_slice_payloads)
+      {:ok, tree} -> project_tree(tree, planned_slice_payloads, opts)
       {:error, reason} -> unavailable_projection(reason, planned_slice_payloads)
     end
   end
 
-  defp project_tree(%{nodes: nodes, slice_links: slice_links, dependency_edges: dependency_edges, latest_revision: latest_revision}, planned_slice_payloads) do
+  defp project_tree(
+         %{
+           nodes: nodes,
+           slice_links: slice_links,
+           dependency_edges: dependency_edges,
+           latest_revision: latest_revision
+         },
+         planned_slice_payloads,
+         opts
+       ) do
     planned_slice_ids = Enum.map(planned_slice_payloads, &map_value(&1, "id"))
+    visible_slice_ids = planned_slice_ids |> Enum.reject(&is_nil/1) |> MapSet.new()
+
+    {nodes, slice_links, dependency_edges} =
+      scope_tree_records(
+        nodes,
+        slice_links,
+        dependency_edges,
+        visible_slice_ids,
+        Keyword.get(opts, :visible_only?, false)
+      )
+
     linked_slice_ids = slice_links |> Enum.map(& &1.planned_slice_id) |> MapSet.new()
     slices_by_id = Map.new(planned_slice_payloads, &{map_value(&1, "id"), &1})
 
@@ -60,6 +80,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
       latest_revision: revision_payload(latest_revision)
     }
   end
+
+  defp scope_tree_records(nodes, slice_links, dependency_edges, visible_slice_ids, true) do
+    slice_links = Enum.filter(slice_links, &MapSet.member?(visible_slice_ids, &1.planned_slice_id))
+    node_ids_by_id = Map.new(nodes, &{&1.id, &1})
+
+    visible_node_ids =
+      slice_links
+      |> Enum.reduce(MapSet.new(), fn link, node_ids ->
+        add_node_with_ancestors(node_ids, node_ids_by_id, link.product_tree_node_id)
+      end)
+
+    nodes = Enum.filter(nodes, &MapSet.member?(visible_node_ids, &1.id))
+
+    dependency_edges =
+      Enum.filter(dependency_edges, fn edge ->
+        visible_dependency_endpoint?(edge.source_kind, edge.source_id, visible_node_ids, visible_slice_ids) and
+          visible_dependency_endpoint?(edge.target_kind, edge.target_id, visible_node_ids, visible_slice_ids)
+      end)
+
+    {nodes, slice_links, dependency_edges}
+  end
+
+  defp scope_tree_records(nodes, slice_links, dependency_edges, _visible_slice_ids, _visible_only?) do
+    {nodes, slice_links, dependency_edges}
+  end
+
+  defp add_node_with_ancestors(node_ids, _nodes_by_id, nil), do: node_ids
+  defp add_node_with_ancestors(node_ids, _nodes_by_id, ""), do: node_ids
+
+  defp add_node_with_ancestors(node_ids, nodes_by_id, node_id) when is_binary(node_id) do
+    case Map.get(nodes_by_id, node_id) do
+      nil ->
+        node_ids
+
+      %Node{} = node ->
+        node_ids
+        |> MapSet.put(node.id)
+        |> add_node_with_ancestors(nodes_by_id, node.parent_id)
+    end
+  end
+
+  defp visible_dependency_endpoint?("product_node", id, visible_node_ids, _visible_slice_ids) do
+    MapSet.member?(visible_node_ids, id)
+  end
+
+  defp visible_dependency_endpoint?("planned_slice", id, _visible_node_ids, visible_slice_ids) do
+    MapSet.member?(visible_slice_ids, id)
+  end
+
+  defp visible_dependency_endpoint?(_kind, _id, _visible_node_ids, _visible_slice_ids), do: false
 
   defp node_payload(%Node{} = node, slice_links, slices_by_id) do
     links =
