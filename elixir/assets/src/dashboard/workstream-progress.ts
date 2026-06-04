@@ -1,6 +1,6 @@
 import type { ActiveBlockingEdge, PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
 import type { ProductTreeCompletionMark, ProductTreeNode } from "@/types/product-tree";
-import { sliceLane } from "@/lib/operational-state";
+import { isFinishedBoardStatus, sliceLane } from "@/lib/operational-state";
 
 export function requestProgress(detail: WorkRequestDetail, packageById: Map<string, WorkPackageCard>) {
   const slices = detail.planned_slices ?? [];
@@ -8,7 +8,7 @@ export function requestProgress(detail: WorkRequestDetail, packageById: Map<stri
   const marks = treeMarks.length > 0 ? completionMarkCounts(treeMarks) : sliceProgressMarkCounts(slices, packageById);
 
   if (marks.total > 0) return Math.round(((marks.done + marks.partial * 0.5) / marks.total) * 100);
-  return detail.work_request.operational_state?.key === "completed" ? 100 : 0;
+  return isFinishedBoardStatus(detail.work_request.operational_state?.key || detail.work_request.status) ? 100 : 0;
 }
 
 export function productTreeCounts(detail: WorkRequestDetail, activeBlockerCount: number) {

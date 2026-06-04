@@ -28,11 +28,13 @@ operator mode, the browser cockpit is the preferred front door for this flow.
 5. Architect asks product questions and records decisions or explicit
    assumptions before product planning or slicing.
 6. Human answers open product questions from the local WorkRequest detail page.
-7. Architect marks the request ready for slicing, adds optional product plan
-   nodes when the work benefits from product grouping, adds planned slices, and
-   approves or skips slices. Product-tree MCP mutation tools are a V3 follow-up;
-   until they land, copied-ledger previews may seed plan nodes through the V3
-   helper flow.
+7. Architect marks the request ready for slicing, uses
+   `upsert_work_request_product_plan_node` when the work benefits from product
+   grouping, moves planned slices with
+   `move_work_request_planned_slice_to_product_node`, and approves or skips
+   slices. Copied-ledger preview and migration flows may still seed plan nodes
+   through helpers, but helper seeding is not the normal architect authoring
+   path.
 8. Human dispatches approved slices that should become WorkPackages.
 9. Browser dispatch creates the WorkPackage, worker grant, and ledger-backed
    worker bootstrap through the existing `PlannedSliceDispatch` flow. Use the

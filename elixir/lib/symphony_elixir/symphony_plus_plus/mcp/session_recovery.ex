@@ -343,18 +343,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
     end
   end
 
-  defp release_current_assignment_success?(payloads, responses, %Server{session: nil}) when is_list(payloads) do
+  defp release_current_assignment_success?(payloads, responses, %Server{}) when is_list(payloads) do
     Enum.any?(payloads, fn payload ->
       release_current_assignment_payload?(payload) and
         release_current_assignment_response_success?(response_for_payload(payload, responses))
     end)
   end
 
-  defp release_current_assignment_success?(payload, response, %Server{session: nil}) do
+  defp release_current_assignment_success?(payload, response, %Server{}) do
     release_current_assignment_payload?(payload) and release_current_assignment_response_success?(response)
   end
-
-  defp release_current_assignment_success?(_payload_or_payloads, _response_or_responses, %Server{session: %Session{}}), do: false
 
   defp release_current_assignment_payload?(%{
          "jsonrpc" => "2.0",
