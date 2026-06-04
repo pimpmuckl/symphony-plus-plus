@@ -195,6 +195,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTreeTest do
     assert detail.product_tree.summary.slice_count == 1
   end
 
+  test "does not count deferred child nodes as partial progress", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-V3-DEFERRED-MIX", title: "Deferred completion")
+    parent = create_node!(repo, work_request, id: "ptn_deferred_parent", title: "Parent")
+
+    create_node!(repo, work_request,
+      id: "ptn_deferred_child",
+      parent_id: parent.id,
+      title: "Deferred child",
+      completion_mark: "deferred"
+    )
+
+    create_node!(repo, work_request,
+      id: "ptn_not_done_child",
+      parent_id: parent.id,
+      title: "Untouched child",
+      completion_mark: "not_done"
+    )
+
+    assert {:ok, detail} = Dashboard.work_request_detail(repo, work_request.id)
+    nodes_by_id = Map.new(detail.product_tree.nodes, &{&1.id, &1})
+
+    assert nodes_by_id[parent.id].computed_completion_mark == "not_done"
+    assert detail.product_tree.summary.partial_count == 0
+  end
+
   test "upserts product nodes without allowing parent cycles", %{repo: repo} do
     work_request = create_work_request!(repo, id: "WR-V3-UPSERT", title: "Re-sort implementation plan")
 

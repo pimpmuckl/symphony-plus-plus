@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { requestProgress } from "./workstream-progress";
+import { productTreeCounts, requestProgress } from "./workstream-progress";
 import type { PlannedSlice, WorkRequestDetail, WorkPackageCard } from "@/types/dashboard";
 
 describe("workstream progress", () => {
@@ -11,6 +11,20 @@ describe("workstream progress", () => {
     ]);
 
     expect(requestProgress(detail, new Map<string, WorkPackageCard>())).toBe(25);
+  });
+
+  it("adds product-tree blockers and explicit blocker edges", () => {
+    const detail = workRequestDetail([]);
+    detail.product_tree = {
+      ...detail.product_tree,
+      summary: {
+        blocker_count: 3,
+        node_count: 2,
+        slice_count: 4,
+      },
+    };
+
+    expect(productTreeCounts(detail, 2).blockerCount).toBe(5);
   });
 });
 

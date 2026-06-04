@@ -136,14 +136,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
   defp aggregate_completion_marks(marks) do
     marks = Enum.reject(marks, &is_nil/1)
 
+    terminal_completion_mark(marks) || mixed_completion_mark(marks)
+  end
+
+  defp terminal_completion_mark(marks) do
     cond do
       marks == [] -> "unknown"
       Enum.all?(marks, &(&1 == "done")) -> "done"
       Enum.all?(marks, &(&1 == "deferred")) -> "deferred"
       Enum.all?(marks, &(&1 == "not_done")) -> "not_done"
       Enum.all?(marks, &(&1 in ["done", "deferred"])) -> "done"
-      Enum.any?(marks, &(&1 in ["done", "partial", "deferred"])) -> "partial"
+      true -> nil
+    end
+  end
+
+  defp mixed_completion_mark(marks) do
+    cond do
+      Enum.any?(marks, &(&1 == "partial")) -> "partial"
+      Enum.any?(marks, &(&1 == "done")) -> "partial"
       Enum.any?(marks, &(&1 == "not_done")) -> "not_done"
+      Enum.any?(marks, &(&1 == "deferred")) -> "deferred"
       true -> "unknown"
     end
   end

@@ -4,6 +4,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.ProductTree
   alias SymphonyElixir.SymphonyPlusPlus.ProductTree.Revision
 
   test "WorkRequest MCP read tools for handoff phases include same repo/base siblings", %{repo: repo} do
@@ -1007,6 +1008,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     assert get_in(direct_payload, ["status", "slice_product_tree_location"]) == "direct"
     assert get_in(direct_payload, ["product_tree", "root_slice_ids"]) == [planned_slice.id]
     assert get_in(direct_payload, ["product_tree", "latest_revision", "revision_number"]) == 7
+  end
+
+  test "architect WorkRequest product tree tools require authoring status", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-PRODUCT-TREE-STATUS", [
+        "write:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-PRODUCT-TREE-STATUS",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    grant_work_request_scope!(repo, session, work_request.id)
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(id: "WRS-MCP-WR-PRODUCT-TREE-STATUS", target_base_branch: work_request.base_branch)
+             )
+
+    assert {:ok, product_node} =
+             ProductTree.create_node(repo, %{
+               work_request_id: work_request.id,
+               title: "Locked product plan"
+             })
+
+    assert {:ok, _clarifying} = WorkRequestRepository.update_status(repo, work_request.id, "ready_for_slicing", "clarifying")
+
+    upsert_response =
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+        "work_request_id" => work_request.id,
+        "title" => "Should not be accepted"
+      })
+
+    move_response =
+      mcp_tool(repo, session, "move_work_request_planned_slice_to_product_node", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice.id,
+        "product_tree_node_id" => product_node.id
+      })
+
+    assert get_in(upsert_response, ["error", "data", "reason"]) == "invalid_status"
+    assert get_in(move_response, ["error", "data", "reason"]) == "invalid_status"
   end
 
   test "architect WorkRequest planned-slice tools allow delivery base different from WorkRequest base", %{repo: repo} do

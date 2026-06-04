@@ -6015,6 +6015,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, created_by} <- optional_string_argument(arguments, "created_by", session_claimed_by(session)),
          {:ok, work_request, _filters, scope} <-
            authorized_work_request_scope(config.repo, session, work_request_id, :work_request_update, tool),
+         :ok <- require_planned_slice_authoring_status(work_request.status),
          attrs =
            %{
              "work_request_id" => work_request_id,
@@ -6059,6 +6060,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, created_by} <- optional_string_argument(arguments, "created_by", session_claimed_by(session)),
          {:ok, work_request, _filters, scope} <-
            authorized_work_request_scope(config.repo, session, work_request_id, :work_request_update, tool),
+         :ok <- require_planned_slice_authoring_status(work_request.status),
          attrs =
            %{
              "work_request_id" => work_request_id,
