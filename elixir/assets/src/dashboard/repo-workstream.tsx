@@ -154,20 +154,24 @@ export function RepoSummaryStrip({ repo, categoryCounts }: { repo: RepoSummary; 
     { icon: <MessageSquareText className="size-3.5" />, label: "Guidance Needed", value: repo.guidanceCount, tone: "guidance" },
     { icon: <AlertTriangle className="size-3.5" />, label: "Active Blockers", value: repo.blockerCount, tone: "blocker" },
   ] as const;
+  const visibleProgress = progress.filter((item) => item.label !== "Plan Nodes" || item.value > 0);
+  const visibleAttention = attention.filter((item) => item.value > 0);
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2 md:justify-end">
       <div className="flex flex-wrap items-center gap-1.5">
-        {progress.map((item) => (
+        {visibleProgress.map((item) => (
           <RepoSummaryPlate key={item.label} icon={item.icon} label={item.label} value={item.value} tone={item.tone} />
         ))}
       </div>
-      <div className="hidden h-6 w-px bg-border md:block" />
-      <div className="flex flex-wrap items-center gap-1.5">
-        {attention.map((item) => (
-          <RepoSummaryPlate key={item.label} icon={item.icon} label={item.label} value={item.value} tone={item.tone} />
-        ))}
-      </div>
+      {visibleAttention.length > 0 ? <div className="hidden h-6 w-px bg-border md:block" /> : null}
+      {visibleAttention.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {visibleAttention.map((item) => (
+            <RepoSummaryPlate key={item.label} icon={item.icon} label={item.label} value={item.value} tone={item.tone} />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

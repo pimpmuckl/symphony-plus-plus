@@ -1090,7 +1090,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp operator_dashboard_payload(repo) do
     with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo),
-         opts = [repo_identity_catalog: repo_identity_catalog],
          {:ok, settings} <- OperatorSettingsService.get(repo),
          {:ok, _retention} <-
            WorkRequestService.retention_pass(repo,
@@ -1101,6 +1100,13 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
          {:ok, settings} <- dedupe_hidden_work_package_ids_for_local_operator(repo, settings),
          {:ok, expired_unlinked_work_package_ids} <-
            expired_unlinked_work_package_ids_for_local_operator(repo, settings, linked_work_package_id_sets.active),
+         hidden_work_package_ids =
+           settings
+           |> effective_hidden_work_package_ids(linked_work_package_id_sets.active)
+           |> MapSet.union(expired_unlinked_work_package_ids)
+           |> MapSet.union(linked_work_package_id_sets.archived_only)
+           |> MapSet.union(architect_handoff_anchor_work_package_ids),
+         opts = [repo_identity_catalog: repo_identity_catalog, hidden_work_package_ids: hidden_work_package_ids],
          {:ok, board} <- Dashboard.operator_board(repo, opts),
          {:ok, work_requests} <- Dashboard.work_requests(repo, opts),
          {:ok, archived_work_requests} <- Dashboard.archived_work_requests(repo, opts),
@@ -1110,13 +1116,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
            operator_work_request_details(repo, Map.get(work_requests, :work_requests, []), repo_identity_catalog) do
       active_blocking_edges = Map.get(board, :active_blocking_edges, [])
       board = Map.delete(board, :active_blocking_edges)
-
-      hidden_work_package_ids =
-        settings
-        |> effective_hidden_work_package_ids(linked_work_package_id_sets.active)
-        |> MapSet.union(expired_unlinked_work_package_ids)
-        |> MapSet.union(linked_work_package_id_sets.archived_only)
-        |> MapSet.union(architect_handoff_anchor_work_package_ids)
 
       board = hide_local_operator_work_packages(board, hidden_work_package_ids)
       active_blocking_edges = hide_local_operator_blocking_edges(active_blocking_edges, hidden_work_package_ids)
@@ -1157,7 +1156,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
     board
     |> Map.put(:groups, groups)
-    |> Map.put(:total_count, groups |> Map.values() |> Enum.map(&length/1) |> Enum.sum())
+    |> Map.put(:visible_count, groups |> Map.values() |> Enum.map(&length/1) |> Enum.sum())
   end
 
   defp hide_local_operator_blocking_edges(active_blocking_edges, hidden_ids) do
