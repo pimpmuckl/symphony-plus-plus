@@ -38,6 +38,40 @@ export function StatusRail({
 }) {
   const [openPanel, setOpenPanel] = useState<TopPanelKey | null>(readStoredTopPanel);
   const selectCardFromPanel = useCallback((selection: CardDetailSelection) => onSelectCard(selection), [onSelectCard]);
+  const tileConfigs: StatusTileConfig[] = [
+    {
+      icon: <MessageSquareText className="size-6" />,
+      panel: "guidance",
+      pulseToken: updateAnimations.countPulseFor("guidance"),
+      title: "Human Guidance Needed",
+      tone: "violet",
+      value: guidanceItems.length,
+    },
+    {
+      icon: <AlertTriangle className="size-6" />,
+      panel: "blockers",
+      pulseToken: updateAnimations.countPulseFor("blockers"),
+      title: "Active Blockers",
+      tone: "amber",
+      value: blockerItems.length,
+    },
+    {
+      icon: <CheckCircle2 className="size-6" />,
+      panel: "finished",
+      pulseToken: updateAnimations.countPulseFor("finished"),
+      title: "Finished",
+      tone: "emerald",
+      value: finishedHighlights.length,
+    },
+  ];
+  const panelContentProps = {
+    blockerItems,
+    finishedHighlights,
+    guidanceItems,
+    onSelectCard: selectCardFromPanel,
+    onSelectGuidance,
+    updateAnimations,
+  };
 
   useEffect(() => {
     writeDashboardUiStateValue("topPanel", openPanel);
@@ -45,51 +79,58 @@ export function StatusRail({
 
   return (
     <section className="relative grid gap-3">
-      <div className="grid gap-3 lg:grid-cols-3">
-        <StatusTile
-          panel="guidance"
-          title="Human Guidance Needed"
-          value={guidanceItems.length}
-          icon={<MessageSquareText className="size-6" />}
-          tone="violet"
-          openPanel={openPanel}
-          onToggle={setOpenPanel}
-          pulseToken={updateAnimations.countPulseFor("guidance")}
-        />
-        <StatusTile
-          panel="blockers"
-          title="Active Blockers"
-          value={blockerItems.length}
-          icon={<AlertTriangle className="size-6" />}
-          tone="amber"
-          openPanel={openPanel}
-          onToggle={setOpenPanel}
-          pulseToken={updateAnimations.countPulseFor("blockers")}
-        />
-        <StatusTile
-          panel="finished"
-          title="Finished"
-          value={finishedHighlights.length}
-          icon={<CheckCircle2 className="size-6" />}
-          tone="emerald"
-          openPanel={openPanel}
-          onToggle={setOpenPanel}
-          pulseToken={updateAnimations.countPulseFor("finished")}
-        />
+      <div className="grid gap-3 lg:hidden">
+        {tileConfigs.map((tile) => (
+          <div key={tile.panel} className="top-panel-inline grid gap-3">
+            <StatusTile {...tile} openPanel={openPanel} onToggle={setOpenPanel} />
+            <MobileTopPanel active={openPanel === tile.panel} panel={tile.panel} {...panelContentProps} />
+          </div>
+        ))}
       </div>
 
-      <TopPanelCarousel
-        activePanel={openPanel}
-        guidanceItems={guidanceItems}
-        blockerItems={blockerItems}
-        finishedHighlights={finishedHighlights}
-        onSelectGuidance={onSelectGuidance}
-        onSelectCard={selectCardFromPanel}
-        updateAnimations={updateAnimations}
-      />
+      <div className="hidden gap-3 lg:grid lg:grid-cols-3">
+        {tileConfigs.map((tile) => (
+          <StatusTile key={tile.panel} {...tile} openPanel={openPanel} onToggle={setOpenPanel} />
+        ))}
+      </div>
+
+      <div className="hidden lg:block">
+        <TopPanelCarousel activePanel={openPanel} {...panelContentProps} />
+      </div>
     </section>
   );
 }
+
+function MobileTopPanel({
+  active,
+  panel,
+  ...contentProps
+}: Omit<TopPanelContentProps, "interactive"> & {
+  active: boolean;
+}) {
+  if (!active) return null;
+
+  return (
+    <div className="top-panel-viewport" data-phase="idle" data-resize="steady" data-has-content="true">
+      <div className="top-panel-static" data-motion="idle">
+        <div className="top-panel-motion-frame">
+          <div className="top-panel-pane-inner">
+            <TopPanelContent {...contentProps} panel={panel} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type StatusTileConfig = {
+  icon: React.ReactNode;
+  panel: TopPanelKey;
+  pulseToken: number;
+  title: string;
+  tone: StatusTileTone;
+  value: number;
+};
 
 export type TopPanelContentProps = {
   panel: TopPanelKey;
@@ -157,7 +198,7 @@ export function TopPanelContent({
   }
 
   return (
-    <TopTray title="Recently finished requests, slices, and work packages">
+    <TopTray title="Recently finished requests, slices, and execution records">
       {finishedHighlights.length === 0 ? (
         <EmptyPanel title="Nothing finished yet" compact />
       ) : (
@@ -280,7 +321,7 @@ export function TopPanelCarousel({
       });
       nextFrame(framesRef, () => dispatch({ type: "patch", state: { height: 0 } }));
       later(timersRef, TOP_PANEL_SLIDE_MS, () => {
-        dispatch({ type: "patch", state: { visiblePanel: null, phase: "idle" } });
+        dispatch({ type: "patch", state: { visiblePanel: null, phase: "idle", height: 0 } });
       });
       return;
     }
@@ -360,7 +401,7 @@ export function TopPanelCarousel({
         ? "growing"
         : "steady";
   const viewportStyle = {
-    height: state.height === "auto" ? undefined : `${Math.max(state.height, 0)}px`,
+    height: topPanelViewportHeight(panes.length > 0, state.height),
     "--top-panel-next-height": `${Math.max(state.transitionHeights.to, 0)}px`,
   } as React.CSSProperties;
 
@@ -428,6 +469,12 @@ export function TopPanelCarousel({
       </div>
     </>
   );
+}
+
+function topPanelViewportHeight(hasPanes: boolean, height: TopPanelCarouselState["height"]) {
+  if (!hasPanes) return "0px";
+  if (height === "auto") return undefined;
+  return `${Math.max(height, 0)}px`;
 }
 
 export function StatusTile({

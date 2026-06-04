@@ -162,11 +162,11 @@ export function RequestCard({
             {canCopyHandoff ? (
               <CardSignal
                 className="min-h-12 flex-1"
-                label={handoffHasOpenQuestions ? "Architect Handoff" : "Agent Handoff"}
+                label="Architect Handoff"
                 value={handoffSignalValue}
                 tone={handoffHasOpenQuestions ? "muted" : "info"}
                 onClick={copyHandoff}
-                ariaLabel={`Copy agent handoff for ${request.title || request.id}`}
+                ariaLabel={`Copy architect handoff for ${request.title || request.id}`}
               />
             ) : null}
             {commentSignal ? (

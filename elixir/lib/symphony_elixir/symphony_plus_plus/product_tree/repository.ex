@@ -1,0 +1,397 @@
+defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Repository do
+  @moduledoc false
+
+  import Ecto.Query, only: [from: 2]
+
+  alias Ecto.Changeset
+  alias SymphonyElixir.SymphonyPlusPlus.ProductTree.{Attrs, DependencyEdge, Node, Revision, SliceLink}
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+
+  @revision_number_retry_count 3
+  @revision_number_unique_index "sympp_product_tree_revisions_work_request_revision_unique_index"
+  @id_collision_constraints [
+    "sympp_product_tree_nodes_pkey",
+    "sympp_product_tree_nodes_id_index",
+    "sympp_product_tree_nodes_id_unique_index",
+    "sympp_product_tree_slice_links_pkey",
+    "sympp_product_tree_slice_links_id_index",
+    "sympp_product_tree_slice_links_id_unique_index",
+    "sympp_product_tree_dependency_edges_pkey",
+    "sympp_product_tree_dependency_edges_id_index",
+    "sympp_product_tree_dependency_edges_id_unique_index",
+    "sympp_product_tree_revisions_pkey",
+    "sympp_product_tree_revisions_id_index",
+    "sympp_product_tree_revisions_id_unique_index"
+  ]
+  @sqlite_primary_key_messages [
+    "unique constraint failed: sympp_product_tree_nodes.id",
+    "unique constraint failed: sympp_product_tree_slice_links.id",
+    "unique constraint failed: sympp_product_tree_dependency_edges.id",
+    "unique constraint failed: sympp_product_tree_revisions.id"
+  ]
+
+  @type repo :: module()
+  @type error ::
+          :not_found
+          | :database_busy
+          | :id_already_exists
+          | {:constraint_failed, String.t()}
+          | {:storage_failed, String.t()}
+          | Changeset.t()
+
+  @spec tree_for_work_request(repo(), String.t()) ::
+          {:ok,
+           %{
+             nodes: [Node.t()],
+             slice_links: [SliceLink.t()],
+             dependency_edges: [DependencyEdge.t()],
+             latest_revision: Revision.t() | nil
+           }}
+          | {:error, error()}
+  def tree_for_work_request(repo, work_request_id) when is_atom(repo) and is_binary(work_request_id) do
+    {:ok,
+     %{
+       nodes: list_nodes!(repo, work_request_id),
+       slice_links: list_slice_links!(repo, work_request_id),
+       dependency_edges: list_dependency_edges!(repo, work_request_id),
+       latest_revision: latest_revision!(repo, work_request_id)
+     }}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec create_node(repo(), map()) :: {:ok, Node.t()} | {:error, error()}
+  def create_node(repo, attrs) when is_atom(repo) and is_map(attrs) do
+    attrs = Attrs.normalize_keys(attrs)
+
+    with :ok <- validate_parent_scope(repo, attrs) do
+      attrs
+      |> Node.create_changeset()
+      |> repo.insert()
+      |> normalize_insert_result()
+    end
+  rescue
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec upsert_node(repo(), map()) :: {:ok, Node.t()} | {:error, error()}
+  def upsert_node(repo, attrs) when is_atom(repo) and is_map(attrs) do
+    attrs = attrs |> Attrs.normalize_keys() |> normalize_blank_id("parent_id")
+
+    case Map.get(attrs, "product_tree_node_id") || Map.get(attrs, "id") do
+      id when is_binary(id) and id != "" -> update_node(repo, Map.put(attrs, "id", id))
+      _id -> create_node(repo, attrs)
+    end
+  rescue
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec create_slice_link(repo(), map()) :: {:ok, SliceLink.t()} | {:error, error()}
+  def create_slice_link(repo, attrs) when is_atom(repo) and is_map(attrs) do
+    attrs = Attrs.normalize_keys(attrs)
+
+    with :ok <- validate_slice_link_scope(repo, attrs) do
+      attrs
+      |> SliceLink.create_changeset()
+      |> repo.insert()
+      |> normalize_insert_result()
+    end
+  rescue
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec move_slice_link(repo(), map()) :: {:ok, SliceLink.t() | nil} | {:error, error()}
+  def move_slice_link(repo, attrs) when is_atom(repo) and is_map(attrs) do
+    attrs = attrs |> Attrs.normalize_keys() |> normalize_blank_id("product_tree_node_id")
+
+    with :ok <- validate_slice_link_scope(repo, attrs) do
+      case Map.get(attrs, "product_tree_node_id") do
+        node_id when node_id in [nil, ""] -> unlink_slice(repo, attrs)
+        _node_id -> upsert_slice_link(repo, attrs)
+      end
+    end
+  rescue
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec create_dependency_edge(repo(), map()) :: {:ok, DependencyEdge.t()} | {:error, error()}
+  def create_dependency_edge(repo, attrs) when is_atom(repo) and is_map(attrs) do
+    attrs = Attrs.normalize_keys(attrs)
+
+    with :ok <- validate_dependency_edge_scope(repo, attrs) do
+      attrs
+      |> DependencyEdge.create_changeset()
+      |> repo.insert()
+      |> normalize_insert_result()
+    end
+  rescue
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec record_revision(repo(), String.t(), map()) :: {:ok, Revision.t()} | {:error, error()}
+  def record_revision(repo, work_request_id, attrs) when is_atom(repo) and is_binary(work_request_id) and is_map(attrs) do
+    record_revision(repo, work_request_id, attrs, @revision_number_retry_count)
+  end
+
+  defp record_revision(repo, work_request_id, attrs, attempts_left) do
+    attrs =
+      attrs
+      |> Attrs.normalize_keys()
+      |> Map.put("work_request_id", work_request_id)
+      |> Map.put("revision_number", next_revision_number(repo, work_request_id))
+
+    case repo.insert(Revision.create_changeset(attrs)) do
+      {:ok, revision} ->
+        {:ok, revision}
+
+      {:error, %Changeset{} = changeset} = error ->
+        if revision_number_conflict?(changeset) and attempts_left > 0 do
+          record_revision(repo, work_request_id, attrs, attempts_left - 1)
+        else
+          normalize_insert_result(error)
+        end
+    end
+  rescue
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp list_nodes!(repo, work_request_id) do
+    repo.all(
+      from(node in Node,
+        where: node.work_request_id == ^work_request_id,
+        order_by: [asc: node.parent_id, asc: node.position, asc: node.created_at, asc: node.id]
+      )
+    )
+  end
+
+  defp list_slice_links!(repo, work_request_id) do
+    repo.all(
+      from(link in SliceLink,
+        where: link.work_request_id == ^work_request_id,
+        order_by: [asc: link.product_tree_node_id, asc: link.position, asc: link.created_at, asc: link.id]
+      )
+    )
+  end
+
+  defp list_dependency_edges!(repo, work_request_id) do
+    repo.all(
+      from(edge in DependencyEdge,
+        where: edge.work_request_id == ^work_request_id,
+        order_by: [asc: edge.kind, asc: edge.created_at, asc: edge.id]
+      )
+    )
+  end
+
+  defp latest_revision!(repo, work_request_id) do
+    repo.one(
+      from(revision in Revision,
+        where: revision.work_request_id == ^work_request_id,
+        order_by: [desc: revision.revision_number],
+        limit: 1
+      )
+    )
+  end
+
+  defp update_node(repo, %{"id" => id, "work_request_id" => work_request_id} = attrs)
+       when is_binary(work_request_id) and work_request_id != "" do
+    case repo.get(Node, id) do
+      nil ->
+        {:error, :not_found}
+
+      %Node{work_request_id: ^work_request_id} = node ->
+        with :ok <- validate_parent_scope(repo, attrs),
+             :ok <- validate_parent_cycle(repo, node, attrs) do
+          node
+          |> Node.update_changeset(Map.put(attrs, "work_request_id", work_request_id))
+          |> repo.update()
+          |> normalize_insert_result()
+        end
+
+      %Node{} ->
+        {:error, {:constraint_failed, "product_tree_node_work_request_scope"}}
+    end
+  end
+
+  defp update_node(repo, attrs), do: create_node(repo, attrs)
+
+  defp upsert_slice_link(repo, attrs) do
+    work_request_id = Map.get(attrs, "work_request_id")
+
+    case existing_slice_link(repo, Map.fetch!(attrs, "planned_slice_id")) do
+      nil ->
+        create_slice_link(repo, attrs)
+
+      %SliceLink{work_request_id: ^work_request_id} = slice_link ->
+        slice_link
+        |> SliceLink.update_changeset(attrs)
+        |> repo.update()
+        |> normalize_insert_result()
+
+      %SliceLink{} ->
+        {:error, {:constraint_failed, "product_tree_slice_link_existing_scope"}}
+    end
+  end
+
+  defp unlink_slice(repo, %{"work_request_id" => work_request_id, "planned_slice_id" => planned_slice_id}) do
+    repo.delete_all(
+      from(link in SliceLink,
+        where: link.work_request_id == ^work_request_id and link.planned_slice_id == ^planned_slice_id
+      )
+    )
+
+    {:ok, nil}
+  end
+
+  defp unlink_slice(_repo, _attrs), do: {:error, {:constraint_failed, "product_tree_slice_link_slice_scope"}}
+
+  defp existing_slice_link(repo, planned_slice_id) do
+    repo.one(from(link in SliceLink, where: link.planned_slice_id == ^planned_slice_id, limit: 1))
+  end
+
+  defp validate_parent_scope(_repo, %{"parent_id" => parent_id}) when parent_id in [nil, ""], do: :ok
+  defp validate_parent_scope(_repo, %{"work_request_id" => work_request_id}) when work_request_id in [nil, ""], do: :ok
+
+  defp validate_parent_scope(repo, %{"work_request_id" => work_request_id, "parent_id" => parent_id}) do
+    validate_record_scope(repo, Node, parent_id, work_request_id, "product_tree_node_parent_scope")
+  end
+
+  defp validate_parent_scope(_repo, _attrs), do: :ok
+
+  defp validate_parent_cycle(_repo, _node, %{"parent_id" => parent_id}) when parent_id in [nil, ""], do: :ok
+
+  defp validate_parent_cycle(repo, %Node{id: id}, %{"parent_id" => parent_id}) do
+    if parent_reaches_node?(repo, parent_id, id, []) do
+      {:error, {:constraint_failed, "product_tree_node_parent_cycle"}}
+    else
+      :ok
+    end
+  end
+
+  defp validate_parent_cycle(_repo, _node, _attrs), do: :ok
+
+  @spec parent_reaches_node?(repo(), String.t() | nil, String.t(), [String.t()]) :: boolean()
+  defp parent_reaches_node?(_repo, current_id, target_id, _visited) when current_id in [nil, ""], do: current_id == target_id
+  defp parent_reaches_node?(_repo, target_id, target_id, _visited), do: true
+
+  defp parent_reaches_node?(repo, current_id, target_id, visited) do
+    if current_id in visited do
+      false
+    else
+      case repo.get(Node, current_id) do
+        %Node{parent_id: parent_id} ->
+          parent_reaches_node?(repo, parent_id, target_id, [current_id | visited])
+
+        _record ->
+          false
+      end
+    end
+  end
+
+  defp validate_slice_link_scope(repo, %{"work_request_id" => work_request_id} = attrs) when is_binary(work_request_id) and work_request_id != "" do
+    with :ok <- validate_record_scope(repo, Node, Map.get(attrs, "product_tree_node_id"), work_request_id, "product_tree_slice_link_node_scope") do
+      validate_record_scope(repo, PlannedSlice, Map.get(attrs, "planned_slice_id"), work_request_id, "product_tree_slice_link_slice_scope")
+    end
+  end
+
+  defp validate_slice_link_scope(_repo, _attrs), do: :ok
+
+  defp validate_dependency_edge_scope(repo, %{"work_request_id" => work_request_id} = attrs) when is_binary(work_request_id) and work_request_id != "" do
+    with :ok <- validate_dependency_endpoint_scope(repo, work_request_id, Map.get(attrs, "source_kind"), Map.get(attrs, "source_id"), "source") do
+      validate_dependency_endpoint_scope(repo, work_request_id, Map.get(attrs, "target_kind"), Map.get(attrs, "target_id"), "target")
+    end
+  end
+
+  defp validate_dependency_edge_scope(_repo, _attrs), do: :ok
+
+  defp validate_dependency_endpoint_scope(repo, work_request_id, "product_node", id, label) do
+    validate_record_scope(repo, Node, id, work_request_id, "product_tree_dependency_#{label}_scope")
+  end
+
+  defp validate_dependency_endpoint_scope(repo, work_request_id, "planned_slice", id, label) do
+    validate_record_scope(repo, PlannedSlice, id, work_request_id, "product_tree_dependency_#{label}_scope")
+  end
+
+  defp validate_dependency_endpoint_scope(_repo, _work_request_id, _kind, _id, _label), do: :ok
+
+  defp validate_record_scope(_repo, _schema, id, _work_request_id, _constraint) when id in [nil, ""], do: :ok
+
+  defp validate_record_scope(repo, schema, id, work_request_id, constraint) do
+    case repo.get(schema, id) do
+      nil -> {:error, {:constraint_failed, constraint}}
+      %{work_request_id: ^work_request_id} -> :ok
+      _record -> {:error, {:constraint_failed, constraint}}
+    end
+  end
+
+  defp next_revision_number(repo, work_request_id) do
+    repo.one(
+      from(revision in Revision,
+        where: revision.work_request_id == ^work_request_id,
+        select: max(revision.revision_number)
+      )
+    )
+    |> case do
+      number when is_integer(number) -> number + 1
+      _number -> 1
+    end
+  end
+
+  defp normalize_blank_id(attrs, key) do
+    case Map.get(attrs, key) do
+      value when value in [nil, ""] -> Map.put(attrs, key, nil)
+      value when is_binary(value) -> Map.put(attrs, key, String.trim(value))
+      _value -> attrs
+    end
+  end
+
+  defp normalize_insert_result({:ok, record}), do: {:ok, record}
+
+  defp normalize_insert_result({:error, %Changeset{} = changeset}) do
+    if duplicate_id?(changeset), do: {:error, :id_already_exists}, else: {:error, changeset}
+  end
+
+  defp duplicate_id?(changeset) do
+    Enum.any?(changeset.errors, fn
+      {:id, {_message, options}} -> Keyword.get(options, :constraint) == :unique
+      _error -> false
+    end)
+  end
+
+  defp revision_number_conflict?(%Changeset{} = changeset) do
+    Enum.any?(changeset.errors, fn
+      {_field, {_message, options}} ->
+        Keyword.get(options, :constraint) == :unique and
+          Keyword.get(options, :constraint_name) == @revision_number_unique_index
+    end)
+  end
+
+  defp normalize_constraint_error(%Ecto.ConstraintError{constraint: constraint}) when constraint in @id_collision_constraints,
+    do: {:error, :id_already_exists}
+
+  defp normalize_constraint_error(%Ecto.ConstraintError{constraint: constraint}) when is_binary(constraint),
+    do: {:error, {:constraint_failed, constraint}}
+
+  defp normalize_constraint_error(%Ecto.ConstraintError{type: type}), do: {:error, {:constraint_failed, Atom.to_string(type)}}
+
+  defp normalize_exqlite_error(error) do
+    message = Exception.message(error)
+    normalized_message = String.downcase(message)
+
+    cond do
+      Enum.any?(@sqlite_primary_key_messages, &String.contains?(normalized_message, &1)) ->
+        {:error, :id_already_exists}
+
+      String.contains?(normalized_message, "busy") or String.contains?(normalized_message, "locked") ->
+        {:error, :database_busy}
+
+      true ->
+        {:error, {:storage_failed, message}}
+    end
+  end
+end

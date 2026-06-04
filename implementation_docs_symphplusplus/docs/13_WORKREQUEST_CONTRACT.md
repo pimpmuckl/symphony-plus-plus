@@ -1,9 +1,10 @@
-# v2 WorkRequest Product Contract
+# WorkRequest Product Contract
 
-This document defines the v2 WorkRequest product contract. It is operator-facing
-product documentation only. It preserves the existing WorkPackage ledger,
-AccessGrant permissions, virtual planning resources, readiness gates,
-review-suite evidence, PR evidence, and human merge controls.
+This document defines the current WorkRequest product contract. It is
+operator-facing product documentation for the V3 product-tree cockpit. It
+preserves the existing WorkPackage ledger, AccessGrant permissions, virtual
+planning resources, readiness gates, review-suite evidence, PR evidence, and
+human merge controls.
 
 Codex architect agents should apply this contract through the plugin-installed
 `symphony-plus-plus-mcp:symphony-architect` skill, backed by the repo-local
@@ -28,15 +29,36 @@ plugin surfaces, and automatic Codex spawning remain future work.
 
 ## Purpose
 
-A `WorkRequest` is the pre-WorkPackage intake object for work that needs product
-clarification, architecture planning, or slicing before implementation starts.
-It captures human intent before Symphony++ creates one or more bounded
-WorkPackages.
+A `WorkRequest` is the top-level product intent and default cockpit row for
+work that needs product clarification, architecture planning, product-tree
+organization, or slicing before implementation starts. It captures human intent
+before Symphony++ dispatches one or more bounded execution slices.
 
 Use a WorkRequest when the human knows the product goal but has not yet locked
 the implementation slices, target branch model, assumptions, or review shape.
-Skip it for already-bounded bugfixes, hotfixes, investigations, or
-review-only tasks that can be expressed directly as one WorkPackage.
+Simple WorkRequests can remain direct-slice requests with no extra product
+structure. Larger implementations can add optional nested product plan nodes so
+the cockpit shows product progress by area. Skip the product-tree ceremony for
+already-bounded bugfixes, hotfixes, investigations, or review-only tasks that
+can be expressed directly as one execution package.
+
+## V3 Product Tree
+
+The WorkRequest may own optional product plan nodes:
+
+```text
+WorkRequest
+|-- product plan node
+|   |-- product plan node
+|   `-- planned slices
+`-- direct planned slices
+```
+
+Product plan nodes are architect-authored product groupings. They are not
+fixed to names such as layer, capability, epic, or milestone, and `node_kind`
+is only a label. Planned slices can link to one node or remain direct children
+of the WorkRequest. WorkPackages remain downstream execution/audit records
+linked from dispatched slices.
 
 ## Required Intake Fields
 
@@ -157,7 +179,10 @@ mutate the same scoped clarification and decision surface through
 `close_work_request_question`, and `record_work_request_decision`, and can mutate
 planned slices through
 `add_work_request_planned_slice`, `approve_work_request_planned_slice`,
-`skip_work_request_planned_slice`, and `mark_work_request_sliced`. Each
+`skip_work_request_planned_slice`, and `mark_work_request_sliced`, and can
+rearrange V3 product plan trees through
+`upsert_work_request_product_plan_node` and
+`move_work_request_planned_slice_to_product_node`. Each
 mutation requires `work_request_id` and first verifies the target WorkRequest
 is inside the frozen repo/base-branch scope. Answer and close calls also
 require `question_id`, verify the question belongs to that scoped WorkRequest,
@@ -175,6 +200,14 @@ service primitives: status movement is explicit through
 `set_work_request_status`, `mark_work_request_sliced` keeps the existing
 approved-slice requirement, and the question/decision tools do not apply
 dashboard-only auto-transition or lifecycle helper policy.
+
+`upsert_work_request_product_plan_node` creates, updates, or reparents an
+optional product-facing plan node. `move_work_request_planned_slice_to_product_node`
+links a planned slice to one product plan node, or moves it back to the direct
+WorkRequest slice list when the product node id is omitted, null, or empty.
+These product-tree tools are rearrangement/control-plane primitives: they do not
+dispatch planned slices, create WorkPackages, alter SecretHandoff, mutate
+Linear, or require simple WorkRequests to add product plan nodes.
 
 `ask_work_request_question` accepts an optional `decision_prompt` JSON object so
 architects can persist human-readable answer cards without replacing the
@@ -306,8 +339,8 @@ The architect plan records:
 
 The slice plan records:
 
-- WorkPackage candidates with titles, goals, owned files, acceptance criteria,
-  validation, review profiles, and stop conditions.
+- Execution slice candidates with titles, goals, owned files, acceptance
+  criteria, validation, review profiles, and stop conditions.
 - Parent/child relationships when an architect-led phase is needed.
 - The intended PR target for each slice.
 - Any package that should be investigation-only or reviewer-only.
@@ -532,7 +565,6 @@ replace the implementing worker's normal review-suite responsibility.
 
 This contract does not implement or require:
 
-- MCP WorkRequest intake tools or architect-planner tools.
 - Plugin packaging changes.
 - Automatic question generation.
 - Automatic WorkPackage slicing/planning.

@@ -72,15 +72,15 @@ target.
 
 | Tool | Purpose |
 |---|---|
-| claim_local_assignment | Claim the normal V2.1 ledger-backed local WorkPackage assignment and bind the current MCP session without raw secrets. |
+| claim_local_assignment | Claim the normal planned-slice ledger-backed local WorkPackage assignment and bind the current MCP session without raw secrets. |
 | claim_local_architect_assignment | Claim or reconnect a normal ledger-backed local WorkRequest architect assignment and bind the current MCP session without private handoff files. |
 | claim_work_key | Claim a one-time work key/secret with required `claimed_by` owner identity and bind the current MCP session to the grant role for legacy/recovery bootstrap. |
 | claim_private_handoff | Claim an existing worker or architect grant from `local-private-file` handoff metadata for legacy/recovery bootstrap. |
 | create_work_request | Create a local WorkRequest with creator provenance and return a redacted architect handoff/bootstrap payload. |
 
 `claim_work_key` appears in both surfaces because the runtime advertises the
-legacy/recovery claim tool before and after binding. It is not the normal V2.1
-worker claim path.
+legacy/recovery claim tool before and after binding. It is not the normal
+planned-slice worker claim path.
 
 ## Local operator tools
 
@@ -129,6 +129,8 @@ ledger identity for operator diagnosis:
 | close_work_request_question | Close an open clarification question that belongs to a scoped WorkRequest without recording an answer. |
 | record_work_request_decision | Record a durable decision log entry on a scoped WorkRequest. |
 | add_work_request_planned_slice | Add a planned slice to a scoped WorkRequest. |
+| upsert_work_request_product_plan_node | Create, update, or reparent a V3 product plan node inside a scoped WorkRequest. |
+| move_work_request_planned_slice_to_product_node | Move a planned slice under a V3 product plan node, or unlink it back to the WorkRequest's direct slice list. |
 | approve_work_request_planned_slice | Approve a planned slice that belongs to a scoped WorkRequest. |
 | skip_work_request_planned_slice | Skip a planned slice that belongs to a scoped WorkRequest. |
 | mark_work_request_sliced | Mark a scoped WorkRequest sliced using the existing approved-slice requirement. |
@@ -225,7 +227,7 @@ child-delegated worker grant already exists for that child, ignores unrelated
 normal worker grants, and cannot outlive the transaction-current architect
 grant when that architect grant has an explicit expiry. With a non-expiring
 architect grant, the child worker grant defaults to non-expiring and may use a
-future explicit expiry. This is the pre-production v1 contract and does not provide implicit
+future explicit expiry. This contract does not provide implicit
 replacement/remint behavior. The tool stores the newly minted child worker
 secret through the private SecretHandoff store and returns only redacted
 metadata under `worker_grant.secret_handoff`; `worker_grant.secret_in_response`
@@ -465,7 +467,7 @@ results keep `structuredContent` as the schema-native source of truth.
 
 `claim_local_assignment` requires `repo`, `base_branch`, `work_package_id`,
 `branch`, `worktree_path`, `caller_id`, and `claimed_by`; `work_request_id` is
-accepted for planned-slice dispatch. It is the normal V2.1 local worker claim.
+accepted for planned-slice dispatch. It is the normal local worker claim.
 The tool validates package repo/base/branch/worktree scope, requires a trusted
 local HTTP MCP session, creates or heartbeats a claim lease, reclaims stale
 leases with audit evidence, rejects paused leases, same local owner claims that

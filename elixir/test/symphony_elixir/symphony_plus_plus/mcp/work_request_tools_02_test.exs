@@ -3,6 +3,10 @@ Code.require_file("../../../support/symphony_plus_plus/mcp_case.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
+  alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.ProductTree
+  alias SymphonyElixir.SymphonyPlusPlus.ProductTree.Revision
+
   test "WorkRequest MCP read tools for handoff phases include same repo/base siblings", %{repo: repo} do
     handoff_work_request =
       create_work_request!(repo,
@@ -887,6 +891,173 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
            } == counts_before
   end
 
+  test "architect WorkRequest product tree tools create nodes and move slices", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-PRODUCT-TREE-MOVE", [
+        "write:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-PRODUCT-TREE-MOVE",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    grant_work_request_scope!(repo, session, work_request.id)
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(id: "WRS-MCP-WR-PRODUCT-TREE-MOVE", target_base_branch: work_request.base_branch)
+             )
+
+    node_response =
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+        "work_request_id" => work_request.id,
+        "title" => "Backend product layer",
+        "node_kind" => "layer",
+        "position" => 2
+      })
+
+    node_payload = get_in(node_response, ["result", "structuredContent"])
+    product_tree_node_id = get_in(node_payload, ["product_plan_node", "id"])
+
+    assert is_binary(product_tree_node_id)
+    assert get_in(node_payload, ["product_plan_node", "title"]) == "Backend product layer"
+    assert get_in(node_payload, ["product_tree", "mode"]) == "product_tree"
+    assert get_in(node_payload, ["product_tree", "root_node_ids"]) == [product_tree_node_id]
+    assert get_in(node_payload, ["product_tree", "latest_revision", "revision_number"]) == 1
+    assert node_payload["scope"] == %{"repo" => anchor.repo, "base_branch" => anchor.base_branch}
+
+    child_response =
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+        "work_request_id" => work_request.id,
+        "parent_id" => product_tree_node_id,
+        "title" => "Nested cleanup"
+      })
+
+    child_node_id = get_in(child_response, ["result", "structuredContent", "product_plan_node", "id"])
+
+    root_child_response =
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+        "work_request_id" => work_request.id,
+        "product_tree_node_id" => child_node_id,
+        "parent_id" => "",
+        "title" => "Nested cleanup"
+      })
+
+    assert get_in(root_child_response, ["result", "structuredContent", "product_plan_node", "parent_id"]) == nil
+    assert Enum.sort(get_in(root_child_response, ["result", "structuredContent", "product_tree", "root_node_ids"])) == Enum.sort([product_tree_node_id, child_node_id])
+    assert get_in(root_child_response, ["result", "structuredContent", "product_tree", "latest_revision", "revision_number"]) == 3
+
+    nested_again_response =
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+        "work_request_id" => work_request.id,
+        "product_tree_node_id" => child_node_id,
+        "parent_id" => product_tree_node_id,
+        "title" => "Nested cleanup"
+      })
+
+    assert get_in(nested_again_response, ["result", "structuredContent", "product_plan_node", "parent_id"]) == product_tree_node_id
+
+    omitted_parent_response =
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+        "work_request_id" => work_request.id,
+        "product_tree_node_id" => child_node_id,
+        "title" => "Nested cleanup"
+      })
+
+    assert get_in(omitted_parent_response, ["result", "structuredContent", "product_plan_node", "parent_id"]) == nil
+    assert Enum.sort(get_in(omitted_parent_response, ["result", "structuredContent", "product_tree", "root_node_ids"])) == Enum.sort([product_tree_node_id, child_node_id])
+    assert get_in(omitted_parent_response, ["result", "structuredContent", "product_tree", "latest_revision", "revision_number"]) == 5
+
+    move_response =
+      mcp_tool(repo, session, "move_work_request_planned_slice_to_product_node", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice.id,
+        "product_tree_node_id" => product_tree_node_id,
+        "position" => 3
+      })
+
+    move_payload = get_in(move_response, ["result", "structuredContent"])
+    link_payload = move_payload["product_tree_slice_link"]
+
+    assert link_payload["planned_slice_id"] == planned_slice.id
+    assert link_payload["product_tree_node_id"] == product_tree_node_id
+    assert link_payload["position"] == 3
+    assert get_in(move_payload, ["status", "slice_product_tree_location"]) == "product_plan_node"
+    assert get_in(move_payload, ["product_tree", "latest_revision", "revision_number"]) == 6
+
+    moved_nodes_by_id = Map.new(move_payload["product_tree"]["nodes"], &{&1["id"], &1})
+    assert moved_nodes_by_id[product_tree_node_id]["slice_ids"] == [planned_slice.id]
+    assert get_in(move_payload, ["product_tree", "root_slice_ids"]) == []
+
+    direct_response =
+      mcp_tool(repo, session, "move_work_request_planned_slice_to_product_node", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice.id,
+        "product_tree_node_id" => ""
+      })
+
+    direct_payload = get_in(direct_response, ["result", "structuredContent"])
+
+    assert direct_payload["product_tree_slice_link"] == nil
+    assert get_in(direct_payload, ["status", "slice_product_tree_location"]) == "direct"
+    assert get_in(direct_payload, ["product_tree", "root_slice_ids"]) == [planned_slice.id]
+    assert get_in(direct_payload, ["product_tree", "latest_revision", "revision_number"]) == 7
+  end
+
+  test "architect WorkRequest product tree tools require authoring status", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-PRODUCT-TREE-STATUS", [
+        "write:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-PRODUCT-TREE-STATUS",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    grant_work_request_scope!(repo, session, work_request.id)
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(id: "WRS-MCP-WR-PRODUCT-TREE-STATUS", target_base_branch: work_request.base_branch)
+             )
+
+    assert {:ok, product_node} =
+             ProductTree.create_node(repo, %{
+               work_request_id: work_request.id,
+               title: "Locked product plan"
+             })
+
+    assert {:ok, _clarifying} = WorkRequestRepository.update_status(repo, work_request.id, "ready_for_slicing", "clarifying")
+
+    upsert_response =
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+        "work_request_id" => work_request.id,
+        "title" => "Should not be accepted"
+      })
+
+    move_response =
+      mcp_tool(repo, session, "move_work_request_planned_slice_to_product_node", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice.id,
+        "product_tree_node_id" => product_node.id
+      })
+
+    assert get_in(upsert_response, ["error", "data", "reason"]) == "invalid_status"
+    assert get_in(move_response, ["error", "data", "reason"]) == "invalid_status"
+  end
+
   test "architect WorkRequest planned-slice tools allow delivery base different from WorkRequest base", %{repo: repo} do
     {anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-DELIVERY-BASE", [
@@ -924,8 +1095,71 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
 
     assert add_payload["scope"] == %{"repo" => anchor.repo, "base_branch" => anchor.base_branch}
     assert get_in(add_payload, ["planned_slice", "target_base_branch"]) == delivery_base
+    assert {:ok, detail} = Dashboard.work_request_detail(repo, work_request.id)
+    assert detail.product_tree.latest_revision.revision_number == 1
+
+    assert [revision] =
+             Revision
+             |> repo.all()
+             |> Enum.filter(&(&1.work_request_id == work_request.id))
+
+    refute Map.has_key?(revision.tree_snapshot, "latest_revision")
     assert {:ok, [planned_slice]} = WorkRequestRepository.list_planned_slices(repo, work_request.id)
     assert planned_slice.target_base_branch == delivery_base
+  end
+
+  test "core WorkRequest slice mutations tolerate ledgers before product-tree schema migration", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-PRE-V3", [
+        "write:work_request",
+        "read:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-SLICE-PRE-V3",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    grant_work_request_scope!(repo, session, work_request.id)
+    drop_product_tree_tables!(repo)
+    on_exit(fn -> assert :ok = WorkPackageRepository.migrate(repo) end)
+    refute table_exists?(repo, "sympp_product_tree_nodes")
+
+    add_response =
+      mcp_tool(repo, session, "add_work_request_planned_slice", %{
+        "work_request_id" => work_request.id,
+        "title" => "Pre-V3 planned slice",
+        "goal" => "Keep core WorkRequest planning usable before product-tree migration.",
+        "work_package_kind" => "mcp",
+        "target_base_branch" => anchor.base_branch,
+        "owned_file_globs" => ["elixir/lib/symphony_elixir/symphony_plus_plus/mcp/server.ex"],
+        "forbidden_file_globs" => [],
+        "acceptance_criteria" => ["Slice creation still succeeds."],
+        "validation_steps" => ["mix test test/symphony_elixir/symphony_plus_plus/mcp"],
+        "review_lanes" => ["normal"],
+        "stop_conditions" => ["Stop before dispatch."]
+      })
+
+    add_payload = get_in(add_response, ["result", "structuredContent"])
+    planned_slice_id = get_in(add_payload, ["planned_slice", "id"])
+
+    assert is_binary(planned_slice_id)
+    assert get_in(add_payload, ["planned_slice", "status"]) == "planned"
+
+    approve_response =
+      mcp_tool(repo, session, "approve_work_request_planned_slice", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice_id,
+        "current_status" => "planned"
+      })
+
+    assert get_in(approve_response, ["result", "structuredContent", "planned_slice", "status"]) == "approved"
+
+    assert {:ok, persisted_slice} = WorkRequestRepository.get_planned_slice(repo, work_request.id, planned_slice_id)
+    assert persisted_slice.status == "approved"
   end
 
   test "WorkRequest MCP planned-slice validation rejects unsupported globstar at add and approve", %{repo: repo} do
@@ -989,6 +1223,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
 
     assert {:ok, persisted_slice} = WorkRequestRepository.get_planned_slice(repo, work_request.id, planned_slice.id)
     assert persisted_slice.status == "planned"
+  end
+
+  defp drop_product_tree_tables!(repo) do
+    repo.query!("DELETE FROM schema_migrations WHERE version = ?", [20_260_604_123_000])
+
+    Enum.each(
+      [
+        "sympp_product_tree_dependency_edges",
+        "sympp_product_tree_slice_links",
+        "sympp_product_tree_revisions",
+        "sympp_product_tree_nodes"
+      ],
+      &repo.query!("DROP TABLE IF EXISTS #{&1}")
+    )
+  end
+
+  defp table_exists?(repo, table) do
+    %{rows: rows} = repo.query!("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", [table])
+    rows != []
   end
 
   defp legacy_handoff_session_without_repo_scope!(repo, session, grant) do

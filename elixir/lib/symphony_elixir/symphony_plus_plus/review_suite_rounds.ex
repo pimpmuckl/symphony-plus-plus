@@ -30,6 +30,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds do
          "round_id" => Map.fetch!(decision, "round_id")
        }
        |> put_if_present("review_suite_id", public_id(cycle))
+       |> put_if_present("work_package_id", text(get_in(cycle, ["identity", "work_package_id"])))
        |> put_if_present("repo", text(get_in(cycle, ["identity", "repo"])))
        |> put_if_present("base_branch", text(get_in(cycle, ["identity", "base"])))
        |> put_if_present("branch", text(get_in(cycle, ["identity", "branch"])))}
@@ -73,40 +74,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds do
   defp load_cycle_for_round_id(state_dir, round_id), do: load_cycle_for_actual_round_id(state_dir, round_id)
 
   defp load_cycle_for_actual_round_id(state_dir, round_id) do
-    with {:ok, matches} <- matching_cycles_for_round_id(state_dir, round_id) do
-      case matches do
-        [{cycle, _cycle_key}] ->
-          {:ok, cycle, :round}
-
-        [] ->
-          unavailable(round_id, ["Review Suite round #{round_id}"])
-
-        matches ->
-          cycle_keys = matches |> Enum.map(fn {_cycle, cycle_key} -> cycle_key end) |> Enum.sort()
-          {:error, {:review_suite_round_ambiguous, round_id, cycle_keys, @fallback_explicit_fields}}
-      end
+    case matching_cycles_for_round_id(state_dir, round_id) do
+      {:ok, matches} -> cycle_for_round_matches(matches, round_id)
+      {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp cycle_for_round_matches([{cycle, _cycle_key}], _round_id), do: {:ok, cycle, :round}
+
+  defp cycle_for_round_matches([], round_id) do
+    unavailable(round_id, ["Review Suite round #{round_id}"])
+  end
+
+  defp cycle_for_round_matches(matches, round_id) do
+    cycle_keys = matches |> Enum.map(fn {_cycle, cycle_key} -> cycle_key end) |> Enum.sort()
+    {:error, {:review_suite_round_ambiguous, round_id, cycle_keys, @fallback_explicit_fields}}
   end
 
   defp matching_cycles_for_round_id(state_dir, round_id) do
     with {:ok, paths} <- cycle_paths(state_dir) do
-      Enum.reduce_while(paths, {:ok, []}, fn path, {:ok, matches} ->
-        case read_json_file(path) do
-          {:ok, %{} = cycle} ->
-            if cycle_has_round_id?(cycle, round_id) do
-              {:cont, {:ok, [{cycle, Path.basename(path, ".json")} | matches]}}
-            else
-              {:cont, {:ok, matches}}
-            end
+      {:ok, Enum.flat_map(paths, &cycle_match_for_round_id(&1, round_id))}
+    end
+  end
 
-          {:error, reason} ->
-            {:halt, {:error, reason}}
-        end
-      end)
-      |> case do
-        {:ok, matches} -> {:ok, Enum.reverse(matches)}
-        {:error, reason} -> {:error, reason}
-      end
+  defp cycle_match_for_round_id(path, round_id) do
+    with {:ok, %{} = cycle} <- read_json_file(path),
+         true <- cycle_has_round_id?(cycle, round_id) do
+      [{cycle, Path.basename(path, ".json")}]
+    else
+      _no_match_or_unreadable_cycle -> []
     end
   end
 
@@ -175,8 +171,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds do
       unavailable(cycle_key, ["safe Review Suite cycle id orc-*"])
     end
   end
-
-  defp validate_cycle_key(cycle_key), do: unavailable(cycle_key, ["safe Review Suite cycle id orc-*"])
 
   defp cycle_path(state_dir, cycle_key) do
     cycles_dir = Path.expand(Path.join([state_dir, "orchestrator", "cycles"]))
@@ -340,8 +334,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds do
       |> Enum.reject(&is_nil/1)
 
     case Enum.reject(hints, &ReviewProfiles.profile_satisfies?(profile, &1)) do
-      [] -> :ok
-      [mismatch | _rest] -> {:error, {:review_suite_round_profile_mismatch, requested_id, profile, mismatch, @fallback_explicit_fields}}
+      [] ->
+        :ok
+
+      [mismatch | _rest] ->
+        {:error, {:review_suite_round_profile_mismatch, requested_id, profile, mismatch, @fallback_explicit_fields}}
     end
   end
 
@@ -366,8 +363,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds do
 
   defp required_text(value, field) do
     case text(value) do
-      value when is_binary(value) -> {:ok, value}
-      nil -> {:error, {:review_suite_round_unavailable, Atom.to_string(field), [Atom.to_string(field)], @fallback_explicit_fields}}
+      value when is_binary(value) ->
+        {:ok, value}
+
+      nil ->
+        field_text = Atom.to_string(field)
+        {:error, {:review_suite_round_unavailable, field_text, [field_text], @fallback_explicit_fields}}
     end
   end
 

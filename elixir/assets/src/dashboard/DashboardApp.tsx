@@ -1,7 +1,6 @@
 import type { ArchitectHandoffPayload, ContextComment, CopyArchitectHandoff, CreateWorkRequestPayload, DashboardPayload, GuidanceAnswerSubmission, GuidanceItem } from "@/types/dashboard";
 import type { NewRequestForm } from "@/components/dashboard/new-request-dialog";
 import type * as React from "react";
-import type { BoardLayoutMode as WorkstreamLayoutMode } from "@/components/dashboard/board-layout";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { CardDetailSelection, DASHBOARD_POLL_INTERVAL_MS, DASHBOARD_RECONNECT_GRACE_MS, DashboardConnectionIssue, DashboardResponseSelector, DashboardRuntimeConfig, PR_SYNC_INTERVAL_MS, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageStateMutation, WorkRequestMutation, WorkRequestStateMutation, WorkspaceTab, copyTextToClipboard, dashboardCaughtMessage, dashboardFromEnvelope, dashboardRuntimeConfig, ensureDashboardRuntimeConfig, isReconnectableLocalOperatorError, jsonHeaders, mutationHeaders, operatorApiUrl, operatorFetch, readDashboardApiResponse, reconnectLocalOperatorSession, withLocalOperatorReconnect } from "./runtime";
 import { DashboardShell } from "./dashboard-shell";
@@ -11,7 +10,7 @@ import { activeBlockerItems, allGuidanceItems, allPackages, dashboardContentFing
 import { appDialogReducer, appStateReducer, createInitialAppState, initialAppDialogState } from "./dashboard-state";
 import { applyDashboardTheme, repoWorkstreamHasWorkItems, shouldShowUpdateSimulationControls, writeDashboardUiStateValue, writeStoredTheme } from "./dashboard-persistence";
 import { canMutateDashboardComments } from "./detail-utils";
-import { linkedPackageIdsForDetails, packageSelectionIndex, requestDetailsByRepoKey } from "./workstream-data";
+import { packageSelectionIndex, requestDetailsByRepoKey } from "./workstream-data";
 import { useDashboardUpdateAnimations } from "./update-animations";
 
 export function DashboardApp() {
@@ -21,7 +20,7 @@ export function DashboardApp() {
 
 export function useDashboardController() {
   const [appState, dispatchApp] = useReducer(appStateReducer, null, createInitialAppState);
-  const { dashboard, error, hideEmptyWorkstreams, loading, refreshing, theme, workspaceTab, workstreamLayout } = appState;
+  const { dashboard, error, hideEmptyWorkstreams, loading, refreshing, theme, workspaceTab } = appState;
   const [dialogState, dispatchDialog] = useReducer(appDialogReducer, initialAppDialogState);
   const [connectionIssue, setConnectionIssue] = useState<DashboardConnectionIssue | null>(null);
   const showUpdateSimulationControls = useMemo(() => shouldShowUpdateSimulationControls(), []);
@@ -51,9 +50,6 @@ export function useDashboardController() {
   }, []);
   const setWorkspaceTab = useCallback((nextWorkspaceTab: WorkspaceTab) => {
     dispatchApp({ type: "patch", state: { workspaceTab: nextWorkspaceTab } });
-  }, []);
-  const setWorkstreamLayout = useCallback((nextWorkstreamLayout: WorkstreamLayoutMode) => {
-    dispatchApp({ type: "patch", state: { workstreamLayout: nextWorkstreamLayout } });
   }, []);
   const setHideEmptyWorkstreams = useCallback((nextHideEmptyWorkstreams: boolean) => {
     dispatchApp({ type: "patch", state: { hideEmptyWorkstreams: nextHideEmptyWorkstreams } });
@@ -410,10 +406,6 @@ export function useDashboardController() {
   }, [workspaceTab]);
 
   useEffect(() => {
-    writeDashboardUiStateValue("workstreamLayout", workstreamLayout);
-  }, [workstreamLayout]);
-
-  useEffect(() => {
     writeDashboardUiStateValue("hideEmptyWorkstreams", hideEmptyWorkstreams);
   }, [hideEmptyWorkstreams]);
 
@@ -433,7 +425,6 @@ export function useDashboardController() {
   const requestDetails = useMemo(() => dashboard?.work_request_details ?? [], [dashboard]);
   const linkedWorkPackageIds = useMemo(() => new Set(dashboard?.linked_work_package_ids ?? []), [dashboard]);
   const requestDetailsByRepo = useMemo(() => requestDetailsByRepoKey(requestDetails), [requestDetails]);
-  const requestLinkedPackageIds = useMemo(() => linkedPackageIdsForDetails(requestDetails), [requestDetails]);
   const packageSelections = useMemo(() => packageSelectionIndex(requestDetails, packages), [packages, requestDetails]);
   const archiveAfterDays = dashboard?.settings?.work_request_archive_after_days ?? 14;
   const guidanceItems = useMemo(() => allGuidanceItems(dashboard), [dashboard]);
@@ -474,12 +465,10 @@ export function useDashboardController() {
           repos={workstreamRepos}
           hiddenRepoCount={hiddenWorkstreamCount}
           requestDetailsByRepo={requestDetailsByRepo}
-          requestLinkedPackageIds={requestLinkedPackageIds}
           activeBlockingEdges={dashboard?.active_blocking_edges ?? []}
           onSelectGuidance={setSelectedGuidance}
           onSelectCard={setSelectedCardDetail}
           onCopyArchitectHandoff={copyArchitectHandoff}
-          layoutMode={workstreamLayout}
           updateAnimations={updateAnimations}
         />
       ),
@@ -490,13 +479,11 @@ export function useDashboardController() {
       dashboard?.active_blocking_edges,
       hiddenWorkstreamCount,
       requestDetailsByRepo,
-      requestLinkedPackageIds,
       setSelectedCardDetail,
       setSelectedGuidance,
       soloSessions,
       updateAnimations,
       workstreamRepos,
-      workstreamLayout,
     ],
   );
 
@@ -533,7 +520,6 @@ export function useDashboardController() {
     onSubmitGuidanceAnswer: submitGuidanceAnswer,
     onUpdateArchiveAfterDays: updateArchiveAfterDays,
     onWorkspaceTabChange: setWorkspaceTab,
-    onWorkstreamLayoutChange: setWorkstreamLayout,
     refreshing,
     repos,
     showUpdateSimulationControls,
@@ -542,6 +528,5 @@ export function useDashboardController() {
     updateAnimations,
     workspacePanes,
     workspaceTab,
-    workstreamLayout,
   };
 }

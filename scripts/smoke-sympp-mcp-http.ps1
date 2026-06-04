@@ -95,6 +95,8 @@ $ArchitectTools = @(
   "approve_work_request_planned_slice",
   "skip_work_request_planned_slice",
   "mark_work_request_sliced",
+  "upsert_work_request_product_plan_node",
+  "move_work_request_planned_slice_to_product_node",
   "dispatch_work_request_planned_slice",
   "prepare_work_package_worktree",
   "cleanup_work_package_worktree",

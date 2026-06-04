@@ -19,6 +19,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
+  alias SymphonyElixir.SymphonyPlusPlus.ProductTree
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.RepoIdentity
@@ -433,6 +434,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            clarification_questions: Enum.map(questions, &clarification_question/1),
            decision_logs: Enum.map(decisions, &decision_log_entry/1),
            planned_slices: planned_slice_payloads,
+           product_tree:
+             ProductTree.project(repo, work_request.id, planned_slice_payloads,
+               visible_only?: true,
+               include_unlinked_nodes?: true
+             ),
            comments: comments_for(comment_context, "work_request", work_request.id),
            summary: work_request_summary(questions, decisions, planned_slices, comment_context)
          }}
@@ -492,6 +498,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            clarification_questions: Enum.map(questions, &clarification_question/1),
            decision_logs: Enum.map(decisions, &decision_log_entry/1),
            planned_slices: planned_slice_payloads,
+           product_tree: ProductTree.project(repo, work_request.id, planned_slice_payloads),
            delivery_board: redacted_json(delivery_board),
            comments: comments_for(comment_context, "work_request", work_request.id),
            summary: work_request_summary(questions, decisions, planned_slices, comment_context)
@@ -3102,12 +3109,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     {has_prepared_worktree, has_meaningful_progress} = progress_activity(progress_events)
 
     has_started =
-      status in @started_package_statuses or
-        has_active_worker or
-        agent_run_activity?(agent_runs) or
-        runtime_activity?(runtime) or
-        has_meaningful_progress or
-        metadata_activity?(metadata)
+      work_package_started?(
+        status,
+        has_active_worker,
+        agent_runs,
+        runtime,
+        has_meaningful_progress,
+        metadata
+      )
 
     has_activity = has_started or has_prepared_worktree
 
@@ -3118,6 +3127,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       last_activity_at: latest_package_activity_at(work_package, progress_events, agent_runs, grants, has_activity),
       is_stale: has_started and not has_active_worker
     }
+  end
+
+  defp work_package_started?(
+         status,
+         has_active_worker,
+         agent_runs,
+         runtime,
+         has_meaningful_progress,
+         metadata
+       ) do
+    status in @started_package_statuses or
+      has_active_worker or
+      agent_run_activity?(agent_runs) or
+      runtime_activity?(runtime) or
+      has_meaningful_progress or
+      metadata_activity?(metadata)
   end
 
   defp operational_activity_fields(activity) do
@@ -3698,8 +3723,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       context.progress_events
       |> MetadataProjection.current_head_review_suite_result_events(context.work_package.id, readiness_head_sha)
       |> Enum.map(& &1.payload)
-      |> Enum.filter(&review_suite_result_payload_in_scope?(&1, context.work_package.id, readiness_head_sha))
-      |> Enum.filter(&persisted_review_suite_artifact?(context.artifacts, context.work_package.id, Map.fetch!(&1, "head_sha")))
+      |> Enum.filter(
+        &(review_suite_result_payload_in_scope?(&1, context.work_package.id, readiness_head_sha) and
+            persisted_review_suite_artifact?(context.artifacts, context.work_package.id, Map.fetch!(&1, "head_sha")))
+      )
 
     payloads != [] and
       Enum.all?(required_lanes, &ReviewProfiles.review_suite_payloads_satisfy_required_profile?(payloads, &1))
@@ -3711,10 +3738,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp progress_review_lane_present?(progress_events, required_lane) do
     satisfying_profiles = ReviewProfiles.satisfying_profiles(required_lane)
-    statuses = Enum.flat_map(satisfying_profiles, &ReviewProfiles.statuses/1)
-    latest_status = latest_generic_progress_status(progress_events, statuses)
 
-    Enum.any?(satisfying_profiles, &(latest_status in ReviewProfiles.green_statuses(&1)))
+    latest_statuses =
+      satisfying_profiles
+      |> Enum.map(&{&1, latest_generic_progress_status(progress_events, ReviewProfiles.statuses(&1))})
+      |> Enum.reject(fn {_profile, status} -> is_nil(status) end)
+
+    latest_statuses != [] and
+      Enum.all?(latest_statuses, fn {profile, status} -> status in ReviewProfiles.green_statuses(profile) end)
   end
 
   defp progress_status_recorded?(progress_events, expected_status) do

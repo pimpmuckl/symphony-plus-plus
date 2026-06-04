@@ -53,9 +53,9 @@ Never log:
 9. Subsequent calls use bound session/grant identity.
 ```
 
-This is the Symphony++ V2.1 worker MCP API decision: workers claim a
-ledger-backed local assignment with explicit owner identity rather than relying
-on ambiguous anonymous ownership or prompting for raw secrets.
+This is the current worker MCP claim contract: workers claim a ledger-backed
+local assignment with explicit owner identity rather than relying on ambiguous
+anonymous ownership or prompting for raw secrets.
 
 `claim_work_key(secret, claimed_by)` and `claim_private_handoff` remain
 server-side legacy/recovery primitives after the ledger-claim cutover.
@@ -75,7 +75,7 @@ Managed handoff metadata records are non-secret deletion-coordinate metadata.
 They identify the work package, worker grant, mode, and managed private-store
 path or credential target needed for later cleanup; they are not worker secrets
 and must not contain work keys, bearer material, run commands, or claimed owner
-identity. In the current pre-production v1 child minting contract,
+identity. In the current child minting contract,
 `mint_child_worker_key` allows only one active child-worker grant/handoff per
 child package and rejects remint attempts while one exists.
 `revoke_child_worker_key` lets an architect with `revoke:child_worker_key`
@@ -86,7 +86,7 @@ grant's frozen scope, reset an active/interrupted child from `claimed`,
 rejects unrelated, normal worker, sibling/out-of-scope, already revoked,
 expired, and architect-controlled/terminal child grants. It records a redacted
 audit/progress event with previous and new child statuses, but does not delete
-persisted child handoffs in this v1 package.
+persisted child handoffs in this package.
 
 Architect child worker minting follows the same private-handoff rule. The
 `mint_child_worker_key` MCP response returns `worker_grant.secret_handoff` and

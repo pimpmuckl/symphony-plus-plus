@@ -63,7 +63,7 @@ export function SliceDetailContent({
             { label: "Updated", value: detailDate(slice.updated_at || slice.dispatched_at || slice.inserted_at) },
           ]}
         />
-        <DetailSection title="What It Does">
+        <DetailSection title="Slice Goal">
           <MarkdownBlock value={slice.goal} empty={pkg?.kind || "No slice goal has been recorded yet."} />
         </DetailSection>
         <DetailSection title="Progress">
@@ -253,8 +253,8 @@ export function PackageDetailContent({
             { label: "Updated", value: detailDate(summary?.latest_progress_at || pkg.latest_progress_at || pkg.updated_at || pkg.inserted_at) },
           ]}
         />
-        <DetailSection title="What It Does">
-          <MarkdownBlock value={purposeMarkdown} empty={pkg.kind || "No package description has been recorded yet."} />
+        <DetailSection title="Execution Scope">
+          <MarkdownBlock value={purposeMarkdown} empty={pkg.kind || "No execution scope has been recorded yet."} />
         </DetailSection>
         <DetailSection title="Operational Truth">
           <div className="grid gap-2">
@@ -337,7 +337,7 @@ export function PackageDetailContent({
               {canArchiveUnlinked ? (
                 <Button type="button" size="sm" variant="outline" onClick={() => setArchiveConfirmOpen(true)} disabled={archivePending}>
                   {archivePending ? <Loader2 className="size-4 animate-spin" /> : <Archive className="size-4" />}
-                  Archive Package
+                  Archive Record
                 </Button>
               ) : null}
             </div>
@@ -352,13 +352,13 @@ export function PackageDetailContent({
           setStateConfirmOpen(open);
           if (!open) dispatchUiState({ type: "pendingStateAction", action: null });
         }}
-        title={pendingStateAction === "closed_and_archive" ? "Close and Archive WorkPackage?" : "Merge WorkPackage?"}
+        title={pendingStateAction === "closed_and_archive" ? "Close and Archive Execution Record?" : "Mark Execution Merged?"}
         description={
           pendingStateAction === "merged_and_archive"
-            ? "This marks the unlinked package Merged and hides it from the active operator board. The package record stays in the local ledger."
+            ? "This marks the unlinked execution record Merged and hides it from the active execution view. The package record stays in the local ledger."
             : pendingStateAction === "closed_and_archive"
-              ? "This marks the unlinked package Closed and hides it from the active operator board. The package record stays in the local ledger."
-              : "This manually marks the package Merged for the local dashboard. Use it only when the external merge or worker handoff was missed."
+              ? "This marks the unlinked execution record Closed and hides it from the active execution view. The package record stays in the local ledger."
+              : "This manually marks the execution record Merged for the local dashboard. Use it only when the external merge or worker handoff was missed."
         }
         confirmLabel={
           pendingStateAction === "merged_and_archive"
@@ -408,9 +408,9 @@ export function PackageDetailContent({
       <DangerousStateConfirmationDialog
         open={archiveConfirmOpen}
         onOpenChange={setArchiveConfirmOpen}
-        title="Archive Unlinked WorkPackage?"
-        description="This hides the delivered unlinked package from the active operator board. The package record stays in the local ledger."
-        confirmLabel="Archive Package"
+        title="Archive Unlinked Execution Record?"
+        description="This hides the delivered unlinked execution record from the active execution view. The package record stays in the local ledger."
+        confirmLabel="Archive Record"
         pending={archivePending}
         onConfirm={() => void archivePackage()}
       />

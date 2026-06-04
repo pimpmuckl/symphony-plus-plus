@@ -22,7 +22,7 @@ For a first local checkout, do the setup once:
   for the `symphony-plus-plus-mcp:*` skills, and do not enable the MCP plugin
   for generic review or unrelated Codex sessions.
 
-During V2.1 feature-branch work, do not refresh or sync the installed
+During normal feature-branch work, do not refresh or sync the installed
 user-local plugin cache. Keep repo skill/docs changes in source control and
 adopt them locally only at final feature-branch cutover. After that cutover,
 reload Codex and start a new session; existing sessions may keep the old skill
@@ -177,7 +177,7 @@ $env:SYMPP_WORK_KEY_SECRET = Get-Content -LiteralPath "<private-secret-file>" -R
 Remove-Item Env:\SYMPP_WORK_KEY_SECRET -ErrorAction SilentlyContinue
 ```
 
-The bound smoke covers the legacy secret-proof path. Normal V2.1 workers claim
+The bound smoke covers the legacy secret-proof path. Normal planned-slice workers claim
 with `claim_local_assignment` instead of `claim_work_key`.
 
 After a WorkPackage worker claims with `claim_local_assignment`, the same local
@@ -359,7 +359,7 @@ PRs, create WorkRequests, create WorkPackages, or write Linear state.
 ## Legacy Handoff Defaults
 
 Private-file or Credential Manager handoff remains available for
-explicit legacy/recovery. It is not the normal V2.1 worker dispatch path after
+explicit legacy/recovery. It is not the normal worker dispatch path after
 ledger-backed `claim_local_assignment`.
 
 Explicit `windows-credential-manager` mode remains available when the operator

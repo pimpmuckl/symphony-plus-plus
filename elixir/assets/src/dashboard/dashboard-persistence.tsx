@@ -1,4 +1,3 @@
-import type { BoardLayoutMode as WorkstreamLayoutMode } from "@/components/dashboard/board-layout";
 import { uniqueNonEmpty } from "@/lib/collections";
 import { DASHBOARD_DEBUG_ANIMATIONS_KEY, DASHBOARD_THEME_KEY, DASHBOARD_UI_STATE_KEY, DashboardTheme, DashboardUiState, LOCAL_DATE_FORMATTER, TOP_PANEL_ORDER, TopPanelDirection, TopPanelKey, WorkspaceTab, isRecord } from "./runtime";
 
@@ -73,11 +72,6 @@ export function readStoredTopPanel(): TopPanelKey | null {
   if (!("topPanel" in state)) return "guidance";
   if (state.topPanel === null) return null;
   return isTopPanelKey(state.topPanel) ? state.topPanel : "guidance";
-}
-
-export function readStoredWorkstreamLayout(): WorkstreamLayoutMode {
-  const storedLayout = readDashboardUiState().workstreamLayout;
-  return isWorkstreamLayoutMode(storedLayout) ? storedLayout : "jira";
 }
 
 export function readStoredHideEmptyWorkstreams() {
@@ -210,10 +204,6 @@ export function isWorkspaceTab(value: unknown): value is WorkspaceTab {
 
 export function isTopPanelKey(value: unknown): value is TopPanelKey {
   return typeof value === "string" && (TOP_PANEL_ORDER as readonly string[]).includes(value);
-}
-
-export function isWorkstreamLayoutMode(value: unknown): value is WorkstreamLayoutMode {
-  return value === "jira" || value === "aligned";
 }
 
 export function isDashboardTheme(value: unknown): value is DashboardTheme {

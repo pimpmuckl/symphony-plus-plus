@@ -86,6 +86,33 @@ still comes from scoped MCP grants and ledger-backed assignment claims.
 
 ### Board view
 
+V3 local operator mode defaults to a product-tree board:
+
+```text
+Repository group
+|-- collapsed WorkRequest row
+|   |-- optional product plan node
+|   |   |-- optional product plan node
+|   |   `-- planned slice rows
+|   `-- direct planned slice rows
+```
+
+The collapsed WorkRequest row is the first-glance product progress unit. It
+shows request title, repo/base branch, plan-node count, slice count, guidance
+count, blocker count, completion percentage, and operational state. Expanding a
+row renders optional nested product plan nodes and direct or linked planned
+slices. WorkPackages are opened from linked slice/package details when a human
+needs execution evidence; they are not the primary product rows.
+
+Product plan nodes are optional. Simple hotfixes may render as one WorkRequest
+with direct slices and a compact unplanned note until an architect adds
+structure. Larger product implementations can use arbitrary nesting; the UI
+must not require a fixed `layer -> capability` hierarchy.
+
+Legacy/package execution views may still expose raw WorkPackage lifecycle lanes
+for audit and recovery. Those lanes use the raw package statuses below and must
+not override the product-tree board as the default human cockpit.
+
 Columns:
 
 ```text
@@ -421,18 +448,16 @@ Human says ready
 
 Do not collapse these into one boolean.
 
-## Future: Execution Atlas
+## V3 Product Tree
 
-The current operator cockpit remains the live V2 dashboard contract: it shows
-WorkRequests, WorkPackages, reviews, handoffs, blockers, and runtime activity.
-The V3 direction is documented separately as the Execution Atlas:
+The current V3 cockpit contract is documented in:
 
 ```text
-implementation_docs_symphplusplus/docs/execution_atlas/README.md
+implementation_docs_symphplusplus/docs/V3_PRODUCT_TREE_REWORK.md
 ```
 
-Execution Atlas is the proposed human-first projection that groups slices and
-packages into nested topics, dependency-aware capability rows, attention items,
-and next moves. It should build on the cockpit data instead of replacing raw
-ledger records. Until V3 is implemented, dashboard changes should continue to
-preserve the V2 operational truth model documented above.
+Execution Atlas remains historical design context only. The implemented V3
+direction is the WorkRequest product tree: optional nested product plan nodes,
+planned slices as execution units, and WorkPackages as linked execution/audit
+evidence. Dashboard changes should preserve raw ledger truth while making the
+product tree the default operator reading order.

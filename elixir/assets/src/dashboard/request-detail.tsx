@@ -52,7 +52,7 @@ export function RequestDetailContent({
   const requestOnlyCommentStats = commentStats(requestComments);
   const handoffEligible = !detailFinished && architectHandoffEligibleRequest(request);
   const handoffHasOpenQuestions = (openQuestions.length || request.open_question_count || 0) > 0;
-  const handoffButtonLabel = handoffHasOpenQuestions ? "Copy Resume Handoff Prompt" : "Copy Agent Handoff Prompt";
+  const handoffButtonLabel = handoffHasOpenQuestions ? "Copy Resume Architect Handoff" : "Copy Architect Handoff";
   const handoffIdentity = `${handoffHasOpenQuestions}:${request.id}:${request.status || ""}:${request.updated_at || ""}`;
   const canManualArchive = Boolean(request.completed_at && !request.archived_at);
   const canMarkDelivered = !detailFinished;
@@ -135,15 +135,9 @@ export function RequestDetailContent({
           </div>
         ) : null}
         <DetailStatGrid
-          stats={[
-            { label: "Open Questions", value: String(openQuestions.length || request.open_question_count || 0) },
-            { label: "Slices", value: String(sliceCounts.total) },
-            { label: "Decisions", value: String(detail.decision_logs?.length || detail.summary?.decision_count || 0) },
-            { label: "Comments", value: commentStatLabel(currentCommentStats.open_comment_count, currentCommentStats.comment_count) },
-            { label: "Updated", value: detailDate(request.updated_at || request.inserted_at) },
-          ]}
+          stats={requestDetailStats(detail, openQuestions.length, sliceCounts.total, currentCommentStats)}
         />
-        <DetailSection title="What It Does">
+        <DetailSection title="Product Intent">
           <MarkdownBlock value={request.human_description} empty="No operator-facing description has been recorded yet." />
         </DetailSection>
         <DetailSection title="Progress">
@@ -187,7 +181,7 @@ export function RequestDetailContent({
           />
         </DetailDisclosure>
         <RecentDecisionsDisclosure detail={detail} />
-        <DetailDisclosure title="Details" meta="IDs, constraints, and slice plan">
+        <DetailDisclosure title="Product Plan" meta="IDs, constraints, plan nodes, and execution slices">
           <DetailFacts
             facts={[
               ["Request ID", request.id],
@@ -199,7 +193,8 @@ export function RequestDetailContent({
               ["Updated", detailDate(request.updated_at)],
             ]}
           />
-          <DetailList title="Planned slices" items={(detail.planned_slices || []).map((slice) => slice.title || slice.id)} empty="No slices recorded." />
+          <DetailList title="Plan nodes" items={(detail.product_tree?.nodes || []).map((node) => node.title || node.id)} empty="No product plan nodes recorded." />
+          <DetailList title="Execution slices" items={(detail.planned_slices || []).map((slice) => slice.title || slice.id)} empty="No slices recorded." />
           <JsonDetail label="Constraints" value={request.constraints} />
         </DetailDisclosure>
         {canMarkDelivered || canManualArchive ? (
@@ -227,13 +222,35 @@ export function RequestDetailContent({
         open={deliverConfirmOpen}
         onOpenChange={setDeliverConfirmOpen}
         title="Mark WorkRequest Delivered?"
-        description="This manually marks the request Delivered for the local dashboard even if unfinished slices, packages, or questions still exist."
+        description="This manually marks the request Delivered for the local dashboard even if unfinished plan nodes, execution slices, or open questions still exist."
         confirmLabel="Mark Delivered"
         pending={statePending}
         onConfirm={() => void markDelivered()}
       />
     </>
   );
+}
+
+function requestDetailStats(
+  detail: WorkRequestDetail,
+  openQuestionCount: number,
+  sliceCount: number,
+  currentCommentStats: ReturnType<typeof requestCommentStats>,
+) {
+  const request = detail.work_request;
+
+  return [
+    { label: "Open Questions", value: String(openQuestionCount || request.open_question_count || 0) },
+    { label: "Plan Nodes", value: String(requestPlanNodeCount(detail)) },
+    { label: "Slices", value: String(sliceCount) },
+    { label: "Decisions", value: String(detail.decision_logs?.length || detail.summary?.decision_count || 0) },
+    { label: "Comments", value: commentStatLabel(currentCommentStats.open_comment_count, currentCommentStats.comment_count) },
+    { label: "Updated", value: detailDate(request.updated_at || request.inserted_at) },
+  ];
+}
+
+function requestPlanNodeCount(detail: WorkRequestDetail) {
+  return detail.product_tree?.summary?.node_count ?? detail.product_tree?.nodes?.length ?? 0;
 }
 
 export function DangerousStateConfirmationDialog({

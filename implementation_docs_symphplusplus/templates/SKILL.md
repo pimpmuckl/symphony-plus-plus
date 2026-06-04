@@ -5,9 +5,14 @@ description: Use when assigned a Symphony++ WorkPackage or an explicitly labeled
 
 # Symphony++ Work Package
 
-Use this skill when a Symphony++ assignment provides a WorkPackage id and
-ledger-backed claim metadata, or explicitly labels a legacy/recovery
-WorkKey/private-handoff bootstrap.
+Use this skill for an assigned Symphony++ WorkPackage, including explicitly
+labeled legacy/recovery WorkKey/private-handoff bootstrap. It is the MCP-backed
+WorkPackage state adapter, not the generic worker contract. Pair it with
+`symphony-plus-plus:symphony-worker`.
+
+The MCP server is the permission boundary and the WorkPackage is the worker
+scope boundary. V3 product progress lives on the WorkRequest/product tree;
+this skill handles only the dispatched execution/audit record.
 
 ## Start
 
@@ -15,7 +20,7 @@ WorkKey/private-handoff bootstrap.
    dispatch.
    Trusted local HTTP sessions may show worker WorkPackage tool schemas before
    claim; schema visibility is not authority, so claim first.
-2. For planned-slice/ledger-dispatched V2.1 assignments, claim with
+2. For planned-slice ledger-dispatched assignments, claim with
    `claim_local_assignment` using the dispatch fields plus runtime `branch`,
    `worktree_path`, `caller_id`, and `claimed_by`.
 3. Replay the same local claim after reconnects. The server heartbeats the

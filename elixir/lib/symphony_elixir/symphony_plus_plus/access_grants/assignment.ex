@@ -21,8 +21,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment do
           display_key: String.t(),
           grant_role: String.t(),
           capabilities: [String.t()] | nil,
-          claimed_at: DateTime.t(),
-          claimed_by: String.t(),
+          claimed_at: DateTime.t() | nil,
+          claimed_by: String.t() | nil,
           scopes: [SymphonyElixir.SymphonyPlusPlus.Authorization.Scope.t()]
         }
 end

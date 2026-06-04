@@ -475,7 +475,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
         "idempotency_key" => "local-architect-alias-delivery-denied"
       })
 
-    for response <- [sibling_status_response, sibling_add_slice_response, sibling_dispatch_response, sibling_delivery_response] do
+    responses = [
+      sibling_status_response,
+      sibling_add_slice_response,
+      sibling_dispatch_response,
+      sibling_delivery_response
+    ]
+
+    for response <- responses do
       assert get_in(response, ["error", "code"]) == -32_004
       assert get_in(response, ["error", "data", "reason"]) == "not_found"
       refute inspect(response) =~ sibling.id

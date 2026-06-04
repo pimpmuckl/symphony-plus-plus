@@ -71,20 +71,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewProfiles do
   @spec profile_verdicts_pass?(term(), map()) :: boolean()
   def profile_verdicts_pass?(required_profile, verdicts) when is_map(verdicts) do
     case normalize_profile(required_profile) do
-      nil ->
-        false
-
-      profile ->
-        verdicts
-        |> Enum.filter(fn {provided_profile, _verdict} -> profile_satisfies?(provided_profile, profile) end)
-        |> case do
-          [] -> false
-          satisfying_verdicts -> Enum.all?(satisfying_verdicts, fn {_provided_profile, verdict} -> passing_verdict?(verdict) end)
-        end
+      nil -> false
+      profile -> profile_verdicts_pass_profile?(verdicts, profile)
     end
   end
 
   def profile_verdicts_pass?(_required_profile, _verdicts), do: false
+
+  defp profile_verdicts_pass_profile?(verdicts, profile) do
+    satisfying_verdicts =
+      Enum.filter(verdicts, fn {provided_profile, _verdict} -> profile_satisfies?(provided_profile, profile) end)
+
+    satisfying_verdicts != [] and
+      Enum.all?(satisfying_verdicts, fn {_provided_profile, verdict} -> passing_verdict?(verdict) end)
+  end
 
   @spec review_suite_payload_profile_satisfies?(term(), term()) :: boolean()
   def review_suite_payload_profile_satisfies?(%{} = payload, required_profile) do
@@ -114,21 +114,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewProfiles do
   @spec review_suite_payloads_satisfy_required_profile?([map()], term()) :: boolean()
   def review_suite_payloads_satisfy_required_profile?(payloads, required_profile) when is_list(payloads) do
     case normalize_profile(required_profile) do
-      nil ->
-        false
-
-      profile ->
-        case latest_review_suite_payload_for_satisfying_profile(payloads, profile) do
-          nil ->
-            false
-
-          payload ->
-            review_suite_payload_passes?(payload)
-        end
+      nil -> false
+      profile -> review_suite_payloads_satisfy_profile?(payloads, profile)
     end
   end
 
   def review_suite_payloads_satisfy_required_profile?(_payloads, _required_profile), do: false
+
+  defp review_suite_payloads_satisfy_profile?(payloads, profile) do
+    satisfying_payloads =
+      payloads
+      |> latest_review_suite_payloads_by_profile()
+      |> Enum.filter(fn {provided_profile, _payload} -> profile_satisfies?(provided_profile, profile) end)
+
+    satisfying_payloads != [] and
+      Enum.all?(satisfying_payloads, fn {_provided_profile, payload} -> review_suite_payload_passes?(payload) end)
+  end
 
   @spec satisfying_profiles(term()) :: [String.t()]
   def satisfying_profiles(required) do
@@ -169,10 +170,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewProfiles do
     |> Enum.reject(&is_nil/1)
   end
 
-  defp latest_review_suite_payload_for_satisfying_profile(payloads, profile) do
-    payloads
-    |> Enum.filter(&review_suite_payload_profile_satisfies?(&1, profile))
-    |> List.last()
+  defp latest_review_suite_payloads_by_profile(payloads) do
+    Enum.reduce(payloads, %{}, fn payload, latest ->
+      payload
+      |> review_suite_payload_profiles()
+      |> Enum.reduce(latest, fn profile, latest -> Map.put(latest, profile, payload) end)
+    end)
   end
 
   defp legacy_green_statuses(profile), do: Enum.map(legacy_status_prefixes(profile), &"#{&1}_green")

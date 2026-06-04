@@ -233,11 +233,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Policy do
   end
 
   defp target_primary_repo_scope_matches?(repo, base_branch, %Target{} = target, trusted_remotes) do
-    repo_scope_name_matches?(repo, target.repo, trusted_remotes) and (is_nil(base_branch) or target.base_branch == base_branch)
+    repo_scope_name_matches?(repo, target.repo, trusted_remotes) and
+      (is_nil(base_branch) or target.base_branch == base_branch)
   end
 
   defp repo_scope_matches?(repo, base_branch, %{repo: scope_repo, base_branch: scope_base_branch}, trusted_remotes) do
-    repo_scope_name_matches?(repo, scope_repo, trusted_remotes) and (is_nil(base_branch) or scope_base_branch == base_branch)
+    repo_scope_name_matches?(repo, scope_repo, trusted_remotes) and
+      (is_nil(base_branch) or scope_base_branch == base_branch)
   end
 
   defp repo_scope_matches?(_repo, _base_branch, _scope, _trusted_remotes), do: false

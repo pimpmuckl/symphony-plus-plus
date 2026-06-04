@@ -127,7 +127,7 @@ function requestSlicesProgressText(
 }
 
 function requestStatusProgressText(status?: string | null) {
-  if (status === "ready_for_slicing") return "Ready for an architecture agent to slice into work packages.";
+  if (status === "ready_for_slicing") return "Ready for an architecture agent to plan execution slices.";
   if (status === "clarifying" || status === "ready_for_clarification") return "Architecture intake is still clarifying the request.";
   return `Current request state: ${formatStatus(status)}.`;
 }

@@ -1,9 +1,8 @@
-import type { ArchitectHandoff, ArchitectHandoffCopyResult, DashboardPayload, GuidanceItem, PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
+import type { ArchitectHandoff, ArchitectHandoffCopyResult, DashboardPayload, GuidanceItem, WorkRequestDetail } from "@/types/dashboard";
 import type { UpdateMotion } from "@/components/dashboard/motion";
-import type { BoardLayoutMode as WorkstreamLayoutMode } from "@/components/dashboard/board-layout";
 import { useCallback, useRef, useState } from "react";
 import { CardDetailSelection, DashboardTheme, PackageDetailUiAction, PackageDetailUiState, RequestDetailUiAction, RequestDetailUiState, ScopedHandoffCopy, UpdateMotionsAction, WorkspaceTab } from "./runtime";
-import { readStoredHideEmptyWorkstreams, readStoredTheme, readStoredWorkspaceTab, readStoredWorkstreamLayout } from "./dashboard-persistence";
+import { readStoredHideEmptyWorkstreams, readStoredTheme, readStoredWorkspaceTab } from "./dashboard-persistence";
 
 export function useScopedHandoffCopy(identity: string) {
   const [copy, setCopy] = useState<ScopedHandoffCopy>({ error: null, identity, state: "idle" });
@@ -57,29 +56,10 @@ export type FinishedHighlight = {
 
 export type FinishedHighlightKind = "Request" | "Slice" | "Work Package";
 
-export type SliceEntry = {
-  detail: WorkRequestDetail;
-  slice: PlannedSlice;
-  pkg?: WorkPackageCard;
-  requestIndex: number;
-};
-
 export type WorkstreamCategoryCounts = {
   requests: number;
+  planNodes: number;
   slices: number;
-  workPackages: number;
-};
-
-export type WorkstreamRow = {
-  detail?: WorkRequestDetail;
-  active: SliceEntry[];
-  implementing: SliceEntry[];
-  finished: SliceEntry[];
-  activePackages: WorkPackageCard[];
-  implementingPackages: WorkPackageCard[];
-  finishedPackages: WorkPackageCard[];
-  minHeight: number;
-  unlinked?: boolean;
 };
 
 export const EMPTY_WORK_REQUEST_DETAILS: WorkRequestDetail[] = [];
@@ -90,7 +70,6 @@ export type AppState = {
   refreshing: boolean;
   error: string | null;
   workspaceTab: WorkspaceTab;
-  workstreamLayout: WorkstreamLayoutMode;
   hideEmptyWorkstreams: boolean;
   theme: DashboardTheme;
 };
@@ -107,7 +86,6 @@ export function createInitialAppState(): AppState {
     refreshing: false,
     error: null,
     workspaceTab: readStoredWorkspaceTab(),
-    workstreamLayout: readStoredWorkstreamLayout(),
     hideEmptyWorkstreams: readStoredHideEmptyWorkstreams(),
     theme: readStoredTheme(),
   };

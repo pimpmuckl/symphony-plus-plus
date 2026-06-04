@@ -77,7 +77,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
     end
   end
 
-  defp remember_action(config, client_key, state_key, payload, %Server{initialized: true, session: %Session{} = session}, response) do
+  defp remember_action(config, client_key, state_key, payload, %Server{initialized: true, session: %Session{} = session} = server, response) do
     case claim_tool_name(payload, response, session) do
       tool_name when tool_name in @local_claim_tools ->
         remember_session_claim(config, client_key, state_key, session, response, tool_name)
@@ -89,7 +89,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
         remember_nonrecoverable_claim(client_key, state_key, session, "ambiguous_claim")
 
       _tool_name ->
-        {:touch, SessionBinding.binding_id(client_key, state_key), now()}
+        if release_current_assignment_success?(payload, response, server) do
+          remember_unbound_initialized(client_key, state_key, @release_current_assignment_tool)
+        else
+          {:touch, SessionBinding.binding_id(client_key, state_key), now()}
+        end
     end
   end
 
@@ -134,7 +138,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
            claim_actor_display_name: actor_display_name
          }
        )
-       when is_binary(work_package_id) and is_binary(claim_lease_id) and is_binary(actor_kind) and is_binary(actor_id) do
+       when is_binary(work_package_id) and is_binary(claim_lease_id) and is_binary(actor_kind) and
+              is_binary(actor_id) do
     with {:ok, %ClaimLease{} = lease} <- ClaimLeaseService.current_for_work_package(repo, work_package_id),
          :ok <- require_session_lease_identity(lease, claim_lease_id, actor_kind, actor_id, actor_display_name) do
       {:ok, lease}
@@ -338,20 +343,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
     end
   end
 
-  defp release_current_assignment_success?(payloads, responses, %Server{session: nil}) when is_list(payloads) do
+  defp release_current_assignment_success?(payloads, responses, %Server{}) when is_list(payloads) do
     Enum.any?(payloads, fn payload ->
-      release_current_assignment_payload?(payload) and release_current_assignment_response_success?(response_for_payload(payload, responses))
+      release_current_assignment_payload?(payload) and
+        release_current_assignment_response_success?(response_for_payload(payload, responses))
     end)
   end
 
-  defp release_current_assignment_success?(payload, response, %Server{session: nil}) do
+  defp release_current_assignment_success?(payload, response, %Server{}) do
     release_current_assignment_payload?(payload) and release_current_assignment_response_success?(response)
   end
 
-  defp release_current_assignment_success?(_payload, _response, %Server{}), do: false
-
-  defp release_current_assignment_payload?(%{"jsonrpc" => "2.0", "method" => "tools/call", "params" => %{"name" => @release_current_assignment_tool}}),
-    do: true
+  defp release_current_assignment_payload?(%{
+         "jsonrpc" => "2.0",
+         "method" => "tools/call",
+         "params" => %{"name" => @release_current_assignment_tool}
+       }),
+       do: true
 
   defp release_current_assignment_payload?(_payload), do: false
 

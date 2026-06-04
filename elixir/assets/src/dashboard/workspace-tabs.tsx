@@ -1,7 +1,6 @@
 import type { ActiveBlockingEdge, CopyArchitectHandoff, GuidanceItem, WorkRequestDetail } from "@/types/dashboard";
 import type * as React from "react";
 import { WORKSPACE_TAB_SLIDE_MS } from "@/components/dashboard/motion";
-import type { BoardLayoutMode as WorkstreamLayoutMode } from "@/components/dashboard/board-layout";
 import { clearMotionTimers, later, measureElementHeight, nextFrame } from "@/components/dashboard/motion-utils";
 import { useEffect, useLayoutEffect, useReducer, useRef } from "react";
 import { CardDetailSelect, DashboardUpdateAnimations, TopPanelDirection, WorkspaceTab, WorkspaceTabPhase } from "./runtime";
@@ -14,27 +13,23 @@ export function WorkstreamsPane({
   repos,
   hiddenRepoCount,
   requestDetailsByRepo,
-  requestLinkedPackageIds,
   activeBlockingEdges,
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
-  layoutMode,
   updateAnimations,
 }: {
   repos: RepoSummary[];
   hiddenRepoCount: number;
   requestDetailsByRepo: Map<string, WorkRequestDetail[]>;
-  requestLinkedPackageIds: ReadonlySet<string>;
   activeBlockingEdges: ActiveBlockingEdge[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
-  layoutMode: WorkstreamLayoutMode;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   if (repos.length === 0) {
-    return <EmptyPanel title={hiddenRepoCount > 0 ? "No active workstreams" : "No workstreams yet"} />;
+    return <EmptyPanel title={hiddenRepoCount > 0 ? "No active repositories" : "No repositories yet"} />;
   }
 
   return (
@@ -44,12 +39,10 @@ export function WorkstreamsPane({
           key={repoWorkstreamStateKey(repo)}
           repo={repo}
           requestDetailsByRepo={requestDetailsByRepo}
-          requestLinkedPackageIds={requestLinkedPackageIds}
           activeBlockingEdges={activeBlockingEdges}
           onSelectGuidance={onSelectGuidance}
           onSelectCard={onSelectCard}
           onCopyArchitectHandoff={onCopyArchitectHandoff}
-          layoutMode={layoutMode}
           updateAnimations={updateAnimations}
         />
       ))}
