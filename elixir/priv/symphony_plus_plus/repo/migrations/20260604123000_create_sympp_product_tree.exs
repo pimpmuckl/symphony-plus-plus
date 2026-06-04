@@ -18,7 +18,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo.Migrations.CreateSymppProductTree
       timestamps(type: :utc_datetime_usec)
     end
 
-    create(unique_index(:sympp_product_tree_nodes, [:id], name: :sympp_product_tree_nodes_id_unique_index))
     create(index(:sympp_product_tree_nodes, [:work_request_id, :parent_id, :position], name: :sympp_product_tree_nodes_parent_order_index))
     create(index(:sympp_product_tree_nodes, [:work_request_id], name: :sympp_product_tree_nodes_work_request_index))
 
@@ -35,7 +34,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo.Migrations.CreateSymppProductTree
       timestamps(type: :utc_datetime_usec)
     end
 
-    create(unique_index(:sympp_product_tree_slice_links, [:id], name: :sympp_product_tree_slice_links_id_unique_index))
     create(unique_index(:sympp_product_tree_slice_links, [:planned_slice_id], name: :sympp_product_tree_slice_links_planned_slice_unique_index))
     create(index(:sympp_product_tree_slice_links, [:work_request_id, :product_tree_node_id, :position], name: :sympp_product_tree_slice_links_node_order_index))
 
@@ -55,7 +53,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo.Migrations.CreateSymppProductTree
       timestamps(type: :utc_datetime_usec)
     end
 
-    create(unique_index(:sympp_product_tree_dependency_edges, [:id], name: :sympp_product_tree_dependency_edges_id_unique_index))
     create(index(:sympp_product_tree_dependency_edges, [:work_request_id, :source_kind, :source_id], name: :sympp_product_tree_dependency_edges_source_index))
     create(index(:sympp_product_tree_dependency_edges, [:work_request_id, :target_kind, :target_id], name: :sympp_product_tree_dependency_edges_target_index))
 
@@ -72,7 +69,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo.Migrations.CreateSymppProductTree
       timestamps(type: :utc_datetime_usec)
     end
 
-    create(unique_index(:sympp_product_tree_revisions, [:id], name: :sympp_product_tree_revisions_id_unique_index))
     create(unique_index(:sympp_product_tree_revisions, [:work_request_id, :revision_number], name: :sympp_product_tree_revisions_work_request_revision_unique_index))
     create(index(:sympp_product_tree_revisions, [:work_request_id, :revision_number], name: :sympp_product_tree_revisions_work_request_index))
   end

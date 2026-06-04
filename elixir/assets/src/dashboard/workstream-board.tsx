@@ -469,8 +469,7 @@ function UnlinkedPackageRow({
 
 function CompletionIcon({ mark }: { mark?: ProductTreeCompletionMark | null }) {
   if (mark === "done") return <CheckCircle2 className="v3-completion-icon" />;
-  if (mark === "partial") return <CircleDashed className="v3-completion-icon" />;
-  if (mark === "deferred") return <CircleDashed className="v3-completion-icon" />;
+  if (mark === "partial" || mark === "deferred") return <CircleDashed className="v3-completion-icon" />;
   return <Circle className="v3-completion-icon" />;
 }
 

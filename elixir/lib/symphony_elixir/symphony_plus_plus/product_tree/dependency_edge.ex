@@ -87,7 +87,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.DependencyEdge do
     |> validate_inclusion(:kind, @edge_kinds)
     |> validate_hard_edge_context()
     |> validate_not_self_edge()
-    |> unique_constraint(:id, name: :sympp_product_tree_dependency_edges_id_unique_index)
     |> foreign_key_constraint(:work_request_id)
   end
 

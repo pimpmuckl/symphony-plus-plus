@@ -74,7 +74,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.SliceLink do
     ])
     |> validate_inclusion(:role, @roles)
     |> validate_number(:position, greater_than_or_equal_to: 0)
-    |> unique_constraint(:id, name: :sympp_product_tree_slice_links_id_unique_index)
     |> unique_constraint(:planned_slice_id, name: :sympp_product_tree_slice_links_planned_slice_unique_index)
     |> foreign_key_constraint(:work_request_id)
     |> foreign_key_constraint(:product_tree_node_id)

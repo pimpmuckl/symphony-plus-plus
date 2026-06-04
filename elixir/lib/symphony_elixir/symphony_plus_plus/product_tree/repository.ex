@@ -9,6 +9,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Repository do
 
   @revision_number_retry_count 3
   @revision_number_unique_index "sympp_product_tree_revisions_work_request_revision_unique_index"
+  @id_collision_constraints [
+    "sympp_product_tree_nodes_pkey",
+    "sympp_product_tree_nodes_id_index",
+    "sympp_product_tree_nodes_id_unique_index",
+    "sympp_product_tree_slice_links_pkey",
+    "sympp_product_tree_slice_links_id_index",
+    "sympp_product_tree_slice_links_id_unique_index",
+    "sympp_product_tree_dependency_edges_pkey",
+    "sympp_product_tree_dependency_edges_id_index",
+    "sympp_product_tree_dependency_edges_id_unique_index",
+    "sympp_product_tree_revisions_pkey",
+    "sympp_product_tree_revisions_id_index",
+    "sympp_product_tree_revisions_id_unique_index"
+  ]
+  @sqlite_primary_key_messages [
+    "unique constraint failed: sympp_product_tree_nodes.id",
+    "unique constraint failed: sympp_product_tree_slice_links.id",
+    "unique constraint failed: sympp_product_tree_dependency_edges.id",
+    "unique constraint failed: sympp_product_tree_revisions.id"
+  ]
 
   @type repo :: module()
   @type error ::
@@ -356,13 +376,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Repository do
     end)
   end
 
-  defp normalize_constraint_error(%Ecto.ConstraintError{constraint: constraint}) when is_binary(constraint) do
-    if String.contains?(constraint, "_id_unique_index") do
-      {:error, :id_already_exists}
-    else
-      {:error, {:constraint_failed, constraint}}
-    end
-  end
+  defp normalize_constraint_error(%Ecto.ConstraintError{constraint: constraint}) when constraint in @id_collision_constraints,
+    do: {:error, :id_already_exists}
+
+  defp normalize_constraint_error(%Ecto.ConstraintError{constraint: constraint}) when is_binary(constraint),
+    do: {:error, {:constraint_failed, constraint}}
 
   defp normalize_constraint_error(%Ecto.ConstraintError{type: type}), do: {:error, {:constraint_failed, Atom.to_string(type)}}
 
@@ -370,10 +388,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Repository do
     message = Exception.message(error)
     normalized_message = String.downcase(message)
 
-    if String.contains?(normalized_message, "busy") or String.contains?(normalized_message, "locked") do
-      {:error, :database_busy}
-    else
-      {:error, {:storage_failed, message}}
+    cond do
+      Enum.any?(@sqlite_primary_key_messages, &String.contains?(normalized_message, &1)) ->
+        {:error, :id_already_exists}
+
+      String.contains?(normalized_message, "busy") or String.contains?(normalized_message, "locked") ->
+        {:error, :database_busy}
+
+      true ->
+        {:error, {:storage_failed, message}}
     end
   end
 end

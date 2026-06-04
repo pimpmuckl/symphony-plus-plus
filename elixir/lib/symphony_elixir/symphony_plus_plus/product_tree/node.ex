@@ -61,7 +61,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Node do
 
     %__MODULE__{}
     |> changeset(attrs)
-    |> unique_constraint(:id, name: :sympp_product_tree_nodes_id_unique_index)
     |> foreign_key_constraint(:work_request_id)
     |> foreign_key_constraint(:parent_id)
   end

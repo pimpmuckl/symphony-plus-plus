@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.ProductTreeTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.ProductTree
   alias SymphonyElixir.SymphonyPlusPlus.ProductTree.{DependencyEdge, Node, Revision, SliceLink}
@@ -284,6 +285,79 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTreeTest do
     assert Enum.all?(moved_back.nodes, &(&1.slice_ids == []))
   end
 
+  test "product tree schema relies on primary keys instead of redundant id indexes", %{repo: repo} do
+    node_indexes = index_names(repo, "sympp_product_tree_nodes")
+    slice_link_indexes = index_names(repo, "sympp_product_tree_slice_links")
+    dependency_edge_indexes = index_names(repo, "sympp_product_tree_dependency_edges")
+    revision_indexes = index_names(repo, "sympp_product_tree_revisions")
+
+    refute "sympp_product_tree_nodes_id_unique_index" in node_indexes
+    refute "sympp_product_tree_slice_links_id_unique_index" in slice_link_indexes
+    refute "sympp_product_tree_dependency_edges_id_unique_index" in dependency_edge_indexes
+    refute "sympp_product_tree_revisions_id_unique_index" in revision_indexes
+
+    assert "sympp_product_tree_slice_links_planned_slice_unique_index" in slice_link_indexes
+    assert "sympp_product_tree_revisions_work_request_revision_unique_index" in revision_indexes
+  end
+
+  test "normalizes native primary key collisions for product tree records", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-V3-PK-COLLISION", title: "Duplicate ids")
+    node = create_node!(repo, work_request, id: "ptn_duplicate_primary_key", title: "Original node")
+
+    assert {:error, :id_already_exists} =
+             ProductTree.create_node(repo, %{
+               id: node.id,
+               work_request_id: work_request.id,
+               title: "Duplicate node"
+             })
+
+    first_slice = add_slice!(repo, work_request, id: "wrs_duplicate_link_first", title: "First linked slice")
+    second_slice = add_slice!(repo, work_request, id: "wrs_duplicate_link_second", title: "Second linked slice")
+
+    assert {:ok, slice_link} =
+             ProductTree.create_slice_link(repo, %{
+               id: "ptl_duplicate_primary_key",
+               work_request_id: work_request.id,
+               product_tree_node_id: node.id,
+               planned_slice_id: first_slice.id
+             })
+
+    assert {:error, :id_already_exists} =
+             ProductTree.create_slice_link(repo, %{
+               id: slice_link.id,
+               work_request_id: work_request.id,
+               product_tree_node_id: node.id,
+               planned_slice_id: second_slice.id
+             })
+
+    assert {:ok, edge} =
+             ProductTree.create_dependency_edge(repo, %{
+               id: "pte_duplicate_primary_key",
+               work_request_id: work_request.id,
+               source_kind: "product_node",
+               source_id: node.id,
+               target_kind: "planned_slice",
+               target_id: first_slice.id,
+               kind: "depends_on",
+               reason: "Original dependency."
+             })
+
+    assert {:error, :id_already_exists} =
+             ProductTree.create_dependency_edge(repo, %{
+               id: edge.id,
+               work_request_id: work_request.id,
+               source_kind: "product_node",
+               source_id: node.id,
+               target_kind: "planned_slice",
+               target_id: second_slice.id,
+               kind: "blocks",
+               reason: "Duplicate dependency id."
+             })
+
+    assert {:ok, revision} = ProductTree.record_revision(repo, work_request.id, %{id: "ptr_duplicate_primary_key", reason: "First"})
+    assert {:error, :id_already_exists} = ProductTree.record_revision(repo, work_request.id, %{id: revision.id, reason: "Second"})
+  end
+
   defp create_work_request!(repo, overrides) do
     attrs =
       %{
@@ -333,5 +407,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTreeTest do
 
     assert {:ok, slice} = WorkRequestRepository.add_planned_slice(repo, work_request.id, attrs)
     slice
+  end
+
+  defp index_names(repo, table) do
+    %{rows: index_rows} = SQL.query!(repo, "PRAGMA index_list(#{table})")
+    Enum.map(index_rows, &Enum.at(&1, 1))
   end
 end

@@ -59,7 +59,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Revision do
     ])
     |> validate_required([:id, :work_request_id, :revision_number, :tree_snapshot, :reason, :created_at])
     |> validate_number(:revision_number, greater_than: 0)
-    |> unique_constraint(:id, name: :sympp_product_tree_revisions_id_unique_index)
     |> unique_constraint([:work_request_id, :revision_number],
       name: :sympp_product_tree_revisions_work_request_revision_unique_index
     )
