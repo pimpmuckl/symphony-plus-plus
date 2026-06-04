@@ -23,12 +23,69 @@ export function productTreeCounts(detail: WorkRequestDetail, activeBlockerCount:
   };
 }
 
-export function activeBlockerCounts(edges: ActiveBlockingEdge[]) {
+export function activeBlockerCounts(edges: ActiveBlockingEdge[], requestDetails: WorkRequestDetail[] = []) {
+  const requestIndex = blockerRequestIndex(requestDetails);
+
   return edges.reduce<Map<string, number>>((counts, edge) => {
-    if (!edge.work_request_id) return counts;
-    counts.set(edge.work_request_id, (counts.get(edge.work_request_id) ?? 0) + 1);
+    const requestIds = activeBlockerRequestIds(edge, requestIndex);
+    for (const requestId of requestIds) {
+      counts.set(requestId, (counts.get(requestId) ?? 0) + 1);
+    }
+
     return counts;
   }, new Map());
+}
+
+type BlockerRequestIndex = {
+  requestIdBySliceId: Map<string, string>;
+  requestIdsByPackageId: Map<string, Set<string>>;
+};
+
+function blockerRequestIndex(requestDetails: WorkRequestDetail[]): BlockerRequestIndex {
+  const requestIdBySliceId = new Map<string, string>();
+  const requestIdsByPackageId = new Map<string, Set<string>>();
+
+  for (const detail of requestDetails) {
+    const requestId = detail.work_request.id;
+    for (const slice of detail.planned_slices ?? []) {
+      requestIdBySliceId.set(slice.id, requestId);
+      if (!slice.work_package_id) continue;
+
+      const requestIds = requestIdsByPackageId.get(slice.work_package_id) ?? new Set<string>();
+      requestIds.add(requestId);
+      requestIdsByPackageId.set(slice.work_package_id, requestIds);
+    }
+  }
+
+  return { requestIdBySliceId, requestIdsByPackageId };
+}
+
+function activeBlockerRequestIds(edge: ActiveBlockingEdge, requestIndex: BlockerRequestIndex) {
+  const derivedRequestIds = new Set<string>();
+  addEndpointRequestIds(derivedRequestIds, requestIndex, edge.from);
+  addEndpointRequestIds(derivedRequestIds, requestIndex, edge.to);
+  if (derivedRequestIds.size > 0) return derivedRequestIds;
+
+  return edge.work_request_id ? new Set([edge.work_request_id]) : new Set<string>();
+}
+
+function addEndpointRequestIds(
+  requestIds: Set<string>,
+  requestIndex: BlockerRequestIndex,
+  endpoint?: ActiveBlockingEdge["from"],
+) {
+  if (!endpoint) return;
+
+  if (endpoint.kind === "slice") {
+    const requestId = requestIndex.requestIdBySliceId.get(endpoint.id);
+    if (requestId) requestIds.add(requestId);
+  }
+
+  if (endpoint.kind === "work_package") {
+    for (const requestId of requestIndex.requestIdsByPackageId.get(endpoint.id) ?? []) {
+      requestIds.add(requestId);
+    }
+  }
 }
 
 export function rootProductSliceIds(detail: WorkRequestDetail, slices: PlannedSlice[]) {

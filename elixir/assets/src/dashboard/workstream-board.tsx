@@ -50,7 +50,7 @@ export function WorkstreamBoard({
   const sortedDetails = useMemo(() => sortWorkRequestDetails(repoDetails), [repoDetails]);
   const sortedUnlinkedPackages = useMemo(() => sortPackages(unlinkedPackages), [unlinkedPackages]);
   const packageById = useMemo(() => new Map(packages.map((pkg) => [pkg.id, pkg])), [packages]);
-  const blockerCountByRequestId = useMemo(() => activeBlockerCounts(activeBlockingEdges), [activeBlockingEdges]);
+  const blockerCountByRequestId = useMemo(() => activeBlockerCounts(activeBlockingEdges, repoDetails), [activeBlockingEdges, repoDetails]);
 
   return (
     <div className="workstream-board-shell">

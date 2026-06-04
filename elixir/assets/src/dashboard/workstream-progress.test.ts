@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { productTreeCounts, requestProgress } from "./workstream-progress";
-import type { PlannedSlice, WorkRequestDetail, WorkPackageCard } from "@/types/dashboard";
+import { activeBlockerCounts, productTreeCounts, requestProgress } from "./workstream-progress";
+import type { ActiveBlockingEdge, PlannedSlice, WorkRequestDetail, WorkPackageCard } from "@/types/dashboard";
 
 describe("workstream progress", () => {
   it("counts active direct slices as partial progress", () => {
@@ -26,6 +26,24 @@ describe("workstream progress", () => {
 
     expect(productTreeCounts(detail, 2).blockerCount).toBe(5);
   });
+
+  it("counts blocker edges through slice and package endpoints before work request fallbacks", () => {
+    const detail = workRequestDetail([
+      plannedSlice("slice-endpoint", "blocked", "pkg-endpoint"),
+      plannedSlice("slice-package", "blocked", "pkg-shared"),
+    ]);
+
+    const counts = activeBlockerCounts(
+      [
+        blockingEdge("blocker-slice", { kind: "slice", id: "slice-endpoint" }, { kind: "work_package", id: "unknown-package" }),
+        blockingEdge("blocker-package", { kind: "work_package", id: "pkg-shared" }, { kind: "work_package", id: "unknown-package" }),
+        blockingEdge("blocker-fallback", { kind: "work_package", id: "unknown-package" }, { kind: "work_package", id: "unknown-package" }, "wr-progress"),
+      ],
+      [detail],
+    );
+
+    expect(counts.get("wr-progress")).toBe(3);
+  });
 });
 
 function workRequestDetail(plannedSlices: PlannedSlice[]): WorkRequestDetail {
@@ -42,12 +60,28 @@ function workRequestDetail(plannedSlices: PlannedSlice[]): WorkRequestDetail {
   };
 }
 
-function plannedSlice(id: string, state: string): PlannedSlice {
+function plannedSlice(id: string, state: string, workPackageId?: string): PlannedSlice {
   return {
     id,
     work_request_id: "wr-progress",
     title: id,
     status: "planned",
+    work_package_id: workPackageId,
     operational_state: { key: state },
+  };
+}
+
+function blockingEdge(
+  id: string,
+  from: ActiveBlockingEdge["from"],
+  to: ActiveBlockingEdge["to"],
+  workRequestId?: string,
+): ActiveBlockingEdge {
+  return {
+    id,
+    blocker_id: id,
+    from,
+    to,
+    work_request_id: workRequestId,
   };
 }
