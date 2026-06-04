@@ -17,11 +17,14 @@ WorkRequest capabilities can read, clarify, record decisions, author planned
 slices, and dispatch approved planned slices through the normal ledger-backed
 local assignment flow.
 
-Product-tree mutation tools for architect-authored plan nodes are still a V3
-follow-up. Until those land, the read projection and copied-ledger preview can
-be seeded by migration/helper flows. Automatic question generation, automatic
-slicing/planning, live Linear state creation, richer planner/intake plugin
-surfaces, and automatic Codex spawning remain future work.
+Architect MCP sessions can mutate the optional product tree with
+`upsert_work_request_product_plan_node` and
+`move_work_request_planned_slice_to_product_node` while the WorkRequest is in an
+authoring status. Copied-ledger preview and migration flows may still seed plan
+nodes through helpers, but helper seeding is not the normal architect authoring
+path. Automatic question generation, automatic slicing/planning, live Linear
+state creation, richer planner/intake plugin surfaces, and automatic Codex
+spawning remain future work.
 
 ### ProductPlanNode
 

@@ -77,19 +77,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
     end
   end
 
-  defp remember_action(config, client_key, state_key, payload, %Server{initialized: true, session: %Session{} = session}, response) do
-    case claim_tool_name(payload, response, session) do
-      tool_name when tool_name in @local_claim_tools ->
-        remember_session_claim(config, client_key, state_key, session, response, tool_name)
+  defp remember_action(config, client_key, state_key, payload, %Server{initialized: true, session: %Session{} = session} = server, response) do
+    if release_current_assignment_success?(payload, response, server) do
+      remember_unbound_initialized(client_key, state_key, @release_current_assignment_tool)
+    else
+      case claim_tool_name(payload, response, session) do
+        tool_name when tool_name in @local_claim_tools ->
+          remember_session_claim(config, client_key, state_key, session, response, tool_name)
 
-      tool_name when tool_name in @secret_claim_tools ->
-        remember_nonrecoverable_claim(client_key, state_key, session, tool_name)
+        tool_name when tool_name in @secret_claim_tools ->
+          remember_nonrecoverable_claim(client_key, state_key, session, tool_name)
 
-      :ambiguous_claim ->
-        remember_nonrecoverable_claim(client_key, state_key, session, "ambiguous_claim")
+        :ambiguous_claim ->
+          remember_nonrecoverable_claim(client_key, state_key, session, "ambiguous_claim")
 
-      _tool_name ->
-        {:touch, SessionBinding.binding_id(client_key, state_key), now()}
+        _tool_name ->
+          {:touch, SessionBinding.binding_id(client_key, state_key), now()}
+      end
     end
   end
 
@@ -349,6 +353,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
   defp release_current_assignment_success?(payload, response, %Server{session: nil}) do
     release_current_assignment_payload?(payload) and release_current_assignment_response_success?(response)
   end
+
+  defp release_current_assignment_success?(_payload_or_payloads, _response_or_responses, %Server{session: %Session{}}), do: false
 
   defp release_current_assignment_payload?(%{
          "jsonrpc" => "2.0",
