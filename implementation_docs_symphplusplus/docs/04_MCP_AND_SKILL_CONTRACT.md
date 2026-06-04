@@ -929,9 +929,13 @@ The repo-local skill package lives at:
 
 Install or copy that directory into the worker repository's `.codex/skills/`
 directory when Symphony++ runs against a downstream codebase, or install the
-Codex-local plugin from `plugins/symphony-plus-plus/`. The skill expects a
-dedicated Symphony++ local HTTP MCP session connected to the same ledger as
-dispatch. The stdio server remains a legacy/recovery fallback. From this
+opt-in MCP companion from `plugins/symphony-plus-plus-mcp/` for the packaged
+`symphony-plus-plus-mcp:symphony-work-package` skill. The default
+`plugins/symphony-plus-plus/` package remains MCP-free and does not provide this
+skill or register `symphony_plus_plus` tools. The skill expects a dedicated
+Symphony++ local HTTP MCP session connected to the same ledger as dispatch, with
+the MCP config or companion plugin loaded before the Codex session starts. The
+stdio server remains a legacy/recovery fallback. From this
 repository's Elixir implementation, the fallback command is:
 
 ```bash
