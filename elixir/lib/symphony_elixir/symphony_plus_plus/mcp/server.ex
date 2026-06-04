@@ -14763,10 +14763,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp record_product_tree_revision(repo, work_request_id, tool, created_by, detail) do
+    snapshot = product_tree_revision_snapshot(detail.product_tree)
+    tree = ProductTree.tree_for_work_request(repo, work_request_id)
+
+    if match?({:ok, %{latest_revision: %{tree_snapshot: ^snapshot}}}, tree) do
+      {:ok, nil}
+    else
+      insert_product_tree_revision(repo, work_request_id, tool, created_by, snapshot)
+    end
+  end
+
+  defp insert_product_tree_revision(repo, work_request_id, tool, created_by, snapshot) do
     case ProductTree.record_revision(repo, work_request_id, %{
            "reason" => product_tree_revision_reason(tool),
            "created_by" => created_by,
-           "tree_snapshot" => product_tree_revision_snapshot(detail.product_tree)
+           "tree_snapshot" => snapshot
          }) do
       {:error, reason} = error ->
         if missing_product_tree_schema_error?(reason), do: {:ok, nil}, else: error
