@@ -12648,19 +12648,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp reject_failed_review_suite_result_override(progress_events, work_package_id, head_sha) do
-    if Enum.any?(progress_events, &failed_review_suite_result_event?(&1, work_package_id, head_sha)) do
+    failed_result? =
+      progress_events
+      |> MetadataProjection.current_head_review_suite_result_events(work_package_id, head_sha)
+      |> Enum.any?(&failed_review_suite_result_payload?(&1, work_package_id))
+
+    if failed_result? do
       {:tool_error, "failed_review_suite_result_exists"}
     else
       :ok
     end
   end
 
-  defp failed_review_suite_result_event?(event, work_package_id, head_sha) do
-    payload = event.payload
-
-    dedicated_review_suite_result_event?(event, work_package_id) and
-      review_head_matches?(payload, head_sha) and
-      Map.get(payload, "work_package_id") == work_package_id and
+  defp failed_review_suite_result_payload?(%ProgressEvent{payload: payload}, work_package_id) do
+    Map.get(payload, "work_package_id") == work_package_id and
       not (review_suite_status_passed?(Map.get(payload, "status")) and review_suite_verdict_passed?(Map.get(payload, "verdict")))
   end
 
@@ -12946,11 +12947,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp valid_persisted_review_suite_result?(_payload, _artifacts, _work_package_id, _readiness_head_sha), do: false
-
-  defp dedicated_review_suite_result_event?(%ProgressEvent{idempotency_key: idempotency_key} = event, work_package_id) do
-    payload_type?(event, "review_suite_result", "attach_review_suite_result") and
-      is_binary(idempotency_key) and String.starts_with?(idempotency_key, "attach_review_suite_result:#{work_package_id}:")
-  end
 
   defp review_package_missing?(state, required_review_lanes) do
     readiness_head_sha = review_head_sha_for_readiness(state)

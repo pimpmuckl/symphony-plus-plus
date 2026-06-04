@@ -93,25 +93,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds do
 
   defp matching_cycles_for_round_id(state_dir, round_id) do
     with {:ok, paths} <- cycle_paths(state_dir) do
-      matches =
-        Enum.reduce(paths, [], &prepend_cycle_match(&1, &2, round_id))
-
-      {:ok, Enum.reverse(matches)}
+      {:ok, Enum.flat_map(paths, &cycle_match_for_round_id(&1, round_id))}
     end
   end
 
-  defp prepend_cycle_match(path, matches, round_id) do
-    case read_json_file(path) do
-      {:ok, %{} = cycle} -> maybe_prepend_cycle_match(cycle, path, round_id, matches)
-      {:error, _reason} -> matches
-    end
-  end
-
-  defp maybe_prepend_cycle_match(cycle, path, round_id, matches) do
-    if cycle_has_round_id?(cycle, round_id) do
-      [{cycle, Path.basename(path, ".json")} | matches]
+  defp cycle_match_for_round_id(path, round_id) do
+    with {:ok, %{} = cycle} <- read_json_file(path),
+         true <- cycle_has_round_id?(cycle, round_id) do
+      [{cycle, Path.basename(path, ".json")}]
     else
-      matches
+      _no_match_or_unreadable_cycle -> []
     end
   end
 

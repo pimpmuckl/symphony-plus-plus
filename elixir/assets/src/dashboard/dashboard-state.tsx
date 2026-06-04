@@ -1,4 +1,4 @@
-import type { ArchitectHandoff, ArchitectHandoffCopyResult, DashboardPayload, GuidanceItem, PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
+import type { ArchitectHandoff, ArchitectHandoffCopyResult, DashboardPayload, GuidanceItem, WorkRequestDetail } from "@/types/dashboard";
 import type { UpdateMotion } from "@/components/dashboard/motion";
 import { useCallback, useRef, useState } from "react";
 import { CardDetailSelection, DashboardTheme, PackageDetailUiAction, PackageDetailUiState, RequestDetailUiAction, RequestDetailUiState, ScopedHandoffCopy, UpdateMotionsAction, WorkspaceTab } from "./runtime";
@@ -56,29 +56,10 @@ export type FinishedHighlight = {
 
 export type FinishedHighlightKind = "Request" | "Slice" | "Work Package";
 
-export type SliceEntry = {
-  detail: WorkRequestDetail;
-  slice: PlannedSlice;
-  pkg?: WorkPackageCard;
-  requestIndex: number;
-};
-
 export type WorkstreamCategoryCounts = {
   requests: number;
   planNodes: number;
   slices: number;
-};
-
-export type WorkstreamRow = {
-  detail?: WorkRequestDetail;
-  active: SliceEntry[];
-  implementing: SliceEntry[];
-  finished: SliceEntry[];
-  activePackages: WorkPackageCard[];
-  implementingPackages: WorkPackageCard[];
-  finishedPackages: WorkPackageCard[];
-  minHeight: number;
-  unlinked?: boolean;
 };
 
 export const EMPTY_WORK_REQUEST_DETAILS: WorkRequestDetail[] = [];
