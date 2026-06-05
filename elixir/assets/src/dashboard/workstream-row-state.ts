@@ -136,7 +136,7 @@ export function productNodeState(
 ) {
   const activeBlockerCount = activeBlockerCountForNode(node, treeIndex, activeBlockerCountBySliceId, activeBlockerKeysBySliceId);
   const blockerCount = Math.max(node.blocker_count ?? 0, activeBlockerCount);
-  const guidanceCount = Math.max((node.attention_count ?? 0) - blockerCount, 0);
+  const guidanceCount = node.guidance_count ?? Math.max((node.attention_count ?? 0) - blockerCount, 0);
   const mark = node.computed_completion_mark || node.completion_mark || "unknown";
 
   return {

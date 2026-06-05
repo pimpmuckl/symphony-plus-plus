@@ -92,6 +92,23 @@ describe("workstream row state", () => {
     expect(state.tone).toBe("blocked");
   });
 
+  it("uses product-tree guidance counts instead of generic attention counts", () => {
+    const node: ProductTreeNode = {
+      id: "node-active-runtime",
+      title: "Active runtime node",
+      completion_mark: "partial",
+      attention_count: 23,
+      guidance_count: 0,
+      blocker_count: 0,
+      slice_ids: ["slice-active"],
+    };
+
+    const state = productNodeState(node, 1, { childrenByParent: new Map() }, new Map());
+
+    expect(state.guidanceCount).toBe(0);
+    expect(state.tone).toBe("review");
+  });
+
   it("does not attribute package-level blocker edges to sibling slice rows", () => {
     const siblingSlice = plannedSlice("slice-sibling", "pkg-shared", "ready_for_worker", "Ready For Worker");
     const packageOnlyBlockerCounts = new Map([["pkg-shared", 1]]);

@@ -1046,19 +1046,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     read_refs_payload = get_in(read_refs_response, ["result", "structuredContent"])
     read_refs_tree = read_refs_payload["product_tree"]
     read_refs_nodes_by_id = Map.new(read_refs_tree["nodes"], &{&1["id"], &1})
+    read_refs_node = read_refs_nodes_by_id[product_tree_node_id]
 
     assert read_refs_payload["view"] == "nodes_with_slice_refs"
-    assert read_refs_nodes_by_id[product_tree_node_id]["slice_ids"] == [planned_slice.id]
-    assert read_refs_nodes_by_id[product_tree_node_id]["computed_completion_mark"] == "partial"
-    assert read_refs_nodes_by_id[product_tree_node_id]["attention_count"] == 1
-    assert read_refs_nodes_by_id[product_tree_node_id]["blocker_count"] == 1
+    assert read_refs_node["slice_ids"] == [planned_slice.id]
+    assert read_refs_node["computed_completion_mark"] == "partial"
+    assert {read_refs_node["attention_count"], read_refs_node["guidance_count"], read_refs_node["blocker_count"]} == {1, 0, 1}
     assert Map.has_key?(read_refs_nodes_by_id, child_node_id)
     assert get_in(read_refs_tree, ["slice_refs", Access.at(0), "id"]) == planned_slice.id
     assert get_in(read_refs_tree, ["slice_refs", Access.at(0), "work_package_id"]) == work_package_id
     assert get_in(read_refs_tree, ["slice_refs", Access.at(0), "operational_state", "key"]) == "blocked"
     assert get_in(read_refs_tree, ["slice_refs", Access.at(0), "has_full_payload"]) == false
-    assert get_in(read_refs_tree, ["summary", "attention_count"]) == 1
-    assert get_in(read_refs_tree, ["summary", "blocker_count"]) == 1
+    summary = read_refs_tree["summary"]
+    assert {summary["attention_count"], summary["guidance_count"], summary["blocker_count"]} == {1, 0, 1}
     refute scratch_slice.id in Enum.map(read_refs_tree["slice_refs"], & &1["id"])
     refute Map.has_key?(read_refs_tree, "slices")
 
@@ -1073,8 +1073,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     read_nodes_by_id = Map.new(read_nodes_tree["nodes"], &{&1["id"], &1})
 
     assert read_nodes_payload["view"] == "nodes_only"
-    refute Map.has_key?(read_nodes_by_id[product_tree_node_id], "slice_ids")
-    refute Map.has_key?(read_nodes_by_id[product_tree_node_id], "attention_count")
+    refute Enum.any?(["slice_ids", "attention_count", "guidance_count"], &Map.has_key?(read_nodes_by_id[product_tree_node_id], &1))
     assert read_nodes_by_id[product_tree_node_id]["computed_completion_mark"] == "partial"
     assert read_nodes_tree["root_slice_ids"] == []
     assert read_nodes_tree["omitted_slice_count"] == 1

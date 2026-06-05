@@ -13,6 +13,7 @@ export type ProductTreeNode = {
   child_node_count?: number;
   slice_count?: number;
   attention_count?: number;
+  guidance_count?: number;
   blocker_count?: number;
   position?: number;
   metadata?: Record<string, unknown>;
@@ -57,6 +58,7 @@ export type ProductTreeProjection = {
     deferred_count?: number;
     unknown_count?: number;
     attention_count?: number;
+    guidance_count?: number;
     blocker_count?: number;
   };
   latest_revision?: {

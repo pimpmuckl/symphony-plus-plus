@@ -107,18 +107,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTreeTest do
     projected =
       ProductTree.project(repo, work_request.id, [
         %{"id" => contract_slice.id, "operational_state" => %{"key" => "blocked"}},
-        %{"id" => serving_slice.id, "operational_state" => %{"key" => "active"}},
+        %{
+          "id" => serving_slice.id,
+          "operational_state" => %{
+            "key" => "active",
+            "attention_items" => [%{"key" => "clarification_question", "label" => "Clarification question", "tone" => "warning"}]
+          }
+        },
         %{"id" => direct_slice.id, "operational_state" => %{"key" => "needs_attention"}}
       ])
 
     projected_nodes_by_id = Map.new(projected.nodes, &{&1.id, &1})
     assert projected_nodes_by_id[kraken.id].attention_count == 1
+    assert projected_nodes_by_id[kraken.id].guidance_count == 0
     assert projected_nodes_by_id[backend.id].computed_completion_mark == "partial"
     assert projected_nodes_by_id[serving.id].computed_completion_mark == "partial"
-    assert projected_nodes_by_id[backend.id].attention_count == 1
+    assert projected_nodes_by_id[backend.id].attention_count == 2
+    assert projected_nodes_by_id[backend.id].guidance_count == 1
+    assert projected_nodes_by_id[serving.id].guidance_count == 1
     assert projected_nodes_by_id[kraken.id].blocker_count == 1
     assert projected_nodes_by_id[backend.id].blocker_count == 1
-    assert projected.summary.attention_count == 2
+    assert projected.summary.attention_count == 3
+    assert projected.summary.guidance_count == 1
     assert projected.summary.blocker_count == 1
   end
 

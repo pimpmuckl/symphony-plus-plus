@@ -6,6 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
   alias SymphonyElixir.SymphonyPlusPlus.ProductTree.{DependencyEdge, Node, Revision}
 
   @terminal_completion_keys ["merged", "merged_into_phase", "delivered", "completed_no_pr", "closed", "completed"]
+  @guidance_completion_keys ["human_info_needed", "ready_for_clarification", "clarifying"]
   @not_started_completion_keys ["approved", "planned", "planning", "ready_for_worker"]
   @partial_completion_keys [
     "active",
@@ -172,6 +173,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
       child_node_count: 0,
       slice_count: length(slice_ids),
       attention_count: attention_count(linked_slices),
+      guidance_count: guidance_count(linked_slices),
       blocker_count: blocker_count(linked_slices),
       position: node.position || 0,
       metadata: Sanitizer.redacted_json(node.metadata || %{}),
@@ -201,6 +203,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
       |> Map.put(:computed_completion_mark, mark)
       |> Map.put(:completion_label, completion_label(mark))
       |> Map.put(:attention_count, (node.attention_count || 0) + Enum.sum(Enum.map(children, &(&1.attention_count || 0))))
+      |> Map.put(:guidance_count, (node.guidance_count || 0) + Enum.sum(Enum.map(children, &(&1.guidance_count || 0))))
       |> Map.put(:blocker_count, (node.blocker_count || 0) + Enum.sum(Enum.map(children, &(&1.blocker_count || 0))))
     end
   end
@@ -315,6 +318,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
       deferred_count: Enum.count(marks, &(&1 == "deferred")),
       unknown_count: Enum.count(marks, &(&1 == "unknown")),
       attention_count: Enum.count(planned_slice_payloads, &slice_attention?/1),
+      guidance_count: Enum.count(planned_slice_payloads, &slice_guidance?/1),
       blocker_count: Enum.count(planned_slice_payloads, &slice_blocker?/1)
     }
   end
@@ -340,6 +344,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
         deferred_count: 0,
         unknown_count: 0,
         attention_count: 0,
+        guidance_count: 0,
         blocker_count: 0
       },
       attention_items: [
@@ -361,6 +366,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
   end
 
   defp attention_count(slices), do: Enum.count(slices, &slice_attention?/1)
+  defp guidance_count(slices), do: Enum.count(slices, &slice_guidance?/1)
   defp blocker_count(slices), do: Enum.count(slices, &slice_blocker?/1)
 
   defp slice_attention?(slice) do
@@ -378,12 +384,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
       Enum.any?(map_value(state, "attention_items") || [], &attention_item_blocker?/1)
   end
 
+  defp slice_guidance?(slice) do
+    state = map_value(slice, "operational_state") || %{}
+    attention_items = map_value(state, "attention_items") || []
+
+    [map_value(state, "key"), map_value(slice, "status"), map_value(slice, "work_package_status")]
+    |> Enum.any?(&(&1 in @guidance_completion_keys)) or Enum.any?(attention_items, &attention_item_guidance?/1)
+  end
+
   defp attention_item_blocker?(item) do
     key = item |> map_value("key") |> downcased()
     label = item |> map_value("label") |> downcased()
     tone = item |> map_value("tone") |> downcased()
 
     String.contains?(key, "blocker") or String.contains?(label, "blocker") or tone in ["critical", "danger", "destructive"]
+  end
+
+  defp attention_item_guidance?(item) do
+    key = item |> map_value("key") |> downcased()
+    label = item |> map_value("label") |> downcased()
+
+    key in @guidance_completion_keys or
+      String.contains?(key, "guidance") or
+      String.contains?(key, "question") or
+      String.contains?(label, "guidance") or
+      String.contains?(label, "question")
   end
 
   defp downcased(value) when is_binary(value), do: value |> String.trim() |> String.downcase()
