@@ -5,8 +5,8 @@ import { operationalLabel, sliceOperationalState } from "@/lib/operational-state
 const MIN_STATUS_LABEL_LENGTH = 8;
 const MIN_STATUS_BADGE_WIDTH_REM = 6.1;
 const MAX_STATUS_BADGE_WIDTH_REM = 11;
-const MIN_COUNT_PLATE_WIDTH_REM = 7.75;
-const MAX_COUNT_PLATE_WIDTH_REM = 13.25;
+const MIN_COUNT_PLATE_WIDTH_REM = 6.6;
+const MAX_COUNT_PLATE_WIDTH_REM = 12;
 
 export type RowProgressIconState = "active" | "blocked" | "done" | "guidance" | "muted";
 
@@ -38,7 +38,7 @@ export function statusBadgeWidthForRequestDetails(details: WorkRequestDetail[], 
 }
 
 export function countPlateWidthForLabels(labels: Iterable<string | null | undefined>) {
-  const width = Math.min(MAX_COUNT_PLATE_WIDTH_REM, Math.max(MIN_COUNT_PLATE_WIDTH_REM, longestStatusLabelLength(labels) * 0.42 + 3.9));
+  const width = Math.min(MAX_COUNT_PLATE_WIDTH_REM, Math.max(MIN_COUNT_PLATE_WIDTH_REM, longestStatusLabelLength(labels) * 0.4 + 3));
   return `${Number(width.toFixed(2))}rem`;
 }
 

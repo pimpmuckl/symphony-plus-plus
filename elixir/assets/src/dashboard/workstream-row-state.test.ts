@@ -16,8 +16,8 @@ describe("workstream row state", () => {
   });
 
   it("sizes repo count plates from the longest rendered count label", () => {
-    expect(countPlateWidthForLabels(["3 Requests", "0 Plan Nodes", "0 Active Blockers"])).toBe("11.04rem");
-    expect(countPlateWidthForLabels(["0 Guidance Needed"])).toBe("11.04rem");
+    expect(countPlateWidthForLabels(["3 Requests", "0 Plan Nodes", "0 Active Blockers"])).toBe("9.8rem");
+    expect(countPlateWidthForLabels(["0 Guidance Needed"])).toBe("9.8rem");
   });
 
   it("maps row progress icons by attention, completion, and active progress priority", () => {

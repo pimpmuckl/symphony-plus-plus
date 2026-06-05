@@ -4,6 +4,16 @@ import type { RepoSummaryPlateTone } from "./runtime";
 
 export type RepoSummaryMetricKey = "requests" | "planNodes" | "slices" | "guidance" | "blockers";
 
+export const REPO_SUMMARY_METRIC_KEYS: RepoSummaryMetricKey[] = ["requests", "planNodes", "slices", "guidance", "blockers"];
+
+export const REPO_SUMMARY_PLATE_WIDTH_VAR_BY_KEY: Record<RepoSummaryMetricKey, string> = {
+  requests: "--v3-repo-plate-requests-width",
+  planNodes: "--v3-repo-plate-plan-nodes-width",
+  slices: "--v3-repo-plate-slices-width",
+  guidance: "--v3-repo-plate-guidance-width",
+  blockers: "--v3-repo-plate-blockers-width",
+};
+
 export type RepoSummaryMetric = {
   key: RepoSummaryMetricKey;
   label: string;
@@ -23,5 +33,9 @@ export function repoSummaryMetrics(repo: RepoSummary, categoryCounts: Workstream
 }
 
 export function repoSummaryPlateLabels(repo: RepoSummary, categoryCounts: WorkstreamCategoryCounts) {
-  return repoSummaryMetrics(repo, categoryCounts).map((item) => `${item.value} ${item.label}`);
+  return repoSummaryMetrics(repo, categoryCounts).map(repoSummaryPlateLabel);
+}
+
+export function repoSummaryPlateLabel(metric: RepoSummaryMetric) {
+  return `${metric.value} ${metric.label}`;
 }

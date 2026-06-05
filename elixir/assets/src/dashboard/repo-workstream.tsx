@@ -152,13 +152,29 @@ export function RepoSummaryStrip({ repo, categoryCounts }: { repo: RepoSummary; 
     <div className="v3-repo-summary-strip">
       <div className="v3-repo-summary-group" data-kind="progress">
         {progress.map((item) => (
-          <RepoSummaryPlate key={item.label} className="v3-repo-summary-plate" icon={repoSummaryIcon(item.key)} label={item.label} value={item.value} tone={item.tone} />
+          <RepoSummaryPlate
+            key={item.key}
+            className="v3-repo-summary-plate"
+            icon={repoSummaryIcon(item.key)}
+            label={item.label}
+            summaryKey={item.key}
+            value={item.value}
+            tone={item.tone}
+          />
         ))}
       </div>
       <div className="v3-repo-summary-divider" />
       <div className="v3-repo-summary-group" data-kind="attention">
         {attention.map((item) => (
-          <RepoSummaryPlate key={item.label} className="v3-repo-summary-plate" icon={repoSummaryIcon(item.key)} label={item.label} value={item.value} tone={item.tone} />
+          <RepoSummaryPlate
+            key={item.key}
+            className="v3-repo-summary-plate"
+            icon={repoSummaryIcon(item.key)}
+            label={item.label}
+            summaryKey={item.key}
+            value={item.value}
+            tone={item.tone}
+          />
         ))}
       </div>
     </div>

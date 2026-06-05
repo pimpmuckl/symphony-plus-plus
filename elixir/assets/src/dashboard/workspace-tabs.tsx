@@ -7,7 +7,13 @@ import { CardDetailSelect, DashboardUpdateAnimations, TopPanelDirection, Workspa
 import { EmptyPanel } from "./detail-extras";
 import { RepoSummary } from "./dashboard-data";
 import { RepoWorkstream } from "./repo-workstream";
-import { repoSummaryPlateLabels } from "./repo-summary-state";
+import {
+  REPO_SUMMARY_METRIC_KEYS,
+  REPO_SUMMARY_PLATE_WIDTH_VAR_BY_KEY,
+  type RepoSummaryMetricKey,
+  repoSummaryMetrics,
+  repoSummaryPlateLabel,
+} from "./repo-summary-state";
 import { repoWorkstreamStateKey, workspaceTabDirection } from "./dashboard-persistence";
 import { countPlateWidthForLabels, statusBadgeWidthForRequestDetails } from "./workstream-row-state";
 import { workstreamCategoryCounts } from "./workstream-data";
@@ -31,9 +37,19 @@ export function WorkstreamsPane({
   onCopyArchitectHandoff: CopyArchitectHandoff;
   updateAnimations: DashboardUpdateAnimations;
 }) {
-  const repoSummaryPlateWidth = useMemo(() => {
-    const labels = repos.flatMap((repo) => repoSummaryPlateLabels(repo, workstreamCategoryCounts(requestDetailsByRepo.get(repo.repoKey) ?? [])));
-    return countPlateWidthForLabels(labels);
+  const repoSummaryPlateWidthVars = useMemo<Record<string, string>>(() => {
+    const labelsByKey = new Map<RepoSummaryMetricKey, string[]>(REPO_SUMMARY_METRIC_KEYS.map((key) => [key, []]));
+
+    for (const repo of repos) {
+      const categoryCounts = workstreamCategoryCounts(requestDetailsByRepo.get(repo.repoKey) ?? []);
+      for (const metric of repoSummaryMetrics(repo, categoryCounts)) {
+        labelsByKey.get(metric.key)?.push(repoSummaryPlateLabel(metric));
+      }
+    }
+
+    return Object.fromEntries(
+      REPO_SUMMARY_METRIC_KEYS.map((key) => [REPO_SUMMARY_PLATE_WIDTH_VAR_BY_KEY[key], countPlateWidthForLabels(labelsByKey.get(key) ?? [])]),
+    );
   }, [repos, requestDetailsByRepo]);
   const rowStatusBadgeWidth = useMemo(() => {
     const details = Array.from(requestDetailsByRepo.values()).flat();
@@ -41,7 +57,7 @@ export function WorkstreamsPane({
     return statusBadgeWidthForRequestDetails(details, packageById);
   }, [repos, requestDetailsByRepo]);
   const paneStyle = {
-    "--v3-repo-plate-width": repoSummaryPlateWidth,
+    ...repoSummaryPlateWidthVars,
     "--v3-row-badge-width": rowStatusBadgeWidth,
   } as React.CSSProperties;
 
