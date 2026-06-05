@@ -109,7 +109,7 @@ export function SoloSessionDetailContent({
   );
 }
 
-export function SoloPlanningGroup({
+function SoloPlanningGroup({
   group,
   defaultOpen,
 }: {

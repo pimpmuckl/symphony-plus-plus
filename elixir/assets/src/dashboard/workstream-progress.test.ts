@@ -77,6 +77,40 @@ describe("workstream progress", () => {
     expect(counts.packages.get("pkg-endpoint")).toBe(1);
     expect(counts.packages.get("pkg-shared")).toBe(1);
   });
+
+  it("deduplicates blocker ids for package endpoints shared by multiple slices", () => {
+    const detail = workRequestDetail([
+      plannedSlice("slice-a", "blocked", "pkg-shared"),
+      plannedSlice("slice-b", "blocked", "pkg-shared"),
+    ]);
+
+    const counts = activeBlockerEntityCounts(
+      [
+        blockingEdge(
+          "edge-a",
+          { kind: "work_package", id: "pkg-shared" },
+          { kind: "work_package", id: "unknown-package" },
+          undefined,
+          { blocker_id: "blocker-shared" },
+        ),
+        blockingEdge(
+          "edge-b",
+          { kind: "work_package", id: "pkg-shared" },
+          { kind: "work_package", id: "unknown-package" },
+          undefined,
+          { blocker_id: "blocker-shared" },
+        ),
+      ],
+      [detail],
+    );
+
+    expect(counts.requests.get("wr-progress")).toBe(1);
+    expect(counts.slices.get("slice-a")).toBe(1);
+    expect(counts.slices.get("slice-b")).toBe(1);
+    expect(counts.packages.get("pkg-shared")).toBe(1);
+    expect([...new Set(counts.sliceBlockerKeys.get("slice-a"))]).toEqual(["blocker-shared"]);
+    expect([...new Set(counts.sliceBlockerKeys.get("slice-b"))]).toEqual(["blocker-shared"]);
+  });
 });
 
 function workRequestDetail(plannedSlices: PlannedSlice[]): WorkRequestDetail {

@@ -76,14 +76,19 @@ function longestStatusLabelLength(labels: Iterable<string | null | undefined>) {
   return longest;
 }
 
-export function activeBlockerCountForNode(
+function activeBlockerCountForNode(
   node: ProductTreeNode,
   treeIndex: { childrenByParent: Map<string, ProductTreeNode[]> },
   activeBlockerCountBySliceId: Map<string, number>,
+  activeBlockerKeysBySliceId?: Map<string, Set<string>>,
   visited = new Set<string>(),
 ) {
   if (visited.has(node.id)) return 0;
   visited.add(node.id);
+
+  if (activeBlockerKeysBySliceId) {
+    return activeBlockerKeysForNode(node, treeIndex, activeBlockerKeysBySliceId, visited).size;
+  }
 
   let count = 0;
   for (const sliceId of node.slice_ids ?? []) {
@@ -91,10 +96,35 @@ export function activeBlockerCountForNode(
   }
 
   for (const child of treeIndex.childrenByParent.get(node.id) ?? []) {
-    count += activeBlockerCountForNode(child, treeIndex, activeBlockerCountBySliceId, visited);
+    count += activeBlockerCountForNode(child, treeIndex, activeBlockerCountBySliceId, undefined, visited);
   }
 
   return count;
+}
+
+function activeBlockerKeysForNode(
+  node: ProductTreeNode,
+  treeIndex: { childrenByParent: Map<string, ProductTreeNode[]> },
+  activeBlockerKeysBySliceId: Map<string, Set<string>>,
+  visited: Set<string>,
+) {
+  const blockerKeys = new Set<string>();
+
+  for (const sliceId of node.slice_ids ?? []) {
+    for (const blockerKey of activeBlockerKeysBySliceId.get(sliceId) ?? []) {
+      blockerKeys.add(blockerKey);
+    }
+  }
+
+  for (const child of treeIndex.childrenByParent.get(node.id) ?? []) {
+    if (visited.has(child.id)) continue;
+    visited.add(child.id);
+    for (const blockerKey of activeBlockerKeysForNode(child, treeIndex, activeBlockerKeysBySliceId, visited)) {
+      blockerKeys.add(blockerKey);
+    }
+  }
+
+  return blockerKeys;
 }
 
 export function productNodeState(
@@ -102,8 +132,9 @@ export function productNodeState(
   nodeSliceCount: number,
   treeIndex: { childrenByParent: Map<string, ProductTreeNode[]> },
   activeBlockerCountBySliceId: Map<string, number>,
+  activeBlockerKeysBySliceId?: Map<string, Set<string>>,
 ) {
-  const activeBlockerCount = activeBlockerCountForNode(node, treeIndex, activeBlockerCountBySliceId);
+  const activeBlockerCount = activeBlockerCountForNode(node, treeIndex, activeBlockerCountBySliceId, activeBlockerKeysBySliceId);
   const blockerCount = Math.max(node.blocker_count ?? 0, activeBlockerCount);
   const guidanceCount = Math.max((node.attention_count ?? 0) - blockerCount, 0);
   const mark = node.computed_completion_mark || node.completion_mark || "unknown";
@@ -119,7 +150,7 @@ export function productNodeState(
   };
 }
 
-export function productNodeStatusLabel(node: ProductTreeNode, mark = node.computed_completion_mark || node.completion_mark || "unknown") {
+function productNodeStatusLabel(node: ProductTreeNode, mark = node.computed_completion_mark || node.completion_mark || "unknown") {
   return node.completion_label || completionMarkLabel(mark);
 }
 

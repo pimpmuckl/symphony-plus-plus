@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { MarkdownBlock, safeMarkdownUrl } from "./markdown-block";
+import { MarkdownBlock } from "./markdown-block";
+import { safeMarkdownUrl } from "./markdown-url";
 
 describe("MarkdownBlock", () => {
   it("renders common Markdown as React elements", () => {

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import type { PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
+import type { ProductTreeNode } from "@/types/product-tree";
 import {
+  productNodeState,
   rowProgressAttentionState,
   rowProgressIconState,
   requestStatusLabels,
@@ -58,6 +60,34 @@ describe("workstream row state", () => {
       "Delivered",
     ]);
     expect(statusBadgeWidthForRequestDetails([detail], packageById)).toBe("9.2rem");
+  });
+
+  it("deduplicates shared blocker keys when rolling up product node state", () => {
+    const node: ProductTreeNode = {
+      id: "node-shared-blocker",
+      title: "Shared blocker node",
+      completion_mark: "partial",
+      attention_count: 2,
+      slice_ids: ["slice-a", "slice-b"],
+    };
+
+    const state = productNodeState(
+      node,
+      2,
+      { childrenByParent: new Map() },
+      new Map([
+        ["slice-a", 1],
+        ["slice-b", 1],
+      ]),
+      new Map([
+        ["slice-a", new Set(["blocker-shared"])],
+        ["slice-b", new Set(["blocker-shared"])],
+      ]),
+    );
+
+    expect(state.blockerCount).toBe(1);
+    expect(state.guidanceCount).toBe(1);
+    expect(state.tone).toBe("blocked");
   });
 });
 

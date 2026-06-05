@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { RepoSummary } from "./dashboard-data";
 import type { WorkstreamCategoryCounts } from "./dashboard-state";
-import { REPO_SUMMARY_PLATE_WIDTH_VAR_BY_KEY, repoSummaryMetrics, repoSummaryPlateLabels, repoSummaryPlateWidthForMetrics } from "./repo-summary-state";
+import { REPO_SUMMARY_PLATE_WIDTH_VAR_BY_KEY, repoSummaryMetrics, repoSummaryPlateWidthForMetrics } from "./repo-summary-state";
 
 describe("repo summary state", () => {
   it("builds the rendered repo summary labels that drive shared plate sizing", () => {
@@ -25,7 +25,7 @@ describe("repo summary state", () => {
       slices: 46,
     };
 
-    expect(repoSummaryPlateLabels(repo, categoryCounts)).toEqual([
+    expect(repoSummaryMetrics(repo, categoryCounts).map((metric) => `${metric.value} ${metric.label}`)).toEqual([
       "3 Requests",
       "12 Plan Nodes",
       "46 Slices",

@@ -143,7 +143,7 @@ export function RepoWorkstream({
   );
 }
 
-export function RepoSummaryStrip({ repo, categoryCounts }: { repo: RepoSummary; categoryCounts: WorkstreamCategoryCounts }) {
+function RepoSummaryStrip({ repo, categoryCounts }: { repo: RepoSummary; categoryCounts: WorkstreamCategoryCounts }) {
   const metrics = repoSummaryMetrics(repo, categoryCounts);
   const progress = metrics.filter((item) => item.group === "progress");
   const attention = metrics.filter((item) => item.group === "attention");

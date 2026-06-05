@@ -66,6 +66,7 @@ export function WorkstreamBoard({
               packageById={packageById}
               activeBlockerCount={blockerCounts.requests.get(detail.work_request.id) ?? 0}
               activeBlockerCountBySliceId={blockerCounts.slices}
+              activeBlockerKeysBySliceId={blockerCounts.sliceBlockerKeys}
               activeBlockerCountByPackageId={blockerCounts.packages}
               expanded={expanded}
               index={index}
@@ -90,6 +91,7 @@ function ProductRequestRow({
   packageById,
   activeBlockerCount,
   activeBlockerCountBySliceId,
+  activeBlockerKeysBySliceId,
   activeBlockerCountByPackageId,
   expanded,
   index,
@@ -103,6 +105,7 @@ function ProductRequestRow({
   packageById: Map<string, WorkPackageCard>;
   activeBlockerCount: number;
   activeBlockerCountBySliceId: Map<string, number>;
+  activeBlockerKeysBySliceId: Map<string, Set<string>>;
   activeBlockerCountByPackageId: Map<string, number>;
   expanded: boolean;
   index: number;
@@ -173,6 +176,7 @@ function ProductRequestRow({
             packageById={packageById}
             slices={slices}
             activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+            activeBlockerKeysBySliceId={activeBlockerKeysBySliceId}
             activeBlockerCountByPackageId={activeBlockerCountByPackageId}
             onSelectCard={onSelectCard}
             updateAnimations={updateAnimations}
@@ -237,6 +241,7 @@ function ProductPlanBody({
   onSelectCard,
   updateAnimations,
   activeBlockerCountBySliceId,
+  activeBlockerKeysBySliceId,
   activeBlockerCountByPackageId,
 }: {
   detail: WorkRequestDetail;
@@ -245,6 +250,7 @@ function ProductPlanBody({
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
   activeBlockerCountBySliceId: Map<string, number>;
+  activeBlockerKeysBySliceId: Map<string, Set<string>>;
   activeBlockerCountByPackageId: Map<string, number>;
 }) {
   const treeIndex = useMemo(() => buildTreeIndex(detail.product_tree?.nodes ?? [], detail.product_tree?.root_node_ids ?? []), [detail.product_tree]);
@@ -266,6 +272,7 @@ function ProductPlanBody({
               slicesById={slicesById}
               packageById={packageById}
               activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+              activeBlockerKeysBySliceId={activeBlockerKeysBySliceId}
               activeBlockerCountByPackageId={activeBlockerCountByPackageId}
               onSelectCard={onSelectCard}
               updateAnimations={updateAnimations}
@@ -305,6 +312,7 @@ function ProductTreeNodeRow({
   slicesById,
   packageById,
   activeBlockerCountBySliceId,
+  activeBlockerKeysBySliceId,
   activeBlockerCountByPackageId,
   onSelectCard,
   updateAnimations,
@@ -316,13 +324,14 @@ function ProductTreeNodeRow({
   slicesById: Map<string, PlannedSlice>;
   packageById: Map<string, WorkPackageCard>;
   activeBlockerCountBySliceId: Map<string, number>;
+  activeBlockerKeysBySliceId: Map<string, Set<string>>;
   activeBlockerCountByPackageId: Map<string, number>;
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const childNodes = treeIndex.childrenByParent.get(node.id) ?? [];
   const nodeSlices = (node.slice_ids ?? []).map((sliceId) => slicesById.get(sliceId)).filter((slice): slice is PlannedSlice => Boolean(slice));
-  const nodeState = productNodeState(node, nodeSlices.length, treeIndex, activeBlockerCountBySliceId);
+  const nodeState = productNodeState(node, nodeSlices.length, treeIndex, activeBlockerCountBySliceId, activeBlockerKeysBySliceId);
 
   return (
     <div className="v3-product-node" style={{ "--tree-depth": depth } as CSSProperties} data-mark={nodeState.mark} data-tone={nodeState.tone}>
@@ -365,6 +374,7 @@ function ProductTreeNodeRow({
               slicesById={slicesById}
               packageById={packageById}
               activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+              activeBlockerKeysBySliceId={activeBlockerKeysBySliceId}
               activeBlockerCountByPackageId={activeBlockerCountByPackageId}
               onSelectCard={onSelectCard}
               updateAnimations={updateAnimations}

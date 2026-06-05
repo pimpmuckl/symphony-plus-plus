@@ -104,7 +104,7 @@ export function useDashboardUpdateAnimations({
   return useMemo(() => ({ countPulseFor, motionFor, simulate }), [countPulseFor, motionFor, simulate]);
 }
 
-export function dashboardAnimationSnapshot({
+function dashboardAnimationSnapshot({
   blockerItems,
   finishedHighlights,
   guidanceItems,
@@ -181,7 +181,7 @@ export function finishedHighlightsListKey(items: FinishedHighlight[]) {
   return items.map(finishedHighlightUpdateKey).join("|");
 }
 
-export function classifyUpdateMotion(previous: UpdateAnimationEntity | undefined, current: UpdateAnimationEntity): UpdateMotionKind | null {
+function classifyUpdateMotion(previous: UpdateAnimationEntity | undefined, current: UpdateAnimationEntity): UpdateMotionKind | null {
   if (!previous) {
     if (current.finished) return "finished";
     if (current.blockerCount > 0 || isBlockedStatus(current.status)) return "blocker";
@@ -196,7 +196,7 @@ export function classifyUpdateMotion(previous: UpdateAnimationEntity | undefined
   return "changed";
 }
 
-export function simulatedMotionKeys(kind: UpdateMotionKind, snapshot: Map<string, UpdateAnimationEntity>) {
+function simulatedMotionKeys(kind: UpdateMotionKind, snapshot: Map<string, UpdateAnimationEntity>) {
   const entries = [...snapshot.entries()];
   const preferred =
     kind === "guidance"
@@ -210,14 +210,14 @@ export function simulatedMotionKeys(kind: UpdateMotionKind, snapshot: Map<string
   return (preferred.length > 0 ? preferred : entries).slice(0, kind === "changed" ? 4 : 3).map(([key]) => key);
 }
 
-export function topPanelForMotionKind(kind: UpdateMotionKind): TopPanelKey | null {
+function topPanelForMotionKind(kind: UpdateMotionKind): TopPanelKey | null {
   if (kind === "guidance") return "guidance";
   if (kind === "blocker") return "blockers";
   if (kind === "finished") return "finished";
   return null;
 }
 
-export function requestAnimationEntity(detail: WorkRequestDetail): UpdateAnimationEntity {
+function requestAnimationEntity(detail: WorkRequestDetail): UpdateAnimationEntity {
   const request = detail.work_request;
   const operational = request.operational_state || null;
   const openQuestions = detail.clarification_questions?.filter((question) => question.status === "open") ?? [];
@@ -250,7 +250,7 @@ export function requestAnimationEntity(detail: WorkRequestDetail): UpdateAnimati
   };
 }
 
-export function sliceAnimationEntity(slice: PlannedSlice, pkg?: WorkPackageCard): UpdateAnimationEntity {
+function sliceAnimationEntity(slice: PlannedSlice, pkg?: WorkPackageCard): UpdateAnimationEntity {
   const operational = sliceOperationalState(slice, pkg);
   const status = operational?.key || slice.work_package_status || slice.status;
   const blockerCount = pkg?.active_blocker_count || (pkg?.status === "blocked" || operational?.key === "blocked" ? 1 : 0);
@@ -278,7 +278,7 @@ export function sliceAnimationEntity(slice: PlannedSlice, pkg?: WorkPackageCard)
   };
 }
 
-export function packageAnimationEntity(pkg: WorkPackageCard): UpdateAnimationEntity {
+function packageAnimationEntity(pkg: WorkPackageCard): UpdateAnimationEntity {
   const operational = pkg.operational_state || null;
   const blockerCount = pkg.active_blocker_count || (pkg.status === "blocked" || operational?.key === "blocked" ? 1 : 0);
 
@@ -306,7 +306,7 @@ export function packageAnimationEntity(pkg: WorkPackageCard): UpdateAnimationEnt
   };
 }
 
-export function guidanceAnimationEntity(item: GuidanceItem): UpdateAnimationEntity {
+function guidanceAnimationEntity(item: GuidanceItem): UpdateAnimationEntity {
   const status = item.source === "guidance" ? item.guidance.status : item.question.status;
 
   return {
@@ -318,7 +318,7 @@ export function guidanceAnimationEntity(item: GuidanceItem): UpdateAnimationEnti
   };
 }
 
-export function blockerAnimationEntity(item: BlockerItem): UpdateAnimationEntity {
+function blockerAnimationEntity(item: BlockerItem): UpdateAnimationEntity {
   return {
     signature: stableSignature([item.status, item.blockerCount, item.detail, item.title]),
     status: item.status,
@@ -328,7 +328,7 @@ export function blockerAnimationEntity(item: BlockerItem): UpdateAnimationEntity
   };
 }
 
-export function finishedHighlightAnimationEntity(item: FinishedHighlight): UpdateAnimationEntity {
+function finishedHighlightAnimationEntity(item: FinishedHighlight): UpdateAnimationEntity {
   return {
     signature: stableSignature([item.state, item.at, item.title, item.kind]),
     status: item.state,
@@ -338,7 +338,7 @@ export function finishedHighlightAnimationEntity(item: FinishedHighlight): Updat
   };
 }
 
-export function soloSessionAnimationEntity(session: SoloSession): UpdateAnimationEntity {
+function soloSessionAnimationEntity(session: SoloSession): UpdateAnimationEntity {
   const attention = soloSessionAttention(session);
 
   return {
@@ -350,14 +350,14 @@ export function soloSessionAnimationEntity(session: SoloSession): UpdateAnimatio
   };
 }
 
-export function stableSignature(value: unknown) {
+function stableSignature(value: unknown) {
   return JSON.stringify(value);
 }
 
-export function isClosedGuidanceStatus(status?: string | null) {
+function isClosedGuidanceStatus(status?: string | null) {
   return ["answered", "closed", "resolved", "done", "completed"].includes(status || "");
 }
 
-export function isBlockedStatus(status?: string | null) {
+function isBlockedStatus(status?: string | null) {
   return status === "blocked";
 }

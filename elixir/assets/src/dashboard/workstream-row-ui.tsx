@@ -174,9 +174,9 @@ export function RequestHeaderActions({
         </Button>
       ) : null}
       {copyToastVisible ? (
-        <div className="v3-handoff-copy-toast" role="status" aria-live="polite">
+        <output className="v3-handoff-copy-toast" aria-live="polite">
           Handoff copied to Clipboard
-        </div>
+        </output>
       ) : null}
     </div>
   );
@@ -272,12 +272,15 @@ export function ProductNodeHeader({
   const progress = completionMarkProgress(mark);
   const progressIconState = rowProgressIconState({ blockerCount, guidanceCount, progress, tone });
   const progressAttentionState = rowProgressAttentionState({ blockerCount, guidanceCount, tone });
+  const nodeTitle = node.title || node.id;
 
   return (
     <div className="v3-product-node-header v3-entity-row" data-tone={tone}>
       <ProgressStateIcon state={progressIconState} attentionState={progressAttentionState} progress={progress} label={statusLabel} />
       <span className="v3-product-node-title-group">
-        <span className="v3-product-node-title">{node.title || node.id}</span>
+        <span className="v3-product-node-title" title={nodeTitle}>
+          {nodeTitle}
+        </span>
         <span className="v3-product-node-meta">
           {visibleNodeKind ? <span>{visibleNodeKind}</span> : null}
           <span>{nodeSliceCount} slices</span>

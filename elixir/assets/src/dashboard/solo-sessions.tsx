@@ -43,7 +43,7 @@ export function SoloSessions({
   );
 }
 
-export function SoloSessionGroup({
+function SoloSessionGroup({
   group,
   onSelectCard,
   updateAnimations,
@@ -104,7 +104,7 @@ export function SoloSessionGroup({
   );
 }
 
-export function SoloSessionLane({
+function SoloSessionLane({
   title,
   sessions,
   emptyLabel,
@@ -132,7 +132,7 @@ export function SoloSessionLane({
   );
 }
 
-export function SoloSessionCard({
+function SoloSessionCard({
   session,
   index,
   onSelectCard,

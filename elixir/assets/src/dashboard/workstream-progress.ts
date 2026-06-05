@@ -6,6 +6,7 @@ export type ActiveBlockerEntityCounts = {
   requests: Map<string, number>;
   slices: Map<string, number>;
   packages: Map<string, number>;
+  sliceBlockerKeys: Map<string, Set<string>>;
 };
 
 export function requestProgress(detail: WorkRequestDetail, packageById: Map<string, WorkPackageCard>) {
@@ -35,15 +36,29 @@ export function activeBlockerCounts(edges: ActiveBlockingEdge[], requestDetails:
 
 export function activeBlockerEntityCounts(edges: ActiveBlockingEdge[], requestDetails: WorkRequestDetail[] = []): ActiveBlockerEntityCounts {
   const requestIndex = blockerRequestIndex(requestDetails);
+  const blockerKeys = edges.reduce<ActiveBlockerEntityKeySets>((keys, edge) => {
+    const blockerKey = activeBlockerKey(edge);
 
-  return edges.reduce<ActiveBlockerEntityCounts>((counts, edge) => {
-    incrementCounts(counts.requests, activeBlockerRequestIds(edge, requestIndex));
-    incrementCounts(counts.slices, activeBlockerSliceIds(edge, requestIndex));
-    incrementCounts(counts.packages, activeBlockerPackageIds(edge));
+    addBlockerKeys(keys.requests, activeBlockerRequestIds(edge, requestIndex), blockerKey);
+    addBlockerKeys(keys.slices, activeBlockerSliceIds(edge, requestIndex), blockerKey);
+    addBlockerKeys(keys.packages, activeBlockerPackageIds(edge), blockerKey);
 
-    return counts;
+    return keys;
   }, { requests: new Map(), slices: new Map(), packages: new Map() });
+
+  return {
+    requests: blockerKeyCounts(blockerKeys.requests),
+    slices: blockerKeyCounts(blockerKeys.slices),
+    packages: blockerKeyCounts(blockerKeys.packages),
+    sliceBlockerKeys: blockerKeys.slices,
+  };
 }
+
+type ActiveBlockerEntityKeySets = {
+  requests: Map<string, Set<string>>;
+  slices: Map<string, Set<string>>;
+  packages: Map<string, Set<string>>;
+};
 
 type BlockerRequestIndex = {
   requestIdBySliceId: Map<string, string>;
@@ -141,10 +156,20 @@ function addEndpointPackageIds(packageIds: Set<string>, endpoint?: ActiveBlockin
   if (endpoint?.kind === "work_package") packageIds.add(endpoint.id);
 }
 
-function incrementCounts(counts: Map<string, number>, ids: Iterable<string>) {
+function activeBlockerKey(edge: ActiveBlockingEdge) {
+  return edge.blocker_id || edge.id;
+}
+
+function addBlockerKeys(blockerKeysByEntityId: Map<string, Set<string>>, ids: Iterable<string>, blockerKey: string) {
   for (const id of ids) {
-    counts.set(id, (counts.get(id) ?? 0) + 1);
+    const blockerKeys = blockerKeysByEntityId.get(id) ?? new Set<string>();
+    blockerKeys.add(blockerKey);
+    blockerKeysByEntityId.set(id, blockerKeys);
   }
+}
+
+function blockerKeyCounts(blockerKeysByEntityId: Map<string, Set<string>>) {
+  return new Map([...blockerKeysByEntityId].map(([id, blockerKeys]) => [id, blockerKeys.size]));
 }
 
 export function rootProductSliceIds(detail: WorkRequestDetail, slices: PlannedSlice[]) {

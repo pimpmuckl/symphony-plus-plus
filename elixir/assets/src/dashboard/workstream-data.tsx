@@ -80,7 +80,7 @@ export function sortPlannedSlices(slices: PlannedSlice[]) {
   return sortedCopy(slices, comparePlannedSlices);
 }
 
-export function comparePlannedSlices(left: PlannedSlice, right: PlannedSlice) {
+function comparePlannedSlices(left: PlannedSlice, right: PlannedSlice) {
   const sequenceDelta = sortableSequence(left.sequence) - sortableSequence(right.sequence);
   if (sequenceDelta !== 0) return sequenceDelta;
 
@@ -91,7 +91,7 @@ export function comparePlannedSlices(left: PlannedSlice, right: PlannedSlice) {
   return (left.title || left.id).localeCompare(right.title || right.id);
 }
 
-export function sortableSequence(sequence?: number | null) {
+function sortableSequence(sequence?: number | null) {
   return typeof sequence === "number" && Number.isFinite(sequence) ? sequence : Number.MAX_SAFE_INTEGER;
 }
 

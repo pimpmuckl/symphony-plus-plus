@@ -18,7 +18,7 @@ export function DashboardApp() {
   return <DashboardShell {...shellProps} />;
 }
 
-export function useDashboardController() {
+function useDashboardController() {
   const [appState, dispatchApp] = useReducer(appStateReducer, null, createInitialAppState);
   const { dashboard, error, hideEmptyWorkstreams, loading, refreshing, theme, workspaceTab } = appState;
   const [dialogState, dispatchDialog] = useReducer(appDialogReducer, initialAppDialogState);

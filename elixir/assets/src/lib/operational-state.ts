@@ -1,5 +1,5 @@
 import type { SignalTone, StateCardTone } from "@/components/dashboard/state-card-style";
-import { formatStatus, statusLabel } from "@/lib/status-labels";
+import { statusLabel } from "@/lib/status-labels";
 import type { PackageOperationalAttention, PlannedSlice, WorkPackageCard, WorkRequestCard, WorkRequestDetail } from "@/types/dashboard";
 
 export type BadgeTone = "default" | "secondary" | "outline" | "success" | "warning" | "danger" | "info" | "ready";
@@ -187,7 +187,7 @@ export function sliceCardTone(slice: PlannedSlice, pkg: WorkPackageCard | undefi
   }
 }
 
-export function packageCardTone(pkg: WorkPackageCard, lane?: BoardLane): StateCardTone {
+function packageCardTone(pkg: WorkPackageCard, lane?: BoardLane): StateCardTone {
   const status = pkg.status || "";
   if ((pkg.active_blocker_count || 0) > 0 || status === "blocked") return "blocked";
 
@@ -242,35 +242,6 @@ export function operationalBadgeVariant(operational?: WorkPackageCard["operation
   return statusVariant(key || operational.raw_status || fallbackStatus);
 }
 
-export function packageAttentionSignal(pkg: WorkPackageCard): { label: string; value: string; tone: SignalTone } | null {
-  const operational = pkg.operational_state || null;
-  const firstAttention = (operational?.attention_items || [])[0] || null;
-  const blockers = packageBlockerSignal(pkg, operational);
-  if (blockers) return blockers;
-
-  if (firstAttention) {
-    return {
-      label: "Attention",
-      value: firstAttention.label || formatStatus(firstAttention.key),
-      tone: attentionTone(firstAttention),
-    };
-  }
-
-  return null;
-}
-
-export function packageBlockerSignal(pkg?: WorkPackageCard, operational?: WorkPackageCard["operational_state"]): { label: string; value: string; tone: SignalTone } | null {
-  const blockerCount = pkg?.active_blocker_count || 0;
-  const state = operational || pkg?.operational_state || null;
-  const hasBlockerAttention = (state?.attention_items || []).some(operationalAttentionIsBlocker);
-  const isBlocked = pkg?.status === "blocked" || state?.key === "blocked";
-
-  if (blockerCount <= 0 && !hasBlockerAttention && !isBlocked) return null;
-
-  const count = blockerCount || 1;
-  return { label: "Blockers", value: `${count} ${plural("blocker", count)}`, tone: "danger" };
-}
-
 export function attentionTone(attention?: PackageOperationalAttention | null): SignalTone {
   return signalToneForBackendTone(attention?.tone);
 }
@@ -297,14 +268,4 @@ export function sliceLane(slice: PlannedSlice, pkg?: WorkPackageCard): BoardLane
 
 export function workRequestLane(request: WorkRequestCard): RequestLane {
   return REQUEST_LANES[request.operational_state?.key || request.status || ""] || "requested";
-}
-
-function plural(word: string, count: number) {
-  return count === 1 ? word : `${word}s`;
-}
-
-function operationalAttentionIsBlocker(attention: PackageOperationalAttention) {
-  const key = (attention.key || "").toLowerCase();
-  const label = (attention.label || "").toLowerCase();
-  return key.includes("blocker") || label.includes("blocker");
 }

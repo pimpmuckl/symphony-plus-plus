@@ -196,7 +196,7 @@ export function FinishedHighlightsBoard({
   );
 }
 
-export function FinishedHighlightCard({
+function FinishedHighlightCard({
   item,
   index,
   onSelectCard,

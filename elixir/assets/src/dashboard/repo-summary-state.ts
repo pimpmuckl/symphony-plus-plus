@@ -44,14 +44,6 @@ export function repoSummaryMetrics(repo: RepoSummary, categoryCounts: Workstream
   ];
 }
 
-export function repoSummaryPlateLabels(repo: RepoSummary, categoryCounts: WorkstreamCategoryCounts) {
-  return repoSummaryMetrics(repo, categoryCounts).map(repoSummaryPlateLabel);
-}
-
-export function repoSummaryPlateLabel(metric: RepoSummaryMetric) {
-  return `${metric.value} ${metric.label}`;
-}
-
 export function repoSummaryPlateWidthForMetrics(key: RepoSummaryMetricKey, metrics: RepoSummaryMetric[]) {
   const maxDigits = Math.max(1, ...metrics.map((metric) => countDigits(metric.value)));
   const countWidth = Math.max(REPO_SUMMARY_MIN_COUNT_WIDTH_REM, maxDigits * REPO_SUMMARY_COUNT_DIGIT_WIDTH_REM);
