@@ -160,10 +160,10 @@ function RequestProgressSummary({ detail, activeBlockerCount }: { detail: WorkRe
 
   return (
     <span className="v3-request-summary">
-      <span aria-label={`${counts.nodeCount} plan nodes`} title="Plan nodes"><Layers3 className="size-3.5" />{counts.nodeCount}</span>
+      {counts.nodeCount > 0 ? <span aria-label={`${counts.nodeCount} plan nodes`} title="Plan nodes"><Layers3 className="size-3.5" />{counts.nodeCount}</span> : null}
       <span aria-label={`${counts.sliceCount} slices`} title="Slices"><Split className="size-3.5" />{counts.sliceCount}</span>
-      <span className="v3-guidance-chip" aria-label={`${counts.guidanceCount} guidance needed`} title="Guidance needed"><MessageSquareText className="size-3.5" />{counts.guidanceCount}</span>
-      <span className="v3-blocker-chip" aria-label={`${counts.blockerCount} active blockers`} title="Active blockers"><AlertTriangle className="size-3.5" />{counts.blockerCount}</span>
+      {counts.guidanceCount > 0 ? <span className="v3-guidance-chip" aria-label={`${counts.guidanceCount} guidance needed`} title="Guidance needed"><MessageSquareText className="size-3.5" />{counts.guidanceCount}</span> : null}
+      {counts.blockerCount > 0 ? <span className="v3-blocker-chip" aria-label={`${counts.blockerCount} active blockers`} title="Active blockers"><AlertTriangle className="size-3.5" />{counts.blockerCount}</span> : null}
     </span>
   );
 }

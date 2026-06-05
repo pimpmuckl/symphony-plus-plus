@@ -9,6 +9,8 @@ import type { RepoIdentitySource } from "./dashboard-persistence";
 import { addBranch, repoDisplayName, repoIdentityKey, repoRemoteName } from "./dashboard-persistence";
 import { packageHasActiveBlocker } from "./workstream-data";
 
+export const FINISHED_HIGHLIGHT_LIMIT = 80;
+
 export function dashboardContentFingerprint(payload: DashboardPayload | null) {
   if (!payload) return "null";
 
@@ -107,6 +109,7 @@ export function recentFinishedHighlights(
   requests: WorkRequestCard[],
   details: WorkRequestDetail[],
   packageSelections: ReadonlyMap<string, CardDetailSelection> = new Map(),
+  limit: number | null = FINISHED_HIGHLIGHT_LIMIT,
 ): FinishedHighlight[] {
   const detailByRequestId = new Map(details.map((detail) => [detail.work_request.id, detail]));
   const packageById = new Map(packages.map((pkg) => [pkg.id, pkg]));
@@ -120,13 +123,14 @@ export function recentFinishedHighlights(
         repo: repoDisplayName(pkg),
         kind: "Work Package",
         state: operationalLabel(operational, pkg.status),
-        at: pkg.latest_progress_at,
+        at: latestTimestamp(pkg.latest_progress_at, pkg.updated_at, pkg.inserted_at),
         selection: packageSelections.get(pkg.id) ?? { kind: "package", pkg },
       });
     }
 
     return items;
   }, []);
+  const visiblePackageHighlights = limit === null ? packageHighlights : sortedCopy(packageHighlights, compareHighlightRecency).slice(0, limit);
 
   const requestHighlights = requests.reduce<FinishedHighlight[]>((items, request) => {
     if (workRequestLane(request) === "finished") {
@@ -169,11 +173,17 @@ export function recentFinishedHighlights(
     return items;
   });
 
-  return sortedCopy([...packageHighlights, ...requestHighlights, ...sliceHighlights], (a, b) => {
-    const left = a.at ? Date.parse(a.at) : 0;
-    const right = b.at ? Date.parse(b.at) : 0;
-    return right - left;
-  });
+  return sortedCopy([...visiblePackageHighlights, ...requestHighlights, ...sliceHighlights], compareHighlightRecency);
+}
+
+function compareHighlightRecency(a: FinishedHighlight, b: FinishedHighlight) {
+  const left = a.at ? Date.parse(a.at) : 0;
+  const right = b.at ? Date.parse(b.at) : 0;
+  return right - left;
+}
+
+function latestTimestamp(...values: (string | null | undefined)[]) {
+  return sortedCopy(values.filter((value): value is string => Boolean(value)), (a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
 }
 
 export function repoSummaries(

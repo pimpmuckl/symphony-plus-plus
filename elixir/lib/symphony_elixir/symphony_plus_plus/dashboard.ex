@@ -89,6 +89,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @work_request_count_chunk_size 500
   @solo_session_query_chunk_size 500
   @solo_session_snippet_limit 120
+  @operator_finished_work_package_limit 80
+  @finished_work_package_candidate_multiplier 3
+  @finished_work_package_min_candidate_limit 40
+  @finished_progress_lookup_chunk_size 500
+  @finished_package_statuses ["merged", "merged_into_phase", "closed", "abandoned"]
 
   @type repo :: module()
   @type dashboard_error :: :not_found | :forbidden | :database_busy | {:storage_failed, String.t()} | term()
@@ -110,7 +115,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   @spec operator_board(repo(), keyword()) :: {:ok, map()} | {:error, dashboard_error()}
   def operator_board(repo, opts) when is_atom(repo) and is_list(opts) do
-    safe_read(fn -> build_board(repo, Keyword.put(opts, :active_blocking_edges?, true)) end)
+    safe_read(fn ->
+      opts
+      |> Keyword.put(:active_blocking_edges?, true)
+      |> Keyword.put_new(:finished_work_package_limit, @operator_finished_work_package_limit)
+      |> then(&build_board(repo, &1))
+    end)
   end
 
   @spec repo_identity_catalog(repo()) :: {:ok, RepoIdentity.catalog()} | {:error, dashboard_error()}
@@ -924,18 +934,137 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp build_board(repo, opts) do
     with {:ok, work_packages} <- WorkPackageRepository.list(repo),
-         {:ok, repo_identity_catalog} <- repo_identity_catalog_from_repo(repo, opts, Enum.map(work_packages, & &1.repo)),
-         {:ok, contexts} <- card_contexts_for_packages(repo, work_packages, repo_identity_catalog) do
+         source_work_packages = board_source_work_packages(work_packages, opts),
+         visible_work_packages = board_work_packages(repo, source_work_packages, opts),
+         {:ok, repo_identity_catalog} <- repo_identity_catalog_from_repo(repo, opts, Enum.map(visible_work_packages, & &1.repo)),
+         {:ok, contexts} <- card_contexts_for_packages(repo, visible_work_packages, repo_identity_catalog) do
       cards = Enum.map(contexts, & &1.card)
 
       board = %{
         groups: group_cards(cards),
+        package_limits: package_limits(source_work_packages, visible_work_packages, opts),
+        visible_count: length(cards),
         statuses: WorkPackage.statuses(),
-        total_count: length(cards)
+        total_count: length(source_work_packages)
       }
 
       maybe_put_active_blocking_edges(repo, board, contexts, opts)
     end
+  end
+
+  defp board_source_work_packages(work_packages, opts) do
+    hidden_ids = hidden_work_package_ids(opts)
+    Enum.reject(work_packages, &MapSet.member?(hidden_ids, &1.id))
+  end
+
+  defp hidden_work_package_ids(opts) do
+    case Keyword.get(opts, :hidden_work_package_ids, MapSet.new()) do
+      %MapSet{} = ids -> ids
+      ids when is_list(ids) -> MapSet.new(ids)
+      _ids -> MapSet.new()
+    end
+  end
+
+  defp board_work_packages(repo, work_packages, opts) do
+    case finished_work_package_limit(opts) do
+      :all ->
+        work_packages
+
+      limit ->
+        {finished, active} = Enum.split_with(work_packages, &finished_work_package?/1)
+        active ++ visible_finished_work_packages(repo, finished, limit)
+    end
+  end
+
+  defp package_limits(work_packages, visible_work_packages, opts) do
+    finished_total_count = Enum.count(work_packages, &finished_work_package?/1)
+    finished_visible_count = Enum.count(visible_work_packages, &finished_work_package?/1)
+    limit = finished_work_package_limit(opts)
+
+    %{
+      finished_work_packages: %{
+        limit: if(limit == :all, do: nil, else: limit),
+        shown_count: finished_visible_count,
+        total_count: finished_total_count,
+        truncated: finished_visible_count < finished_total_count
+      }
+    }
+  end
+
+  defp finished_work_package_limit(opts) do
+    case Keyword.get(opts, :finished_work_package_limit, :all) do
+      limit when is_integer(limit) and limit >= 0 -> limit
+      _limit -> :all
+    end
+  end
+
+  defp finished_work_package?(%WorkPackage{status: status}), do: status in @finished_package_statuses
+
+  defp visible_finished_work_packages(_repo, _finished, 0), do: []
+  defp visible_finished_work_packages(_repo, [], _limit), do: []
+
+  defp visible_finished_work_packages(repo, finished, limit) do
+    candidate_limit = finished_work_package_candidate_limit(limit)
+    latest_progress_by_id = recent_finished_progress_by_work_package_id(repo, finished, candidate_limit)
+    candidates_by_id = Map.new(finished, &{&1.id, &1})
+
+    package_candidate_ids =
+      finished
+      |> sort_finished_work_packages(%{})
+      |> Enum.take(candidate_limit)
+      |> Enum.map(& &1.id)
+
+    (package_candidate_ids ++ Map.keys(latest_progress_by_id))
+    |> Enum.uniq()
+    |> Enum.flat_map(fn id ->
+      case Map.fetch(candidates_by_id, id) do
+        {:ok, work_package} -> [work_package]
+        :error -> []
+      end
+    end)
+    |> sort_finished_work_packages(latest_progress_by_id)
+    |> Enum.take(limit)
+  end
+
+  defp finished_work_package_candidate_limit(limit), do: max(limit * @finished_work_package_candidate_multiplier, @finished_work_package_min_candidate_limit)
+
+  defp recent_finished_progress_by_work_package_id(repo, finished, limit) do
+    finished
+    |> Enum.map(& &1.id)
+    |> Enum.chunk_every(@finished_progress_lookup_chunk_size)
+    |> Enum.flat_map(&recent_finished_progress_rows(repo, &1, limit))
+    |> Enum.sort_by(fn {_work_package_id, created_at} -> timestamp_sort_value(created_at) end, :desc)
+    |> Enum.take(limit)
+    |> Map.new()
+  end
+
+  defp recent_finished_progress_rows(repo, work_package_ids, limit) do
+    from(progress_event in ProgressEvent,
+      where: progress_event.work_package_id in ^work_package_ids,
+      group_by: progress_event.work_package_id,
+      order_by: [desc: max(progress_event.created_at)],
+      limit: ^limit,
+      select: {progress_event.work_package_id, max(progress_event.created_at)}
+    )
+    |> repo.all()
+  end
+
+  defp sort_finished_work_packages(work_packages, latest_progress_by_id) do
+    Enum.sort_by(work_packages, &recent_work_package_sort_key(&1, latest_progress_by_id), :desc)
+  end
+
+  defp recent_work_package_sort_key(%WorkPackage{} = work_package, latest_progress_by_id) do
+    {
+      timestamp_sort_value(recent_work_package_at(work_package, latest_progress_by_id)),
+      timestamp_sort_value(work_package.updated_at),
+      timestamp_sort_value(work_package.inserted_at),
+      work_package.id || ""
+    }
+  end
+
+  defp recent_work_package_at(%WorkPackage{} = work_package, latest_progress_by_id) do
+    [Map.get(latest_progress_by_id, work_package.id), work_package.updated_at, work_package.inserted_at]
+    |> Enum.max_by(&timestamp_sort_value/1, fn -> nil end)
   end
 
   defp maybe_put_active_blocking_edges(repo, board, contexts, opts) do
