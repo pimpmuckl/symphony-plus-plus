@@ -21,7 +21,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
   @adapter_repo_cleanup_poll_ms 10
   @adapter_repo_cleanup_timeout_ms 2_000
   @lock_wait_observer_key :sympp_tracker_adapter_lock_wait_observer
-  @lock_wait_probe_ms 250
+  @lock_wait_probe_ms 50
 
   setup_all do
     database_path = WorkPackageFactory.database_path()
@@ -840,8 +840,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     if Node.alive?() do
       assert true
     else
+      original_owner_timeout = Application.get_env(:symphony_elixir, :sympp_tracker_adapter_local_lock_owner_timeout_ms)
       reset_local_lock_owner()
       parent = self()
+
+      Application.put_env(:symphony_elixir, :sympp_tracker_adapter_local_lock_owner_timeout_ms, @fast_lock_retry_delay_ms)
 
       fake_owner =
         spawn(fn ->
@@ -862,6 +865,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
                  TrackerAdapter.global_transaction_for_test(lock_id, fn -> :unexpected end, 1)
       after
         send(fake_owner, :stop)
+        restore_app_env(:sympp_tracker_adapter_local_lock_owner_timeout_ms, original_owner_timeout)
       end
     end
   end

@@ -25,6 +25,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings, as: OperatorSettings
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
@@ -2940,7 +2941,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp migrate_repo(Repo, pid, database_key) do
     migration_opts = [all: true, dynamic_repo: pid, log: false]
 
-    Ecto.Migrator.run(Repo, WorkPackageRepository.migrations_path(), :up, migration_opts)
+    Ecto.Migrator.run(Repo, Migrations.all(), :up, migration_opts)
 
     mark_database_migrated(database_key)
   rescue
@@ -2949,7 +2950,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp migrate_repo(repo, _pid, database_key) do
-    Ecto.Migrator.run(repo, WorkPackageRepository.migrations_path(), :up, all: true, log: false)
+    Ecto.Migrator.run(repo, Migrations.all(), :up, all: true, log: false)
 
     mark_database_migrated(database_key)
   rescue
@@ -2993,15 +2994,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp migration_versions do
-    WorkPackageRepository.migrations_path()
-    |> Path.join("*.exs")
-    |> Path.wildcard()
-    |> Enum.map(fn path ->
-      path
-      |> Path.basename()
-      |> String.split("_", parts: 2)
-      |> hd()
-    end)
+    Migrations.version_strings()
   end
 
   defp mark_database_migrated(database_key) do

@@ -226,14 +226,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     try do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_timeout_ms: 100,
-        hook_after_create: "sleep 5"
+        hook_timeout_ms: 10,
+        hook_after_create: "sleep 0.05"
       )
 
-      assert {:error, {:workspace_hook_timeout, "after_create", 100}} =
+      assert {:error, {:workspace_hook_timeout, "after_create", 10}} =
                Workspace.create_for_issue("MT-TIMEOUT")
 
-      assert {:error, {:workspace_hook_timeout, "after_create", 100}} =
+      assert {:error, {:workspace_hook_timeout, "after_create", 10}} =
                Workspace.create_for_issue("MT-TIMEOUT")
     after
       File.rm_rf(workspace_root)
@@ -797,7 +797,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_before_remove: "sleep 1"
+        hook_before_remove: "sleep 0.05"
       )
 
       assert {:ok, workspace} = Workspace.create_for_issue("MT-HOOKS-TIMEOUT")
