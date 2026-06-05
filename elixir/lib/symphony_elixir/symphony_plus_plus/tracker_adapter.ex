@@ -17,6 +17,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
   alias SymphonyElixir.SymphonyPlusPlus.TrackerStates
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -576,6 +577,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
     configured_retry_delay_ms(:sympp_tracker_adapter_local_lock_retry_delay_ms, @local_lock_retry_delay_ms)
   end
 
+  defp local_lock_owner_timeout_ms do
+    configured_retry_delay_ms(
+      :sympp_tracker_adapter_local_lock_owner_timeout_ms,
+      @local_lock_owner_timeout_ms
+    )
+  end
+
   defp notify_lock_wait(kind, identifier) do
     case Application.get_env(:symphony_elixir, @lock_wait_observer_key) do
       pid when is_pid(pid) ->
@@ -836,7 +844,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
           {:local_lock_owner_ready, ^pid} -> pid
           {:local_lock_owner_exists, ^pid, owner_pid} -> owner_pid || ensure_local_lock_owner(name)
         after
-          @local_lock_owner_timeout_ms ->
+          local_lock_owner_timeout_ms() ->
             case Process.whereis(name) do
               owner_pid when is_pid(owner_pid) -> owner_pid
               nil -> ensure_local_lock_owner(name)
@@ -874,7 +882,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
     receive do
       {:local_lock_table_ready, ^ref} -> :ok
     after
-      @local_lock_owner_timeout_ms -> :error
+      local_lock_owner_timeout_ms() -> :error
     end
   end
 
@@ -894,7 +902,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
   end
 
   defp migrate_repo do
-    Ecto.Migrator.run(Repo, Repository.migrations_path(), :up,
+    Ecto.Migrator.run(Repo, Migrations.all(), :up,
       all: true,
       dynamic_repo: Repo.get_dynamic_repo(),
       log: false
@@ -923,15 +931,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
   end
 
   defp migration_versions do
-    Repository.migrations_path()
-    |> Path.join("*.exs")
-    |> Path.wildcard()
-    |> Enum.map(fn path ->
-      path
-      |> Path.basename()
-      |> String.split("_", parts: 2)
-      |> hd()
-    end)
+    Migrations.version_strings()
   end
 
   defp description(%WorkPackage{} = work_package) do

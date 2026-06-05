@@ -594,14 +594,14 @@ export type WorkPackageDetailPayload = {
 
 export type DashboardPayload = {
   generated_at?: string;
-  ledger?: {
-    database?: string | null;
-  };
+  ledger?: { database?: string | null };
   settings?: DashboardSettings;
   active_blocking_edges?: ActiveBlockingEdge[];
   board?: {
     groups?: Record<string, WorkPackageCard[]>;
+    package_limits?: { finished_work_packages?: { limit?: number | null; shown_count?: number; total_count?: number; truncated?: boolean } };
     total_count?: number;
+    visible_count?: number;
   };
   linked_work_package_ids?: string[];
   work_requests?: {

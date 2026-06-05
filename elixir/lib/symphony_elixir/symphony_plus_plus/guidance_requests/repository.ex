@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository do
 
   alias Ecto.Changeset
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
+  alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
   @type repo :: module()
@@ -21,7 +22,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository do
 
   @spec migrate(repo()) :: :ok | {:error, error()}
   def migrate(repo) when is_atom(repo) do
-    Ecto.Migrator.run(repo, migrations_path(), :up, all: true, log: false)
+    Ecto.Migrator.run(repo, Migrations.all(), :up, all: true, log: false)
     :ok
   rescue
     error -> {:error, {:migration_failed, error}}
@@ -241,10 +242,4 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository do
 
   defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)
   defp normalize_key(key), do: to_string(key)
-
-  @doc false
-  @spec migrations_path() :: Path.t()
-  def migrations_path do
-    Application.app_dir(:symphony_elixir, "priv/symphony_plus_plus/repo/migrations")
-  end
 end

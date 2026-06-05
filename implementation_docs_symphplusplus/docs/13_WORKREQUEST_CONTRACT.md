@@ -21,11 +21,13 @@ architect MCP planned-slice dispatch tool, and local-operator dashboard
 planned-slice dispatch exist. Package-scoped guidance request persistence and
 MCP worker/architect routing exist for dispatched packages. Local-operator
 dashboard handling for escalated `human_info_needed` package guidance also
-exists. The installable Codex plugin exposes current Symphony++ skills and a
-generic `symphony_plus_plus` MCP wrapper. The MCP `create_work_request` intake
-tool exists for local/operator-safe agent creation. Automatic question
-generation, automatic slicing, Linear state creation, richer planner/intake
-plugin surfaces, and automatic Codex spawning remain future work.
+exists. The default installable Codex plugin exposes MCP-free Symphony++ skills;
+the sibling opt-in `symphony-plus-plus-mcp` plugin owns the full MCP-mode
+Solo, worker, coordinator, architect, and WorkPackage skills plus the generic
+`symphony_plus_plus` MCP wrapper. The MCP
+`create_work_request` intake tool exists for local/operator-safe agent creation.
+Automatic question generation, automatic slicing, Linear state creation, richer
+planner/intake plugin surfaces, and automatic Codex spawning remain future work.
 
 ## Purpose
 

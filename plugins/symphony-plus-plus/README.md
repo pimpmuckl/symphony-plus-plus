@@ -4,8 +4,8 @@ This plugin exposes Symphony++ MCP-free planning skills as a local Codex
 plugin: Solo Session memory, the baseline worker playbook, and the lightweight
 coordinator playbook. The default plugin package is physically MCP-free: it
 must not ship a root `.mcp.json` and its manifest is skill-only. The sibling
-`symphony-plus-plus-mcp` package owns the bundled MCP startup file for
-dedicated S++ workflows. The canonical source for the runtime remains this
+`symphony-plus-plus-mcp` package owns the bundled MCP startup file and the full
+MCP-mode skill set for dedicated S++ workflows. The canonical source for the runtime remains this
 repository; the plugin cache under `~/.codex/plugins/cache/...` is generated
 install state.
 
@@ -66,7 +66,7 @@ metadata.
 
 The refresh script writes the GitHub-marketplace-shaped manifest-version cache
 directory, for example
-`~/.codex/plugins/cache/<marketplace>/symphony-plus-plus/0.1.3`, and prunes the
+`~/.codex/plugins/cache/<marketplace>/symphony-plus-plus/<version>`, and prunes the
 older generated `local` cache root when it carries the script's
 `.sympp-source-root` marker after the versioned cache has been written and, when
 requested, validated. Unmarked `local` directories stop refresh with a manual
@@ -439,12 +439,15 @@ The wrapper resolves relative database overrides against the caller workspace
 and restores the original current directory after invoking Mix.
 
 Solo Session planning is explicitly separate from WorkPackage orchestration.
-Use `symphony-plus-plus-mcp:symphony-work-package` for assigned WorkPackages or
-WorkKeys, and `symphony-plus-plus-mcp:symphony-architect` for WorkRequest-led
-orchestration. Use `symphony-plus-plus:symphony-worker` as the baseline worker
-contract in both ordinary and WorkPackage-backed assignments. Solo Session
-entries must not include raw secrets, tokens, worker handoff payloads, WorkKeys,
-or private grant material.
+Use this default package for non-MCP Solo, worker, and coordinator sessions.
+Use `symphony-plus-plus-mcp:symphony-worker` plus
+`symphony-plus-plus-mcp:symphony-work-package` for the preferred packaged MCP
+WorkPackage path. Downstream repos that copy only the repo-local
+`symphony-work-package` skill should pair it with
+`symphony-plus-plus:symphony-worker` and an explicit S++ MCP session. Use
+`symphony-plus-plus-mcp:symphony-architect` for WorkRequest-led orchestration.
+Solo Session entries must not include raw secrets, tokens, worker handoff
+payloads, WorkKeys, or private grant material.
 Solo entry bodies are human-facing Markdown; titles, statuses, repo names, and
 other compact labels remain plain text.
 
@@ -504,9 +507,10 @@ appropriate for simple missing facts.
 
 Use `symphony-plus-plus-mcp:symphony-architect` when assigned a Symphony++
 WorkRequest, product-tree planning lane, an architect WorkPackage, phase, or
-feature orchestration. Dispatch worker prompts should name
-`symphony-plus-plus:symphony-worker`; WorkPackage-backed workers should also use
-`symphony-plus-plus-mcp:symphony-work-package`.
+feature orchestration. Dispatch worker prompts for MCP WorkPackages should name
+the packaged MCP pair, `symphony-plus-plus-mcp:symphony-worker` and
+`symphony-plus-plus-mcp:symphony-work-package`, or the repo-local fallback pair,
+`symphony-plus-plus:symphony-worker` and copied `symphony-work-package`.
 
 The architect skill expects the same secret hygiene as worker flow. It may
 route workers to private-store handoff metadata, but static plugin docs and

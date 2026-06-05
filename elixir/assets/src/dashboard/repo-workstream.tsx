@@ -143,10 +143,10 @@ export function RepoWorkstream({
   );
 }
 
-function RepoSummaryStrip({ repo, categoryCounts }: { repo: RepoSummary; categoryCounts: WorkstreamCategoryCounts }) {
+export function RepoSummaryStrip({ repo, categoryCounts }: { repo: RepoSummary; categoryCounts: WorkstreamCategoryCounts }) {
   const metrics = repoSummaryMetrics(repo, categoryCounts);
-  const progress = metrics.filter((item) => item.group === "progress");
-  const attention = metrics.filter((item) => item.group === "attention");
+  const progress = metrics.filter((item) => item.group === "progress" && (item.key !== "planNodes" || item.value > 0));
+  const attention = metrics.filter((item) => item.group === "attention" && item.value > 0);
 
   return (
     <div className="v3-repo-summary-strip">
@@ -163,20 +163,22 @@ function RepoSummaryStrip({ repo, categoryCounts }: { repo: RepoSummary; categor
           />
         ))}
       </div>
-      <div className="v3-repo-summary-divider" />
-      <div className="v3-repo-summary-group" data-kind="attention">
-        {attention.map((item) => (
-          <RepoSummaryPlate
-            key={item.key}
-            className="v3-repo-summary-plate"
-            icon={repoSummaryIcon(item.key)}
-            label={item.label}
-            summaryKey={item.key}
-            value={item.value}
-            tone={item.tone}
-          />
-        ))}
-      </div>
+      {attention.length > 0 ? <div className="v3-repo-summary-divider" /> : null}
+      {attention.length > 0 ? (
+        <div className="v3-repo-summary-group" data-kind="attention">
+          {attention.map((item) => (
+            <RepoSummaryPlate
+              key={item.key}
+              className="v3-repo-summary-plate"
+              icon={repoSummaryIcon(item.key)}
+              label={item.label}
+              summaryKey={item.key}
+              value={item.value}
+              tone={item.tone}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

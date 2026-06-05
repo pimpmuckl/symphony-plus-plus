@@ -2,8 +2,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Repository do
   @moduledoc false
 
   alias Ecto.Adapters.SQL
+  alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
   alias SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
-  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
 
   @cache_table __MODULE__
 
@@ -84,7 +84,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Repository do
   end
 
   defp migrate(repo) do
-    Ecto.Migrator.run(repo, WorkPackageRepository.migrations_path(), :up, migration_opts(repo))
+    Ecto.Migrator.run(repo, Migrations.all(), :up, migration_opts(repo))
     :ok
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
@@ -123,12 +123,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Repository do
   defp database_identity(repo, _path), do: {:dynamic_repo, dynamic_repo(repo) || repo}
 
   defp migration_signature do
-    path = WorkPackageRepository.migrations_path()
-
-    case File.ls(path) do
-      {:ok, filenames} -> {path, Enum.sort(filenames)}
-      {:error, reason} -> {path, {:error, reason}}
-    end
+    Migrations.signature()
   end
 
   defp query_target(repo) do

@@ -11,6 +11,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
+  alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion, as: WorkRequestCompletion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
@@ -39,7 +40,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
 
   @spec migrate(repo()) :: :ok | {:error, error()}
   def migrate(repo) when is_atom(repo) do
-    Ecto.Migrator.run(repo, migrations_path(), :up, all: true, log: false)
+    Ecto.Migrator.run(repo, Migrations.all(), :up, all: true, log: false)
     :ok
   rescue
     error -> {:error, {:migration_failed, error}}
@@ -956,10 +957,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
     else
       {:error, {:storage_failed, message}}
     end
-  end
-
-  defp migrations_path do
-    Application.app_dir(:symphony_elixir, "priv/symphony_plus_plus/repo/migrations")
   end
 
   defp normalize_keys(attrs) when is_map(attrs) do

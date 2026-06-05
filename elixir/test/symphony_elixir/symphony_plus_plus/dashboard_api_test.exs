@@ -32,6 +32,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service, as: SoloSessionsService
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
@@ -7292,7 +7293,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       pre_phase_migration = 20_260_503_192_500
 
       migrated_versions =
-        Ecto.Migrator.run(Repo, WorkPackageRepository.migrations_path(), :up,
+        Ecto.Migrator.run(Repo, Migrations.all(), :up,
           to: pre_phase_migration,
           log: false
         )
@@ -7372,7 +7373,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     try do
       migrated_versions =
-        Ecto.Migrator.run(Repo, WorkPackageRepository.migrations_path(), :up,
+        Ecto.Migrator.run(Repo, Migrations.all(), :up,
           to: migration_version,
           log: false
         )

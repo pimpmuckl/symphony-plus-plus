@@ -149,7 +149,7 @@ export const REPO_SUMMARY_PLATE_TONES: Record<RepoSummaryPlateTone, string> = {
   implementing: "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-700/70 dark:bg-sky-950/50 dark:text-sky-200",
   finished: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/70 dark:bg-emerald-950/50 dark:text-emerald-200",
   guidance: "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-700/70 dark:bg-violet-950/50 dark:text-violet-200",
-  blocker: "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/50 dark:text-amber-200",
+  blocker: "border-red-200 bg-red-50 text-red-700 dark:border-red-700/70 dark:bg-red-950/50 dark:text-red-200",
 };
 
 export type CardDetailSelection =

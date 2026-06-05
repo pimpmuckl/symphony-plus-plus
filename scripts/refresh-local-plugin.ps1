@@ -341,10 +341,10 @@ function Assert-CachePluginConfig([string]$TargetRoot, [string]$ExpectedVersion)
     return
   }
 
-  foreach ($mcpFreeSkill in @("symphony-solo-session", "symphony-worker", "symphony-coordinator")) {
-    $mcpFreeSkillPath = Join-Path $TargetRoot "skills/$mcpFreeSkill"
-    if (Test-Path -LiteralPath $mcpFreeSkillPath) {
-      throw "Opt-in MCP plugin cache must not contain MCP-free base skill '$mcpFreeSkill'; keep it in the default symphony-plus-plus package: $mcpFreeSkillPath"
+  foreach ($mcpRequiredSkill in @("symphony-solo-session", "symphony-worker", "symphony-coordinator", "symphony-work-package", "symphony-architect")) {
+    $mcpRequiredSkillPath = Join-Path $TargetRoot "skills/$mcpRequiredSkill/SKILL.md"
+    if (-not (Test-Path -LiteralPath $mcpRequiredSkillPath)) {
+      throw "Opt-in MCP plugin cache is missing full MCP-mode skill '$mcpRequiredSkill': $mcpRequiredSkillPath"
     }
   }
 

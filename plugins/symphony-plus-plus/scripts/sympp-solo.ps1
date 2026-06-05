@@ -263,8 +263,8 @@ if ($Help) {
 }
 
 $repoRoot = Resolve-RepoRoot
-$callerWorkspace = Resolve-CallerWorkspace
-$resolvedSoloArgs = Resolve-DatabaseArgs -InputArgs $SoloArgs -CallerWorkspace $callerWorkspace
+$callerWorkspace = if ($ValidateOnly) { $null } else { Resolve-CallerWorkspace }
+$resolvedSoloArgs = if ($ValidateOnly) { @() } else { Resolve-DatabaseArgs -InputArgs $SoloArgs -CallerWorkspace $callerWorkspace }
 $elixirDir = Join-Path $repoRoot "elixir"
 $soloTaskPath = Join-Path $elixirDir "lib/mix/tasks/sympp.solo.ex"
 $launcher = if ([string]::IsNullOrWhiteSpace($env:SYMPP_LAUNCHER)) { "direct" } else { $env:SYMPP_LAUNCHER.Trim().ToLowerInvariant() }

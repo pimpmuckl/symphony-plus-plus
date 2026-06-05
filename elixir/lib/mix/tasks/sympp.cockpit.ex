@@ -405,17 +405,27 @@ defmodule Mix.Tasks.Sympp.Cockpit do
   defp start_retention_repo do
     database = Repo.database_path()
 
-    case Repo.start_link(database: database, name: Repo.process_name(database), pool_size: 1, log: false) do
-      {:ok, pid} ->
-        Repo.put_dynamic_repo(pid)
-        {:ok, pid}
+    with :ok <- validate_retention_database_path(database) do
+      case Repo.start_link(database: database, name: Repo.process_name(database), pool_size: 1, log: false) do
+        {:ok, pid} ->
+          Repo.put_dynamic_repo(pid)
+          {:ok, pid}
 
-      {:error, {:already_started, pid}} ->
-        Repo.put_dynamic_repo(pid)
-        {:ok, nil}
+        {:error, {:already_started, pid}} ->
+          Repo.put_dynamic_repo(pid)
+          {:ok, nil}
 
-      {:error, reason} ->
-        {:error, {:repo_start_failed, reason}}
+        {:error, reason} ->
+          {:error, {:repo_start_failed, reason}}
+      end
+    end
+  end
+
+  defp validate_retention_database_path(database) when is_binary(database) do
+    if Repo.filesystem_database_path?(database) and File.dir?(database) do
+      {:error, {:database_path_is_directory, database}}
+    else
+      :ok
     end
   end
 
