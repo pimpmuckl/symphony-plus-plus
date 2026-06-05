@@ -81,8 +81,10 @@ Dispatch workers into worktrees; MCP has `prepare_work_package_worktree` to help
 
 Worker prompts must include:
 
-- `symphony-plus-plus:symphony-worker`.
-- For assigned WorkPackages, `symphony-plus-plus-mcp:symphony-work-package`.
+- Preferred packaged setup: `symphony-plus-plus-mcp:symphony-worker` plus
+  `symphony-plus-plus-mcp:symphony-work-package`.
+- Repo-local fallback: `symphony-plus-plus:symphony-worker` plus copied
+  `symphony-work-package`.
 - WorkPackage id, branch/base, scope, acceptance, validation, review profile,
   line/PR-size budget, and stop conditions.
 - The ledger claim payload or clear recovery/legacy bootstrap label; never raw

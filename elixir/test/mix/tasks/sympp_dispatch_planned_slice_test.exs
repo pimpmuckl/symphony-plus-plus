@@ -73,13 +73,15 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
       refute Map.has_key?(bootstrap["claim"]["arguments"], "branch")
       assert bootstrap["claim"]["required_runtime_arguments"] == ["branch", "worktree_path", "caller_id"]
 
-      assert bootstrap["required_skills"] == [
-               "symphony-plus-plus:symphony-worker",
+      assert bootstrap["preferred_skill_set"] == [
+               "symphony-plus-plus-mcp:symphony-worker",
                "symphony-plus-plus-mcp:symphony-work-package"
              ]
 
+      assert bootstrap["required_skills"] == bootstrap["preferred_skill_set"]
+
       assert [
-               ["symphony-plus-plus:symphony-worker", "symphony-plus-plus-mcp:symphony-work-package"],
+               ["symphony-plus-plus-mcp:symphony-worker", "symphony-plus-plus-mcp:symphony-work-package"],
                ["symphony-plus-plus:symphony-worker", "symphony-work-package"]
              ] = bootstrap["supported_skill_sets"]
 

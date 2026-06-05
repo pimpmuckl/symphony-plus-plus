@@ -8,7 +8,7 @@ description: Use when assigned a Symphony++ WorkPackage or an explicitly labeled
 Use this skill for an assigned Symphony++ WorkPackage, including explicitly
 labeled legacy/recovery WorkKey/private-handoff bootstrap. It is the MCP-backed
 WorkPackage state adapter, not the generic worker contract. Pair it with
-`symphony-plus-plus:symphony-worker`.
+`symphony-plus-plus-mcp:symphony-worker`.
 
 The MCP server is the permission boundary and the WorkPackage is the worker
 scope boundary. V3 product progress lives on the WorkRequest/product tree;

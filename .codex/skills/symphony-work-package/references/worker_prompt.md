@@ -1,8 +1,7 @@
 You are assigned Symphony++ work package <WORK_PACKAGE_ID>: <TITLE>.
 
-Use `symphony-plus-plus:symphony-worker` plus
-`symphony-plus-plus-mcp:symphony-work-package` and the configured Symphony++
-MCP server.
+Use `symphony-plus-plus:symphony-worker` plus this repo-local
+`symphony-work-package` skill and the configured Symphony++ MCP server.
 Implement only this WorkPackage. Do not implement dependent packages, hooks,
 runtime wiring, dashboard/API, broader GitHub sync, architect delegation, live
 Linear state, or sibling package work unless the architecture agent explicitly
