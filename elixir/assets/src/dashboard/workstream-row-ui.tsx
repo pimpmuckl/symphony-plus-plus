@@ -1,6 +1,6 @@
 import type { CopyArchitectHandoff, PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
 import type { ProductTreeCompletionMark, ProductTreeNode } from "@/types/product-tree";
-import { AlertTriangle, CheckCircle2, CircleAlert, CircleDashed, CircleHelp, ClipboardCopy, Info, Layers3, MessageSquareText, Package, Split } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronRight, CircleAlert, CircleDashed, CircleHelp, ClipboardCopy, Info, Layers3, MessageSquareText, Package, Split } from "lucide-react";
 import type { ComponentProps, CSSProperties, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -259,6 +259,10 @@ export function ProductNodeHeader({
   statusLabel,
   guidanceCount,
   blockerCount,
+  collapsible,
+  expanded,
+  contentId,
+  onToggle,
 }: {
   node: ProductTreeNode;
   nodeSliceCount: number;
@@ -268,6 +272,10 @@ export function ProductNodeHeader({
   statusLabel: string;
   guidanceCount: number;
   blockerCount: number;
+  collapsible: boolean;
+  expanded: boolean;
+  contentId?: string;
+  onToggle: () => void;
 }) {
   const progress = completionMarkProgress(mark);
   const progressIconState = rowProgressIconState({ blockerCount, guidanceCount, progress, tone });
@@ -276,6 +284,21 @@ export function ProductNodeHeader({
 
   return (
     <div className="v3-product-node-header v3-entity-row" data-tone={tone}>
+      {collapsible ? (
+        <button
+          type="button"
+          className="v3-product-node-chevron-button"
+          aria-controls={contentId}
+          aria-expanded={expanded}
+          aria-label={`${expanded ? "Collapse" : "Expand"} ${nodeTitle}`}
+          data-expanded={expanded ? "true" : "false"}
+          onClick={onToggle}
+        >
+          <ChevronRight className="size-4" />
+        </button>
+      ) : (
+        <span className="v3-product-node-chevron-placeholder" aria-hidden="true" />
+      )}
       <ProgressStateIcon state={progressIconState} attentionState={progressAttentionState} progress={progress} label={statusLabel} />
       <span className="v3-product-node-title-group">
         <span className="v3-product-node-title" title={nodeTitle}>

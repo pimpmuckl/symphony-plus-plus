@@ -6,7 +6,7 @@ import { AnimatedBadge } from "@/components/dashboard/motion";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { operationalBadgeVariant, operationalLabel, requestStateCardTone, sliceCardTone, sliceLane, sliceOperationalState } from "@/lib/operational-state";
-import { useMemo } from "react";
+import { useId, useMemo, useState } from "react";
 import { CardDetailSelect, DashboardUpdateAnimations } from "./runtime";
 import { clarificationGuidanceItem } from "./dashboard-data";
 import { firstParagraph, stripMarkdown } from "./dashboard-text";
@@ -20,6 +20,17 @@ import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
 type TreeIndex = {
   childrenByParent: Map<string, ProductTreeNode[]>;
   rootNodes: ProductTreeNode[];
+};
+
+type ProductTreeRenderContext = {
+  detail: WorkRequestDetail;
+  treeIndex: TreeIndex;
+  slicesById: Map<string, PlannedSlice>;
+  packageById: Map<string, WorkPackageCard>;
+  activeBlockerCountBySliceId: Map<string, number>;
+  activeBlockerKeysBySliceId: Map<string, Set<string>>;
+  onSelectCard: CardDetailSelect;
+  updateAnimations: DashboardUpdateAnimations;
 };
 
 export function WorkstreamBoard({
@@ -251,6 +262,16 @@ function ProductPlanBody({
   const slicesById = useMemo(() => new Map(slices.map((slice) => [slice.id, slice])), [slices]);
   const rootSliceIds = useMemo(() => rootProductSliceIds(detail, slices), [detail, slices]);
   const hasVisiblePlan = treeIndex.rootNodes.length > 0 || rootSliceIds.some((sliceId) => slicesById.has(sliceId));
+  const treeContext: ProductTreeRenderContext = {
+    detail,
+    treeIndex,
+    slicesById,
+    packageById,
+    activeBlockerCountBySliceId,
+    activeBlockerKeysBySliceId,
+    onSelectCard,
+    updateAnimations,
+  };
 
   return (
     <div className="v3-product-plan">
@@ -261,14 +282,7 @@ function ProductPlanBody({
               key={node.id}
               node={node}
               depth={0}
-              detail={detail}
-              treeIndex={treeIndex}
-              slicesById={slicesById}
-              packageById={packageById}
-              activeBlockerCountBySliceId={activeBlockerCountBySliceId}
-              activeBlockerKeysBySliceId={activeBlockerKeysBySliceId}
-              onSelectCard={onSelectCard}
-              updateAnimations={updateAnimations}
+              context={treeContext}
             />
           ))}
         </div>
@@ -299,29 +313,19 @@ function UnplannedRequestNote() {
 function ProductTreeNodeRow({
   node,
   depth,
-  detail,
-  treeIndex,
-  slicesById,
-  packageById,
-  activeBlockerCountBySliceId,
-  activeBlockerKeysBySliceId,
-  onSelectCard,
-  updateAnimations,
+  context,
 }: {
   node: ProductTreeNode;
   depth: number;
-  detail: WorkRequestDetail;
-  treeIndex: TreeIndex;
-  slicesById: Map<string, PlannedSlice>;
-  packageById: Map<string, WorkPackageCard>;
-  activeBlockerCountBySliceId: Map<string, number>;
-  activeBlockerKeysBySliceId: Map<string, Set<string>>;
-  onSelectCard: CardDetailSelect;
-  updateAnimations: DashboardUpdateAnimations;
+  context: ProductTreeRenderContext;
 }) {
+  const { activeBlockerCountBySliceId, activeBlockerKeysBySliceId, treeIndex, slicesById } = context;
   const childNodes = treeIndex.childrenByParent.get(node.id) ?? [];
   const nodeSlices = (node.slice_ids ?? []).map((sliceId) => slicesById.get(sliceId)).filter((slice): slice is PlannedSlice => Boolean(slice));
   const nodeState = productNodeState(node, nodeSlices.length, treeIndex, activeBlockerCountBySliceId, activeBlockerKeysBySliceId);
+  const contentId = useId();
+  const hasDisclosureContent = productNodeHasDisclosureContent(node, nodeSlices, childNodes);
+  const [expanded, setExpanded] = useState(true);
 
   return (
     <div className="v3-product-node" style={{ "--tree-depth": depth } as CSSProperties} data-mark={nodeState.mark} data-tone={nodeState.tone}>
@@ -334,7 +338,51 @@ function ProductTreeNodeRow({
         statusLabel={nodeState.statusLabel}
         guidanceCount={nodeState.guidanceCount}
         blockerCount={nodeState.blockerCount}
+        collapsible={hasDisclosureContent}
+        expanded={expanded}
+        contentId={hasDisclosureContent ? contentId : undefined}
+        onToggle={() => setExpanded((open) => !open)}
       />
+      {hasDisclosureContent ? (
+        <ProductTreeNodeContent
+          contentId={contentId}
+          hidden={!expanded}
+          node={node}
+          nodeSlices={nodeSlices}
+          childNodes={childNodes}
+          depth={depth}
+          context={context}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function productNodeHasDisclosureContent(node: ProductTreeNode, nodeSlices: PlannedSlice[], childNodes: ProductTreeNode[]) {
+  return Boolean(node.description) || nodeSlices.length > 0 || childNodes.length > 0;
+}
+
+function ProductTreeNodeContent({
+  contentId,
+  hidden,
+  node,
+  nodeSlices,
+  childNodes,
+  depth,
+  context,
+}: {
+  contentId: string;
+  hidden: boolean;
+  node: ProductTreeNode;
+  nodeSlices: PlannedSlice[];
+  childNodes: ProductTreeNode[];
+  depth: number;
+  context: ProductTreeRenderContext;
+}) {
+  const { activeBlockerCountBySliceId, detail, packageById, onSelectCard, updateAnimations } = context;
+
+  return (
+    <div id={contentId} className="v3-product-node-content" hidden={hidden}>
       {node.description ? <p className="v3-product-node-description">{stripMarkdown(firstParagraph(node.description) || node.description)}</p> : null}
       {nodeSlices.length > 0 ? (
         <div className="v3-slice-list">
@@ -358,14 +406,7 @@ function ProductTreeNodeRow({
               key={child.id}
               node={child}
               depth={depth + 1}
-              detail={detail}
-              treeIndex={treeIndex}
-              slicesById={slicesById}
-              packageById={packageById}
-              activeBlockerCountBySliceId={activeBlockerCountBySliceId}
-              activeBlockerKeysBySliceId={activeBlockerKeysBySliceId}
-              onSelectCard={onSelectCard}
-              updateAnimations={updateAnimations}
+              context={context}
             />
           ))}
         </div>
