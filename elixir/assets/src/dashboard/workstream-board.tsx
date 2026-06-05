@@ -67,7 +67,6 @@ export function WorkstreamBoard({
               activeBlockerCount={blockerCounts.requests.get(detail.work_request.id) ?? 0}
               activeBlockerCountBySliceId={blockerCounts.slices}
               activeBlockerKeysBySliceId={blockerCounts.sliceBlockerKeys}
-              activeBlockerCountByPackageId={blockerCounts.packages}
               expanded={expanded}
               index={index}
               onToggle={() => onSetFinishedRequestChildrenOpen(detail.work_request.id, !expanded)}
@@ -92,7 +91,6 @@ function ProductRequestRow({
   activeBlockerCount,
   activeBlockerCountBySliceId,
   activeBlockerKeysBySliceId,
-  activeBlockerCountByPackageId,
   expanded,
   index,
   onToggle,
@@ -106,7 +104,6 @@ function ProductRequestRow({
   activeBlockerCount: number;
   activeBlockerCountBySliceId: Map<string, number>;
   activeBlockerKeysBySliceId: Map<string, Set<string>>;
-  activeBlockerCountByPackageId: Map<string, number>;
   expanded: boolean;
   index: number;
   onToggle: () => void;
@@ -177,7 +174,6 @@ function ProductRequestRow({
             slices={slices}
             activeBlockerCountBySliceId={activeBlockerCountBySliceId}
             activeBlockerKeysBySliceId={activeBlockerKeysBySliceId}
-            activeBlockerCountByPackageId={activeBlockerCountByPackageId}
             onSelectCard={onSelectCard}
             updateAnimations={updateAnimations}
           />
@@ -242,7 +238,6 @@ function ProductPlanBody({
   updateAnimations,
   activeBlockerCountBySliceId,
   activeBlockerKeysBySliceId,
-  activeBlockerCountByPackageId,
 }: {
   detail: WorkRequestDetail;
   packageById: Map<string, WorkPackageCard>;
@@ -251,7 +246,6 @@ function ProductPlanBody({
   updateAnimations: DashboardUpdateAnimations;
   activeBlockerCountBySliceId: Map<string, number>;
   activeBlockerKeysBySliceId: Map<string, Set<string>>;
-  activeBlockerCountByPackageId: Map<string, number>;
 }) {
   const treeIndex = useMemo(() => buildTreeIndex(detail.product_tree?.nodes ?? [], detail.product_tree?.root_node_ids ?? []), [detail.product_tree]);
   const slicesById = useMemo(() => new Map(slices.map((slice) => [slice.id, slice])), [slices]);
@@ -273,7 +267,6 @@ function ProductPlanBody({
               packageById={packageById}
               activeBlockerCountBySliceId={activeBlockerCountBySliceId}
               activeBlockerKeysBySliceId={activeBlockerKeysBySliceId}
-              activeBlockerCountByPackageId={activeBlockerCountByPackageId}
               onSelectCard={onSelectCard}
               updateAnimations={updateAnimations}
             />
@@ -286,7 +279,6 @@ function ProductPlanBody({
         slicesById={slicesById}
         packageById={packageById}
         activeBlockerCountBySliceId={activeBlockerCountBySliceId}
-        activeBlockerCountByPackageId={activeBlockerCountByPackageId}
         onSelectCard={onSelectCard}
         updateAnimations={updateAnimations}
       />
@@ -313,7 +305,6 @@ function ProductTreeNodeRow({
   packageById,
   activeBlockerCountBySliceId,
   activeBlockerKeysBySliceId,
-  activeBlockerCountByPackageId,
   onSelectCard,
   updateAnimations,
 }: {
@@ -325,7 +316,6 @@ function ProductTreeNodeRow({
   packageById: Map<string, WorkPackageCard>;
   activeBlockerCountBySliceId: Map<string, number>;
   activeBlockerKeysBySliceId: Map<string, Set<string>>;
-  activeBlockerCountByPackageId: Map<string, number>;
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
 }) {
@@ -355,7 +345,6 @@ function ProductTreeNodeRow({
               slice={slice}
               pkg={packageById.get(slice.work_package_id || "")}
               activeBlockerCountBySliceId={activeBlockerCountBySliceId}
-              activeBlockerCountByPackageId={activeBlockerCountByPackageId}
               onSelectCard={onSelectCard}
               updateAnimations={updateAnimations}
             />
@@ -375,7 +364,6 @@ function ProductTreeNodeRow({
               packageById={packageById}
               activeBlockerCountBySliceId={activeBlockerCountBySliceId}
               activeBlockerKeysBySliceId={activeBlockerKeysBySliceId}
-              activeBlockerCountByPackageId={activeBlockerCountByPackageId}
               onSelectCard={onSelectCard}
               updateAnimations={updateAnimations}
             />
@@ -392,7 +380,6 @@ function DirectSliceGroup({
   slicesById,
   packageById,
   activeBlockerCountBySliceId,
-  activeBlockerCountByPackageId,
   onSelectCard,
   updateAnimations,
 }: {
@@ -401,7 +388,6 @@ function DirectSliceGroup({
   slicesById: Map<string, PlannedSlice>;
   packageById: Map<string, WorkPackageCard>;
   activeBlockerCountBySliceId: Map<string, number>;
-  activeBlockerCountByPackageId: Map<string, number>;
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
 }) {
@@ -417,7 +403,6 @@ function DirectSliceGroup({
           slice={slice}
           pkg={packageById.get(slice.work_package_id || "")}
           activeBlockerCountBySliceId={activeBlockerCountBySliceId}
-          activeBlockerCountByPackageId={activeBlockerCountByPackageId}
           onSelectCard={onSelectCard}
           updateAnimations={updateAnimations}
         />
@@ -431,7 +416,6 @@ function ProductSliceRow({
   slice,
   pkg,
   activeBlockerCountBySliceId,
-  activeBlockerCountByPackageId,
   onSelectCard,
   updateAnimations,
 }: {
@@ -439,7 +423,6 @@ function ProductSliceRow({
   slice: PlannedSlice;
   pkg?: WorkPackageCard;
   activeBlockerCountBySliceId: Map<string, number>;
-  activeBlockerCountByPackageId: Map<string, number>;
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
 }) {
@@ -447,7 +430,7 @@ function ProductSliceRow({
   const rawStatus = slice.work_package_status || slice.status;
   const lane = sliceLane(slice, pkg);
   const tone = sliceCardTone(slice, pkg, lane);
-  const blockerCount = sliceBlockerCount(slice, pkg, activeBlockerCountBySliceId, activeBlockerCountByPackageId);
+  const blockerCount = sliceBlockerCount(slice, pkg, activeBlockerCountBySliceId);
   const guidanceCount = sliceGuidanceCount(slice, pkg, blockerCount);
   const sliceLabel = operationalLabel(operational, rawStatus);
   const progress = sliceProgressPercent(pkg, lane, tone);

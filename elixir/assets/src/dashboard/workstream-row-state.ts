@@ -182,11 +182,9 @@ export function sliceBlockerCount(
   slice: PlannedSlice,
   pkg: WorkPackageCard | undefined,
   activeBlockerCountBySliceId: Map<string, number>,
-  activeBlockerCountByPackageId: Map<string, number>,
 ) {
   const operational = sliceOperationalState(slice, pkg);
-  const linkedPackageBlockers = slice.work_package_id ? activeBlockerCountByPackageId.get(slice.work_package_id) ?? 0 : 0;
-  const activeCount = Math.max(activeBlockerCountBySliceId.get(slice.id) ?? 0, linkedPackageBlockers, pkg?.active_blocker_count ?? 0);
+  const activeCount = Math.max(activeBlockerCountBySliceId.get(slice.id) ?? 0, pkg?.active_blocker_count ?? 0);
 
   if (activeCount > 0) return activeCount;
 

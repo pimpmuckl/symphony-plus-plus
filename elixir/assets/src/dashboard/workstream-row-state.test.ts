@@ -7,6 +7,7 @@ import {
   rowProgressAttentionState,
   rowProgressIconState,
   requestStatusLabels,
+  sliceBlockerCount,
   statusBadgeWidthForLabels,
   statusBadgeWidthForRequestDetails,
 } from "./workstream-row-state";
@@ -88,6 +89,21 @@ describe("workstream row state", () => {
     expect(state.blockerCount).toBe(1);
     expect(state.guidanceCount).toBe(1);
     expect(state.tone).toBe("blocked");
+  });
+
+  it("does not attribute package-level blocker edges to sibling slice rows", () => {
+    const siblingSlice = plannedSlice("slice-sibling", "pkg-shared", "ready_for_worker", "Ready For Worker");
+    const packageOnlyBlockerCounts = new Map([["pkg-shared", 1]]);
+
+    expect(sliceBlockerCount(siblingSlice, { id: "pkg-shared", status: "active" }, new Map())).toBe(0);
+    expect(sliceBlockerCount(siblingSlice, { id: "pkg-shared", status: "active" }, packageOnlyBlockerCounts)).toBe(0);
+    expect(
+      sliceBlockerCount(
+        siblingSlice,
+        { id: "pkg-shared", status: "active", active_blocker_count: 1 },
+        new Map(),
+      ),
+    ).toBe(1);
   });
 });
 
