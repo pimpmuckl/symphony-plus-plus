@@ -35,9 +35,9 @@ export const LOCAL_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { month: 
 
 export const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
 
-export const DEFAULT_DASHBOARD_API_BASE = "/api/v1/sympp/operator";
+const DEFAULT_DASHBOARD_API_BASE = "/api/v1/sympp/operator";
 
-export const OPERATOR_BOOTSTRAP_PARAM = "operator_bootstrap";
+const OPERATOR_BOOTSTRAP_PARAM = "operator_bootstrap";
 
 export const LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE = "Local operator session needs reconnect. Use Reconnect after Symphony++ is reachable.";
 
@@ -59,7 +59,7 @@ export type DashboardApiResponse = unknown;
 
 export type DashboardResponseSelector = (payload: DashboardApiResponse) => DashboardPayload | null | undefined;
 
-export class DashboardApiError extends Error {
+class DashboardApiError extends Error {
   readonly reconnectableLocalSession: boolean;
 
   constructor(message: string, reconnectableLocalSession = false) {
@@ -71,9 +71,9 @@ export class DashboardApiError extends Error {
 
 export let dashboardRuntimeConfig: DashboardRuntimeConfig | undefined = typeof window === "undefined" ? undefined : window.SYMPP_DASHBOARD_CONFIG;
 
-export let dashboardRuntimeConfigPromise: Promise<DashboardRuntimeConfig | undefined> | null = null;
+let dashboardRuntimeConfigPromise: Promise<DashboardRuntimeConfig | undefined> | null = null;
 
-export let dashboardRuntimeConfigGeneration = 0;
+let dashboardRuntimeConfigGeneration = 0;
 
 export const DASHBOARD_LOGO_URL = dashboardRuntimeConfig?.logoUrl || "/splusplus-logo.png";
 
@@ -240,7 +240,7 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-export function normalizeRuntimeBase(value: string | undefined, fallback: string) {
+function normalizeRuntimeBase(value: string | undefined, fallback: string) {
   const base = value?.trim() || fallback;
   return base.replace(/\/+$/, "");
 }
@@ -251,7 +251,7 @@ export function operatorApiUrl(path: string) {
   return `${base}${suffix}`;
 }
 
-export function operatorConfigUrl() {
+function operatorConfigUrl() {
   const url = operatorApiUrl("/config");
   const token = currentOperatorBootstrapToken();
 
@@ -261,7 +261,7 @@ export function operatorConfigUrl() {
   return `${url}${separator}${encodeURIComponent(OPERATOR_BOOTSTRAP_PARAM)}=${encodeURIComponent(token)}`;
 }
 
-export function currentOperatorBootstrapToken() {
+function currentOperatorBootstrapToken() {
   if (typeof window === "undefined") return null;
 
   try {
@@ -272,7 +272,7 @@ export function currentOperatorBootstrapToken() {
   }
 }
 
-export function scrubOperatorBootstrapFromUrl() {
+function scrubOperatorBootstrapFromUrl() {
   if (typeof window === "undefined") return;
 
   try {
@@ -315,7 +315,7 @@ export async function readDashboardApiResponse(response: Response, fallbackMessa
   return payload;
 }
 
-export async function readDashboardJson(response: Response): Promise<DashboardApiResponse> {
+async function readDashboardJson(response: Response): Promise<DashboardApiResponse> {
   try {
     return await response.json();
   } catch {
@@ -323,24 +323,24 @@ export async function readDashboardJson(response: Response): Promise<DashboardAp
   }
 }
 
-export function dashboardErrorMessage(payload: DashboardApiResponse) {
+function dashboardErrorMessage(payload: DashboardApiResponse) {
   if (!isRecord(payload) || !isRecord(payload.error)) return null;
   return typeof payload.error.message === "string" ? payload.error.message : null;
 }
 
-export function dashboardResponseError(response: Response, payload: DashboardApiResponse, fallbackMessage: string) {
+function dashboardResponseError(response: Response, payload: DashboardApiResponse, fallbackMessage: string) {
   return new DashboardApiError(
     dashboardResponseErrorMessage(response, payload, fallbackMessage),
     isLocalOperatorAuthResponse(response, payload),
   );
 }
 
-export function dashboardResponseErrorMessage(response: Response, payload: DashboardApiResponse, fallbackMessage: string) {
+function dashboardResponseErrorMessage(response: Response, payload: DashboardApiResponse, fallbackMessage: string) {
   if (isLocalOperatorAuthResponse(response, payload)) return LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE;
   return dashboardErrorMessage(payload) || fallbackMessage;
 }
 
-export function isLocalOperatorAuthResponse(response: Response, payload: DashboardApiResponse) {
+function isLocalOperatorAuthResponse(response: Response, payload: DashboardApiResponse) {
   if (response.status === 401) return true;
   if (response.status === 403 && !isRecord(payload)) return true;
 
@@ -369,7 +369,7 @@ export function dashboardFromEnvelope(payload: DashboardApiResponse) {
   return payload.dashboard as DashboardPayload;
 }
 
-export function invalidateDashboardRuntimeAuth() {
+function invalidateDashboardRuntimeAuth() {
   dashboardRuntimeConfigGeneration += 1;
   dashboardRuntimeConfigPromise = null;
   const currentConfig = dashboardRuntimeConfig ?? (typeof window === "undefined" ? undefined : window.SYMPP_DASHBOARD_CONFIG);

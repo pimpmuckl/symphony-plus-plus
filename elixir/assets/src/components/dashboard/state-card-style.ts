@@ -1,5 +1,3 @@
-import type { CSSProperties } from "react";
-
 export type SignalTone = "muted" | "info" | "warning" | "danger" | "success";
 export type StateCardTone = "request" | "queued" | "slice" | "implementing" | "review" | "merge" | "guidance" | "blocked" | "finished" | "muted";
 
@@ -28,7 +26,3 @@ export const CARD_SIGNAL_TONE_CLASSES: Record<SignalTone, string> = {
   danger: "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-700/70 dark:bg-rose-950/50 dark:text-rose-200",
   success: "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-700/70 dark:bg-emerald-950/50 dark:text-emerald-200",
 };
-
-export function wireToneStyle(tone: StateCardTone) {
-  return { "--wire-color": STATE_CARD_TONES[tone].accent } as CSSProperties;
-}

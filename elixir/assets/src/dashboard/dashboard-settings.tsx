@@ -301,23 +301,30 @@ export function ArchivedRequestsDialog({ requests, onRestoreWorkRequest }: { req
 export function RepoSummaryPlate({
   icon,
   label,
+  summaryKey,
   value,
   tone,
+  className,
 }: {
   icon?: React.ReactNode;
   label: string;
+  summaryKey?: string;
   value: number;
   tone: RepoSummaryPlateTone;
+  className?: string;
 }) {
   const countMotion = useCountMotion(value);
 
   return (
-    <div className={cn("inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium", REPO_SUMMARY_PLATE_TONES[tone])}>
+    <div
+      className={cn("inline-flex items-center gap-0.5 rounded-md border px-1 py-1 text-xs font-medium", REPO_SUMMARY_PLATE_TONES[tone], className)}
+      data-summary-key={summaryKey}
+    >
       {icon ? <span className="repo-summary-plate-icon">{icon}</span> : null}
-      <span className="font-semibold tabular-nums">
+      <span className="repo-summary-plate-value font-semibold tabular-nums">
         <NumberWheel value={value} motion={countMotion} compact />
       </span>
-      <span className="whitespace-nowrap">{label}</span>
+      <span className="repo-summary-plate-label">{label}</span>
     </div>
   );
 }

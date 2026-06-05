@@ -287,7 +287,7 @@ export function CardDetailDialog({
   );
 }
 
-export function useDashboardReducedMotionPreference() {
+function useDashboardReducedMotionPreference() {
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(() => dashboardPrefersReducedMotion());
 
   useEffect(() => {
@@ -342,7 +342,7 @@ function cardDetailContentReady(selection: CardDetailSelection | null, state: Ca
   }
 }
 
-export function NaturalDetailBody({ motionKey, children }: { motionKey: string; children: React.ReactNode }) {
+function NaturalDetailBody({ motionKey, children }: { motionKey: string; children: React.ReactNode }) {
   return (
     <div className="detail-modal-natural-frame" data-detail-motion-key={motionKey}>
       <div className="detail-modal-size-inner">{children}</div>
@@ -381,7 +381,7 @@ function detailLoadState(loading: boolean, payload: unknown, error: string | nul
   return loading ? "loading" : "summary";
 }
 
-export function CardDetailLoadingContent({ selection, stage }: { selection: CardDetailSelection; stage: CardDetailStage }) {
+function CardDetailLoadingContent({ selection, stage }: { selection: CardDetailSelection; stage: CardDetailStage }) {
   switch (selection.kind) {
     case "request":
       return <RequestDetailLoadingContent detail={selection.detail} stage={stage} />;
@@ -394,7 +394,7 @@ export function CardDetailLoadingContent({ selection, stage }: { selection: Card
   }
 }
 
-export function DetailLoadingHeader({ title, eyebrow, badge, stage }: { title: string; eyebrow: string; badge: React.ReactNode; stage: CardDetailStage }) {
+function DetailLoadingHeader({ title, eyebrow, badge, stage }: { title: string; eyebrow: string; badge: React.ReactNode; stage: CardDetailStage }) {
   return (
     <DialogHeader className="detail-loading-header" data-guidance-section style={{ animationDelay: "35ms" }}>
       <div className="min-w-0">
@@ -417,7 +417,7 @@ export function DetailLoadingHeader({ title, eyebrow, badge, stage }: { title: s
   );
 }
 
-export function RequestDetailLoadingContent({ detail, stage }: { detail: WorkRequestDetail; stage: CardDetailStage }) {
+function RequestDetailLoadingContent({ detail, stage }: { detail: WorkRequestDetail; stage: CardDetailStage }) {
   const request = detail.work_request;
   const operational = request.operational_state || null;
 
@@ -431,7 +431,7 @@ export function RequestDetailLoadingContent({ detail, stage }: { detail: WorkReq
   );
 }
 
-export function SliceDetailLoadingContent({
+function SliceDetailLoadingContent({
   detail,
   slice,
   pkg,
@@ -455,7 +455,7 @@ export function SliceDetailLoadingContent({
   );
 }
 
-export function PackageDetailLoadingContent({ selection, stage }: { selection: Extract<CardDetailSelection, { kind: "package" }>; stage: CardDetailStage }) {
+function PackageDetailLoadingContent({ selection, stage }: { selection: Extract<CardDetailSelection, { kind: "package" }>; stage: CardDetailStage }) {
   const pkg = selection.pkg;
   const operational = pkg.operational_state || null;
 
@@ -469,7 +469,7 @@ export function PackageDetailLoadingContent({ selection, stage }: { selection: E
   );
 }
 
-export function SoloSessionDetailLoadingContent({ session, stage }: { session: SoloSession; stage: CardDetailStage }) {
+function SoloSessionDetailLoadingContent({ session, stage }: { session: SoloSession; stage: CardDetailStage }) {
   return (
     <DetailLoadingHeader
       title={session.title || session.id}

@@ -143,7 +143,7 @@ export type TopPanelContentProps = {
   updateAnimations: DashboardUpdateAnimations;
 };
 
-export function TopPanelContent({
+function TopPanelContent({
   panel,
   interactive = true,
   guidanceItems,
@@ -241,7 +241,7 @@ function topPanelCarouselReducer(state: TopPanelCarouselState, action: TopPanelC
   return { ...state, ...action.state };
 }
 
-export function TopPanelCarousel({
+function TopPanelCarousel({
   activePanel,
   guidanceItems,
   blockerItems,
@@ -477,7 +477,7 @@ function topPanelViewportHeight(hasPanes: boolean, height: TopPanelCarouselState
   return `${Math.max(height, 0)}px`;
 }
 
-export function StatusTile({
+function StatusTile({
   panel,
   title,
   value,
@@ -532,7 +532,7 @@ export function StatusTile({
   );
 }
 
-export function TopTray({ title, children }: { title: string; children: React.ReactNode }) {
+function TopTray({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <Card className="dashboard-glass-surface top-tray-card overflow-hidden">
       <CardHeader className="pb-3">

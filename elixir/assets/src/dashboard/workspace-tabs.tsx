@@ -2,12 +2,21 @@ import type { ActiveBlockingEdge, CopyArchitectHandoff, GuidanceItem, WorkReques
 import type * as React from "react";
 import { WORKSPACE_TAB_SLIDE_MS } from "@/components/dashboard/motion";
 import { clearMotionTimers, later, measureElementHeight, nextFrame } from "@/components/dashboard/motion-utils";
-import { useEffect, useLayoutEffect, useReducer, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useReducer, useRef } from "react";
 import { CardDetailSelect, DashboardUpdateAnimations, TopPanelDirection, WorkspaceTab, WorkspaceTabPhase } from "./runtime";
 import { EmptyPanel } from "./detail-extras";
 import { RepoSummary } from "./dashboard-data";
 import { RepoWorkstream } from "./repo-workstream";
+import {
+  REPO_SUMMARY_METRIC_KEYS,
+  REPO_SUMMARY_PLATE_WIDTH_VAR_BY_KEY,
+  type RepoSummaryMetricKey,
+  repoSummaryMetrics,
+  repoSummaryPlateWidthForMetrics,
+} from "./repo-summary-state";
 import { repoWorkstreamStateKey, workspaceTabDirection } from "./dashboard-persistence";
+import { statusBadgeWidthForRequestDetails } from "./workstream-row-state";
+import { workstreamCategoryCounts } from "./workstream-data";
 
 export function WorkstreamsPane({
   repos,
@@ -28,12 +37,38 @@ export function WorkstreamsPane({
   onCopyArchitectHandoff: CopyArchitectHandoff;
   updateAnimations: DashboardUpdateAnimations;
 }) {
+  const repoSummaryPlateWidthVars = useMemo<Record<string, string>>(() => {
+    const metricsByKey = new Map<RepoSummaryMetricKey, ReturnType<typeof repoSummaryMetrics>>(
+      REPO_SUMMARY_METRIC_KEYS.map((key) => [key, []]),
+    );
+
+    for (const repo of repos) {
+      const categoryCounts = workstreamCategoryCounts(requestDetailsByRepo.get(repo.repoKey) ?? []);
+      for (const metric of repoSummaryMetrics(repo, categoryCounts)) {
+        metricsByKey.get(metric.key)?.push(metric);
+      }
+    }
+
+    return Object.fromEntries(
+      REPO_SUMMARY_METRIC_KEYS.map((key) => [REPO_SUMMARY_PLATE_WIDTH_VAR_BY_KEY[key], repoSummaryPlateWidthForMetrics(key, metricsByKey.get(key) ?? [])]),
+    );
+  }, [repos, requestDetailsByRepo]);
+  const rowStatusBadgeWidth = useMemo(() => {
+    const details = Array.from(requestDetailsByRepo.values()).flat();
+    const packageById = new Map(repos.flatMap((repo) => repo.packages.map((pkg) => [pkg.id, pkg] as const)));
+    return statusBadgeWidthForRequestDetails(details, packageById);
+  }, [repos, requestDetailsByRepo]);
+  const paneStyle = {
+    ...repoSummaryPlateWidthVars,
+    "--v3-row-badge-width": rowStatusBadgeWidth,
+  } as React.CSSProperties;
+
   if (repos.length === 0) {
     return <EmptyPanel title={hiddenRepoCount > 0 ? "No active repositories" : "No repositories yet"} />;
   }
 
   return (
-    <div className="grid gap-5">
+    <div className="v3-workstreams-pane grid gap-5" style={paneStyle}>
       {repos.map((repo) => (
         <RepoWorkstream
           key={repoWorkstreamStateKey(repo)}

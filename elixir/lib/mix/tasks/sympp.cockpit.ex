@@ -429,8 +429,6 @@ defmodule Mix.Tasks.Sympp.Cockpit do
     end
   end
 
-  defp validate_retention_database_path(_database), do: :ok
-
   defp wait_for_bound_port do
     Enum.reduce_while(1..500, nil, fn _attempt, _port ->
       case HttpServer.bound_port() do

@@ -5,7 +5,6 @@ import { packageReviewLabel, planProgressLabel } from "@/lib/review-signals";
 import { sortedCopy } from "@/lib/collections";
 import type { CommentStats, DashboardRuntimeConfig, PackageLineageProjection } from "./runtime";
 import { formatDate } from "./dashboard-persistence";
-import { firstParagraph } from "./dashboard-text";
 import { sliceSuccessorLabel, sortableTime } from "./workstream-data";
 
 export function detailActivityRows(items: Array<{ title?: string | null; body?: string | null; at?: string | null }>) {
@@ -19,11 +18,11 @@ export function detailActivityRows(items: Array<{ title?: string | null; body?: 
   });
 }
 
-export function detailActivityKey(item: { title?: string | null; body?: string | null; at?: string | null }) {
+function detailActivityKey(item: { title?: string | null; body?: string | null; at?: string | null }) {
   return `activity:${hashText([item.title, item.body, item.at].filter(Boolean).join("|"))}`;
 }
 
-export function hashText(text: string) {
+function hashText(text: string) {
   let hash = 0;
   for (let index = 0; index < text.length; index += 1) {
     hash = (hash * 31 + text.charCodeAt(index)) | 0;
@@ -58,7 +57,7 @@ export function commentStats(comments: ContextComment[]): CommentStats {
   return { comment_count: commentCount, open_comment_count: openCommentCount };
 }
 
-export function serverCommentStats(counts: { comment_count?: number | null; open_comment_count?: number | null } | null | undefined, fallbackComments: ContextComment[]): CommentStats {
+function serverCommentStats(counts: { comment_count?: number | null; open_comment_count?: number | null } | null | undefined, fallbackComments: ContextComment[]): CommentStats {
   const fallbackStats = commentStats(fallbackComments);
 
   return {
@@ -247,11 +246,6 @@ function packageRuntimeSummaryText(summary: WorkPackageDetailPayload["summary"] 
   return runtimeCount ? `${runtimeCount[0]} ${runtimeCount[1]}` : null;
 }
 
-export function packagePurpose(pkg: WorkPackageCard | NonNullable<WorkPackageDetailPayload["work_package"]>) {
-  const richPackage = pkg as NonNullable<WorkPackageDetailPayload["work_package"]>;
-  return firstParagraph(richPackage.engineering_scope) || firstParagraph(richPackage.product_description) || pkg.kind || "No package description has been recorded yet.";
-}
-
 export function packageOperationalFallbackText(pkg: WorkPackageCard) {
   const review = packageReviewLabel(pkg);
   if (review) return `Review signal: ${review}.`;
@@ -341,11 +335,11 @@ export function lineageDetailRows(lineage?: WorkPackageCard["lineage"] | null) {
   ];
 }
 
-export function lineageEntryKey(entry: NonNullable<PackageLineageProjection["successor_work"]>[number]) {
+function lineageEntryKey(entry: NonNullable<PackageLineageProjection["successor_work"]>[number]) {
   return [entry.relationship, entry.work_package_id, entry.target_work_package_id, entry.source_work_package_id, entry.event_id].filter(Boolean).join(":");
 }
 
-export function lineageEntries(label: string, entries?: PackageLineageProjection["successor_work"]) {
+function lineageEntries(label: string, entries?: PackageLineageProjection["successor_work"]) {
   return (entries || []).map((entry) => ({
     title: `${label} ${entry.work_package_id || entry.target_work_package_id || entry.source_work_package_id || "work package"}`,
     body: lineageEntryBody(entry),
@@ -353,7 +347,7 @@ export function lineageEntries(label: string, entries?: PackageLineageProjection
   }));
 }
 
-export function lineageEntryBody(entry: NonNullable<PackageLineageProjection["successor_work"]>[number]) {
+function lineageEntryBody(entry: NonNullable<PackageLineageProjection["successor_work"]>[number]) {
   const status = entry.status || entry.target_status || entry.source_status;
   const branch = entry.branch || entry.target_branch || entry.source_branch;
   const details = [status ? statusLabel(status) : null, branch, entry.oracle_preserved ? "oracle preserved" : null, entry.reason].filter(Boolean);

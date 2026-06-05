@@ -840,11 +840,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     if Node.alive?() do
       assert true
     else
-      original_owner_timeout = Application.get_env(:symphony_elixir, :sympp_tracker_adapter_local_lock_owner_timeout_ms)
+      original_owner_timeout =
+        Application.get_env(:symphony_elixir, :sympp_tracker_adapter_local_lock_owner_timeout_ms)
+
       reset_local_lock_owner()
       parent = self()
 
-      Application.put_env(:symphony_elixir, :sympp_tracker_adapter_local_lock_owner_timeout_ms, @fast_lock_retry_delay_ms)
+      Application.put_env(
+        :symphony_elixir,
+        :sympp_tracker_adapter_local_lock_owner_timeout_ms,
+        @fast_lock_retry_delay_ms
+      )
 
       fake_owner =
         spawn(fn ->

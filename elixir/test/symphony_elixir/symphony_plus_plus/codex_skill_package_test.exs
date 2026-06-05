@@ -3109,7 +3109,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
-  test "refresh script validates installed cache MCP config and wrapper from cache roots" do
+  test "refresh script validates installed default cache wrapper from cache roots" do
     powershell = System.find_executable("pwsh")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
 
@@ -3142,7 +3142,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         assert status == 0, output
         assert output =~ "Mix 1.99.0 test"
-        assert output =~ "Symphony++ MCP launcher validation passed."
         assert output =~ "Symphony++ Solo Session wrapper validation passed."
         assert output =~ "Validated installed Symphony++ plugin cache:"
         assert output =~ "cache: #{expected_version}"

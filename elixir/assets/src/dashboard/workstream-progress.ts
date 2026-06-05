@@ -2,6 +2,13 @@ import type { ActiveBlockingEdge, PlannedSlice, WorkPackageCard, WorkRequestDeta
 import type { ProductTreeCompletionMark, ProductTreeNode } from "@/types/product-tree";
 import { isFinishedBoardStatus, sliceLane } from "@/lib/operational-state";
 
+export type ActiveBlockerEntityCounts = {
+  requests: Map<string, number>;
+  slices: Map<string, number>;
+  packages: Map<string, number>;
+  sliceBlockerKeys: Map<string, Set<string>>;
+};
+
 export function requestProgress(detail: WorkRequestDetail, packageById: Map<string, WorkPackageCard>) {
   const slices = detail.planned_slices ?? [];
   const treeMarks = productTreeRootProgressMarks(detail, slices, packageById);
@@ -23,27 +30,42 @@ export function productTreeCounts(detail: WorkRequestDetail, activeBlockerCount:
   };
 }
 
-export function activeBlockerCounts(edges: ActiveBlockingEdge[], requestDetails: WorkRequestDetail[] = []) {
+export function activeBlockerEntityCounts(edges: ActiveBlockingEdge[], requestDetails: WorkRequestDetail[] = []): ActiveBlockerEntityCounts {
   const requestIndex = blockerRequestIndex(requestDetails);
+  const blockerKeys = edges.reduce<ActiveBlockerEntityKeySets>((keys, edge) => {
+    const blockerKey = activeBlockerKey(edge);
 
-  return edges.reduce<Map<string, number>>((counts, edge) => {
-    const requestIds = activeBlockerRequestIds(edge, requestIndex);
-    for (const requestId of requestIds) {
-      counts.set(requestId, (counts.get(requestId) ?? 0) + 1);
-    }
+    addBlockerKeys(keys.requests, activeBlockerRequestIds(edge, requestIndex), blockerKey);
+    addBlockerKeys(keys.slices, activeBlockerSliceIds(edge, requestIndex), blockerKey);
+    addBlockerKeys(keys.packages, activeBlockerPackageIds(edge), blockerKey);
 
-    return counts;
-  }, new Map());
+    return keys;
+  }, { requests: new Map(), slices: new Map(), packages: new Map() });
+
+  return {
+    requests: blockerKeyCounts(blockerKeys.requests),
+    slices: blockerKeyCounts(blockerKeys.slices),
+    packages: blockerKeyCounts(blockerKeys.packages),
+    sliceBlockerKeys: blockerKeys.slices,
+  };
 }
+
+type ActiveBlockerEntityKeySets = {
+  requests: Map<string, Set<string>>;
+  slices: Map<string, Set<string>>;
+  packages: Map<string, Set<string>>;
+};
 
 type BlockerRequestIndex = {
   requestIdBySliceId: Map<string, string>;
   requestIdsByPackageId: Map<string, Set<string>>;
+  sliceIdsByPackageId: Map<string, Set<string>>;
 };
 
 function blockerRequestIndex(requestDetails: WorkRequestDetail[]): BlockerRequestIndex {
   const requestIdBySliceId = new Map<string, string>();
   const requestIdsByPackageId = new Map<string, Set<string>>();
+  const sliceIdsByPackageId = new Map<string, Set<string>>();
 
   for (const detail of requestDetails) {
     const requestId = detail.work_request.id;
@@ -54,10 +76,14 @@ function blockerRequestIndex(requestDetails: WorkRequestDetail[]): BlockerReques
       const requestIds = requestIdsByPackageId.get(slice.work_package_id) ?? new Set<string>();
       requestIds.add(requestId);
       requestIdsByPackageId.set(slice.work_package_id, requestIds);
+
+      const sliceIds = sliceIdsByPackageId.get(slice.work_package_id) ?? new Set<string>();
+      sliceIds.add(slice.id);
+      sliceIdsByPackageId.set(slice.work_package_id, sliceIds);
     }
   }
 
-  return { requestIdBySliceId, requestIdsByPackageId };
+  return { requestIdBySliceId, requestIdsByPackageId, sliceIdsByPackageId };
 }
 
 function activeBlockerRequestIds(edge: ActiveBlockingEdge, requestIndex: BlockerRequestIndex) {
@@ -67,6 +93,22 @@ function activeBlockerRequestIds(edge: ActiveBlockingEdge, requestIndex: Blocker
   if (derivedRequestIds.size > 0) return derivedRequestIds;
 
   return edge.work_request_id ? new Set([edge.work_request_id]) : new Set<string>();
+}
+
+function activeBlockerSliceIds(edge: ActiveBlockingEdge, requestIndex: BlockerRequestIndex) {
+  const sliceIds = new Set<string>();
+  if (edge.planned_slice_id) sliceIds.add(edge.planned_slice_id);
+  addEndpointSliceIds(sliceIds, requestIndex, edge.from);
+  addEndpointSliceIds(sliceIds, requestIndex, edge.to);
+  return sliceIds;
+}
+
+function activeBlockerPackageIds(edge: ActiveBlockingEdge) {
+  const packageIds = new Set<string>();
+  if (edge.work_package_id) packageIds.add(edge.work_package_id);
+  addEndpointPackageIds(packageIds, edge.from);
+  addEndpointPackageIds(packageIds, edge.to);
+  return packageIds;
 }
 
 function addEndpointRequestIds(
@@ -86,6 +128,44 @@ function addEndpointRequestIds(
       requestIds.add(requestId);
     }
   }
+}
+
+function addEndpointSliceIds(
+  sliceIds: Set<string>,
+  requestIndex: BlockerRequestIndex,
+  endpoint?: ActiveBlockingEdge["from"],
+) {
+  if (!endpoint) return;
+
+  if (endpoint.kind === "slice") {
+    sliceIds.add(endpoint.id);
+  }
+
+  if (endpoint.kind === "work_package") {
+    for (const sliceId of requestIndex.sliceIdsByPackageId.get(endpoint.id) ?? []) {
+      sliceIds.add(sliceId);
+    }
+  }
+}
+
+function addEndpointPackageIds(packageIds: Set<string>, endpoint?: ActiveBlockingEdge["from"]) {
+  if (endpoint?.kind === "work_package") packageIds.add(endpoint.id);
+}
+
+function activeBlockerKey(edge: ActiveBlockingEdge) {
+  return edge.blocker_id || edge.id;
+}
+
+function addBlockerKeys(blockerKeysByEntityId: Map<string, Set<string>>, ids: Iterable<string>, blockerKey: string) {
+  for (const id of ids) {
+    const blockerKeys = blockerKeysByEntityId.get(id) ?? new Set<string>();
+    blockerKeys.add(blockerKey);
+    blockerKeysByEntityId.set(id, blockerKeys);
+  }
+}
+
+function blockerKeyCounts(blockerKeysByEntityId: Map<string, Set<string>>) {
+  return new Map([...blockerKeysByEntityId].map(([id, blockerKeys]) => [id, blockerKeys.size]));
 }
 
 export function rootProductSliceIds(detail: WorkRequestDetail, slices: PlannedSlice[]) {

@@ -1,19 +1,19 @@
 import type { ActiveBlockingEdge, CopyArchitectHandoff, GuidanceItem, PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
-import type { ProductTreeCompletionMark, ProductTreeNode } from "@/types/product-tree";
-import { AlertTriangle, CheckCircle2, ChevronRight, Circle, CircleDashed, ClipboardCopy, GitBranch, Info, Layers3, MessageSquareText, Package, Split } from "lucide-react";
+import type { ProductTreeNode } from "@/types/product-tree";
+import { AlertTriangle, ChevronRight, CircleDashed, GitBranch, Layers3, MessageSquareText, Package, Split } from "lucide-react";
 import type { CSSProperties } from "react";
 import { AnimatedBadge } from "@/components/dashboard/motion";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { operationalBadgeVariant, operationalLabel, sliceOperationalState } from "@/lib/operational-state";
-import { useCallback, useMemo, useState } from "react";
+import { operationalBadgeVariant, operationalLabel, requestStateCardTone, sliceCardTone, sliceLane, sliceOperationalState } from "@/lib/operational-state";
+import { useMemo } from "react";
 import { CardDetailSelect, DashboardUpdateAnimations } from "./runtime";
-import { SequenceBadge } from "./workstream-cards";
-import { architectHandoffEligibleRequest } from "@/lib/operational-state";
 import { clarificationGuidanceItem } from "./dashboard-data";
 import { firstParagraph, stripMarkdown } from "./dashboard-text";
 import { finishedRequestChildrenStorageKey, sortPackages, sortPlannedSlices, sortWorkRequestDetails } from "./workstream-data";
-import { activeBlockerCounts, productTreeCounts, requestProgress, rootProductSliceIds } from "./workstream-progress";
+import { activeBlockerEntityCounts, productTreeCounts, requestProgress, rootProductSliceIds } from "./workstream-progress";
+import { productNodeState, rowProgressAttentionState, rowProgressIconState, sliceBlockerCount, sliceGuidanceCount } from "./workstream-row-state";
+import { EntityCountChips, EntityKindSlot, ProductNodeHeader, ProgressPill, ProgressStateIcon, RequestHeaderActions, RowBadgeSlot, SliceKindSlot } from "./workstream-row-ui";
 import { packageUpdateKey, requestUpdateKey, sliceUpdateKey } from "./update-animations";
 import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
 
@@ -50,7 +50,7 @@ export function WorkstreamBoard({
   const sortedDetails = useMemo(() => sortWorkRequestDetails(repoDetails), [repoDetails]);
   const sortedUnlinkedPackages = useMemo(() => sortPackages(unlinkedPackages), [unlinkedPackages]);
   const packageById = useMemo(() => new Map(packages.map((pkg) => [pkg.id, pkg])), [packages]);
-  const blockerCountByRequestId = useMemo(() => activeBlockerCounts(activeBlockingEdges, repoDetails), [activeBlockingEdges, repoDetails]);
+  const blockerCounts = useMemo(() => activeBlockerEntityCounts(activeBlockingEdges, repoDetails), [activeBlockingEdges, repoDetails]);
 
   return (
     <div className="workstream-board-shell">
@@ -64,7 +64,9 @@ export function WorkstreamBoard({
               key={detail.work_request.id}
               detail={detail}
               packageById={packageById}
-              activeBlockerCount={blockerCountByRequestId.get(detail.work_request.id) ?? 0}
+              activeBlockerCount={blockerCounts.requests.get(detail.work_request.id) ?? 0}
+              activeBlockerCountBySliceId={blockerCounts.slices}
+              activeBlockerKeysBySliceId={blockerCounts.sliceBlockerKeys}
               expanded={expanded}
               index={index}
               onToggle={() => onSetFinishedRequestChildrenOpen(detail.work_request.id, !expanded)}
@@ -87,6 +89,8 @@ function ProductRequestRow({
   detail,
   packageById,
   activeBlockerCount,
+  activeBlockerCountBySliceId,
+  activeBlockerKeysBySliceId,
   expanded,
   index,
   onToggle,
@@ -98,6 +102,8 @@ function ProductRequestRow({
   detail: WorkRequestDetail;
   packageById: Map<string, WorkPackageCard>;
   activeBlockerCount: number;
+  activeBlockerCountBySliceId: Map<string, number>;
+  activeBlockerKeysBySliceId: Map<string, Set<string>>;
   expanded: boolean;
   index: number;
   onToggle: () => void;
@@ -109,20 +115,36 @@ function ProductRequestRow({
   const request = detail.work_request;
   const slices = sortPlannedSlices(detail.planned_slices ?? []);
   const progress = requestProgress(detail, packageById);
+  const counts = productTreeCounts(detail, activeBlockerCount);
   const openQuestion = detail.clarification_questions?.find((question) => question.status === "open");
+  const tone = requestStateCardTone(detail);
+  const requestLabel = operationalLabel(request.operational_state, request.status);
+  const rowStyle = {
+    animationDelay: `${index * 30}ms`,
+  } as CSSProperties;
 
   return (
     <section
       className="v3-request-row stagger-item"
       data-expanded={expanded ? "true" : "false"}
-      style={{ animationDelay: `${index * 30}ms` }}
+      data-tone={tone}
+      style={rowStyle}
       {...updateMotionAttributes(updateAnimations.motionFor(requestUpdateKey(detail)))}
     >
-      <div className="v3-request-header">
+      <div className="v3-request-header v3-entity-row" data-tone={tone}>
+        <button type="button" className="v3-request-chevron-button" aria-expanded={expanded} aria-label={`${expanded ? "Collapse" : "Expand"} ${request.title || request.id}`} onClick={onToggle}>
+          <ChevronRight className={cn("size-4 transition-transform duration-200", expanded && "rotate-90")} />
+        </button>
+        <RequestHeaderActions
+          detail={detail}
+          progress={progress}
+          progressAttentionState={rowProgressAttentionState({ blockerCount: counts.blockerCount, guidanceCount: counts.guidanceCount, tone })}
+          progressIconState={rowProgressIconState({ blockerCount: counts.blockerCount, guidanceCount: counts.guidanceCount, progress, tone })}
+          progressLabel={requestLabel}
+          onSelectCard={onSelectCard}
+          onCopyArchitectHandoff={onCopyArchitectHandoff}
+        />
         <button type="button" className="v3-request-main" aria-expanded={expanded} onClick={onToggle}>
-          <span className="v3-request-chevron">
-            <ChevronRight className={cn("size-4 transition-transform duration-200", expanded && "rotate-90")} />
-          </span>
           <span className="v3-request-title-group">
             <span className="v3-request-title">{request.title || request.id}</span>
             <span className="v3-request-meta">
@@ -132,14 +154,12 @@ function ProductRequestRow({
             </span>
           </span>
         </button>
-        <div className="v3-request-row-controls">
-          <RequestHeaderActions detail={detail} onSelectCard={onSelectCard} onCopyArchitectHandoff={onCopyArchitectHandoff} />
-          <RequestProgressSummary detail={detail} activeBlockerCount={activeBlockerCount} />
-          <span className="v3-request-status">
-            <ProgressPill progress={progress} />
-            <AnimatedBadge label={operationalLabel(request.operational_state, request.status)} variant={operationalBadgeVariant(request.operational_state, request.status)} />
-          </span>
-        </div>
+        <RequestProgressSummary counts={counts} />
+        <span className="v3-row-status">
+          <ProgressPill progress={progress} />
+          <RowBadgeSlot label={requestLabel} variant={operationalBadgeVariant(request.operational_state, request.status)} />
+        </span>
+        <RequestScopeSlot counts={counts} />
       </div>
       {expanded ? (
         <div className="v3-request-body">
@@ -148,76 +168,45 @@ function ProductRequestRow({
             openQuestion={openQuestion}
             onSelectGuidance={onSelectGuidance}
           />
-          <ProductPlanBody detail={detail} packageById={packageById} slices={slices} onSelectCard={onSelectCard} updateAnimations={updateAnimations} />
+          <ProductPlanBody
+            detail={detail}
+            packageById={packageById}
+            slices={slices}
+            activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+            activeBlockerKeysBySliceId={activeBlockerKeysBySliceId}
+            onSelectCard={onSelectCard}
+            updateAnimations={updateAnimations}
+          />
         </div>
       ) : null}
     </section>
   );
 }
 
-function RequestProgressSummary({ detail, activeBlockerCount }: { detail: WorkRequestDetail; activeBlockerCount: number }) {
-  const counts = productTreeCounts(detail, activeBlockerCount);
-
+function RequestProgressSummary({ counts }: { counts: ReturnType<typeof productTreeCounts> }) {
   return (
-    <span className="v3-request-summary">
-      {counts.nodeCount > 0 ? <span aria-label={`${counts.nodeCount} plan nodes`} title="Plan nodes"><Layers3 className="size-3.5" />{counts.nodeCount}</span> : null}
-      <span aria-label={`${counts.sliceCount} slices`} title="Slices"><Split className="size-3.5" />{counts.sliceCount}</span>
-      {counts.guidanceCount > 0 ? <span className="v3-guidance-chip" aria-label={`${counts.guidanceCount} guidance needed`} title="Guidance needed"><MessageSquareText className="size-3.5" />{counts.guidanceCount}</span> : null}
-      {counts.blockerCount > 0 ? <span className="v3-blocker-chip" aria-label={`${counts.blockerCount} active blockers`} title="Active blockers"><AlertTriangle className="size-3.5" />{counts.blockerCount}</span> : null}
-    </span>
+    <EntityCountChips
+      className="v3-request-summary"
+      items={[
+        { key: "nodes", icon: <Layers3 className="size-3.5" />, count: counts.nodeCount, label: "plan nodes", showZero: true },
+        { key: "slices", icon: <Split className="size-3.5" />, count: counts.sliceCount, label: "slices", showZero: true },
+        { key: "guidance", icon: <MessageSquareText className="size-3.5" />, count: counts.guidanceCount, label: "guidance needed", tone: "guidance", showZero: true },
+        { key: "blockers", icon: <AlertTriangle className="size-3.5" />, count: counts.blockerCount, label: "active blockers", tone: "blocker", showZero: true },
+      ]}
+    />
   );
 }
 
-function RequestHeaderActions({
-  detail,
-  onSelectCard,
-  onCopyArchitectHandoff,
-}: {
-  detail: WorkRequestDetail;
-  onSelectCard: CardDetailSelect;
-  onCopyArchitectHandoff: CopyArchitectHandoff;
-}) {
-  const [copying, setCopying] = useState(false);
-  const request = detail.work_request;
-  const canCopyHandoff = architectHandoffEligibleRequest(request);
-  const copyHandoff = useCallback(async () => {
-    setCopying(true);
-    try {
-      await onCopyArchitectHandoff(request.id);
-    } finally {
-      setCopying(false);
-    }
-  }, [onCopyArchitectHandoff, request.id]);
+function RequestScopeSlot({ counts }: { counts: ReturnType<typeof productTreeCounts> }) {
+  if (counts.nodeCount > 0) {
+    return <EntityKindSlot icon={<Layers3 className="size-3.5" />} value={counts.nodeCount} title={`${counts.nodeCount} plan nodes`} />;
+  }
 
-  return (
-    <div className="v3-request-header-actions">
-      <Button
-        type="button"
-        variant="secondary"
-        size="icon"
-        className="v3-request-action-button"
-        aria-label="Open request details"
-        title="Request details"
-        onClick={() => onSelectCard({ kind: "request", detail })}
-      >
-        <Info className="size-4" />
-      </Button>
-      {canCopyHandoff ? (
-        <Button
-          type="button"
-          variant="outline"
-          size="icon"
-          className="v3-request-action-button"
-          aria-label={copying ? "Copying architect handoff" : "Copy architect handoff"}
-          title={copying ? "Copying architect handoff" : "Architect handoff"}
-          onClick={copyHandoff}
-          disabled={copying}
-        >
-          <ClipboardCopy className="size-4" />
-        </Button>
-      ) : null}
-    </div>
-  );
+  if (counts.sliceCount > 0) {
+    return <EntityKindSlot icon={<Split className="size-3.5" />} value={counts.sliceCount} title={`${counts.sliceCount} slices`} />;
+  }
+
+  return <EntityKindSlot icon={<CircleDashed className="size-3.5" />} title="No product plan or slices attached" muted />;
 }
 
 function RequestActions({
@@ -247,12 +236,16 @@ function ProductPlanBody({
   slices,
   onSelectCard,
   updateAnimations,
+  activeBlockerCountBySliceId,
+  activeBlockerKeysBySliceId,
 }: {
   detail: WorkRequestDetail;
   packageById: Map<string, WorkPackageCard>;
   slices: PlannedSlice[];
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
+  activeBlockerCountBySliceId: Map<string, number>;
+  activeBlockerKeysBySliceId: Map<string, Set<string>>;
 }) {
   const treeIndex = useMemo(() => buildTreeIndex(detail.product_tree?.nodes ?? [], detail.product_tree?.root_node_ids ?? []), [detail.product_tree]);
   const slicesById = useMemo(() => new Map(slices.map((slice) => [slice.id, slice])), [slices]);
@@ -264,11 +257,31 @@ function ProductPlanBody({
       {treeIndex.rootNodes.length > 0 ? (
         <div className="v3-product-tree">
           {treeIndex.rootNodes.map((node) => (
-            <ProductTreeNodeRow key={node.id} node={node} depth={0} detail={detail} treeIndex={treeIndex} slicesById={slicesById} packageById={packageById} onSelectCard={onSelectCard} updateAnimations={updateAnimations} />
+            <ProductTreeNodeRow
+              key={node.id}
+              node={node}
+              depth={0}
+              detail={detail}
+              treeIndex={treeIndex}
+              slicesById={slicesById}
+              packageById={packageById}
+              activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+              activeBlockerKeysBySliceId={activeBlockerKeysBySliceId}
+              onSelectCard={onSelectCard}
+              updateAnimations={updateAnimations}
+            />
           ))}
         </div>
       ) : null}
-      <DirectSliceGroup detail={detail} sliceIds={rootSliceIds} slicesById={slicesById} packageById={packageById} onSelectCard={onSelectCard} updateAnimations={updateAnimations} />
+      <DirectSliceGroup
+        detail={detail}
+        sliceIds={rootSliceIds}
+        slicesById={slicesById}
+        packageById={packageById}
+        activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+        onSelectCard={onSelectCard}
+        updateAnimations={updateAnimations}
+      />
       {!hasVisiblePlan ? <UnplannedRequestNote /> : null}
     </div>
   );
@@ -290,6 +303,8 @@ function ProductTreeNodeRow({
   treeIndex,
   slicesById,
   packageById,
+  activeBlockerCountBySliceId,
+  activeBlockerKeysBySliceId,
   onSelectCard,
   updateAnimations,
 }: {
@@ -299,33 +314,59 @@ function ProductTreeNodeRow({
   treeIndex: TreeIndex;
   slicesById: Map<string, PlannedSlice>;
   packageById: Map<string, WorkPackageCard>;
+  activeBlockerCountBySliceId: Map<string, number>;
+  activeBlockerKeysBySliceId: Map<string, Set<string>>;
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const childNodes = treeIndex.childrenByParent.get(node.id) ?? [];
   const nodeSlices = (node.slice_ids ?? []).map((sliceId) => slicesById.get(sliceId)).filter((slice): slice is PlannedSlice => Boolean(slice));
-  const visibleNodeKind = node.node_kind === "product_plan_node" ? null : node.node_kind;
+  const nodeState = productNodeState(node, nodeSlices.length, treeIndex, activeBlockerCountBySliceId, activeBlockerKeysBySliceId);
 
   return (
-    <div className="v3-product-node" style={{ "--tree-depth": depth } as CSSProperties} data-mark={node.computed_completion_mark || "unknown"}>
-      <div className="v3-product-node-header">
-        <CompletionIcon mark={node.computed_completion_mark} />
-        <span className="v3-product-node-title">{node.title || node.id}</span>
-        {visibleNodeKind ? <span className="v3-node-kind">{visibleNodeKind}</span> : null}
-        <span className="v3-node-counts">{node.slice_count || nodeSlices.length} slices</span>
-      </div>
+    <div className="v3-product-node" style={{ "--tree-depth": depth } as CSSProperties} data-mark={nodeState.mark} data-tone={nodeState.tone}>
+      <ProductNodeHeader
+        node={node}
+        nodeSliceCount={nodeState.nodeSliceCount}
+        visibleNodeKind={nodeState.visibleNodeKind}
+        mark={nodeState.mark}
+        tone={nodeState.tone}
+        statusLabel={nodeState.statusLabel}
+        guidanceCount={nodeState.guidanceCount}
+        blockerCount={nodeState.blockerCount}
+      />
       {node.description ? <p className="v3-product-node-description">{stripMarkdown(firstParagraph(node.description) || node.description)}</p> : null}
       {nodeSlices.length > 0 ? (
         <div className="v3-slice-list">
           {nodeSlices.map((slice) => (
-            <ProductSliceRow key={slice.id} detail={detail} slice={slice} pkg={packageById.get(slice.work_package_id || "")} onSelectCard={onSelectCard} updateAnimations={updateAnimations} />
+            <ProductSliceRow
+              key={slice.id}
+              detail={detail}
+              slice={slice}
+              pkg={packageById.get(slice.work_package_id || "")}
+              activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+              onSelectCard={onSelectCard}
+              updateAnimations={updateAnimations}
+            />
           ))}
         </div>
       ) : null}
       {childNodes.length > 0 ? (
         <div className="v3-product-node-children">
           {childNodes.map((child) => (
-            <ProductTreeNodeRow key={child.id} node={child} depth={depth + 1} detail={detail} treeIndex={treeIndex} slicesById={slicesById} packageById={packageById} onSelectCard={onSelectCard} updateAnimations={updateAnimations} />
+            <ProductTreeNodeRow
+              key={child.id}
+              node={child}
+              depth={depth + 1}
+              detail={detail}
+              treeIndex={treeIndex}
+              slicesById={slicesById}
+              packageById={packageById}
+              activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+              activeBlockerKeysBySliceId={activeBlockerKeysBySliceId}
+              onSelectCard={onSelectCard}
+              updateAnimations={updateAnimations}
+            />
           ))}
         </div>
       ) : null}
@@ -338,6 +379,7 @@ function DirectSliceGroup({
   sliceIds,
   slicesById,
   packageById,
+  activeBlockerCountBySliceId,
   onSelectCard,
   updateAnimations,
 }: {
@@ -345,6 +387,7 @@ function DirectSliceGroup({
   sliceIds: string[];
   slicesById: Map<string, PlannedSlice>;
   packageById: Map<string, WorkPackageCard>;
+  activeBlockerCountBySliceId: Map<string, number>;
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
 }) {
@@ -354,7 +397,15 @@ function DirectSliceGroup({
   return (
     <div className="v3-direct-slices">
       {directSlices.map((slice) => (
-        <ProductSliceRow key={slice.id} detail={detail} slice={slice} pkg={packageById.get(slice.work_package_id || "")} onSelectCard={onSelectCard} updateAnimations={updateAnimations} />
+        <ProductSliceRow
+          key={slice.id}
+          detail={detail}
+          slice={slice}
+          pkg={packageById.get(slice.work_package_id || "")}
+          activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+          onSelectCard={onSelectCard}
+          updateAnimations={updateAnimations}
+        />
       ))}
     </div>
   );
@@ -364,49 +415,61 @@ function ProductSliceRow({
   detail,
   slice,
   pkg,
+  activeBlockerCountBySliceId,
   onSelectCard,
   updateAnimations,
 }: {
   detail: WorkRequestDetail;
   slice: PlannedSlice;
   pkg?: WorkPackageCard;
+  activeBlockerCountBySliceId: Map<string, number>;
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const operational = sliceOperationalState(slice, pkg);
   const rawStatus = slice.work_package_status || slice.status;
+  const lane = sliceLane(slice, pkg);
+  const tone = sliceCardTone(slice, pkg, lane);
+  const blockerCount = sliceBlockerCount(slice, pkg, activeBlockerCountBySliceId);
+  const guidanceCount = sliceGuidanceCount(slice, pkg, blockerCount);
+  const sliceLabel = operationalLabel(operational, rawStatus);
+  const progress = sliceProgressPercent(pkg, lane, tone);
+  const progressIconState = rowProgressIconState({ blockerCount, guidanceCount, progress, tone });
+  const progressAttentionState = rowProgressAttentionState({ blockerCount, guidanceCount, tone });
   const openSliceDetail = () => onSelectCard({ kind: "slice", detail, slice, pkg });
 
   return (
     <div
-      className="v3-slice-row stagger-item"
+      className="v3-slice-row v3-entity-row stagger-item"
+      data-tone={tone}
       {...updateMotionAttributes(updateAnimations.motionFor(sliceUpdateKey(slice)))}
     >
+      <ProgressStateIcon state={progressIconState} attentionState={progressAttentionState} progress={progress} label={sliceLabel} />
       <button type="button" className="v3-slice-main-button" onClick={openSliceDetail}>
-        <span className="v3-slice-title">
-          <SequenceBadge sequence={slice.sequence} />
-          <span>{slice.title || slice.id}</span>
-        </span>
-        <AnimatedBadge label={operationalLabel(operational, rawStatus)} variant={operationalBadgeVariant(operational, rawStatus)} />
+        <span>{slice.title || slice.id}</span>
       </button>
-      {pkg ? (
-        <Button
-          type="button"
-          size="icon"
-          variant="ghost"
-          className="v3-slice-package-button"
-          title={pkg.title || pkg.id}
-          aria-label={`Open execution details for ${pkg.title || pkg.id}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            onSelectCard({ kind: "package", pkg, detail, slice });
-          }}
-        >
-          <Package className="size-4" />
-        </Button>
-      ) : null}
+      <EntityCountChips
+        reserveEmpty
+        items={[
+          { key: "guidance", icon: <MessageSquareText className="size-3.5" />, count: guidanceCount, label: "guidance needed", tone: "guidance" },
+          { key: "blockers", icon: <AlertTriangle className="size-3.5" />, count: blockerCount, label: "active blockers", tone: "blocker" },
+        ]}
+      />
+      <span className="v3-row-status v3-slice-status">
+        <RowBadgeSlot label={sliceLabel} variant={operationalBadgeVariant(operational, rawStatus)} />
+      </span>
+      <SliceKindSlot detail={detail} slice={slice} pkg={pkg} onSelectCard={onSelectCard} />
     </div>
   );
+}
+
+function sliceProgressPercent(pkg: WorkPackageCard | undefined, lane: ReturnType<typeof sliceLane>, tone: string) {
+  const completed = pkg?.plan?.completed_count ?? 0;
+  const total = pkg?.plan?.total_count ?? 0;
+  if (total > 0) return Math.round((completed / total) * 100);
+  if (lane === "finished" || tone === "finished") return 100;
+  if (lane === "implementing" || ["implementing", "review", "merge"].includes(tone)) return 50;
+  return 0;
 }
 
 function UnlinkedExecutionSection({
@@ -464,21 +527,6 @@ function UnlinkedPackageRow({
       </span>
       <AnimatedBadge label={operationalLabel(operational, pkg.status)} variant={operationalBadgeVariant(operational, pkg.status)} />
     </button>
-  );
-}
-
-function CompletionIcon({ mark }: { mark?: ProductTreeCompletionMark | null }) {
-  if (mark === "done") return <CheckCircle2 className="v3-completion-icon" />;
-  if (mark === "partial" || mark === "deferred") return <CircleDashed className="v3-completion-icon" />;
-  return <Circle className="v3-completion-icon" />;
-}
-
-function ProgressPill({ progress }: { progress: number }) {
-  return (
-    <span className="v3-progress-pill">
-      <span className="v3-progress-bar"><span style={{ width: `${progress}%` }} /></span>
-      <span>{progress}%</span>
-    </span>
   );
 }
 

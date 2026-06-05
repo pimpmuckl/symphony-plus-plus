@@ -30,7 +30,7 @@ export function formatDate(value: string) {
   return LOCAL_DATE_FORMATTER.format(timestamp);
 }
 
-export function repoName(value?: string | null) {
+function repoName(value?: string | null) {
   const trimmed = value?.trim();
   return trimmed || "Unscoped";
 }
@@ -108,7 +108,7 @@ export function writeDashboardUiStateValue<Key extends keyof DashboardUiState>(k
   updateDashboardUiState((state) => ({ ...state, [key]: value }));
 }
 
-export function readDashboardUiState(): DashboardUiState {
+function readDashboardUiState(): DashboardUiState {
   if (typeof window === "undefined") return {};
 
   try {
@@ -122,7 +122,7 @@ export function readDashboardUiState(): DashboardUiState {
   }
 }
 
-export function updateDashboardUiState(updater: (state: DashboardUiState) => DashboardUiState) {
+function updateDashboardUiState(updater: (state: DashboardUiState) => DashboardUiState) {
   if (typeof window === "undefined") return;
 
   try {
@@ -190,7 +190,7 @@ export function repoWorkstreamStateKey(repo: RepoStateKeySummary) {
   return `${repo.repoKey}::${branchKey}::${activityKey}`;
 }
 
-export function repoWorkstreamHasActivity(repo: RepoActivitySummary) {
+function repoWorkstreamHasActivity(repo: RepoActivitySummary) {
   return repo.requested + repo.active + repo.implementing + repo.finished + repo.guidanceCount + repo.blockerCount > 0;
 }
 
@@ -198,15 +198,15 @@ export function repoWorkstreamHasWorkItems(repo: RepoWorkItemsSummary) {
   return repo.requests.length + repo.packages.length + repo.requested + repo.active + repo.implementing + repo.finished > 0;
 }
 
-export function isWorkspaceTab(value: unknown): value is WorkspaceTab {
+function isWorkspaceTab(value: unknown): value is WorkspaceTab {
   return value === "workstreams" || value === "solo";
 }
 
-export function isTopPanelKey(value: unknown): value is TopPanelKey {
+function isTopPanelKey(value: unknown): value is TopPanelKey {
   return typeof value === "string" && (TOP_PANEL_ORDER as readonly string[]).includes(value);
 }
 
-export function isDashboardTheme(value: unknown): value is DashboardTheme {
+function isDashboardTheme(value: unknown): value is DashboardTheme {
   return value === "light" || value === "dark";
 }
 
