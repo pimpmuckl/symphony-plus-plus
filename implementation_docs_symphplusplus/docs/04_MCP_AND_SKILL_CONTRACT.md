@@ -673,7 +673,7 @@ Delivery outcomes are:
   grants and stale active local claim leases are retired and audited as stale
   recut cleanup; claimed worker grants, fresh/current claim leases, paused claim
   leases, fresh active AgentRun rows, and unrelated runtime evidence still
-  reject.
+  reject until an architect explicitly recycles the scoped worker authority.
 - `abandoned`: requires `abandoned_rationale` and moves a compatible linked
   package to `abandoned`.
 
@@ -724,9 +724,13 @@ Example supersession closeout:
 
 `revoke_planned_slice_worker_key` is gated by `write:work_request` and revokes
 one live worker grant for the WorkPackage linked to the scoped planned slice
-after the worker has reached a closeout-ready state. It accepts the grant id
-and a redacted reason, records redacted audit evidence, and never accepts or
-returns raw worker secrets.
+during active recut/recycle cleanup (`claimed`, `implementing`, `reviewing`,
+`ci_waiting`, or `blocked`) or after the worker has reached a closeout-ready
+state. For claimed/implementing/reviewing/CI-waiting packages, revocation moves
+the linked package to `blocked` so abandoned follow-up work is not left looking
+executable if closeout is interrupted. It accepts the grant id and a redacted
+reason, records redacted audit evidence, and never accepts or returns raw worker
+secrets.
 
 `set_work_request_status`, `ask_work_request_question`,
 `answer_work_request_question`, `answer_work_request_question_and_record_decision`,

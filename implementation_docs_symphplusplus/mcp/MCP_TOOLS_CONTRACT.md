@@ -341,11 +341,18 @@ It may retire unclaimed worker-grant and stale claim-lease evidence for that
 linked package only. Active blockers do not block accepted abandoned or
 superseded terminal closeout; they remain historical evidence and are echoed in
 the closeout progress event. The closeout path still rejects claimed worker
-authority, active agent runs, paused leases, or an uncleared recorded worktree.
+authority, active agent runs, paused leases, or an uncleared recorded worktree;
+claimed planned-slice worker authority must be explicitly recycled through
+`revoke_planned_slice_worker_key` before closeout can proceed.
 For `outcome=superseded`, any `successor_work_package_id` must be linked to the
 declared `successor_planned_slice_id` inside the same WorkRequest.
-`revoke_planned_slice_worker_key` remains limited to closeout-ready packages and
-is not required before this abandoned no-code repair path.
+`revoke_planned_slice_worker_key` supports scoped in-progress recut/recycle
+cleanup for active states (`claimed`, `implementing`, `reviewing`,
+`ci_waiting`, or `blocked`) and closeout cleanup. For
+claimed/implementing/reviewing/CI-waiting packages, revocation moves the linked
+package to `blocked` so interrupted cleanup is visible rather than executable.
+It is not required before this abandoned no-code repair path when worker
+authority is still unclaimed.
 `dispatch_work_request_planned_slice` is separate from those mutation tools and
 requires `dispatch:work_request` because it creates a WorkPackage, worker grant,
 and worker bootstrap side effects. It does not prepare or record worktree scope;

@@ -103,6 +103,14 @@ worker grants, fresh/current claim leases, paused claim leases, fresh active
 AgentRun rows, and architect/runtime evidence outside stale recut bookkeeping
 still fail closed.
 
+When supersession is intentional but a claimed worker grant is the remaining
+runtime blocker, the architect can call
+`revoke_planned_slice_worker_key(work_request_id, planned_slice_id, grant_id,
+reason)` for the linked planned slice. The tool records redacted recycle
+evidence, moves active execution statuses to `blocked`, and does not expose raw
+worker secrets; after it succeeds, rerun `record_planned_slice_delivery` with
+the same superseded evidence.
+
 If closeout rejects because of active runtime on an unsupported outcome,
 package metadata mismatch, weak PR evidence, or stale terminal conflict, do not
 paper over it with a decision note. Fix the evidence or ask the

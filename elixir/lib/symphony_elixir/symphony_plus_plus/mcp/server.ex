@@ -32,7 +32,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Repository, Session, SoloTools}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, PlannedSliceWorkerRevoke, Repository, Session, SoloTools}
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
@@ -224,7 +224,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @child_worker_resettable_statuses ["claimed", "planning", "implementing", "reviewing", "ci_waiting", "blocked"]
   @child_worker_recyclable_statuses [@child_worker_ready_status | @child_worker_resettable_statuses]
   @child_worker_grant_provenance "child_worker_delegation"
-  @planned_slice_worker_revoke_statuses ["ready_for_human_merge", "ready_for_architect_merge", "merged", "merged_into_phase", "closed", "abandoned"]
   @version_resource "sympp://health/version"
   @assignment_resource "sympp://assignment/current"
   @finding_replay_retry_attempts 50
@@ -1706,7 +1705,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_description("revoke_planned_slice_worker_key") do
-    "Revoke one live worker grant for the WorkPackage linked to a scoped WorkRequest planned slice after the worker has reached a closeout-ready state."
+    "Revoke one live worker grant for the WorkPackage linked to a scoped WorkRequest planned slice during in-progress recycle or delivery closeout cleanup."
   end
 
   defp architect_tool_description("list_guidance_requests") do
@@ -2215,7 +2214,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "work_request_id" => described_string_schema("Scoped WorkRequest id that owns the planned slice."),
         "planned_slice_id" => described_string_schema("Dispatched planned slice whose linked WorkPackage owns the worker grant."),
         "grant_id" => described_string_schema("Live worker grant id for the linked WorkPackage. Raw worker secrets are never accepted or returned."),
-        "reason" => described_string_schema("Redacted audit reason for revoking the completed worker grant before delivery closeout.")
+        "reason" => described_string_schema("Redacted audit reason for revoking the worker grant during recut, recycle, or delivery closeout cleanup.")
       },
       ["work_request_id", "planned_slice_id", "grant_id", "reason"]
     )
@@ -8288,8 +8287,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              primary_scope?,
              filters
            ),
-         :ok <- require_planned_slice_worker_revoke_status(work_package),
+         :ok <- PlannedSliceWorkerRevoke.require_revoke_status(work_package),
          {:ok, grant} <- scoped_planned_slice_worker_grant_for_revoke(repo, grant_id, work_package_id, now),
+         {:ok, recycled_work_package} <- PlannedSliceWorkerRevoke.update_status(repo, work_package, now),
          {:ok, revoked_grant} <- revoke_live_planned_slice_worker_grant(repo, grant, now),
          {:ok, event} <-
            append_planned_slice_worker_revoke_event(
@@ -8297,11 +8297,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              session,
              work_request,
              planned_slice,
-             work_package,
+             work_package.status,
+             recycled_work_package,
              revoked_grant,
              reason
            ) do
-      {:ok, planned_slice_worker_revoke_result(work_request, planned_slice, work_package, revoked_grant, event, reason)}
+      {:ok,
+       planned_slice_worker_revoke_result(
+         work_request,
+         planned_slice,
+         work_package.status,
+         recycled_work_package,
+         revoked_grant,
+         event,
+         reason
+       )}
     end
   end
 
@@ -8372,9 +8382,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp require_live_planned_slice_worker_grant_for_revoke(%AccessGrant{}, _now), do: {:tool_error, "not_planned_slice_worker_grant"}
-
-  defp require_planned_slice_worker_revoke_status(%WorkPackage{status: status}) when status in @planned_slice_worker_revoke_statuses, do: :ok
-  defp require_planned_slice_worker_revoke_status(%WorkPackage{}), do: {:tool_error, "work_package_not_closeout_ready"}
 
   defp scoped_child_worker_grant_for_revoke(repo, grant_id, %WorkPackage{} = anchor, phase_id, %DateTime{} = now) do
     with {:ok, grant} <- AccessGrantRepository.get(repo, grant_id),
@@ -8549,54 +8556,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          %Session{} = session,
          %WorkRequest{} = work_request,
          %PlannedSlice{} = planned_slice,
+         previous_work_package_status,
          %WorkPackage{} = work_package,
          %AccessGrant{} = grant,
          reason
        ) do
-    payload = planned_slice_worker_revoke_payload(work_request, planned_slice, work_package, grant, reason)
+    payload =
+      PlannedSliceWorkerRevoke.payload(
+        work_request,
+        planned_slice,
+        previous_work_package_status,
+        work_package,
+        grant,
+        reason
+      )
 
     PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, work_package.id, %{
-      "summary" => "WorkRequest planned-slice worker grant revoked for closeout",
-      "body" => "Closeout reason: #{redacted_child_worker_revoke_reason(reason)}; WorkRequest: #{work_request.id}; planned slice: #{planned_slice.id}",
+      "summary" => "WorkRequest planned-slice worker grant revoked for cleanup",
+      "body" => "Cleanup reason: #{redacted_child_worker_revoke_reason(reason)}; WorkRequest: #{work_request.id}; planned slice: #{planned_slice.id}",
       "status" => "planned_slice_worker_key_revoked",
       "idempotency_key" => metadata_idempotency_key(payload),
       "payload" => payload
     })
   end
 
-  defp planned_slice_worker_revoke_payload(
-         %WorkRequest{} = work_request,
-         %PlannedSlice{} = planned_slice,
-         %WorkPackage{} = work_package,
-         %AccessGrant{} = grant,
-         reason
-       ) do
-    reason_codes = planned_slice_worker_revoke_reason_codes()
-
-    %{
-      "type" => "planned_slice_worker_key_revoke",
-      "source_tool" => "revoke_planned_slice_worker_key",
-      "work_request_id" => work_request.id,
-      "planned_slice_id" => planned_slice.id,
-      "work_package_id" => work_package.id,
-      "grant_id" => grant.id,
-      "reason" => redacted_child_worker_revoke_reason(reason),
-      "revoked_at" => timestamp(grant.revoked_at),
-      "work_package_status" => work_package.status,
-      "lifecycle_state" => "recycled",
-      "reason_codes" => reason_codes,
-      "private_handoff_cleanup" => "not_attempted"
-    }
-  end
-
   defp planned_slice_worker_revoke_result(
          %WorkRequest{} = work_request,
          %PlannedSlice{} = planned_slice,
+         previous_work_package_status,
          %WorkPackage{} = work_package,
          %AccessGrant{} = grant,
          %ProgressEvent{} = event,
          reason
        ) do
+    reason_codes = PlannedSliceWorkerRevoke.reason_codes(previous_work_package_status, work_package.status)
+
     %{
       "work_request" => work_request_mutation_payload(work_request),
       "planned_slice" => planned_slice_payload(planned_slice),
@@ -8604,10 +8598,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "revoked_worker_grant" => revoked_child_worker_grant_payload(grant),
       "closeout_affordance" => %{
         "status" => "revoked",
-        "reason" => redacted_child_worker_revoke_reason(reason),
+        "reason" => PlannedSliceWorkerRevoke.redacted_reason(reason),
         "active_runtime_guard_bypassed" => false,
         "lifecycle_state" => "recycled",
-        "reason_codes" => planned_slice_worker_revoke_reason_codes(),
+        "previous_work_package_status" => previous_work_package_status,
+        "work_package_status" => work_package.status,
+        "reason_codes" => reason_codes,
         "private_handoff_cleanup" => "not_attempted"
       },
       "revocation_event" => progress_event_payload(event)
@@ -8621,8 +8617,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     ]
     |> Enum.reject(&is_nil/1)
   end
-
-  defp planned_slice_worker_revoke_reason_codes, do: ["worker_recycled", "planned_slice_worker_key_revoked"]
 
   defp revoked_child_worker_grant_payload(%AccessGrant{} = grant) do
     %{

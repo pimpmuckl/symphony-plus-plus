@@ -504,7 +504,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     assert repo.get!(WorkPackage, linked_package.id).status == "closed"
   end
 
-  test "WR architect abandons no-code failed dispatch after replacement delivery without revoking unrelated grants", %{repo: repo} do
+  test "WR architect abandons no-code failed dispatch after replacement delivery without explicit revoke or unrelated grants", %{repo: repo} do
     {work_request, failed_slice, failed_package} =
       linked_slice!(repo,
         work_request_id: "WR-MCP-DELIVERY-ABANDON-FAILED-DISPATCH",
