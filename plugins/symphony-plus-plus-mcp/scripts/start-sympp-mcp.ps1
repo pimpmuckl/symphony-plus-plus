@@ -59,6 +59,59 @@ function Test-SymphonySourceRoot([string]$Path) {
   return (-not [string]::IsNullOrWhiteSpace($Path)) -and (Test-Path -LiteralPath (Join-Path $Path "elixir/mix.exs"))
 }
 
+function Normalize-SourceRevision([string]$Revision) {
+  if ([string]::IsNullOrWhiteSpace($Revision)) {
+    return $null
+  }
+
+  $normalized = $Revision.Trim().ToLowerInvariant()
+  if ($normalized -match "^[0-9a-f]{40}$") {
+    return $normalized
+  }
+
+  return $null
+}
+
+function Get-MarketplaceInstallRevision([string]$RepoRoot) {
+  $installPath = Join-Path $RepoRoot ".codex-marketplace-install.json"
+  if (-not (Test-Path -LiteralPath $installPath)) {
+    return $null
+  }
+
+  try {
+    $install = Get-Content -LiteralPath $installPath -Raw | ConvertFrom-Json
+    return Normalize-SourceRevision ([string]$install.revision)
+  } catch {
+    return $null
+  }
+}
+
+function Get-GitHeadRevision([string]$RepoRoot) {
+  $git = Get-Command git -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $git) {
+    return $null
+  }
+
+  try {
+    $output = @(& $git.Source @("-C", $RepoRoot, "rev-parse", "--verify", "HEAD") 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $output.Count -gt 0) {
+      return Normalize-SourceRevision ([string]$output[0])
+    }
+  } catch {
+  }
+
+  return $null
+}
+
+function Resolve-ExpectedSourceRevision([string]$RepoRoot) {
+  $gitRevision = Get-GitHeadRevision $RepoRoot
+  if ($gitRevision) {
+    return $gitRevision
+  }
+
+  return Get-MarketplaceInstallRevision $RepoRoot
+}
+
 function Resolve-RepoRootFromMarketplaceCache([string]$PluginRoot) {
   $versionRoot = [System.IO.Path]::GetFullPath($PluginRoot)
   $packageRoot = Split-Path -Parent $versionRoot
@@ -730,6 +783,24 @@ function Get-ResponseProtocolVersion([string[]]$ContentLines) {
   return $null
 }
 
+function Get-HealthSourceRevision($Payload) {
+  if ($null -eq $Payload -or -not $Payload.PSObject.Properties["result"]) {
+    return $null
+  }
+
+  $structuredContent = $Payload.result.structuredContent
+  if ($null -eq $structuredContent -or -not $structuredContent.PSObject.Properties["source"]) {
+    return $null
+  }
+
+  $source = $structuredContent.source
+  if ($null -eq $source -or -not $source.PSObject.Properties["revision"]) {
+    return $null
+  }
+
+  return Normalize-SourceRevision ([string]$source.revision)
+}
+
 function Invoke-McpPost([string]$Url, [string]$Body, [string]$SessionId, [string]$ProtocolVersion, [int]$TimeoutSec) {
   $headers = @{ Accept = "application/json, text/event-stream" }
   if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
@@ -780,21 +851,21 @@ function Invoke-McpPost([string]$Url, [string]$Body, [string]$SessionId, [string
   }
 }
 
-function Test-HealthySymppBackend([string]$BackendUrl) {
+function Get-SymppBackendHealth([string]$BackendUrl) {
   if ([string]::IsNullOrWhiteSpace($BackendUrl)) {
-    return $false
+    return [pscustomobject]@{ healthy = $false; source_revision = $null; detail = "missing_url" }
   }
 
   $mcpUrl = $BackendUrl.TrimEnd("/") + "/mcp"
   $initializeBody = ConvertTo-JsonBody (New-InitializeRequest)
   $init = Invoke-McpPost $mcpUrl $initializeBody $null $null 2
   if (-not $init.ok -or [string]::IsNullOrWhiteSpace($init.content)) {
-    return $false
+    return [pscustomobject]@{ healthy = $false; source_revision = $null; detail = "initialize_failed" }
   }
 
   $sessionId = Get-ResponseHeaderValue $init.headers "Mcp-Session-Id"
   if ([string]::IsNullOrWhiteSpace($sessionId)) {
-    return $false
+    return [pscustomobject]@{ healthy = $false; source_revision = $null; detail = "missing_session_id" }
   }
 
   $protocolVersion = Get-ResponseProtocolVersion @($init.content_lines)
@@ -805,15 +876,48 @@ function Test-HealthySymppBackend([string]$BackendUrl) {
   $health = Invoke-McpPost $mcpUrl (ConvertTo-JsonBody (New-HealthRequest)) $sessionId $protocolVersion 2
   $healthLines = @($health.content_lines)
   if (-not $health.ok -or $healthLines.Count -eq 0) {
-    return $false
+    return [pscustomobject]@{ healthy = $false; source_revision = $null; detail = "health_failed" }
   }
 
   try {
     $payload = $healthLines[0] | ConvertFrom-Json
-    return $null -ne $payload.result -and $null -eq $payload.error
+    if ($null -ne $payload.result -and $null -eq $payload.error) {
+      return [pscustomobject]@{
+        healthy = $true
+        source_revision = Get-HealthSourceRevision $payload
+        detail = $null
+      }
+    }
+
+    return [pscustomobject]@{ healthy = $false; source_revision = $null; detail = "health_error" }
   } catch {
+    return [pscustomobject]@{ healthy = $false; source_revision = $null; detail = "health_parse_failed" }
+  }
+}
+
+function Test-HealthySymppBackend([string]$BackendUrl) {
+  return (Get-SymppBackendHealth $BackendUrl).healthy
+}
+
+function Test-BackendSourceMatches($Health, [string]$ExpectedSourceRevision) {
+  if ($null -eq $Health -or -not $Health.healthy) {
     return $false
   }
+
+  if ([string]::IsNullOrWhiteSpace($ExpectedSourceRevision)) {
+    return $false
+  }
+
+  return -not [string]::IsNullOrWhiteSpace([string]$Health.source_revision) -and
+    [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$Health.source_revision, $ExpectedSourceRevision)
+}
+
+function Format-SourceRevisionForDiagnostic([string]$Revision) {
+  if ([string]::IsNullOrWhiteSpace($Revision)) {
+    return "unknown"
+  }
+
+  return $Revision
 }
 
 function Test-HealthySymppDashboard([string]$DashboardOrigin) {
@@ -866,6 +970,262 @@ function Write-RuntimeState([string]$Path, $State) {
   $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
   $json = $State | ConvertTo-Json -Depth 12
   [System.IO.File]::WriteAllText($Path, "$json`n", $utf8NoBom)
+}
+
+function Resolve-BridgeLeaseDir([string]$RuntimeFile) {
+  return [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $RuntimeFile) "codex-plugin-leases"))
+}
+
+function New-BridgeLease([string]$RuntimeFile, $BackendPlan, $DashboardPlan) {
+  $leaseDir = Resolve-BridgeLeaseDir $RuntimeFile
+  New-Item -ItemType Directory -Path $leaseDir -Force | Out-Null
+  $leasePath = Join-Path $leaseDir ("bridge-$PID-$([guid]::NewGuid().ToString('N')).json")
+  $lease = [pscustomobject]@{
+    pid = $PID
+    created_at = (Get-Date).ToString("o")
+    backend_url = $BackendPlan.url
+    dashboard_origin = $DashboardPlan.origin
+  }
+  $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+  [System.IO.File]::WriteAllText($leasePath, (($lease | ConvertTo-Json -Depth 8) + "`n"), $utf8NoBom)
+  return $leasePath
+}
+
+function Remove-BridgeLease([string]$LeasePath) {
+  if (-not [string]::IsNullOrWhiteSpace($LeasePath)) {
+    Remove-Item -LiteralPath $LeasePath -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Get-ProcessCommandLine([int]$ProcessId) {
+  if ($ProcessId -le 0) {
+    return $null
+  }
+
+  $cim = Get-Command Get-CimInstance -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($cim) {
+    try {
+      $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
+      if ($process) {
+        return [string]$process.CommandLine
+      }
+    } catch {
+    }
+  }
+
+  $procCmdline = "/proc/$ProcessId/cmdline"
+  if (Test-Path -LiteralPath $procCmdline) {
+    try {
+      $raw = [System.IO.File]::ReadAllText($procCmdline)
+      $text = ($raw -replace [char]0, " ").Trim()
+      if (-not [string]::IsNullOrWhiteSpace($text)) {
+        return $text
+      }
+    } catch {
+    }
+  }
+
+  return $null
+}
+
+function Test-ProcessAlive([int]$ProcessId) {
+  if ($ProcessId -le 0) {
+    return $false
+  }
+
+  return $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
+}
+
+function Test-BridgeLeaseActive($Lease) {
+  if ($null -eq $Lease -or -not $Lease.PSObject.Properties["pid"]) {
+    return $false
+  }
+
+  $leasePid = 0
+  if (-not [int]::TryParse([string]$Lease.pid, [ref]$leasePid) -or $leasePid -le 0) {
+    return $false
+  }
+
+  if (-not (Test-ProcessAlive $leasePid)) {
+    return $false
+  }
+
+  $commandLine = Get-ProcessCommandLine $leasePid
+  return -not [string]::IsNullOrWhiteSpace($commandLine) -and $commandLine -match "start-sympp-mcp\.(ps1|cmd)"
+}
+
+function Get-ActiveBridgeLeases([string]$RuntimeFile) {
+  $leaseDir = Resolve-BridgeLeaseDir $RuntimeFile
+  if (-not (Test-Path -LiteralPath $leaseDir -PathType Container)) {
+    return @()
+  }
+
+  $active = [System.Collections.Generic.List[object]]::new()
+  foreach ($leasePath in @(Get-ChildItem -LiteralPath $leaseDir -Filter "bridge-*.json" -File -ErrorAction SilentlyContinue)) {
+    $lease = $null
+    try {
+      $lease = Get-Content -LiteralPath $leasePath.FullName -Raw | ConvertFrom-Json
+    } catch {
+    }
+
+    if (Test-BridgeLeaseActive $lease) {
+      $active.Add([pscustomobject]@{ path = $leasePath.FullName; lease = $lease })
+    } else {
+      Remove-Item -LiteralPath $leasePath.FullName -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  return @($active)
+}
+
+function Stop-ManagedRuntimeProcess([string]$Role, $ProcessIdValue, [int]$Port) {
+  $managedPid = 0
+  if (-not [int]::TryParse([string]$ProcessIdValue, [ref]$managedPid) -or $managedPid -le 0) {
+    return $false
+  }
+
+  $commandLine = Get-ProcessCommandLine $managedPid
+  if ([string]::IsNullOrWhiteSpace($commandLine)) {
+    Write-Diagnostic "Skipping $Role shutdown for pid=$managedPid because its command line could not be verified."
+    return $false
+  }
+
+  $rolePattern = if ($Role -eq "backend") { "sympp\.cockpit" } else { "vite" }
+  $portPattern = if ($Port -gt 0) { "(--port\s+$Port|--port\s+`"$Port`")" } else { $null }
+  if ($commandLine -notmatch $rolePattern -or ($portPattern -and $commandLine -notmatch $portPattern)) {
+    Write-Diagnostic "Skipping $Role shutdown for pid=$managedPid because it no longer matches the managed Symphony++ command."
+    return $false
+  }
+
+  Write-Diagnostic "Stopping managed Symphony++ $Role pid=$managedPid after last Codex MCP bridge exited."
+  Stop-Process -Id $managedPid -Force -ErrorAction SilentlyContinue
+  return $true
+}
+
+function Get-RuntimeEntryPort($Entry) {
+  $port = 0
+  if ($null -ne $Entry) {
+    [void][int]::TryParse([string]$Entry.port, [ref]$port)
+  }
+
+  return $port
+}
+
+function Stop-ManagedRuntimeEntry([string]$Role, $Entry) {
+  if ($null -eq $Entry -or $Entry.managed -ne $true) {
+    return $false
+  }
+
+  return Stop-ManagedRuntimeProcess $Role $Entry.pid (Get-RuntimeEntryPort $Entry)
+}
+
+function Test-ManagedRuntimeEntrySuperseded([string]$Role, $Entry, [string]$SelectedEndpoint) {
+  if ($null -eq $Entry -or $Entry.managed -ne $true) {
+    return $false
+  }
+
+  $entryEndpoint = if ($Role -eq "backend") { [string]$Entry.url } else { [string]$Entry.origin }
+  if ([string]::IsNullOrWhiteSpace($entryEndpoint)) {
+    return $false
+  }
+
+  if ([string]::IsNullOrWhiteSpace($SelectedEndpoint)) {
+    return $true
+  }
+
+  return $entryEndpoint.TrimEnd("/") -ne $SelectedEndpoint.TrimEnd("/")
+}
+
+function New-SupersededRuntimeState($RuntimeState, $BackendPlan, $DashboardPlan) {
+  $backend = $null
+  $frontend = $null
+  if ($null -ne $RuntimeState) {
+    if (Test-ManagedRuntimeEntrySuperseded "backend" $RuntimeState.backend ([string]$BackendPlan.url)) {
+      $backend = $RuntimeState.backend
+    }
+    if (Test-ManagedRuntimeEntrySuperseded "frontend" $RuntimeState.frontend ([string]$DashboardPlan.origin)) {
+      $frontend = $RuntimeState.frontend
+    }
+  }
+
+  return [pscustomobject]@{
+    backend = $backend
+    frontend = $frontend
+  }
+}
+
+function Stop-SupersededManagedServersIfUnused([string]$RuntimeFile, $Superseded) {
+  if ($null -eq $Superseded) {
+    return $Superseded
+  }
+
+  $activeLeases = @(Get-ActiveBridgeLeases $RuntimeFile)
+  if ($activeLeases.Count -gt 0) {
+    return $Superseded
+  }
+
+  if (Stop-ManagedRuntimeEntry "frontend" $Superseded.frontend) {
+    $Superseded.frontend = $null
+  }
+  if (Stop-ManagedRuntimeEntry "backend" $Superseded.backend) {
+    $Superseded.backend = $null
+  }
+
+  return $Superseded
+}
+
+function Get-ManagedListenerPid([string]$Role, [int]$Port) {
+  $rolePattern = if ($Role -eq "backend") { "sympp\.cockpit" } else { "vite" }
+  foreach ($owner in @(Get-TcpPortOwners $Port)) {
+    $commandLine = Get-ProcessCommandLine ([int]$owner.pid)
+    if (-not [string]::IsNullOrWhiteSpace($commandLine) -and $commandLine -match $rolePattern) {
+      return [int]$owner.pid
+    }
+  }
+
+  return $null
+}
+
+function Stop-ManagedServersIfUnused([string]$RuntimeFile) {
+  $lock = Enter-FileLock (Resolve-StartupLockFile $RuntimeFile) 30
+  try {
+    $activeLeases = @(Get-ActiveBridgeLeases $RuntimeFile)
+    if ($activeLeases.Count -gt 0) {
+      return
+    }
+
+    $state = Read-RuntimeState $RuntimeFile
+    if ($null -eq $state) {
+      return
+    }
+
+    $supersededProperty = $state.PSObject.Properties["superseded"]
+    if ($supersededProperty) {
+      $superseded = $supersededProperty.Value
+      if ($null -ne $superseded) {
+        if (Stop-ManagedRuntimeEntry "frontend" $superseded.frontend) {
+          $superseded.frontend = $null
+        }
+        if (Stop-ManagedRuntimeEntry "backend" $superseded.backend) {
+          $superseded.backend = $null
+        }
+      }
+    }
+
+    if (Stop-ManagedRuntimeEntry "frontend" $state.frontend) {
+      $state.frontend.status = "stopped"
+      $state.frontend.pid = $null
+    }
+
+    if (Stop-ManagedRuntimeEntry "backend" $state.backend) {
+      $state.backend.status = "stopped"
+      $state.backend.pid = $null
+    }
+
+    Write-RuntimeState $RuntimeFile $state
+  } finally {
+    Exit-FileLock $lock
+  }
 }
 
 function Start-LoggedProcess([string]$FilePath, [string[]]$ArgumentList, [string]$WorkingDirectory, [hashtable]$Environment, [string]$LogPrefix, [string]$LogDir) {
@@ -927,11 +1287,12 @@ function Wait-Until([scriptblock]$Predicate, [int]$TimeoutSec) {
   return $false
 }
 
-function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $RuntimeState, [int]$PortReleaseTimeoutSec) {
+function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $RuntimeState, [int]$PortReleaseTimeoutSec, [string]$ExpectedSourceRevision) {
   if (-not [string]::IsNullOrWhiteSpace($ConfiguredUrl)) {
     $url = $ConfiguredUrl.TrimEnd("/")
     Assert-LoopbackHttpOrigin $url "SYMPP_BACKEND_URL"
-    if (-not (Test-HealthySymppBackend $url)) {
+    $health = Get-SymppBackendHealth $url
+    if (-not $health.healthy) {
       throw "SYMPP_BACKEND_URL is not a healthy Symphony++ backend: $url"
     }
 
@@ -942,28 +1303,54 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
       port = Get-PortFromOrigin $url
       should_start = $false
       reused = $true
+      managed = $false
+      pid = $null
+      source_revision = $health.source_revision
     }
   }
 
+  $stalePreferredPort = $false
   if ($PreferredPort -gt 0) {
     $preferredUrl = "http://127.0.0.1:$PreferredPort"
-    if (Test-HealthySymppBackend $preferredUrl) {
-      return [pscustomobject]@{
-        status = "reused"
-        url = $preferredUrl
-        mcp_url = "$preferredUrl/mcp"
-        port = $PreferredPort
-        should_start = $false
-        reused = $true
+    $preferredHealth = Get-SymppBackendHealth $preferredUrl
+    if ($preferredHealth.healthy) {
+      if (Test-BackendSourceMatches $preferredHealth $ExpectedSourceRevision) {
+        $managed = $false
+        $managedPid = $null
+        if ($null -ne $RuntimeState) {
+          $runtimeUrl = [string]$RuntimeState.backend.url
+          if (-not [string]::IsNullOrWhiteSpace($runtimeUrl) -and
+              $runtimeUrl.TrimEnd("/") -eq $preferredUrl -and
+              $RuntimeState.backend.managed -eq $true) {
+            $managed = $true
+            $managedPid = $RuntimeState.backend.pid
+          }
+        }
+
+        return [pscustomobject]@{
+          status = "reused"
+          url = $preferredUrl
+          mcp_url = "$preferredUrl/mcp"
+          port = $PreferredPort
+          should_start = $false
+          reused = $true
+          managed = $managed
+          pid = $managedPid
+          source_revision = $preferredHealth.source_revision
+        }
       }
+
+      $stalePreferredPort = $true
+      Write-Diagnostic "Ignoring healthy Symphony++ backend $preferredUrl because source revision $(Format-SourceRevisionForDiagnostic $preferredHealth.source_revision) does not match expected $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision)."
     }
   }
 
   if ($null -ne $RuntimeState) {
     $runtimeUrl = [string]$RuntimeState.backend.url
-    if (-not [string]::IsNullOrWhiteSpace($runtimeUrl) -and (Test-HealthySymppBackend $runtimeUrl)) {
+    if (-not [string]::IsNullOrWhiteSpace($runtimeUrl)) {
       $runtimeUrl = $runtimeUrl.TrimEnd("/")
-      if (Test-RuntimeBackendPortAllowed $PreferredPort $runtimeUrl) {
+      $runtimeHealth = Get-SymppBackendHealth $runtimeUrl
+      if ($runtimeHealth.healthy -and (Test-RuntimeBackendPortAllowed $PreferredPort $runtimeUrl) -and (Test-BackendSourceMatches $runtimeHealth $ExpectedSourceRevision)) {
         return [pscustomobject]@{
           status = "reused"
           url = $runtimeUrl
@@ -971,14 +1358,23 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
           port = Get-PortFromOrigin $runtimeUrl
           should_start = $false
           reused = $true
+          managed = $RuntimeState.backend.managed -eq $true
+          pid = $RuntimeState.backend.pid
+          source_revision = $runtimeHealth.source_revision
         }
       }
 
-      Write-Diagnostic "Ignoring healthy runtime backend $runtimeUrl because configured backend port is $PreferredPort. Set SYMPP_BACKEND_PORT=0 or SYMPP_BACKEND_URL=$runtimeUrl to reuse it explicitly."
+      if ($runtimeHealth.healthy -and -not (Test-BackendSourceMatches $runtimeHealth $ExpectedSourceRevision)) {
+        Write-Diagnostic "Ignoring healthy runtime backend $runtimeUrl because source revision $(Format-SourceRevisionForDiagnostic $runtimeHealth.source_revision) does not match expected $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision)."
+      } elseif ($runtimeHealth.healthy) {
+        Write-Diagnostic "Ignoring healthy runtime backend $runtimeUrl because configured backend port is $PreferredPort. Set SYMPP_BACKEND_PORT=0 or SYMPP_BACKEND_URL=$runtimeUrl to reuse it explicitly."
+      }
     }
   }
 
-  if ($PreferredPort -gt 0) {
+  if ($PreferredPort -gt 0 -and $stalePreferredPort) {
+    $selectedPort = Select-AvailablePort $PreferredPort @($PreferredPort)
+  } elseif ($PreferredPort -gt 0) {
     $portRelease = Wait-ForTcpPortRelease $PreferredPort $PortReleaseTimeoutSec
     if (-not $portRelease.released) {
       throw (New-BackendPortOccupiedMessage $PreferredPort @($portRelease.owners))
@@ -997,6 +1393,9 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
     port = $selectedPort
     should_start = $true
     reused = $false
+    managed = $true
+    pid = $null
+    source_revision = $null
   }
 }
 
@@ -1010,34 +1409,30 @@ function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [
       port = Get-PortFromOrigin $origin
       should_start = $false
       reused = $true
+      managed = $false
+      pid = $null
     }
   }
 
-  if ($null -ne $RuntimeState -and $RuntimeState.backend.url -eq $BackendUrl) {
+  if ($null -ne $RuntimeState) {
+    $runtimeBackendUrl = [string]$RuntimeState.backend.url
     $runtimeOrigin = [string]$RuntimeState.frontend.origin
-    if (-not [string]::IsNullOrWhiteSpace($runtimeOrigin) -and (Test-HealthySymppDashboard $runtimeOrigin)) {
-      return [pscustomobject]@{
-        status = "reused"
-        origin = $runtimeOrigin.TrimEnd("/")
-        url = "$($runtimeOrigin.TrimEnd('/'))$BoardPath"
-        port = Get-PortFromOrigin $runtimeOrigin
-        should_start = $false
-        reused = $true
+    if (-not [string]::IsNullOrWhiteSpace($runtimeBackendUrl) -and
+        $runtimeBackendUrl.TrimEnd("/") -eq $BackendUrl.TrimEnd("/")) {
+      if (-not [string]::IsNullOrWhiteSpace($runtimeOrigin) -and (Test-HealthySymppDashboard $runtimeOrigin)) {
+        return [pscustomobject]@{
+          status = "reused"
+          origin = $runtimeOrigin.TrimEnd("/")
+          url = "$($runtimeOrigin.TrimEnd('/'))$BoardPath"
+          port = Get-PortFromOrigin $runtimeOrigin
+          should_start = $false
+          reused = $true
+          managed = $RuntimeState.frontend.managed -eq $true
+          pid = $RuntimeState.frontend.pid
+        }
       }
-    }
-  }
-
-  if ($PreferredPort -gt 0) {
-    $preferredOrigin = "http://127.0.0.1:$PreferredPort"
-    if ((Test-HealthySymppDashboard $preferredOrigin) -and $BackendUrl -eq "http://127.0.0.1:$DefaultBackendPort") {
-      return [pscustomobject]@{
-        status = "reused"
-        origin = $preferredOrigin
-        url = "$preferredOrigin$BoardPath"
-        port = $PreferredPort
-        should_start = $false
-        reused = $true
-      }
+    } elseif (-not [string]::IsNullOrWhiteSpace($runtimeOrigin) -and (Test-HealthySymppDashboard $runtimeOrigin)) {
+      Write-Diagnostic "Ignoring healthy runtime dashboard $($runtimeOrigin.TrimEnd('/')) because it was recorded for backend $($runtimeBackendUrl.TrimEnd('/')), not $($BackendUrl.TrimEnd('/'))."
     }
   }
 
@@ -1052,6 +1447,8 @@ function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [
     port = $selectedPort
     should_start = $true
     reused = $false
+    managed = $true
+    pid = $null
   }
 }
 
@@ -1079,10 +1476,13 @@ function Start-Backend($Plan, [string]$DashboardOrigin, [string]$ElixirDir, [str
     throw "Symphony++ backend did not become healthy at $($Plan.url) within $TimeoutSec seconds. $portDetail stderr_log=$($launch.stderr)"
   }
 
+  $health = Get-SymppBackendHealth $Plan.url
+  $listenerPid = Get-ManagedListenerPid "backend" ([int]$Plan.port)
   return [pscustomobject]@{
-    pid = $launch.process.Id
+    pid = if ($listenerPid) { $listenerPid } else { $launch.process.Id }
     stdout = $launch.stdout
     stderr = $launch.stderr
+    source_revision = if ($health.healthy) { $health.source_revision } else { $null }
   }
 }
 
@@ -1100,8 +1500,9 @@ function Start-Frontend($Plan, [string]$BackendUrl, [string]$AssetsDir, [string]
     throw "Symphony++ dashboard did not become healthy at $($Plan.origin) within $TimeoutSec seconds. logs: $($launch.stderr)"
   }
 
+  $listenerPid = Get-ManagedListenerPid "frontend" ([int]$Plan.port)
   return [pscustomobject]@{
-    pid = $launch.process.Id
+    pid = if ($listenerPid) { $listenerPid } else { $launch.process.Id }
     stdout = $launch.stdout
     stderr = $launch.stderr
   }
@@ -1317,6 +1718,22 @@ function Invoke-SelfTest {
     throw "Response protocol version extraction failed."
   }
 
+  $revisionA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  $revisionB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  $healthyA = [pscustomobject]@{ healthy = $true; source_revision = $revisionA }
+  if (-not (Test-BackendSourceMatches $healthyA $revisionA)) {
+    throw "Source-matching backend health should be reusable."
+  }
+  if (Test-BackendSourceMatches $healthyA $revisionB) {
+    throw "Stale backend source revision should not be reusable."
+  }
+  if (Test-BackendSourceMatches $healthyA $null) {
+    throw "Backend source matching should fail closed when the expected source revision is unknown."
+  }
+  if (Test-BackendSourceMatches ([pscustomobject]@{ healthy = $false; source_revision = $revisionA }) $revisionA) {
+    throw "Unhealthy backend should not be reusable."
+  }
+
   if (-not (Test-RuntimeBackendPortAllowed 0 "http://127.0.0.1:45678")) {
     throw "Runtime backend reuse should be allowed when SYMPP_BACKEND_PORT=0."
   }
@@ -1329,6 +1746,27 @@ function Invoke-SelfTest {
     throw "Runtime backend reuse should not bypass the configured backend port."
   }
 
+  $oldRuntimeState = [pscustomobject]@{
+    backend = [pscustomobject]@{
+      managed = $true
+      url = "http://127.0.0.1:19998"
+      port = 19998
+      pid = 1234
+    }
+    frontend = [pscustomobject]@{
+      managed = $true
+      origin = "http://127.0.0.1:19999"
+      port = 19999
+      pid = 1235
+    }
+  }
+  $newBackendPlan = [pscustomobject]@{ url = "http://127.0.0.1:20000" }
+  $newDashboardPlan = [pscustomobject]@{ origin = "http://127.0.0.1:20001" }
+  $superseded = New-SupersededRuntimeState $oldRuntimeState $newBackendPlan $newDashboardPlan
+  if ($null -eq $superseded.backend -or $null -eq $superseded.frontend) {
+    throw "Superseded managed runtime entries should be preserved for cleanup."
+  }
+
   $runtimePath = Join-Path ([System.IO.Path]::GetTempPath()) "sympp-plugin-selftest-runtime.json"
   $state = [pscustomobject]@{
     backend = [pscustomobject]@{ url = "http://127.0.0.1:$DefaultBackendPort" }
@@ -1339,7 +1777,28 @@ function Invoke-SelfTest {
   if ($read.backend.url -ne $state.backend.url) {
     throw "Runtime state did not round-trip."
   }
+
+  $leasePath = New-BridgeLease $runtimePath $state.backend $state.frontend
+  $activeLeases = @(Get-ActiveBridgeLeases $runtimePath)
+  if ($activeLeases.Count -ne 1 -or $activeLeases[0].path -ne $leasePath) {
+    throw "Bridge lease did not appear active for the current launcher process."
+  }
+  Remove-BridgeLease $leasePath
+  $activeAfterRemove = @(Get-ActiveBridgeLeases $runtimePath)
+  if ($activeAfterRemove.Count -ne 0) {
+    throw "Bridge lease cleanup did not remove the current launcher lease."
+  }
+  $staleLeaseDir = Resolve-BridgeLeaseDir $runtimePath
+  New-Item -ItemType Directory -Path $staleLeaseDir -Force | Out-Null
+  $staleLeasePath = Join-Path $staleLeaseDir "bridge-0-stale.json"
+  Set-Content -LiteralPath $staleLeasePath -Value '{"pid":0}' -NoNewline
+  $activeAfterStale = @(Get-ActiveBridgeLeases $runtimePath)
+  if ($activeAfterStale.Count -ne 0 -or (Test-Path -LiteralPath $staleLeasePath)) {
+    throw "Stale bridge leases were not pruned."
+  }
+
   Remove-Item -LiteralPath $runtimePath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath (Resolve-BridgeLeaseDir $runtimePath) -Recurse -Force -ErrorAction SilentlyContinue
 
   Write-Host "Symphony++ MCP launcher self-test passed."
 }
@@ -1423,10 +1882,13 @@ $frontendLaunch = $null
 $frontendError = $null
 $backendPlan = $null
 $dashboardPlan = $null
+$bridgeLeasePath = $null
+$supersededState = $null
+$expectedSourceRevision = Resolve-ExpectedSourceRevision $repoRoot
 $startupLock = Enter-FileLock (Resolve-StartupLockFile $runtimeFile) $startupLockTimeout
 try {
   $runtimeState = Read-RuntimeState $runtimeFile
-  $backendPlan = Resolve-BackendPlan $backendPort $env:SYMPP_BACKEND_URL $runtimeState $backendPortReleaseTimeout
+  $backendPlan = Resolve-BackendPlan $backendPort $env:SYMPP_BACKEND_URL $runtimeState $backendPortReleaseTimeout $expectedSourceRevision
   if ($backendPlan.should_start -and -not $autostartBackend) {
     throw "Backend autostart is disabled and no reusable Symphony++ backend was found at $($backendPlan.url)."
   }
@@ -1443,15 +1905,21 @@ try {
     }
   }
 
+  $supersededState = New-SupersededRuntimeState $runtimeState $backendPlan $dashboardPlan
+  $supersededState = Stop-SupersededManagedServersIfUnused $runtimeFile $supersededState
+
   if ($backendPlan.should_start) {
     $backendLaunch = Start-Backend $backendPlan $dashboardPlan.origin $elixirDir $launcher $mix $mise $logDir $backendTimeout
     $backendPlan.status = "started"
+    $backendPlan.pid = $backendLaunch.pid
+    $backendPlan.source_revision = $backendLaunch.source_revision
   }
 
   if ($dashboardPlan.should_start) {
     try {
       $frontendLaunch = Start-Frontend $dashboardPlan $backendPlan.url $assetsDir $logDir $frontendTimeout
       $dashboardPlan.status = "started"
+      $dashboardPlan.pid = $frontendLaunch.pid
     } catch {
       $frontendError = $_.Exception.Message
       $dashboardPlan.status = "failed"
@@ -1470,7 +1938,10 @@ try {
       mcp_url = $backendPlan.mcp_url
       port = $backendPlan.port
       reused = $backendPlan.reused
-      pid = if ($backendLaunch) { $backendLaunch.pid } else { $null }
+      managed = $backendPlan.managed -eq $true
+      pid = $backendPlan.pid
+      expected_source_revision = $expectedSourceRevision
+      source_revision = $backendPlan.source_revision
       stdout_log = if ($backendLaunch) { $backendLaunch.stdout } else { $null }
       stderr_log = if ($backendLaunch) { $backendLaunch.stderr } else { $null }
     }
@@ -1480,7 +1951,8 @@ try {
       url = $dashboardPlan.url
       port = $dashboardPlan.port
       reused = $dashboardPlan.reused
-      pid = if ($frontendLaunch) { $frontendLaunch.pid } else { $null }
+      managed = $dashboardPlan.managed -eq $true
+      pid = $dashboardPlan.pid
       stdout_log = if ($frontendLaunch) { $frontendLaunch.stdout } else { $null }
       stderr_log = if ($frontendLaunch) { $frontendLaunch.stderr } else { $null }
       error = $frontendError
@@ -1493,12 +1965,19 @@ try {
       autostart_env = "SYMPP_AUTOSTART_SERVERS"
       bridge_mode_env = "SYMPP_MCP_BRIDGE_MODE"
     }
+    superseded = $supersededState
   }
   Write-RuntimeState $runtimeFile $state
+  $bridgeLeasePath = New-BridgeLease $runtimeFile $backendPlan $dashboardPlan
 
   $dashboardSummary = if ($dashboardPlan.url) { "$($dashboardPlan.url) [$($dashboardPlan.status)]" } else { $dashboardPlan.status }
   Write-Diagnostic "Symphony++ MCP bridge ready: backend=$($backendPlan.url) dashboard=$dashboardSummary runtime=$runtimeFile"
 } finally {
   Exit-FileLock $startupLock
 }
-Invoke-HttpMcpBridge $backendPlan.mcp_url $bridgeTimeout
+try {
+  Invoke-HttpMcpBridge $backendPlan.mcp_url $bridgeTimeout
+} finally {
+  Remove-BridgeLease $bridgeLeasePath
+  Stop-ManagedServersIfUnused $runtimeFile
+}
