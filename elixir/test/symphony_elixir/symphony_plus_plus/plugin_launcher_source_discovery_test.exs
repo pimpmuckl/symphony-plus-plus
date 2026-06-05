@@ -1,0 +1,224 @@
+defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
+  use ExUnit.Case, async: true
+
+  @repo_root Path.expand("../../../../", __DIR__)
+  @plugin_marketplace_name "symphony-plus-plus"
+  @plugin_manifest_path Path.join(@repo_root, "plugins/symphony-plus-plus/.codex-plugin/plugin.json")
+  @plugin_version @plugin_manifest_path |> File.read!() |> Jason.decode!() |> Map.fetch!("version")
+  @plugin_solo_script_path Path.join(@repo_root, "plugins/symphony-plus-plus/scripts/sympp-solo.ps1")
+  @plugin_lifecycle_diagnostic_path Path.join(@repo_root, "plugins/symphony-plus-plus/scripts/diagnose-mcp-lifecycle.ps1")
+  @mcp_plugin_solo_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-solo.ps1")
+  @mcp_plugin_start_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1")
+
+  test "installed launchers resolve marketplace source clone despite missing or stale cache hints" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-marketplace-source")
+
+    if powershell do
+      fake_mix = fake_mix_executable(temp_codex_home)
+      marketplace_root = write_minimal_marketplace_source(temp_codex_home)
+      stale_source_root = write_minimal_stale_source(temp_codex_home)
+      default_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"])
+      mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
+
+      try do
+        File.mkdir_p!(default_cache_root)
+        File.write!(Path.join(default_cache_root, ".sympp-source-root"), "#{stale_source_root}\n")
+        File.mkdir_p!(mcp_cache_root)
+        File.write!(Path.join(mcp_cache_root, ".sympp-source-root"), "#{stale_source_root}\n")
+
+        launchers = [
+          {write_cached_script(default_cache_root, @plugin_solo_script_path), "Symphony++ Solo Session wrapper validation passed."},
+          {write_cached_script(mcp_cache_root, @mcp_plugin_solo_script_path), "Symphony++ Solo Session wrapper validation passed."},
+          {write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path), "Symphony++ MCP launcher validation passed."}
+        ]
+
+        for {script_path, expected} <- launchers do
+          {output, status} =
+            System.cmd(
+              powershell,
+              ["-NoProfile", "-File", script_path, "-ValidateOnly"],
+              cd: Path.dirname(Path.dirname(script_path)),
+              stderr_to_stdout: true,
+              env: [{"SYMPP_LAUNCHER", "direct"}, {"SYMPP_MIX", fake_mix}, {"SYMPP_REPO_ROOT", ""}]
+            )
+
+          assert status == 0, output
+          assert output =~ expected
+          assert normalize_path_fragment(output) =~ "reporoot: #{normalize_path_fragment(marketplace_root)}"
+        end
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  test "lifecycle doctor resolves marketplace source clone before stale cache hints" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = unique_temp_path("sympp-plugin-marketplace-source-doctor")
+
+    if powershell do
+      marketplace_root = write_minimal_marketplace_source(temp_codex_home)
+      stale_source_root = write_minimal_stale_source(temp_codex_home)
+      default_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version])
+      mcp_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version], "symphony-plus-plus-mcp")
+
+      try do
+        installed_script_path = write_cached_script(default_cache_root, @plugin_lifecycle_diagnostic_path)
+        write_cache_manifest(default_cache_root, "symphony-plus-plus")
+        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        File.write!(Path.join(default_cache_root, ".sympp-source-root"), "#{stale_source_root}\n")
+        File.write!(Path.join(mcp_cache_root, ".sympp-source-root"), "#{stale_source_root}\n")
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              installed_script_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              @plugin_marketplace_name,
+              "-SkipProcessScan",
+              "-Json"
+            ],
+            cd: temp_codex_home,
+            stderr_to_stdout: true,
+            env: [{"SYMPP_REPO_ROOT", ""}]
+          )
+
+        assert status == 0, output
+        report = Jason.decode!(output)
+        source_checkout = get_in(report, ["readiness", "source_checkout"])
+        assert source_checkout["status"] == "codex_marketplace_source_clone"
+        assert normalize_path_fragment(source_checkout["root"]) == normalize_path_fragment(marketplace_root)
+        assert report["process_scan_scope"] == "installed_cache_source_root_hints"
+        assert [process_filter] = report["process_repo_root_filters"]
+        assert normalize_path_fragment(process_filter) == normalize_path_fragment(marketplace_root)
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  defp write_cached_script(cache_root, source_script_path) do
+    target = Path.join([cache_root, "scripts", Path.basename(source_script_path)])
+    File.mkdir_p!(Path.dirname(target))
+    File.cp!(source_script_path, target)
+    target
+  end
+
+  defp write_cache_manifest(cache_root, plugin_name, opts \\ []) do
+    manifest_path = Path.join(cache_root, ".codex-plugin/plugin.json")
+    File.mkdir_p!(Path.dirname(manifest_path))
+
+    manifest =
+      if Keyword.get(opts, :mcp?, false) do
+        %{"name" => plugin_name, "version" => @plugin_version, "mcpServers" => "./.mcp.json"}
+      else
+        %{"name" => plugin_name, "version" => @plugin_version}
+      end
+
+    File.write!(manifest_path, Jason.encode!(manifest))
+
+    if Keyword.get(opts, :mcp?, false) do
+      File.write!(
+        Path.join(cache_root, ".mcp.json"),
+        Jason.encode!(%{
+          "symphony_plus_plus" => %{
+            "type" => "stdio",
+            "command" => "cmd.exe",
+            "args" => ["/d", "/s", "/c", "scripts/start-sympp-mcp.cmd"],
+            "cwd" => "."
+          }
+        })
+      )
+    end
+  end
+
+  defp write_minimal_marketplace_source(codex_home) do
+    marketplace_root = Path.join([codex_home, ".tmp", "marketplaces", @plugin_marketplace_name])
+    File.mkdir_p!(Path.join(marketplace_root, "elixir"))
+    File.write!(Path.join(marketplace_root, "elixir/mix.exs"), "defmodule SymphonyElixir.MixProject do\nend\n")
+    File.mkdir_p!(Path.join(marketplace_root, "elixir/lib/mix/tasks"))
+    File.write!(Path.join(marketplace_root, "elixir/lib/mix/tasks/sympp.solo.ex"), "")
+    File.mkdir_p!(Path.join(marketplace_root, "scripts"))
+    File.write!(Path.join(marketplace_root, "scripts/refresh-local-plugin.ps1"), "")
+    File.write!(Path.join(marketplace_root, "scripts/smoke-sympp-mcp-http.ps1"), "")
+
+    for plugin_name <- ~w(symphony-plus-plus symphony-plus-plus-mcp) do
+      manifest_path = Path.join([marketplace_root, "plugins", plugin_name, ".codex-plugin", "plugin.json"])
+      File.mkdir_p!(Path.dirname(manifest_path))
+      File.write!(manifest_path, Jason.encode!(%{"name" => plugin_name, "version" => @plugin_version}))
+    end
+
+    marketplace_root
+  end
+
+  defp write_minimal_stale_source(codex_home) do
+    source_root = Path.join(codex_home, "stale-source")
+    File.mkdir_p!(Path.join(source_root, "elixir/lib/mix/tasks"))
+    File.write!(Path.join(source_root, "elixir/mix.exs"), "defmodule Stale.MixProject do\nend\n")
+    File.write!(Path.join(source_root, "elixir/lib/mix/tasks/sympp.solo.ex"), "")
+    source_root
+  end
+
+  defp fake_mix_executable(temp_root) do
+    path = Path.join(temp_root, if(windows?(), do: "mix.cmd", else: "mix"))
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, fake_mix_script())
+
+    unless windows?() do
+      File.chmod!(path, 0o755)
+    end
+
+    path
+  end
+
+  defp fake_mix_script do
+    if windows?() do
+      """
+      @echo off
+      if "%~1"=="--version" (
+        echo Mix 1.99.0 test
+        exit /b 0
+      )
+      echo unexpected mix args: %*
+      exit /b 2
+      """
+    else
+      """
+      #!/usr/bin/env sh
+      if [ "$1" = "--version" ]; then
+        echo "Mix 1.99.0 test"
+        exit 0
+      fi
+      echo "unexpected mix args: $*" >&2
+      exit 2
+      """
+    end
+  end
+
+  defp windows?, do: match?({:win32, _name}, :os.type())
+
+  defp normalize_path_fragment(value) do
+    value
+    |> String.replace("\\", "/")
+    |> String.downcase()
+  end
+
+  defp unique_temp_path(prefix) do
+    Path.join(System.tmp_dir!(), "#{prefix}-#{unique_id()}")
+  end
+
+  defp unique_id do
+    id = "#{System.pid()}-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+    String.replace(id, ~r/[^A-Za-z0-9_.-]/, "-")
+  end
+
+  defp plugin_cache_path(codex_home, suffix, plugin_name \\ "symphony-plus-plus") do
+    Path.join([codex_home, "plugins", "cache", @plugin_marketplace_name, plugin_name] ++ suffix)
+  end
+end

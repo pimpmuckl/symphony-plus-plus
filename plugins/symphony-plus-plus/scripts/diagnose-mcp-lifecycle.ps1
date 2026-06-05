@@ -292,6 +292,38 @@ function Get-SourceCheckoutFromCurrentDirectory {
   return $null
 }
 
+function Get-MarketplaceSourceRootFromCachePackage($Package) {
+  if ($null -eq $Package -or [string]::IsNullOrWhiteSpace([string]$Package.root)) {
+    return $null
+  }
+
+  $versionRoot = Resolve-OptionalFullPath ([string]$Package.root)
+  if (-not $versionRoot) {
+    return $null
+  }
+
+  $packageRoot = Split-Path -Parent $versionRoot
+  $marketplaceRoot = Split-Path -Parent $packageRoot
+  $cacheRoot = Split-Path -Parent $marketplaceRoot
+  $pluginsRoot = Split-Path -Parent $cacheRoot
+
+  if ((Split-Path -Leaf $cacheRoot) -ne "cache" -or (Split-Path -Leaf $pluginsRoot) -ne "plugins") {
+    return $null
+  }
+
+  $codexHome = Split-Path -Parent $pluginsRoot
+  $marketplaceName = Split-Path -Leaf $marketplaceRoot
+  $candidate = Resolve-OptionalFullPath (Join-Path $codexHome ".tmp/marketplaces/$marketplaceName")
+
+  if ((Test-SourceCheckoutRoot $candidate) -and
+      (Test-Path -LiteralPath (Join-Path $candidate "plugins/symphony-plus-plus/.codex-plugin/plugin.json")) -and
+      (Test-Path -LiteralPath (Join-Path $candidate "plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json"))) {
+    return $candidate
+  }
+
+  return $null
+}
+
 function Test-PackageCanProvideSourceRootHint($Package) {
   if ($null -eq $Package) {
     return $false
@@ -318,6 +350,15 @@ function Get-UsableSourceHintRoots($Packages) {
   )
 }
 
+function Get-UsableMarketplaceSourceRoots($Packages) {
+  return @(
+    $Packages |
+      ForEach-Object { Get-MarketplaceSourceRootFromCachePackage $_ } |
+      Where-Object { Test-SourceCheckoutRoot $_ } |
+      Sort-Object -Unique
+  )
+}
+
 function New-SourceCheckoutStatus([string]$Status, [string]$Root, [string]$Note = $null) {
   return [pscustomobject]@{
     status = $Status
@@ -339,6 +380,15 @@ function Resolve-ReadinessSourceCheckout([string]$PluginRoot, [string]$ProvidedR
   $sourceCheckoutRoot = Get-SourceCheckoutFromCurrentDirectory
   if ($sourceCheckoutRoot) {
     return New-SourceCheckoutStatus "current_working_directory" $sourceCheckoutRoot
+  }
+
+  $marketplaceSourceRoots = Get-UsableMarketplaceSourceRoots $PreferredPackages
+  if ($marketplaceSourceRoots.Count -eq 1) {
+    return New-SourceCheckoutStatus "codex_marketplace_source_clone" (@($marketplaceSourceRoots)[0])
+  }
+
+  if ($marketplaceSourceRoots.Count -gt 1) {
+    return New-SourceCheckoutStatus "ambiguous_codex_marketplace_source_clones" $null "Selected installed caches resolve to multiple Codex marketplace source clones; rerun this doctor with -RepoRoot <path-to-symphony-plus-plus-checkout>."
   }
 
   $preferredHintRoots = Get-UsableSourceHintRoots $PreferredPackages
@@ -2905,7 +2955,13 @@ $cacheRepoRootFilters = @(
       Test-VersionedOptInSuppressedByLocal $_ $localOptInMcpProcessScopePackages
     )
   } |
-  ForEach-Object { Normalize-ComparablePath $_.source_root_hint } |
+  ForEach-Object {
+    $sourceRoot = Get-MarketplaceSourceRootFromCachePackage $_
+    if (-not $sourceRoot) {
+      $sourceRoot = Resolve-OptionalFullPath $_.source_root_hint
+    }
+    Normalize-ComparablePath $sourceRoot
+  } |
   Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
   Sort-Object -Unique
 )
@@ -2931,9 +2987,9 @@ $processScanNote = if ($SkipProcessScan) {
 } elseif (-not $processScanSupported) {
   "Win32_Process process inventory is only available on Windows."
 } elseif ($cacheRepoRootFilters.Count -gt 1 -and $processRepoRootFilters.Count -eq 0) {
-  "Skipped scoped live process scan because selected installed caches point at multiple source roots; pass -RepoRoot to audit one checkout."
+  "Skipped scoped live process scan because selected installed caches resolve to multiple source roots; pass -RepoRoot to audit one checkout."
 } elseif ($processRepoRootFilters.Count -eq 0) {
-  "Skipped live process scan because no -RepoRoot value or installed-cache source-root hints were available for the selected Codex home and marketplace."
+  "Skipped live process scan because no -RepoRoot value or installed-cache source root was available for the selected Codex home and marketplace."
 } else {
   $null
 }
@@ -3046,6 +3102,9 @@ $summary = [pscustomobject]@{
 $readinessSourcePackages = @(
   if (-not (Test-ActivationMarketplaceAmbiguous $cachePackages $MarketplaceName)) {
     Get-ActivationSourceHintPackages $cachePackages $MarketplaceName
+    foreach ($packageName in $SymppPluginPackageNames) {
+      Get-PreferredActivationPackage $cachePackages $packageName $MarketplaceName
+    }
   }
 ) | Where-Object { $null -ne $_ }
 $sourceCheckout = Resolve-ReadinessSourceCheckout $pluginRoot $RepoRoot $readinessSourcePackages

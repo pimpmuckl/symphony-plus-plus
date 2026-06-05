@@ -19,7 +19,7 @@ function Write-Usage {
   Write-Host "  - Bridge Codex stdio MCP traffic into the HTTP backend /mcp endpoint."
   Write-Host ""
   Write-Host "Environment:"
-  Write-Host "  SYMPP_REPO_ROOT              Optional repo checkout root. Required when the plugin runs from installed cache without a source-root hint."
+  Write-Host "  SYMPP_REPO_ROOT              Optional Symphony++ source checkout override. Marketplace installs are discovered automatically."
   Write-Host "  SYMPP_DATABASE               Optional SQLite ledger override passed to mix sympp.cockpit and mix sympp.mcp direct fallback."
   Write-Host "  SYMPP_LAUNCHER               Optional launcher: 'direct' or 'mise'. Defaults to 'direct'."
   Write-Host "  SYMPP_MIX                    Optional mix executable path or name for direct launcher. Defaults to 'mix'."
@@ -40,7 +40,7 @@ function Write-Usage {
   Write-Host "  SYMPP_MCP_HTTP_TIMEOUT_SEC           Per-request bridge timeout. Defaults to 300."
   Write-Host "  SYMPP_STARTUP_LOCK_TIMEOUT_SEC       Local startup lock wait. Defaults to the configured startup waits plus 30 seconds, with a 120-second floor."
   Write-Host ""
-  Write-Host "The local refresh script writes a non-secret .sympp-source-root hint into the installed cache."
+  Write-Host "Installed plugins first use marketplace source discovery; local refresh may also write a non-secret .sympp-source-root hint."
 }
 
 function Write-Diagnostic([string]$Message) {
@@ -55,10 +55,38 @@ function Resolve-OptionalPath([string]$Path) {
   return [System.IO.Path]::GetFullPath($Path)
 }
 
+function Test-SymphonySourceRoot([string]$Path) {
+  return (-not [string]::IsNullOrWhiteSpace($Path)) -and (Test-Path -LiteralPath (Join-Path $Path "elixir/mix.exs"))
+}
+
+function Resolve-RepoRootFromMarketplaceCache([string]$PluginRoot) {
+  $versionRoot = [System.IO.Path]::GetFullPath($PluginRoot)
+  $packageRoot = Split-Path -Parent $versionRoot
+  $marketplaceRoot = Split-Path -Parent $packageRoot
+  $cacheRoot = Split-Path -Parent $marketplaceRoot
+  $pluginsRoot = Split-Path -Parent $cacheRoot
+
+  if ((Split-Path -Leaf $cacheRoot) -ne "cache" -or (Split-Path -Leaf $pluginsRoot) -ne "plugins") {
+    return $null
+  }
+
+  $codexHome = Split-Path -Parent $pluginsRoot
+  $marketplaceName = Split-Path -Leaf $marketplaceRoot
+  $candidate = [System.IO.Path]::GetFullPath((Join-Path $codexHome ".tmp/marketplaces/$marketplaceName"))
+
+  if ((Test-SymphonySourceRoot $candidate) -and
+      (Test-Path -LiteralPath (Join-Path $candidate "plugins/symphony-plus-plus/.codex-plugin/plugin.json")) -and
+      (Test-Path -LiteralPath (Join-Path $candidate "plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json"))) {
+    return $candidate
+  }
+
+  return $null
+}
+
 function Resolve-RepoRoot {
   $configuredRoot = Resolve-OptionalPath $env:SYMPP_REPO_ROOT
   if ($configuredRoot) {
-    if (Test-Path -LiteralPath (Join-Path $configuredRoot "elixir/mix.exs")) {
+    if (Test-SymphonySourceRoot $configuredRoot) {
       return $configuredRoot
     }
 
@@ -66,23 +94,33 @@ function Resolve-RepoRoot {
   }
 
   $pluginRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+  $sourceCandidate = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../../.."))
+  if (Test-SymphonySourceRoot $sourceCandidate) {
+    return $sourceCandidate
+  }
+
+  $marketplaceRoot = Resolve-RepoRootFromMarketplaceCache $pluginRoot
+  if ($marketplaceRoot) {
+    return $marketplaceRoot
+  }
+
+  $invalidSourceRootHint = $false
   $sourceRootHintPath = Join-Path $pluginRoot ".sympp-source-root"
   if (Test-Path -LiteralPath $sourceRootHintPath) {
     $hintText = (Get-Content -LiteralPath $sourceRootHintPath -Raw).Trim().TrimStart([char]0xFEFF)
     $hintedRoot = Resolve-OptionalPath $hintText
-    if ($hintedRoot -and (Test-Path -LiteralPath (Join-Path $hintedRoot "elixir/mix.exs"))) {
+    if ($hintedRoot -and (Test-SymphonySourceRoot $hintedRoot)) {
       return $hintedRoot
     }
 
+    $invalidSourceRootHint = $true
+  }
+
+  if ($invalidSourceRootHint) {
     throw "Installed plugin source-root hint is invalid. Refresh the plugin cache or set SYMPP_REPO_ROOT."
   }
 
-  $sourceCandidate = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../../.."))
-  if (Test-Path -LiteralPath (Join-Path $sourceCandidate "elixir/mix.exs")) {
-    return $sourceCandidate
-  }
-
-  throw "Cannot infer the Symphony++ checkout. Run scripts/refresh-local-plugin.ps1 from the repo or set SYMPP_REPO_ROOT to the repository root before starting the plugin MCP server."
+  throw "Cannot infer the Symphony++ runtime source. Reinstall or refresh the Symphony++ marketplace, or set SYMPP_REPO_ROOT to the source checkout root before starting the plugin MCP server."
 }
 
 function Resolve-SymppHome {
