@@ -257,6 +257,170 @@ function Test-SourceCheckoutRoot([string]$Path) {
     (Test-Path -LiteralPath (Join-Path $fullPath "scripts/smoke-sympp-mcp-http.ps1"))
 }
 
+function Get-RelativePackagePath([string]$Root, [string]$Path) {
+  $rootPath = [System.IO.Path]::GetFullPath($Root).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+  $fullPath = [System.IO.Path]::GetFullPath($Path)
+  $rootWithSeparator = $rootPath + [System.IO.Path]::DirectorySeparatorChar
+  $comparison = if (Test-PathComparisonCaseInsensitive $rootPath) {
+    [System.StringComparison]::OrdinalIgnoreCase
+  } else {
+    [System.StringComparison]::Ordinal
+  }
+
+  if ($fullPath.StartsWith($rootWithSeparator, $comparison)) {
+    return $fullPath.Substring($rootWithSeparator.Length).Replace("\", "/")
+  }
+
+  throw "Package fingerprint path is outside package root: $fullPath"
+}
+
+function Test-PackageFingerprintRelativePath([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    return $false
+  }
+
+  $normalized = $Path.Replace("\", "/")
+  return $normalized -eq ".mcp.json" -or
+    $normalized.StartsWith(".codex-plugin/", [System.StringComparison]::Ordinal) -or
+    $normalized.StartsWith("assets/", [System.StringComparison]::Ordinal) -or
+    $normalized.StartsWith("scripts/", [System.StringComparison]::Ordinal) -or
+    $normalized.StartsWith("skills/", [System.StringComparison]::Ordinal) -or
+    $normalized.StartsWith("skills-default/", [System.StringComparison]::Ordinal)
+}
+
+function Get-PackageFingerprintFiles([string]$Root) {
+  if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+    return @()
+  }
+
+  $fingerprintInputs = @(".codex-plugin", ".mcp.json", "assets", "scripts", "skills", "skills-default")
+  return @(
+    foreach ($relativePath in $fingerprintInputs) {
+      $candidate = Join-Path $Root $relativePath
+      if (-not (Test-Path -LiteralPath $candidate)) {
+        continue
+      }
+
+      $item = Get-Item -LiteralPath $candidate -Force
+      if ($item.PSIsContainer) {
+        Get-ChildItem -LiteralPath $candidate -File -Recurse -Force
+      } else {
+        $item
+      }
+    }
+  )
+}
+
+function Get-GitTrackedPackageFingerprintPaths([string]$SourceRoot, [string]$PackageRoot) {
+  if ([string]::IsNullOrWhiteSpace($SourceRoot) -or [string]::IsNullOrWhiteSpace($PackageRoot)) {
+    return @()
+  }
+
+  $git = Get-Command git -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $git) {
+    return @()
+  }
+
+  try {
+    $packagePrefix = Get-RelativePackagePath $SourceRoot $PackageRoot
+    $trackedPaths = @(& $git.Source @("-C", $SourceRoot, "ls-files", "--", $packagePrefix) 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+      return @()
+    }
+
+    $prefix = $packagePrefix.TrimEnd("/") + "/"
+    return @(
+      $trackedPaths |
+        ForEach-Object { [string]$_ } |
+        Where-Object { $_.StartsWith($prefix, [System.StringComparison]::Ordinal) } |
+        ForEach-Object { $_.Substring($prefix.Length) } |
+        Where-Object { Test-PackageFingerprintRelativePath $_ } |
+        Sort-Object -Unique
+    )
+  } catch {
+    return @()
+  }
+}
+
+function Get-ExistingPackageFingerprintPaths([string]$Root) {
+  return @(
+    Get-PackageFingerprintFiles $Root |
+      ForEach-Object { Get-RelativePackagePath $Root $_.FullName } |
+      Sort-Object -Unique
+  )
+}
+
+function Merge-PackageFingerprintPaths([string[]]$SourcePaths, [string[]]$CachePaths) {
+  return @(
+    @($SourcePaths) + @($CachePaths) |
+      Where-Object { Test-PackageFingerprintRelativePath $_ } |
+      Sort-Object -Unique
+  )
+}
+
+function Get-FileSha256Hex([string]$Path) {
+  $stream = [System.IO.File]::OpenRead($Path)
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    return [System.BitConverter]::ToString($sha.ComputeHash($stream)).Replace("-", "").ToLowerInvariant()
+  } finally {
+    $sha.Dispose()
+    $stream.Dispose()
+  }
+}
+
+function Get-PluginPackageFingerprint([string]$Root, [string[]]$RelativePaths = @()) {
+  if ($RelativePaths.Count -gt 0) {
+    $entries = @(
+      $RelativePaths |
+        ForEach-Object { [string]$_ } |
+        Sort-Object -Unique |
+        ForEach-Object {
+          $relativePath = $_.Replace("\", "/")
+          $fullPath = Join-Path $Root $relativePath
+          if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+            "$relativePath`0$(Get-FileSha256Hex $fullPath)"
+          } else {
+            "$relativePath`0<missing>"
+          }
+        }
+    )
+    if ($entries.Count -eq 0) {
+      return $null
+    }
+
+    $payload = [System.String]::Join("`n", $entries)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+      return [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace("-", "").ToLowerInvariant()
+    } finally {
+      $sha.Dispose()
+    }
+  }
+
+  $files = @(Get-PackageFingerprintFiles $Root)
+  if ($files.Count -eq 0) {
+    return $null
+  }
+
+  $entries = @(
+    $files |
+      ForEach-Object {
+        "$(Get-RelativePackagePath $Root $_.FullName)`0$(Get-FileSha256Hex $_.FullName)"
+      } |
+      Sort-Object
+  )
+  $payload = [System.String]::Join("`n", $entries)
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+    return [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace("-", "").ToLowerInvariant()
+  } finally {
+    $sha.Dispose()
+  }
+}
+
 function Get-SourceCheckoutFromPluginRoot([string]$PluginRoot) {
   if ([string]::IsNullOrWhiteSpace($PluginRoot)) {
     return $null
@@ -535,6 +699,51 @@ function Invoke-SelfTest {
   $expectedVerifyCommand = "& $(Quote-PowerShellLiteral $expectedSourceCommandPath) -RepoRoot $(Quote-PowerShellLiteral (Resolve-OptionalFullPath $sourceCommandRoot))"
   if ($verifyCommand -ne $expectedVerifyCommand) {
     throw "New-VerifyHttpMcpCommand did not emit a repo-root-bound smoke invocation."
+  }
+
+  $git = Get-Command git -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($git) {
+    $gitRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("sympp-fingerprint-git-" + [guid]::NewGuid().ToString("N"))
+    try {
+      $packageRoot = Join-Path $gitRoot "plugins/symphony-plus-plus-mcp"
+      $trackedPath = Join-Path $packageRoot "scripts/tracked.ps1"
+      $scratchPath = Join-Path $packageRoot "scripts/scratch.tmp"
+      New-Item -ItemType Directory -Path (Split-Path -Parent $trackedPath) -Force | Out-Null
+      Set-Content -LiteralPath $trackedPath -Value "tracked" -NoNewline
+      Set-Content -LiteralPath $scratchPath -Value "scratch" -NoNewline
+      & $git.Source @("-C", $gitRoot, "init", "-q") | Out-Null
+      & $git.Source @("-C", $gitRoot, "add", "plugins/symphony-plus-plus-mcp/scripts/tracked.ps1") | Out-Null
+      $trackedFingerprintPaths = @(Get-GitTrackedPackageFingerprintPaths $gitRoot $packageRoot)
+      if ($trackedFingerprintPaths.Count -ne 1 -or $trackedFingerprintPaths[0] -ne "scripts/tracked.ps1") {
+        throw "Git-tracked package fingerprint paths should exclude untracked scratch files."
+      }
+
+      $cacheRoot = Join-Path $gitRoot "cache/symphony-plus-plus-mcp"
+      New-Item -ItemType Directory -Path (Join-Path $cacheRoot "scripts") -Force | Out-Null
+      Set-Content -LiteralPath (Join-Path $cacheRoot "scripts/tracked.ps1") -Value "tracked" -NoNewline
+      Set-Content -LiteralPath (Join-Path $cacheRoot "scripts/removed.ps1") -Value "removed" -NoNewline
+      $mergedFingerprintPaths = @(Merge-PackageFingerprintPaths $trackedFingerprintPaths @(Get-ExistingPackageFingerprintPaths $cacheRoot))
+      if ($mergedFingerprintPaths -notcontains "scripts/removed.ps1") {
+        throw "Cache-only package files should be included in freshness comparisons."
+      }
+      $sourceFingerprint = Get-PluginPackageFingerprint $packageRoot $mergedFingerprintPaths
+      $cacheFingerprint = Get-PluginPackageFingerprint $cacheRoot $mergedFingerprintPaths
+      if ($sourceFingerprint -eq $cacheFingerprint) {
+        throw "Cache-only package files should produce a fingerprint mismatch."
+      }
+    } finally {
+      Remove-Item -LiteralPath $gitRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  $invalidSourcePackage = [pscustomobject]@{
+    manifest_exists = $true
+    manifest_parse_error = "bad json"
+    package_name = "symphony-plus-plus-mcp"
+    manifest_version = $null
+  }
+  if (Test-SourcePackageSummaryComparable $invalidSourcePackage "symphony-plus-plus-mcp") {
+    throw "Invalid source package summaries must not be comparable for cache freshness."
   }
 
   if ((Normalize-ComparablePath "~/.codex") -ne (Normalize-ComparablePath (Join-Path $HOME ".codex"))) {
@@ -1269,6 +1478,7 @@ function Get-PluginPackageSummary([string]$Root, [string]$Label, [string]$Packag
     symphony_plus_plus_server = if (-not $manifestExists) { "missing_manifest" } elseif ($manifestParseError) { "manifest_parse_error" } elseif ($manifestHasMcpServers -and $isOptInMcpPackage) { $mcpServerStatus } elseif ($defaultPackageBundlesMcp) { "incompatible_default_plugin_bundles_mcp" } else { $mcpServerStatus }
     has_start_script = Test-Path -LiteralPath (Join-Path $Root "scripts/start-sympp-mcp.ps1")
     source_root_hint = $sourceHint
+    package_fingerprint = Get-PluginPackageFingerprint $Root
   }
 }
 
@@ -2325,6 +2535,11 @@ function Invoke-McpCompanionEnable($Summary, [string]$RequestedMarketplaceName, 
     throw "Cannot enable symphony-plus-plus-mcp because the companion cache or manifest is missing or invalid. Doctor next action: $nextActions"
   }
 
+  if (Test-PackageFreshnessStale $Summary.readiness.workrequest_mcp.cache_freshness) {
+    $nextActions = Format-ReadinessActions $Summary.readiness.next_actions
+    throw "Cannot enable symphony-plus-plus-mcp because the companion cache is stale. Doctor next action: $nextActions"
+  }
+
   $marketplaceName = [string]$companionPackage.marketplace_name
   if ([string]::IsNullOrWhiteSpace($marketplaceName) -or $marketplaceName -eq "*") {
     throw "Cannot determine the target marketplace for symphony-plus-plus-mcp; rerun with -MarketplaceName <marketplace>."
@@ -2568,6 +2783,97 @@ function Test-McpCompanionPackageReady($Package) {
     $Package.reference_mcp_server_status -eq "ok"
 }
 
+function Get-SourcePackageSummaryFromCheckout([string]$SourceRoot, [string]$PackageName) {
+  if ([string]::IsNullOrWhiteSpace($SourceRoot) -or [string]::IsNullOrWhiteSpace($PackageName)) {
+    return $null
+  }
+
+  $packageRoot = Resolve-OptionalFullPath (Join-Path $SourceRoot "plugins/$PackageName")
+  if (-not $packageRoot -or -not (Test-Path -LiteralPath (Join-Path $packageRoot ".codex-plugin/plugin.json"))) {
+    return $null
+  }
+
+  return Get-PluginPackageSummary $packageRoot "source" "source"
+}
+
+function New-PackageFreshnessResult([string]$Status, $Package, $SourcePackage) {
+  $result = [ordered]@{ status = $Status }
+  if ($null -ne $Package) {
+    $result.package_name = [string]$Package.package_name
+    $result.cache_label = [string]$Package.label
+    $result.cache_version = [string]$Package.manifest_version
+    $result.cache_root = [string]$Package.root
+  }
+  if ($null -ne $SourcePackage) {
+    $result.source_version = [string]$SourcePackage.manifest_version
+    $result.source_root = [string]$SourcePackage.root
+  }
+
+  return [pscustomobject]$result
+}
+
+function Test-SourcePackageSummaryComparable($SourcePackage, [string]$PackageName) {
+  return $null -ne $SourcePackage -and
+    $SourcePackage.manifest_exists -eq $true -and
+    [string]::IsNullOrWhiteSpace([string]$SourcePackage.manifest_parse_error) -and
+    [string]$SourcePackage.package_name -eq $PackageName -and
+    -not [string]::IsNullOrWhiteSpace([string]$SourcePackage.manifest_version)
+}
+
+function Get-InstalledPackageFreshness($Package, [string]$SourceRoot) {
+  if ($null -eq $Package) {
+    return New-PackageFreshnessResult "not_installed" $null $null
+  }
+
+  $sourcePackage = Get-SourcePackageSummaryFromCheckout $SourceRoot ([string]$Package.package_name)
+  if (-not (Test-SourcePackageSummaryComparable $sourcePackage ([string]$Package.package_name))) {
+    return New-PackageFreshnessResult "unknown_source" $Package $null
+  }
+
+  if ([string]$Package.manifest_version -ne [string]$sourcePackage.manifest_version) {
+    return New-PackageFreshnessResult "version_mismatch" $Package $sourcePackage
+  }
+
+  $trackedRelativePaths = @(Get-GitTrackedPackageFingerprintPaths $SourceRoot ([string]$sourcePackage.root))
+  if ($trackedRelativePaths.Count -eq 0) {
+    return New-PackageFreshnessResult "unknown_fingerprint" $Package $sourcePackage
+  }
+
+  $relativePaths = @(Merge-PackageFingerprintPaths $trackedRelativePaths @(Get-ExistingPackageFingerprintPaths ([string]$Package.root)))
+  $cacheFingerprint = Get-PluginPackageFingerprint ([string]$Package.root) $relativePaths
+  $sourceFingerprint = Get-PluginPackageFingerprint ([string]$sourcePackage.root) $relativePaths
+
+  if ([string]::IsNullOrWhiteSpace([string]$cacheFingerprint) -or [string]::IsNullOrWhiteSpace([string]$sourceFingerprint)) {
+    return New-PackageFreshnessResult "unknown_fingerprint" $Package $sourcePackage
+  }
+
+  if ([string]$cacheFingerprint -eq [string]$sourceFingerprint) {
+    return New-PackageFreshnessResult "current" $Package $sourcePackage
+  }
+
+  return New-PackageFreshnessResult "content_mismatch" $Package $sourcePackage
+}
+
+function Test-PackageFreshnessStale($Freshness) {
+  return $null -ne $Freshness -and @("version_mismatch", "content_mismatch") -contains [string]$Freshness.status
+}
+
+function Format-PackageFreshnessMessage($Freshness) {
+  if ($null -eq $Freshness) {
+    return "Package cache freshness could not be evaluated."
+  }
+
+  if ($Freshness.status -eq "version_mismatch") {
+    return "$($Freshness.package_name) cache $($Freshness.cache_label) has manifest version $($Freshness.cache_version), but the inferred source checkout has version $($Freshness.source_version)."
+  }
+
+  if ($Freshness.status -eq "content_mismatch") {
+    return "$($Freshness.package_name) cache $($Freshness.cache_label) has the same manifest version as the inferred source checkout, but packaged file contents differ."
+  }
+
+  return "$($Freshness.package_name) cache freshness status: $($Freshness.status)."
+}
+
 function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName, $SourceCheckout, [string]$CodexHomePath) {
   $defaultMarketplaceAmbiguous = Test-ActivationMarketplaceAmbiguous $CachePackages $MarketplaceName "symphony-plus-plus"
   $companionMarketplaceAmbiguous = Test-ActivationMarketplaceAmbiguous $CachePackages $MarketplaceName "symphony-plus-plus-mcp"
@@ -2616,23 +2922,39 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     $enabledCompanionEntries |
       Where-Object { [string]$_.marketplace_name -ne [string]$companionMarketplace }
   )
-  $defaultReady = Test-DefaultPackageReady $defaultPackage
-  $companionReady = Test-McpCompanionPackageReady $companionPackage
-  $companionProvidesSoloSkills = $companionReady -and $companionEnabled -eq $true
   $defaultCodexHomeSelected = Test-DefaultCodexHome $CodexHomePath
   $otherMarketplaceMcpCompanionEnabled = $enabledOtherCompanionEntries.Count -gt 0
   $defaultHomeMcpCompanionEnabled = $configExists -and $enabledCompanionEntries.Count -gt 0 -and $defaultCodexHomeSelected
   $sourceRoot = if ($null -ne $SourceCheckout) { [string]$SourceCheckout.root } else { $null }
+  $defaultFreshness = Get-InstalledPackageFreshness $defaultPackage $sourceRoot
+  $companionFreshness = Get-InstalledPackageFreshness $companionPackage $sourceRoot
+  $defaultCacheStale = Test-PackageFreshnessStale $defaultFreshness
+  $companionCacheStale = Test-PackageFreshnessStale $companionFreshness
+  $defaultStructurallyReady = Test-DefaultPackageReady $defaultPackage
+  $companionStructurallyReady = Test-McpCompanionPackageReady $companionPackage
+  $defaultReady = $defaultStructurallyReady -and -not $defaultCacheStale
+  $companionReady = $companionStructurallyReady -and -not $companionCacheStale
+  $companionProvidesSoloSkills = $companionReady -and $companionEnabled -eq $true
   $refreshCodexHomeArg = if ([string]::IsNullOrWhiteSpace($CodexHomePath)) { "" } else { "-CodexHome $(Quote-PowerShellLiteral $CodexHomePath) " }
   $defaultRefreshMarketplaceArg = if ([string]::IsNullOrWhiteSpace($defaultMarketplace)) { "" } else { "-MarketplaceName $(Quote-PowerShellLiteral $defaultMarketplace) " }
   $companionRefreshMarketplaceArg = if ([string]::IsNullOrWhiteSpace($companionMarketplace)) { "" } else { "-MarketplaceName $(Quote-PowerShellLiteral $companionMarketplace) " }
   $actions = @()
   $warnings = @()
 
+  if ($defaultCacheStale) {
+    $warnings += New-ReadinessWarning "default_plugin_cache_stale" "$(Format-PackageFreshnessMessage $defaultFreshness) Refresh the installed cache before relying on newly merged skill or wrapper changes."
+    $actions += New-SourceCheckoutAction "refresh_default_plugin_cache" "solo_session" "Refresh the stale skill-only Symphony++ plugin cache." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($defaultRefreshMarketplaceArg)-PluginName symphony-plus-plus -ValidateInstalledCache")
+  }
+
+  if ($companionCacheStale) {
+    $warnings += New-ReadinessWarning "mcp_companion_cache_stale" "$(Format-PackageFreshnessMessage $companionFreshness) Refresh the installed cache before relying on MCP launcher, dashboard, or skill changes."
+    $actions += New-SourceCheckoutAction "refresh_mcp_companion_cache" "workrequest_mcp" "Refresh the stale opt-in MCP companion cache and validate its command-backed .mcp.json." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($companionRefreshMarketplaceArg)-PluginName symphony-plus-plus-mcp -ValidateInstalledCache")
+  }
+
   if (-not $configExists) {
-    $createConfigMessage = if (-not $companionSelectionBlocked -and $companionReady -and $defaultCodexHomeSelected) {
+    $createConfigMessage = if (-not $companionSelectionBlocked -and $companionStructurallyReady -and $defaultCodexHomeSelected) {
       "No Codex config exists at $($Config.path). Choose a dedicated Symphony++ MCP Codex home before enabling the companion; the default Codex home is intentionally refused."
-    } elseif (-not $companionSelectionBlocked -and $companionReady) {
+    } elseif (-not $companionSelectionBlocked -and $companionStructurallyReady) {
       "No Codex config exists at $($Config.path). Run the explicit MCP companion enable command below to create it, or restore the config before diagnosing unrelated plugin enablement."
     } else {
       "Create or restore the Codex config at $($Config.path) before plugin enablement can be diagnosed."
@@ -2653,15 +2975,17 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     "ready_via_mcp_companion"
   } elseif ($defaultMarketplaceAmbiguous) {
     "default_plugin_marketplace_ambiguous"
-  } elseif (-not $defaultReady) {
-    "default_plugin_cache_missing_or_invalid"
   } elseif ($defaultEnabled -ne $true) {
     "default_plugin_not_enabled"
+  } elseif ($defaultCacheStale) {
+    "default_plugin_cache_stale"
+  } elseif (-not $defaultStructurallyReady) {
+    "default_plugin_cache_missing_or_invalid"
   } else {
     "ready"
   }
 
-  if (-not $defaultMarketplaceAmbiguous -and -not $crossMarketplacePairingAmbiguous -and -not $defaultReady -and -not $companionProvidesSoloSkills) {
+  if (-not $defaultMarketplaceAmbiguous -and -not $crossMarketplacePairingAmbiguous -and -not $defaultStructurallyReady -and -not $companionProvidesSoloSkills) {
     $actions += New-SourceCheckoutAction "refresh_default_plugin_cache" "solo_session" "Refresh the skill-only Symphony++ plugin cache." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($defaultRefreshMarketplaceArg)-PluginName symphony-plus-plus -ValidateInstalledCache")
   } elseif (-not $defaultMarketplaceAmbiguous -and -not $crossMarketplacePairingAmbiguous -and $configExists -and $defaultEnabled -ne $true -and -not $companionProvidesSoloSkills) {
     $defaultConfigKey = Get-ActivationConfigKey "symphony-plus-plus" $defaultMarketplace
@@ -2672,7 +2996,7 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     "config_missing"
   } elseif ($companionMarketplaceAmbiguous) {
     "companion_marketplace_ambiguous"
-  } elseif (-not $companionReady) {
+  } elseif (-not $companionStructurallyReady) {
     if ($null -eq $companionPackage) {
       "companion_cache_missing"
     } else {
@@ -2682,6 +3006,8 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     "companion_config_entry_unsupported"
   } elseif ($companionEnabled -ne $true) {
     "companion_installed_not_enabled"
+  } elseif ($companionCacheStale) {
+    "companion_cache_stale"
   } elseif ($companionPackage.http_mcp_reachability_status -eq "not_applicable") {
     "ready"
   } elseif ($companionPackage.http_mcp_reachability_status -eq "mcp_endpoint_available") {
@@ -2692,20 +3018,20 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     [string]$companionPackage.http_mcp_reachability_status
   }
 
-  if (-not $companionSelectionBlocked -and -not $companionReady) {
+  if (-not $companionSelectionBlocked -and -not $companionStructurallyReady) {
     $actions += New-SourceCheckoutAction "refresh_mcp_companion_cache" "workrequest_mcp" "Refresh the opt-in MCP companion cache and validate its command-backed .mcp.json." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($companionRefreshMarketplaceArg)-PluginName symphony-plus-plus-mcp -ValidateInstalledCache")
-  } elseif (-not $companionSelectionBlocked -and $companionReady -and $companionEnabled -ne $true -and $otherMarketplaceMcpCompanionEnabled) {
+  } elseif (-not $companionSelectionBlocked -and $companionStructurallyReady -and $companionEnabled -ne $true -and $otherMarketplaceMcpCompanionEnabled) {
     $actions += New-ReadinessAction "resolve_mcp_companion_marketplace_conflict" "config" "Another symphony-plus-plus-mcp marketplace is already enabled in this Codex config; disable or relocate that entry before enabling $companionMarketplace."
-  } elseif (-not $companionSelectionBlocked -and $companionReady -and $companionEnabled -ne $true -and $defaultCodexHomeSelected) {
+  } elseif (-not $companionSelectionBlocked -and $companionStructurallyReady -and $companionEnabled -ne $true -and $defaultCodexHomeSelected) {
     $actions += New-ReadinessAction "choose_dedicated_codex_home" "workrequest_mcp" "Rerun the doctor and enable command with -CodexHome <dedicated-symphony-plus-plus-codex-home>; refusing to enable symphony-plus-plus-mcp in the default Codex home keeps generic worker/review configs MCP-clean."
-  } elseif (-not $companionSelectionBlocked -and $companionReady -and $unsupportedTargetCompanionConfigEntry) {
+  } elseif (-not $companionSelectionBlocked -and $companionStructurallyReady -and $unsupportedTargetCompanionConfigEntry) {
     $companionConfigKey = Get-ActivationConfigKey "symphony-plus-plus-mcp" $companionMarketplace
     $rewriteMessage = @(
       "A $companionConfigKey config entry exists, but its enabled value is missing, duplicate, or unsupported."
       "Rewrite it as a supported boolean plugin entry before using -EnableMcpCompanion, for example [plugins.`"$companionConfigKey`"] enabled = false."
     ) -join " "
     $actions += New-ReadinessAction "rewrite_mcp_companion_config_entry" "config" $rewriteMessage
-  } elseif (-not $companionSelectionBlocked -and $companionReady -and $companionEnabled -ne $true -and $Config.global_sympp_mcp_entry -ne $true) {
+  } elseif (-not $companionSelectionBlocked -and $companionStructurallyReady -and -not $companionCacheStale -and $companionEnabled -ne $true -and $Config.global_sympp_mcp_entry -ne $true) {
     $companionConfigKey = Get-ActivationConfigKey "symphony-plus-plus-mcp" $companionMarketplace
     $enableArgs = "$($refreshCodexHomeArg)$($companionRefreshMarketplaceArg)-EnableMcpCompanion"
     $enableCommand = New-CurrentDiagnosticCommand $enableArgs
@@ -2751,6 +3077,8 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     "default_codex_home_mcp_companion_enabled"
   } elseif ($otherMarketplaceMcpCompanionEnabled) {
     "mcp_companion_enabled_in_other_marketplace"
+  } elseif ($defaultStatus -eq "default_plugin_cache_stale" -or $companionStatus -eq "companion_cache_stale") {
+    "plugin_cache_stale"
   } elseif ($soloReady -and $companionStatus -eq "ready") {
     "healthy_local_workrequest_mcp"
   } elseif ($defaultStatus -eq "ready" -and $companionStatus -eq "companion_installed_not_enabled") {
@@ -2777,6 +3105,7 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
       plugin_enabled = $defaultEnabled
       cache_label = if ($null -ne $defaultPackage) { $defaultPackage.label } else { $null }
       cache_lifecycle = if ($null -ne $defaultPackage) { $defaultPackage.default_plugin_lifecycle_status } else { $null }
+      cache_freshness = $defaultFreshness
     }
     workrequest_mcp = [pscustomobject]@{
       status = $companionStatus
@@ -2784,6 +3113,7 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
       companion_plugin_enabled = $companionEnabled
       cache_label = if ($null -ne $companionPackage) { $companionPackage.label } else { $null }
       cache_lifecycle = if ($null -ne $companionPackage) { $companionPackage.default_plugin_lifecycle_status } else { $null }
+      cache_freshness = $companionFreshness
       reference_mcp_server_status = if ($null -ne $companionPackage) { $companionPackage.reference_mcp_server_status } else { $null }
       http_mcp_reachability_status = if ($null -ne $companionPackage) { $companionPackage.http_mcp_reachability_status } else { $null }
       transport = if ($null -ne $companionPackage -and $companionPackage.http_mcp_reachability_status -eq "not_applicable") { "command_stdio_to_http_bridge" } else { "http_url" }
@@ -2816,12 +3146,14 @@ function Write-DoctorSummary($Summary) {
   Write-Host "  config key: $($readiness.solo_session.plugin_config_key)"
   Write-Host "  enabled: $($readiness.solo_session.plugin_enabled)"
   Write-Host "  cache: $($readiness.solo_session.cache_label) / $($readiness.solo_session.cache_lifecycle)"
+  Write-Host "  cache freshness: $($readiness.solo_session.cache_freshness.status)"
   Write-Host ""
   Write-Host "WorkRequest MCP companion"
   Write-Host "  status: $($readiness.workrequest_mcp.status)"
   Write-Host "  config key: $($readiness.workrequest_mcp.companion_config_key)"
   Write-Host "  enabled: $($readiness.workrequest_mcp.companion_plugin_enabled)"
   Write-Host "  cache: $($readiness.workrequest_mcp.cache_label) / $($readiness.workrequest_mcp.cache_lifecycle)"
+  Write-Host "  cache freshness: $($readiness.workrequest_mcp.cache_freshness.status)"
   Write-Host "  server: $($readiness.workrequest_mcp.reference_mcp_server_status)"
   Write-Host "  endpoint: $($readiness.workrequest_mcp.http_mcp_reachability_status)"
   Write-Host "  transport: $($readiness.workrequest_mcp.transport)"

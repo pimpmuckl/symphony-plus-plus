@@ -140,6 +140,10 @@ Repo validation proves only the plugin package contract:
   confirms default cache roots do not contain `.mcp.json`, checks the opt-in
   `symphony_plus_plus` command-backed launcher entry, and validates the Solo
   Session wrapper from each cache root.
+- `plugins/symphony-plus-plus/scripts/diagnose-mcp-lifecycle.ps1 -Doctor`
+  compares installed cache fingerprints with the inferred source checkout so a
+  same-version stale cache reports an explicit refresh action instead of a
+  shape-only ready result.
 - `scripts/start-sympp-mcp.cmd -ValidateOnly` can resolve the checkout and
   launch through `pwsh.exe` or Windows PowerShell. Installed marketplace
   launchers discover the full marketplace source clone automatically; they do
@@ -402,10 +406,11 @@ The explicit MCP reference entry runs
 That wrapper prefers `pwsh.exe` and falls back to Windows PowerShell so hosts do
 not need a hard-coded PowerShell executable in Codex MCP config.
 When the plugin is executed from this source checkout, the wrapper can infer the
-repository root. When it runs from an installed plugin cache, the wrapper first
-uses non-secret `.sympp-source-root` hints from current S++ cache entries.
-Refresh the local cache with `scripts/refresh-local-plugin.ps1` if those hints
-are missing or stale. Set `SYMPP_REPO_ROOT` only as a temporary override to the
+repository root. When it runs from an installed plugin cache, the wrapper uses
+the Codex marketplace source clone first and falls back to non-secret
+`.sympp-source-root` hints from current S++ cache entries. Refresh the local
+cache with `scripts/refresh-local-plugin.ps1` if the cache fingerprint, source
+clone, or hints are stale. Set `SYMPP_REPO_ROOT` only as a temporary override to the
 Symphony++ source checkout containing `elixir/mix.exs`; it is not the
 caller/task repository root. Set `SYMPP_DATABASE` only when the MCP server
 should use a specific SQLite ledger instead of the runtime default.
