@@ -73,10 +73,10 @@ next action:
 .\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName symphony-plus-plus -Doctor
 ```
 
-The doctor checks cache, config, and the command-backed launcher shape. It
-cannot inspect tools already registered inside an open Codex model session; if
-the doctor is healthy but tools are still absent, restart or reload the
-dedicated MCP-enabled session.
+The doctor checks cache, config, command-backed launcher shape, and package
+fingerprints against the inferred source checkout. It cannot inspect tools
+already registered inside an open Codex model session; if the doctor is healthy
+but tools are still absent, restart or reload the dedicated MCP-enabled session.
 
 Keep this companion out of generic worker, `worker_smart`, review-suite, and
 `codex review` configs so ordinary review and execution sessions stay MCP-clean.

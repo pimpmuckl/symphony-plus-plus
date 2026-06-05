@@ -656,14 +656,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         assert json_status == 0, json_output
         readiness = json_output |> Jason.decode!() |> Map.fetch!("readiness")
-        assert readiness["overall_status"] == "solo_ready_mcp_companion_not_enabled"
-        assert readiness["solo_session"]["status"] == "ready"
+        assert readiness["overall_status"] == "plugin_cache_stale"
+        assert readiness["solo_session"]["status"] == "default_plugin_cache_stale"
         assert readiness["workrequest_mcp"]["status"] == "companion_installed_not_enabled"
         assert readiness["workrequest_mcp"]["companion_config_key"] == "symphony-plus-plus-mcp@jonat-local"
-        enable_action = Enum.find(readiness["next_actions"], &(&1["code"] == "enable_mcp_companion"))
-        assert enable_action
-        assert enable_action["message"] =~ ~s([plugins."symphony-plus-plus-mcp@jonat-local"])
-        assert enable_action["command"] =~ "-EnableMcpCompanion"
+        refresh_action = Enum.find(readiness["next_actions"], &(&1["code"] == "refresh_mcp_companion_cache"))
+        assert refresh_action
+        refute Enum.any?(readiness["next_actions"], &(&1["code"] == "enable_mcp_companion"))
         assert readiness["generic_review_boundary"] =~ "generic worker"
 
         {doctor_output, doctor_status} =
@@ -683,10 +682,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert doctor_status == 0, doctor_output
-        assert doctor_output =~ "overall: solo_ready_mcp_companion_not_enabled"
-        assert doctor_output =~ ~s([plugins."symphony-plus-plus-mcp@jonat-local"])
-        assert doctor_output =~ "-EnableMcpCompanion"
-        assert doctor_output =~ "Restart or reload that dedicated Codex session"
+        assert doctor_output =~ "overall: plugin_cache_stale"
+        assert doctor_output =~ "config key: symphony-plus-plus-mcp@jonat-local"
+        assert doctor_output =~ "refresh_mcp_companion_cache"
+        assert doctor_output =~ "restart or reload the dedicated MCP-enabled session"
         assert doctor_output =~ "Keep symphony-plus-plus-mcp out of generic worker"
       after
         File.rm_rf(temp_codex_home)
@@ -1928,11 +1927,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         valid_version_readiness = valid_version_output |> Jason.decode!() |> Map.fetch!("readiness")
         assert valid_version_readiness["workrequest_mcp"]["status"] == "companion_installed_not_enabled"
         assert valid_version_readiness["workrequest_mcp"]["cache_label"] == "10.0.0"
+        assert valid_version_readiness["workrequest_mcp"]["cache_freshness"]["status"] == "version_mismatch"
 
-        refute Enum.any?(
-                 valid_version_readiness["next_actions"],
-                 &(&1["code"] == "refresh_mcp_companion_cache")
-               )
+        refresh_action =
+          Enum.find(valid_version_readiness["next_actions"], &(&1["code"] == "refresh_mcp_companion_cache"))
+
+        assert refresh_action["command"] =~ "-PluginName symphony-plus-plus-mcp"
       after
         File.rm_rf(temp_codex_home)
       end
@@ -2090,7 +2090,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
-  test "lifecycle diagnostic treats enabled MCP companion as a Solo skill provider" do
+  test "lifecycle diagnostic does not treat stale enabled MCP companion as a Solo skill provider" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-readiness-mcp-only-#{System.unique_integer([:positive])}")
 
@@ -2139,7 +2139,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         assert json_status == 0, json_output
         readiness = json_output |> Jason.decode!() |> Map.fetch!("readiness")
-        assert readiness["solo_session"]["status"] == "ready_via_mcp_companion"
+        assert readiness["overall_status"] == "plugin_cache_stale"
+        assert readiness["solo_session"]["status"] == "default_plugin_not_enabled"
+        assert readiness["workrequest_mcp"]["status"] == "companion_cache_stale"
         refute Enum.any?(readiness["next_actions"], &(&1["code"] == "enable_default_plugin"))
         assert readiness["session_visibility_note"] =~ "cannot inspect tools already registered"
       after
@@ -3861,28 +3863,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   defp command_mcp_config_json, do: Jason.encode!(command_mcp_config())
 
   defp write_activation_cache(codex_home, marketplace_name) do
-    default_manifest_path =
-      plugin_cache_path(codex_home, ["local", ".codex-plugin", "plugin.json"], "symphony-plus-plus", marketplace_name)
+    write_activation_cache_plugin(codex_home, marketplace_name, "symphony-plus-plus")
+    write_activation_cache_plugin(codex_home, marketplace_name, "symphony-plus-plus-mcp")
+  end
 
-    companion_manifest_path =
-      plugin_cache_path(codex_home, ["local", ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp", marketplace_name)
+  defp write_activation_cache_plugin(codex_home, marketplace_name, plugin_name) do
+    source_root = Path.join(@repo_root, "plugins/#{plugin_name}")
+    cache_root = plugin_cache_path(codex_home, ["local"], plugin_name, marketplace_name)
 
-    companion_mcp_path = plugin_cache_path(codex_home, ["local", ".mcp.json"], "symphony-plus-plus-mcp", marketplace_name)
-
-    File.mkdir_p!(Path.dirname(default_manifest_path))
-    File.write!(default_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => @plugin_version}))
-
-    File.mkdir_p!(Path.dirname(companion_manifest_path))
-
-    File.write!(
-      companion_manifest_path,
-      Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => @plugin_version, "mcpServers" => "./.mcp.json"})
-    )
-
-    File.write!(
-      companion_mcp_path,
-      command_mcp_config_json()
-    )
+    File.rm_rf!(cache_root)
+    File.mkdir_p!(Path.dirname(cache_root))
+    File.cp_r!(source_root, cache_root)
   end
 
   defp config_backups(codex_home) do
