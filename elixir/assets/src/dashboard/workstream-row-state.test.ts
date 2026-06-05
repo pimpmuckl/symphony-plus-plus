@@ -8,6 +8,7 @@ import {
   rowProgressIconState,
   requestStatusLabels,
   sliceBlockerCount,
+  sliceGuidanceCount,
   statusBadgeWidthForLabels,
   statusBadgeWidthForRequestDetails,
 } from "./workstream-row-state";
@@ -104,6 +105,31 @@ describe("workstream row state", () => {
         new Map(),
       ),
     ).toBe(1);
+  });
+
+  it("does not show delivery-board attention reasons as human guidance on slice rows", () => {
+    const closeoutSlice = plannedSlice("slice-closeout", "pkg-closeout", "dispatched", "Needs Closeout");
+    closeoutSlice.attention_reason_codes = ["terminal_package_without_delivery_outcome"];
+    closeoutSlice.operational_state = {
+      key: "needs_closeout",
+      label: "Needs Closeout",
+      attention_reason_codes: ["terminal_package_without_delivery_outcome"],
+      attention_items: [{ key: "terminal_package_without_delivery_outcome", label: "Missing Delivery Closeout", tone: "warning" }],
+    };
+
+    expect(sliceGuidanceCount(closeoutSlice, undefined)).toBe(0);
+  });
+
+  it("shows slice guidance only for actual human guidance signals", () => {
+    const questionSlice = plannedSlice("slice-question", "pkg-question", "active", "Active");
+    questionSlice.operational_state = {
+      key: "active",
+      label: "Active",
+      attention_items: [{ key: "clarification_question", label: "Clarification question", tone: "warning" }],
+    };
+
+    expect(sliceGuidanceCount(plannedSlice("slice-human", "pkg-human", "human_info_needed", "Human Info Needed"), undefined)).toBe(1);
+    expect(sliceGuidanceCount(questionSlice, undefined)).toBe(1);
   });
 });
 

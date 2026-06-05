@@ -194,15 +194,14 @@ export function sliceBlockerCount(
   return [operational?.key, slice.work_package_status, slice.status, pkg?.status].includes("blocked") ? 1 : 0;
 }
 
-export function sliceGuidanceCount(slice: PlannedSlice, pkg: WorkPackageCard | undefined, blockerCount: number) {
+export function sliceGuidanceCount(slice: PlannedSlice, pkg: WorkPackageCard | undefined) {
   const operational = sliceOperationalState(slice, pkg);
-  const nonBlockerAttention = (operational?.attention_items ?? []).filter((item) => !attentionItemIsBlocker(item)).length;
-  const reasonCount = Math.max(operational?.attention_reason_codes?.length ?? 0, slice.attention_reason_codes?.length ?? 0);
+  const guidanceAttention = (operational?.attention_items ?? []).filter(attentionItemIsGuidance).length;
   const stateNeedsGuidance = [operational?.key, slice.status, slice.work_package_status, pkg?.status].some((status) =>
-    status === "needs_attention" || status === "human_info_needed",
+    statusIsGuidance(status),
   );
 
-  return Math.max(nonBlockerAttention, reasonCount, blockerCount > 0 ? 0 : stateNeedsGuidance ? 1 : 0);
+  return Math.max(guidanceAttention, stateNeedsGuidance ? 1 : 0);
 }
 
 function attentionBlockerCount(operational?: WorkPackageCard["operational_state"]) {
@@ -225,4 +224,14 @@ function attentionItemIsBlocker(item: NonNullable<NonNullable<WorkPackageCard["o
   const key = (item.key || "").toLowerCase();
   const label = (item.label || "").toLowerCase();
   return key.includes("blocker") || label.includes("blocker") || (item.blocker_ids?.length ?? 0) > 0;
+}
+
+function attentionItemIsGuidance(item: NonNullable<NonNullable<WorkPackageCard["operational_state"]>["attention_items"]>[number]) {
+  const key = (item.key || "").toLowerCase();
+  const label = (item.label || "").toLowerCase();
+  return statusIsGuidance(key) || key.includes("guidance") || key.includes("question") || label.includes("guidance") || label.includes("question");
+}
+
+function statusIsGuidance(status?: string | null) {
+  return status === "human_info_needed" || status === "ready_for_clarification" || status === "clarifying";
 }
