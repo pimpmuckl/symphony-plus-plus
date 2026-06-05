@@ -23,9 +23,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     :windows_credential_manager_unavailable
   ]
 
-  @worker_skill "symphony-plus-plus:symphony-worker"
+  @mcp_worker_skill "symphony-plus-plus-mcp:symphony-worker"
+  @default_worker_skill "symphony-plus-plus:symphony-worker"
   @mcp_work_package_skill "symphony-plus-plus-mcp:symphony-work-package"
   @repo_work_package_skill "symphony-work-package"
+  @preferred_worker_skill_set [@mcp_worker_skill, @mcp_work_package_skill]
 
   @type dispatch_result :: %{
           work_request: WorkRequest.t(),
@@ -229,7 +231,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
         arguments: claim_arguments,
         required_runtime_arguments: runtime_arguments
       },
-      required_skills: [@worker_skill, @mcp_work_package_skill],
+      required_skills: @preferred_worker_skill_set,
+      preferred_skill_set: @preferred_worker_skill_set,
       supported_skill_sets: supported_worker_skill_sets(),
       launch_prompt:
         worker_launch_prompt(
@@ -379,8 +382,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
 
   defp supported_worker_skill_sets do
     [
-      [@worker_skill, @mcp_work_package_skill],
-      [@worker_skill, @repo_work_package_skill]
+      @preferred_worker_skill_set,
+      [@default_worker_skill, @repo_work_package_skill]
     ]
   end
 
@@ -408,7 +411,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     """
     You are assigned Symphony++ WorkPackage JSON id #{work_package_id} from WorkRequest JSON id #{work_request_id}. WorkPackage title JSON data: #{title}.
 
-    Use `#{@worker_skill}` plus either `#{@mcp_work_package_skill}` or the repo-local `#{@repo_work_package_skill}` and the configured Symphony++ MCP server.
+    Preferred packaged setup: use `#{@mcp_worker_skill}` plus `#{@mcp_work_package_skill}` from the opt-in MCP plugin. Repo-local fallback: use `#{@default_worker_skill}` plus copied `#{@repo_work_package_skill}` and the configured Symphony++ MCP server.
     #{ledger_line}
 
     Start from the ledger-backed local claim path. After the package worktree is prepared, call `claim_local_assignment` with #{claim_arguments}. Also provide #{Enum.join(runtime_arguments, ", ")} from the prepared local session. Then call `get_current_assignment()` and read the WorkPackage context before coding.

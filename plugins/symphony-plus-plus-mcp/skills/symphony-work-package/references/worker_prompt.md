@@ -1,6 +1,6 @@
 You are assigned Symphony++ work package <WORK_PACKAGE_ID>: <TITLE>.
 
-Use `symphony-plus-plus:symphony-worker` plus
+Use `symphony-plus-plus-mcp:symphony-worker` plus
 `symphony-plus-plus-mcp:symphony-work-package` and the configured Symphony++
 MCP server.
 Implement only this WorkPackage. Do not implement dependent packages, hooks,

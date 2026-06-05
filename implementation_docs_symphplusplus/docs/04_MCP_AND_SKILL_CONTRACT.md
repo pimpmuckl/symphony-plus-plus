@@ -400,6 +400,10 @@ For Codex first-use worker dispatch, the preferred path is the ledger-backed
 local claim. Dispatch returns non-secret `worker_bootstrap` metadata with
 `claim.tool: claim_local_assignment`; workers add local runtime `branch`,
 `worktree_path`, and `caller_id`, then call `get_current_assignment()`.
+`required_skills` remains the compatibility field for older launchers and
+contains the preferred packaged MCP skill pair. Newer launchers should read
+`preferred_skill_set` and `supported_skill_sets` so they can select either the
+packaged MCP companion pair or the repo-local copied-skill fallback pair.
 `caller_id` is the stable local MCP session/launcher identity, not a field
 returned by worktree preparation; reuse it for reconnects because changing it
 within the same local owner is a hard claim rejection.
@@ -928,11 +932,18 @@ The repo-local skill package lives at:
 ```
 
 Install or copy that directory into the worker repository's `.codex/skills/`
-directory when Symphony++ runs against a downstream codebase, or install the
-opt-in MCP companion from `plugins/symphony-plus-plus-mcp/` for the packaged
-`symphony-plus-plus-mcp:symphony-work-package` skill. The default
-`plugins/symphony-plus-plus/` package remains MCP-free and does not provide this
-skill or register `symphony_plus_plus` tools. The skill expects a dedicated
+directory when Symphony++ runs against a downstream codebase and pair it with
+the default `symphony-plus-plus:symphony-worker` skill. For the preferred
+packaged MCP mode, install the opt-in MCP companion from
+`plugins/symphony-plus-plus-mcp/` for the full MCP-mode skill set:
+`symphony-plus-plus-mcp:symphony-solo-session`,
+`symphony-plus-plus-mcp:symphony-worker`,
+`symphony-plus-plus-mcp:symphony-coordinator`,
+`symphony-plus-plus-mcp:symphony-work-package`, and
+`symphony-plus-plus-mcp:symphony-architect`. The default
+`plugins/symphony-plus-plus/` package remains MCP-free and does not provide the
+WorkPackage/architect skills or register `symphony_plus_plus` tools. The MCP
+skills expect a dedicated
 Symphony++ local HTTP MCP session connected to the same ledger as dispatch, with
 the MCP config or companion plugin loaded before the Codex session starts. The
 stdio server remains a legacy/recovery fallback. From this

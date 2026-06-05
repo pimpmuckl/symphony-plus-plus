@@ -14,13 +14,16 @@ For a first local checkout, do the setup once:
 
 - Follow `../../elixir/README.md` for Elixir runtime prerequisites before
   running `mix sympp.cockpit`.
-- Follow `../../plugins/symphony-plus-plus/README.md` to install and enable the
-  default `symphony-plus-plus` Codex plugin for MCP-free planning skills.
-- For WorkRequest architect or WorkPackage worker sessions, also make the
-  opt-in `symphony-plus-plus-mcp` plugin/config available in that dedicated
-  MCP-enabled session before launch. Do not rely on the default plugin alone
-  for the `symphony-plus-plus-mcp:*` skills, and do not enable the MCP plugin
-  for generic review or unrelated Codex sessions.
+- Choose the Codex plugin mode before launch. For non-MCP Solo, worker, or
+  coordinator sessions, enable only the default `symphony-plus-plus` plugin.
+  For packaged WorkRequest architect or WorkPackage worker sessions, enable
+  only the opt-in `symphony-plus-plus-mcp` plugin in that dedicated
+  MCP-enabled config. For the copied-skill WorkPackage fallback, enable the
+  default plugin for `symphony-plus-plus:symphony-worker`, copy the repo-local
+  `symphony-work-package` skill into the worker repo, and configure S++ MCP
+  explicitly before launch. Do not rely on the default plugin for the
+  `symphony-plus-plus-mcp:*` skills, and do not enable the MCP plugin for
+  generic review or unrelated Codex sessions.
 
 During normal feature-branch work, do not refresh or sync the installed
 user-local plugin cache. Keep repo skill/docs changes in source control and
@@ -274,8 +277,14 @@ Give each worker:
 - The prepared worker `branch` and `worktree_path`, plus the stable local MCP
   `caller_id` used for claim/reclaim.
 - The stable `claimed_by` identity for that package.
-- The instruction to use `symphony-plus-plus:symphony-worker` plus
+- The machine-readable `required_skills` compatibility pair for older launchers,
+  plus `preferred_skill_set` and `supported_skill_sets` for launchers that can
+  choose between packaged MCP and copied-skill fallback modes.
+- The preferred instruction to use `symphony-plus-plus-mcp:symphony-worker` plus
   `symphony-plus-plus-mcp:symphony-work-package`.
+- The fallback instruction to use `symphony-plus-plus:symphony-worker` plus
+  copied repo-local `symphony-work-package` when the worker repo uses the
+  copied-skill path instead of the packaged companion.
 - The explicit requirement to launch the worker in an opt-in Symphony++
   MCP-enabled session before using that skill.
 - The instruction to ask the architect first for product, architecture,
@@ -353,7 +362,7 @@ PRs, create WorkRequests, create WorkPackages, or write Linear state.
 | Situation | Skill |
 | --- | --- |
 | WorkRequest-led planning, clarification, decisions, slicing, dispatch, or package guidance routing | `symphony-plus-plus-mcp:symphony-architect` |
-| One assigned WorkPackage with MCP-backed planning and readiness evidence | `symphony-plus-plus:symphony-worker` plus `symphony-plus-plus-mcp:symphony-work-package` |
+| One assigned WorkPackage with MCP-backed planning and readiness evidence | Preferred: `symphony-plus-plus-mcp:symphony-worker` plus `symphony-plus-plus-mcp:symphony-work-package`. Repo-local fallback: `symphony-plus-plus:symphony-worker` plus copied `symphony-work-package`. |
 | One normal local agent session that only needs durable planning memory | `symphony-plus-plus:symphony-solo-session` |
 
 ## Legacy Handoff Defaults

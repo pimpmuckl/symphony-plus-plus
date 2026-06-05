@@ -1,9 +1,9 @@
 You are assigned Symphony++ work package <WORK_PACKAGE_ID>: <TITLE>.
 
-Use `symphony-plus-plus:symphony-worker` for the baseline worker contract. Use
-the repo-local `symphony-work-package` skill when copied into `.codex/skills/`,
-or the plugin-qualified `symphony-plus-plus-mcp:symphony-work-package` when
-installed from plugins. Use the configured Symphony++ MCP server.
+Preferred packaged setup: use `symphony-plus-plus-mcp:symphony-worker` plus
+`symphony-plus-plus-mcp:symphony-work-package`. Repo-local fallback: use
+`symphony-plus-plus:symphony-worker` plus copied `symphony-work-package`. Use
+the configured Symphony++ MCP server.
 Implement only this WorkPackage. Do not implement dependent packages, hooks,
 runtime wiring, dashboard/API, broader GitHub sync, architect delegation, live
 Linear state, or sibling package work unless the architecture agent explicitly

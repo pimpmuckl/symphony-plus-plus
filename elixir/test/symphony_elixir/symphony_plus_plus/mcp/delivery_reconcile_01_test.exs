@@ -232,16 +232,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile01Test do
     refute Map.has_key?(payload["worker_bootstrap"]["claim"]["arguments"], "branch")
     assert payload["worker_bootstrap"]["claim"]["required_runtime_arguments"] == ["branch", "worktree_path", "caller_id"]
 
-    assert payload["worker_bootstrap"]["required_skills"] == [
-             "symphony-plus-plus:symphony-worker",
+    assert payload["worker_bootstrap"]["preferred_skill_set"] == [
+             "symphony-plus-plus-mcp:symphony-worker",
              "symphony-plus-plus-mcp:symphony-work-package"
            ]
 
+    assert payload["worker_bootstrap"]["required_skills"] == payload["worker_bootstrap"]["preferred_skill_set"]
+
     assert payload["worker_bootstrap"]["supported_skill_sets"] == [
-             ["symphony-plus-plus:symphony-worker", "symphony-plus-plus-mcp:symphony-work-package"],
+             ["symphony-plus-plus-mcp:symphony-worker", "symphony-plus-plus-mcp:symphony-work-package"],
              ["symphony-plus-plus:symphony-worker", "symphony-work-package"]
            ]
 
+    assert payload["worker_bootstrap"]["launch_prompt"] =~ "symphony-plus-plus-mcp:symphony-worker"
     assert payload["worker_bootstrap"]["launch_prompt"] =~ "symphony-plus-plus:symphony-worker"
     assert payload["worker_bootstrap"]["launch_prompt"] =~ "symphony-plus-plus-mcp:symphony-work-package"
     assert payload["worker_bootstrap"]["launch_prompt"] =~ "symphony-work-package"

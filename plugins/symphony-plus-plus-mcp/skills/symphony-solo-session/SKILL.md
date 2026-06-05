@@ -5,10 +5,10 @@ description: Use when Codex needs lightweight local planning memory for one norm
 
 # Symphony++ Solo Session
 
-Use Solo Sessions for ordinary single-agent work, non-MCP worker tasks, and
-lightweight parent coordination that needs durable local planning memory
-without WorkRequest or WorkPackage orchestration. This is the default MCP-free
-Symphony++ planning path for real agents.
+Use Solo Sessions for ordinary single-agent work and lightweight parent
+coordination inside a dedicated MCP-enabled Symphony++ config when the task
+needs durable local planning memory without WorkRequest or WorkPackage
+orchestration.
 
 Do not use this as authority for assigned WorkPackages, ledger-backed claims,
 legacy WorkKeys, WorkRequests, architect orchestration, bound MCP planning
@@ -29,7 +29,8 @@ secret-bearing commands. Do not record claim lease internals.
 
 ## Tools
 
-Prefer MCP tools when available in an unbound session:
+Prefer MCP tools from the `symphony_plus_plus` namespace when available in an
+unbound session. The exposed tool names are:
 
 ```text
 solo_attach

@@ -1,16 +1,16 @@
 # Symphony++ MCP Opt-In Plugin
 
 This package is the explicit MCP-backed companion to the default
-`symphony-plus-plus` Codex plugin.
+`symphony-plus-plus` Codex plugin. It is the complete MCP-mode plugin for
+dedicated Symphony++ WorkRequest and WorkPackage sessions.
 
 Use the default plugin for generic sessions, review-suite lanes, `codex review`,
 visible desktop cockpit threads, and MCP-free planning. Use this opt-in
 plugin only in a dedicated Codex config, alternate Codex home, managed
 app-server session, or worker/architect subprocess where starting
-`symphony_plus_plus` MCP before session startup is intentional.
-The default plugin's manifest loads the MCP-free Solo Session, worker, and
-coordinator skills; the MCP-dependent WorkPackage and architect skills live in
-this opt-in package.
+`symphony_plus_plus` MCP before session startup is intentional. In MCP mode,
+this package provides the full skill set under the `symphony-plus-plus-mcp:`
+prefix: Solo Session, worker, coordinator, WorkPackage, and architect.
 
 Do not enable this plugin in the normal global Codex config unless every
 generic Codex session on that config should start Symphony++ MCP. Current Codex
@@ -24,20 +24,17 @@ This plugin intentionally bundles:
   starts or reuses the dashboard on `127.0.0.1:19999`, then bridges Codex
   stdio MCP traffic into the backend HTTP `/mcp` endpoint.
 - The same `assets/splusplus-logo.png` icon used by the default Symphony++ plugin.
-- The MCP-backed architect and WorkPackage skills.
+- The MCP-mode Solo Session, worker, coordinator, architect, and WorkPackage skills.
 - The local MCP launcher plus the Solo wrapper script needed after marketplace/cache packaging.
 
-It intentionally does not bundle the Solo Session, worker, or coordinator
-skills. The default `symphony-plus-plus` plugin owns those MCP-free skills,
-which prevents duplicate baseline skill entries when both the default and MCP
-companion packages are enabled in the same Codex home.
-
 The default `symphony-plus-plus` plugin must remain skill-only and should stay
-enabled broadly. Dedicated MCP homes should enable both plugins: the default
-plugin for baseline worker/coordinator/Solo skills, and this companion for
-architect/WorkPackage MCP adapters. Codex starts this companion as a quiet
-stdio process; background backend/frontend logs are redirected under the local
-runtime log directory instead of streaming through every MCP call.
+enabled broadly for non-MCP work. Dedicated MCP homes should enable this
+companion plugin instead of the default plugin so the session has the full MCP
+skill set and the `symphony_plus_plus` tool namespace from one package. Do not
+enable both packages in the same Codex home unless you intentionally want both
+skill prefixes visible. Codex starts this companion as a quiet stdio process;
+background backend/frontend logs are redirected under the local runtime log
+directory instead of streaming through every MCP call.
 
 ## Activation
 
