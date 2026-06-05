@@ -285,6 +285,14 @@
       "cleanup_policy": "Planning scratch rows must not be removed with direct SQLite deletion. A future persisted archive path requires an explicit schema-backed design."
     },
     {
+      "name": "read_work_request_product_tree",
+      "purpose": "Read one scoped WorkRequest's V3 product-tree projection with selectable payload size for agent planning.",
+      "required_capabilities": ["read:work_request"],
+      "arguments_policy": "Requires work_request_id, accepts optional include_planning_scratch and view, and accepts no repo/base-branch override. view defaults to nodes_with_slice_refs and must be one of nodes_only, nodes_with_slice_refs, or nodes_with_slices.",
+      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope and a matching claimed phase anchor. The target WorkRequest must match that frozen repo and base branch. Trusted local unbound HTTP sessions may use the same read-only projection for non-secret local-ledger discovery. Missing or out-of-scope WorkRequests fail closed as not_found without leaking sibling content.",
+      "response_policy": "Returns safe JSON with the redacted WorkRequest status, selected product_tree projection, selected view, include_planning_scratch flag, and scope. Product-tree completion and attention rollups use scoped delivery-board operational state. nodes_only omits slice identifiers from node rows and direct root slice ids. nodes_with_slice_refs includes compact slice_refs for mapping existing slices. nodes_with_slices includes full visible planned-slice payloads. Slice refs/full slices may include operational summaries for linked WorkPackages. The payload excludes work-key secrets, API tokens, private handoff payloads, and worker secret material."
+    },
+    {
       "name": "read_work_request_delivery_board",
       "purpose": "Read the scoped WorkRequest delivery-board projection for visible planned-slice closeout without broad package visibility.",
       "required_capabilities": ["read:work_request"],

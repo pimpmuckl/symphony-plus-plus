@@ -964,6 +964,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "properties", "work_request_id", "type"]) == "string"
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "properties", "include_planning_scratch", "type"]) == "boolean"
+    assert get_in(tools_by_name, ["read_work_request_product_tree", "inputSchema", "required"]) == ["work_request_id"]
+
+    assert get_in(tools_by_name, ["read_work_request_product_tree", "inputSchema", "properties", "view", "enum"]) == [
+             "nodes_only",
+             "nodes_with_slice_refs",
+             "nodes_with_slices"
+           ]
+
+    assert get_in(tools_by_name, ["read_work_request_product_tree", "inputSchema", "properties", "include_planning_scratch", "type"]) == "boolean"
     assert get_in(tools_by_name, ["add_comment", "inputSchema", "required"]) == ["target_kind", "target_id", "body"]
     assert get_in(tools_by_name, ["list_comments", "inputSchema", "required"]) == ["target_kind", "target_id"]
     assert get_in(tools_by_name, ["resolve_comment", "inputSchema", "required"]) == ["comment_id"]

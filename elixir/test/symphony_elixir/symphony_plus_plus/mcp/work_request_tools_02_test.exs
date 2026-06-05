@@ -894,7 +894,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
   test "architect WorkRequest product tree tools create nodes and move slices", %{repo: repo} do
     {anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-PRODUCT-TREE-MOVE", [
-        "write:work_request"
+        "read:work_request",
+        "write:work_request",
+        "dispatch:work_request"
       ])
 
     work_request =
@@ -994,6 +996,116 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     moved_nodes_by_id = Map.new(move_payload["product_tree"]["nodes"], &{&1["id"], &1})
     assert moved_nodes_by_id[product_tree_node_id]["slice_ids"] == [planned_slice.id]
     assert get_in(move_payload, ["product_tree", "root_slice_ids"]) == []
+
+    approve_response =
+      mcp_tool(repo, session, "approve_work_request_planned_slice", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice.id,
+        "current_status" => "planned"
+      })
+
+    assert get_in(approve_response, ["result", "structuredContent", "planned_slice", "status"]) == "approved"
+
+    dispatch_response =
+      mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice.id,
+        "claimed_by" => "product-tree-worker"
+      })
+
+    work_package_id = get_in(dispatch_response, ["result", "structuredContent", "work_package", "id"])
+    assert is_binary(work_package_id)
+    assert {:ok, _blocked_work_package} = WorkPackageRepository.update(repo, work_package_id, %{status: "blocked"})
+
+    assert {:ok, scratch_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-WR-PRODUCT-TREE-SCRATCH",
+                 title: "Superseded scratch",
+                 target_base_branch: work_request.base_branch
+               )
+             )
+
+    scratch_slice = repo.update!(Ecto.Changeset.change(scratch_slice, status: "skipped"))
+
+    assert {:ok, _scratch_link} =
+             ProductTree.create_slice_link(repo, %{
+               work_request_id: work_request.id,
+               product_tree_node_id: product_tree_node_id,
+               planned_slice_id: scratch_slice.id,
+               position: 4
+             })
+
+    read_refs_response =
+      mcp_tool(repo, session, "read_work_request_product_tree", %{
+        "work_request_id" => work_request.id
+      })
+
+    read_refs_payload = get_in(read_refs_response, ["result", "structuredContent"])
+    read_refs_tree = read_refs_payload["product_tree"]
+    read_refs_nodes_by_id = Map.new(read_refs_tree["nodes"], &{&1["id"], &1})
+
+    assert read_refs_payload["view"] == "nodes_with_slice_refs"
+    assert read_refs_nodes_by_id[product_tree_node_id]["slice_ids"] == [planned_slice.id]
+    assert read_refs_nodes_by_id[product_tree_node_id]["computed_completion_mark"] == "partial"
+    assert read_refs_nodes_by_id[product_tree_node_id]["attention_count"] == 1
+    assert read_refs_nodes_by_id[product_tree_node_id]["blocker_count"] == 1
+    assert Map.has_key?(read_refs_nodes_by_id, child_node_id)
+    assert get_in(read_refs_tree, ["slice_refs", Access.at(0), "id"]) == planned_slice.id
+    assert get_in(read_refs_tree, ["slice_refs", Access.at(0), "work_package_id"]) == work_package_id
+    assert get_in(read_refs_tree, ["slice_refs", Access.at(0), "operational_state", "key"]) == "blocked"
+    assert get_in(read_refs_tree, ["slice_refs", Access.at(0), "has_full_payload"]) == false
+    assert get_in(read_refs_tree, ["summary", "attention_count"]) == 1
+    assert get_in(read_refs_tree, ["summary", "blocker_count"]) == 1
+    refute scratch_slice.id in Enum.map(read_refs_tree["slice_refs"], & &1["id"])
+    refute Map.has_key?(read_refs_tree, "slices")
+
+    read_nodes_response =
+      mcp_tool(repo, session, "read_work_request_product_tree", %{
+        "work_request_id" => work_request.id,
+        "view" => "nodes_only"
+      })
+
+    read_nodes_payload = get_in(read_nodes_response, ["result", "structuredContent"])
+    read_nodes_tree = read_nodes_payload["product_tree"]
+    read_nodes_by_id = Map.new(read_nodes_tree["nodes"], &{&1["id"], &1})
+
+    assert read_nodes_payload["view"] == "nodes_only"
+    refute Map.has_key?(read_nodes_by_id[product_tree_node_id], "slice_ids")
+    refute Map.has_key?(read_nodes_by_id[product_tree_node_id], "attention_count")
+    assert read_nodes_by_id[product_tree_node_id]["computed_completion_mark"] == "partial"
+    assert read_nodes_tree["root_slice_ids"] == []
+    assert read_nodes_tree["omitted_slice_count"] == 1
+
+    read_scratch_response =
+      mcp_tool(repo, session, "read_work_request_product_tree", %{
+        "work_request_id" => work_request.id,
+        "include_planning_scratch" => true
+      })
+
+    read_scratch_tree = get_in(read_scratch_response, ["result", "structuredContent", "product_tree"])
+    read_scratch_nodes_by_id = Map.new(read_scratch_tree["nodes"], &{&1["id"], &1})
+
+    assert Enum.sort(read_scratch_nodes_by_id[product_tree_node_id]["slice_ids"]) == Enum.sort([planned_slice.id, scratch_slice.id])
+    assert Map.has_key?(read_scratch_nodes_by_id, child_node_id)
+    assert scratch_slice.id in Enum.map(read_scratch_tree["slice_refs"], & &1["id"])
+
+    read_full_response =
+      mcp_tool(repo, session, "read_work_request_product_tree", %{
+        "work_request_id" => work_request.id,
+        "view" => "nodes_with_slices"
+      })
+
+    read_full_tree = get_in(read_full_response, ["result", "structuredContent", "product_tree"])
+    read_full_text = get_in(read_full_response, ["result", "content", Access.at(0), "text"])
+
+    assert get_in(read_full_tree, ["slices", Access.at(0), "id"]) == planned_slice.id
+    assert get_in(read_full_tree, ["slices", Access.at(0), "goal"]) == "Expose scoped read-only WorkRequest MCP payloads."
+    assert get_in(read_full_tree, ["slices", Access.at(0), "operational_state", "key"]) == "blocked"
+    assert read_full_text =~ "agent_context: work_request_product_tree"
+    assert read_full_text =~ "nodes_with_slices"
 
     direct_response =
       mcp_tool(repo, session, "move_work_request_planned_slice_to_product_node", %{

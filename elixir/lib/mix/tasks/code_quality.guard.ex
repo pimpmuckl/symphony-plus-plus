@@ -57,17 +57,17 @@ defmodule Mix.Tasks.CodeQuality.Guard do
     },
     "lib/symphony_elixir/symphony_plus_plus/mcp/server.ex" => %{
       functions: %{
-        "architect_tool/3" => %{max_complexity: 182, max_function_lines: 987},
-        "architect_tool_capability/1" => %{max_complexity: 39},
-        "architect_tool_description/1" => %{max_complexity: 38},
-        "architect_tool_input_schema/1" => %{max_complexity: 39, max_function_lines: 356},
+        "architect_tool/3" => %{max_complexity: 193, max_function_lines: 1033},
+        "architect_tool_capability/1" => %{max_complexity: 40},
+        "architect_tool_description/1" => %{max_complexity: 39},
+        "architect_tool_input_schema/1" => %{max_complexity: 40, max_function_lines: 378},
         "dispatch/3" => %{max_complexity: 100, max_function_lines: 255},
         "handle_state/2" => %{max_complexity: 22},
         "invalid_params_error/2" => %{max_function_lines: 184},
         "worker_tool/3" => %{max_complexity: 68, max_function_lines: 245},
         "worker_tool_input_schema/1" => %{max_function_lines: 182}
       },
-      max_lines: 15_268
+      max_lines: 15_535
     },
     "lib/symphony_elixir/symphony_plus_plus/planning/repository.ex" => %{max_lines: 981},
     "lib/symphony_elixir/symphony_plus_plus/secret_handoff.ex" => %{
@@ -116,8 +116,8 @@ defmodule Mix.Tasks.CodeQuality.Guard do
     "test/symphony_elixir/symphony_plus_plus/dashboard_api_test.exs" => %{max_lines: 7468},
     "test/symphony_elixir/symphony_plus_plus/mcp/claim_session_transport_03_test.exs" => %{max_lines: 1055},
     "test/symphony_elixir/symphony_plus_plus/mcp/claim_session_transport_04_test.exs" => %{max_lines: 1012},
-    "test/symphony_elixir/symphony_plus_plus/mcp/solo_schema_01_test.exs" => %{max_lines: 1379},
-    "test/symphony_elixir/symphony_plus_plus/mcp/work_request_tools_02_test.exs" => %{max_lines: 1267},
+    "test/symphony_elixir/symphony_plus_plus/mcp/solo_schema_01_test.exs" => %{max_lines: 1388},
+    "test/symphony_elixir/symphony_plus_plus/mcp/work_request_tools_02_test.exs" => %{max_lines: 1379},
     "test/symphony_elixir/symphony_plus_plus/mcp/worker_tools_06_test.exs" => %{max_lines: 1879},
     "test/symphony_elixir/symphony_plus_plus/mcp_http_endpoint_test.exs" => %{max_lines: 1267},
     "test/symphony_elixir/symphony_plus_plus/mcp_test.exs" => %{max_lines: 19_703},

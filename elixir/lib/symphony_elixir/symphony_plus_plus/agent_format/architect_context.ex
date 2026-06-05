@@ -25,6 +25,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.ArchitectContext do
 
   defp agent_payload(payload, :work_request_read), do: work_request_read_payload(payload)
 
+  defp agent_payload(payload, :work_request_product_tree),
+    do: work_request_product_tree_payload(payload)
+
   defp agent_payload(payload, :work_request_delivery_board),
     do: delivery_board_agent_payload(payload)
 
@@ -46,6 +49,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.ArchitectContext do
       "clarification_questions" => payload |> map_value("clarification_questions") |> list_rows(&question_row/1),
       "decisions_as_rationale" => payload |> map_value("decision_log_entries") |> list_rows(&decision_row/1),
       "planned_slices" => payload |> map_value("planned_slices") |> list_rows(&planned_slice_row/1)
+    }
+  end
+
+  defp work_request_product_tree_payload(payload) do
+    product_tree = map_value(payload, "product_tree") || %{}
+
+    %{
+      "agent_context" => "work_request_product_tree",
+      "source_of_truth" => "structuredContent.product_tree",
+      "work_request" => payload |> map_value("work_request") |> compact_work_request(),
+      "scope" => payload |> map_value("scope") |> primitive_map(),
+      "view" => text_value(map_value(payload, "view")),
+      "include_planning_scratch" => map_value(payload, "include_planning_scratch"),
+      "mode" => text_value(map_value(product_tree, "mode")),
+      "summary" => product_tree |> map_value("summary") |> primitive_map(),
+      "root_node_ids" => product_tree |> map_value("root_node_ids") |> join_list(),
+      "root_slice_ids" => product_tree |> map_value("root_slice_ids") |> join_list(),
+      "nodes" => product_tree |> map_value("nodes") |> list_rows(&product_tree_node_row/1),
+      "slice_refs" => product_tree |> map_value("slice_refs") |> list_rows(&product_tree_slice_ref_row/1),
+      "slices" => product_tree |> map_value("slices") |> list_rows(&planned_slice_row/1)
     }
   end
 
@@ -232,6 +255,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.ArchitectContext do
       "pr_state" => text_value(map_value(pr, "state")),
       "review_verdict" => review_verdict(work_package)
     }
+  end
+
+  defp product_tree_node_row(%{} = node) do
+    %{
+      "id" => text_value(map_value(node, "id")),
+      "parent_id" => text_value(map_value(node, "parent_id")),
+      "title" => text_value(map_value(node, "title")),
+      "node_kind" => text_value(map_value(node, "node_kind")),
+      "completion" => text_value(map_value(node, "computed_completion_mark")),
+      "slice_count" => integer_value(map_value(node, "slice_count")),
+      "child_node_count" => integer_value(map_value(node, "child_node_count")),
+      "slice_ids" => node |> map_value("slice_ids") |> join_list()
+    }
+    |> reject_nil_values()
+  end
+
+  defp product_tree_slice_ref_row(%{} = slice) do
+    %{
+      "id" => text_value(map_value(slice, "id")),
+      "sequence" => integer_value(map_value(slice, "sequence")),
+      "title" => text_value(map_value(slice, "title")),
+      "status" => text_value(map_value(slice, "status")),
+      "work_package_id" => text_value(map_value(slice, "work_package_id")),
+      "planning_classification" => text_value(map_value(slice, "planning_classification"))
+    }
+    |> reject_nil_values()
   end
 
   defp guidance_request_row(%{} = request) do
