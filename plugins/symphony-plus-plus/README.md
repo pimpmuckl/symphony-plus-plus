@@ -124,11 +124,13 @@ Repo validation proves only the plugin package contract:
   start S++ MCP in generic/review sessions.
 - `plugins/symphony-plus-plus-mcp/.mcp.json` defines a command-backed generic
   `symphony_plus_plus` launcher using a documented direct server map, not a
-  nested `mcpServers` object, for explicit opt-in use. The launcher starts or
-  reuses a healthy current-source backend on `127.0.0.1:19998`, starts or
-  reuses the matching dashboard on `127.0.0.1:19999`, and bridges Codex stdio
-  MCP traffic into the backend HTTP `/mcp` endpoint. Healthy stale-source
-  listeners are ignored for automatic reuse.
+  nested `mcpServers` object, for explicit opt-in use. The launcher starts
+  fresh managed backend/dashboard processes on Codex startup, reuses the
+  recorded managed runtime only while another Codex bridge lease is alive, and
+  bridges Codex stdio MCP traffic into the backend HTTP `/mcp` endpoint.
+  Existing local listeners require explicit `SYMPP_BACKEND_URL` or
+  `SYMPP_DASHBOARD_ORIGIN` configuration to be reused as operator-owned
+  external processes.
 - `scripts/refresh-local-plugin.ps1` removes stale managed default-cache
   `.mcp.json` files, strips stale manifest `mcpServers` from generated default
   cache entries, prunes removed managed skill directories, and writes a
@@ -165,12 +167,14 @@ cmd.exe /d /s /c scripts\start-sympp-mcp.cmd
 That per-session startup is host-managed by a plugin `mcpServers` declaration.
 The foreground process bridges stdio MCP to the backend HTTP `/mcp`, records a
 local bridge lease while Codex is connected, and removes that lease when stdin
-closes. Backend and frontend output is redirected to the log paths recorded in
-the runtime file. When the last bridge lease exits, the launcher stops only the
-managed backend/frontend PIDs it previously recorded, including managed PIDs
-superseded by a newer backend/dashboard plan, and whose command lines still
-match Symphony++; externally configured `SYMPP_BACKEND_URL` or
-`SYMPP_DASHBOARD_ORIGIN` processes remain operator-owned.
+closes. The normal lifecycle is deliberately simple: fresh managed servers on
+Codex startup, reuse only while at least one Codex bridge lease is alive, and
+shutdown after the last bridge exits. Backend and frontend output is redirected
+to the log paths recorded in the runtime file. When the last bridge lease exits,
+the launcher stops only the managed backend/frontend PIDs it previously
+recorded, including managed PIDs superseded by a newer backend/dashboard plan,
+and whose command lines still match Symphony++; externally configured
+`SYMPP_BACKEND_URL` or `SYMPP_DASHBOARD_ORIGIN` processes remain operator-owned.
 
 For non-destructive lifecycle forensics, run the installed diagnostic from the
 plugin root:
@@ -293,9 +297,10 @@ and does not require Codex to start or register the `symphony_plus_plus` MCP
 server.
 
 Heavy WorkPackage and architect orchestration still needs explicit MCP tools.
-In dedicated MCP homes, the opt-in companion plugin starts or reuses the local
-cockpit/backend automatically when Codex starts. For manual operation, start the
-local cockpit/daemon:
+In dedicated MCP homes, the opt-in companion plugin starts fresh managed local
+servers automatically when Codex starts and reuses them only while another
+Codex bridge lease is alive. For manual operation, start the local
+cockpit/daemon:
 
 ```powershell
 cd elixir
@@ -313,8 +318,8 @@ pass `--database <ledger.sqlite3>` only for isolation. Codex must load an MCP se
 configuration before the model session starts for the tools to be registered in
 that session. The
 sibling `plugins/symphony-plus-plus-mcp` plugin is the bundled opt-in package
-for dedicated configs and owns the command-backed launcher that starts/reuses
-that local HTTP daemon and dashboard.
+for dedicated configs and owns the command-backed launcher for that local HTTP
+daemon and dashboard.
 
 Before debugging Codex plugin visibility, verify the daemon itself from the
 source repository checkout root. This helper is not copied into installed
@@ -331,10 +336,10 @@ source revision as the checkout, and advertised the expected generic tools.
 Codex app plugin enabling/visibility is a separate startup/config step. If the
 smoke reports `stale_or_unverified_daemon` or
 `stale_daemon_source_revision_mismatch`, an old manual cockpit may still own
-the port. Dedicated plugin launchers ignore stale-source daemons for automatic
-reuse and pick a fallback port when the default is occupied, but
-operator-started stale listeners still need manual shutdown before they can own
-the default port again.
+the port. Dedicated plugin launchers avoid untracked local listeners for
+automatic reuse and pick a fallback port when the default is occupied. Set
+`SYMPP_BACKEND_URL` or `SYMPP_DASHBOARD_ORIGIN` only when you intentionally want
+to reuse an operator-owned external process.
 If this smoke passes but a Codex session still lacks S++ MCP tools, run:
 
 ```powershell

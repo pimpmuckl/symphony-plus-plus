@@ -2363,7 +2363,7 @@ function Invoke-McpCompanionEnable($Summary, [string]$RequestedMarketplaceName, 
     companion_cache_lifecycle = $companionPackage.default_plugin_lifecycle_status
     companion_reference_mcp_server_status = $companionPackage.reference_mcp_server_status
     companion_http_mcp_reachability_status = $companionPackage.http_mcp_reachability_status
-    restart_action = "Restart or reload the dedicated Symphony++ MCP Codex session so the plugin launcher starts or reuses the backend/dashboard before the model starts."
+    restart_action = "Restart or reload the dedicated Symphony++ MCP Codex session so the plugin launcher starts the managed backend/dashboard before the model starts."
     smoke_command = $smokeCommand
     boundary = "Keep symphony-plus-plus-mcp out of generic worker, worker_smart, review-suite, and codex review configs; use a dedicated S++ MCP-enabled config/session instead."
   }
@@ -2715,7 +2715,7 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     } else {
       $actions += New-ReadinessAction "enable_mcp_companion" "workrequest_mcp" "Enable the opt-in MCP companion only in a dedicated S++ config/session: [plugins.`"$companionConfigKey`"] enabled = true." $enableCommand
     }
-    $actions += New-ReadinessAction "restart_codex_session" "workrequest_mcp" "Restart or reload that dedicated Codex session so the plugin launcher can start or reuse the S++ backend/dashboard before the model starts."
+    $actions += New-ReadinessAction "restart_codex_session" "workrequest_mcp" "Restart or reload that dedicated Codex session so the plugin launcher can start the managed S++ backend/dashboard before the model starts."
   } elseif (-not $companionSelectionBlocked -and $companionStatus -eq "endpoint_unreachable") {
     $actions += New-SourceCheckoutAction "start_cockpit" "workrequest_mcp" "Start the local Symphony++ cockpit/HTTP MCP daemon." $SourceCheckout (New-CockpitCommand $sourceRoot)
     $actions += New-SourceCheckoutAction "verify_http_mcp" "workrequest_mcp" "Verify the local HTTP MCP daemon source revision independently of Codex plugin loading." $SourceCheckout (New-VerifyHttpMcpCommand $sourceRoot)
