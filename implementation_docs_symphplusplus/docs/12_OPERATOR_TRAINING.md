@@ -131,8 +131,11 @@ clocks. An explicit `expires_at` remains a deliberate narrowing constraint when
 a package or tool passes one.
 
 Explicit phase-scoped architect MCP sessions with `read:work_request` can call
-`list_work_requests(status?)` and `read_work_request(work_request_id)` for the
-same frozen repo/base-branch WorkRequest scope. For local architect handoff
+`list_work_requests(status?)`, `read_work_request(work_request_id)`, and
+`read_work_request_product_tree(work_request_id, view?)` for the same frozen
+repo/base-branch WorkRequest scope. Product-tree reads are the supported way to
+inspect existing V3 plan nodes and slice links; do not query the SQLite ledger
+directly for routine tree organization. For local architect handoff
 phases, the deterministic phase id also pins these tools to the selected
 WorkRequest, so sibling WorkRequests on the same repo/base branch are hidden as
 not found. These tools are read-only, do not accept arbitrary repo or

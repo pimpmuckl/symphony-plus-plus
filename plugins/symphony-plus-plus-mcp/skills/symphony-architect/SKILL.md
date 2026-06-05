@@ -19,8 +19,11 @@ packages yourself.
    private handoff is recovery-only for that path and the fallback otherwise.
    Pass the handoff's `claimed_by` value unchanged; use `caller_id` only for
    the current runtime/thread identity.
-2. For WorkRequest lanes, read `read_work_request(work_request_id)` and
-   `list_guidance_requests` before slicing.
+2. For WorkRequest lanes, read `read_work_request(work_request_id)`,
+   `read_work_request_product_tree(work_request_id, view?)`, and
+   `list_guidance_requests(work_request_id?)` before slicing or rearranging
+   product nodes. The WorkRequest guidance filter requires the usual
+   `read:work_request` grant.
 3. If MCP/session/scope state is unavailable, record/report the blocker. Do not
    invent state.
 4. Never expose raw work keys, bearer/API/GitHub/Linear/MCP tokens, grant
@@ -49,6 +52,11 @@ that as presentation only: tool arguments remain JSON/schema-native, and
 For larger WorkRequests, use product plan nodes to make human progress legible
 before or alongside slice planning. Product plan nodes are optional and may be
 nested however the product needs; do not force a fixed layer/capability shape.
+Use `read_work_request_product_tree` instead of direct ledger queries when you
+need existing node/link state; choose `nodes_only` for product plan outline,
+`nodes_with_slice_refs` for slice id mapping, and `nodes_with_slices` when
+slice bodies are needed. Product-tree rollups reflect scoped delivery-board
+operational state for linked WorkPackages.
 
 Design one PR-sized execution slice per worker unless the operator approves
 another shape. Each slice needs:

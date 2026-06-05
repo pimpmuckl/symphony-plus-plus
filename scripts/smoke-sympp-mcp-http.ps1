@@ -73,6 +73,7 @@ $ArchitectTools = @(
   "revoke_child_worker_key",
   "list_work_requests",
   "read_work_request",
+  "read_work_request_product_tree",
   "add_comment",
   "list_comments",
   "resolve_comment",
@@ -140,6 +141,14 @@ $ExpectedTrustedLocalPreClaimReadCalls = @(
     name = "read_work_request"
     arguments = @{
       work_request_id = "WR-SMOKE-PRECLAIM-READ"
+    }
+    allowedReasons = @("not_found")
+  },
+  @{
+    name = "read_work_request_product_tree"
+    arguments = @{
+      work_request_id = "WR-SMOKE-PRECLAIM-READ"
+      view = "nodes_with_slice_refs"
     }
     allowedReasons = @("not_found")
   },
@@ -1488,7 +1497,7 @@ function Invoke-SelfTest {
     throw "Expected unbound discovery to include worker scoped schemas."
   }
 
-  if ($ExpectedUnboundTools -notcontains "read_work_request" -or $ExpectedUnboundTools -notcontains "dispatch_work_request_planned_slice" -or $ExpectedUnboundTools -notcontains "read_work_request_delivery_board") {
+  if ($ExpectedUnboundTools -notcontains "read_work_request" -or $ExpectedUnboundTools -notcontains "read_work_request_product_tree" -or $ExpectedUnboundTools -notcontains "dispatch_work_request_planned_slice" -or $ExpectedUnboundTools -notcontains "read_work_request_delivery_board") {
     throw "Expected unbound discovery to include architect scoped schemas."
   }
 
@@ -1501,7 +1510,7 @@ function Invoke-SelfTest {
   }
 
   $preClaimReadNames = @($ExpectedTrustedLocalPreClaimReadCalls | ForEach-Object { [string]$_.name })
-  if ($preClaimReadNames -notcontains "read_work_request" -or $preClaimReadNames -notcontains "read_work_request_delivery_board") {
+  if ($preClaimReadNames -notcontains "read_work_request" -or $preClaimReadNames -notcontains "read_work_request_product_tree" -or $preClaimReadNames -notcontains "read_work_request_delivery_board") {
     throw "Expected trusted-local pre-claim smoke to verify read-only WorkRequest calls."
   }
 

@@ -79,6 +79,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository do
         filters
         |> visible_to_architect_query()
         |> maybe_filter_status(Map.get(filters, "status"))
+        |> maybe_filter_work_packages(Map.get(filters, "filter_work_package_ids"))
         |> maybe_filter_work_package(Map.get(filters, "work_package_id"))
       )
 
@@ -182,6 +183,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository do
   end
 
   defp maybe_filter_status(query, _status), do: query
+
+  defp maybe_filter_work_packages(query, ids) when is_list(ids) do
+    case ids |> Enum.filter(&is_binary/1) |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == "")) |> Enum.uniq() do
+      [] -> from(guidance_request in query, where: false)
+      work_package_ids -> from(guidance_request in query, where: guidance_request.work_package_id in ^work_package_ids)
+    end
+  end
+
+  defp maybe_filter_work_packages(query, _ids), do: query
 
   defp maybe_filter_work_package(query, work_package_id) when is_binary(work_package_id) and work_package_id != "" do
     from(guidance_request in query, where: guidance_request.work_package_id == ^work_package_id)

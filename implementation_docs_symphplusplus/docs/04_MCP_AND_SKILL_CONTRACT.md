@@ -543,6 +543,7 @@ mint_child_worker_key(work_package_id, template)
 revoke_child_worker_key(grant_id, reason)
 list_work_requests(status?)
 read_work_request(work_request_id)
+read_work_request_product_tree(work_request_id, view?, include_planning_scratch?)
 read_work_request_delivery_board(work_request_id)
 reconcile_work_request(work_request_id, apply?, recorded_by?)
 record_planned_slice_delivery(work_request_id, planned_slice_id, outcome, idempotency_key, recorded_by?, pr_url?, pr_number?, pr_repository?, pr_merged_at?, merge_commit_sha?, no_pr_evidence?, successor_planned_slice_id?, successor_work_package_id?, superseded_reason?, abandoned_rationale?)
@@ -612,8 +613,9 @@ calls fail closed until an explicit phase-scoped architect grant with the
 required frozen repo/base-branch scope and specific WorkRequest capability is
 live. Legacy null `phase_id` architect grants do not authorize those tools.
 
-`list_work_requests(status?)` and `read_work_request(work_request_id)` are
-read-only architect tools gated by `read:work_request`. They require an
+`list_work_requests(status?)`, `read_work_request(work_request_id)`, and
+`read_work_request_product_tree(work_request_id, view?, include_planning_scratch?)`
+are read-only architect tools gated by `read:work_request`. They require an
 explicit phase-scoped architect grant with frozen repo/base-branch scope and do
 not accept caller supplied repo or base-branch arguments. Legacy null
 `phase_id` architect grants are not supported for WorkRequest MCP reads and
@@ -621,10 +623,16 @@ fail closed instead of deriving scope from a mutable anchor package.
 `list_work_requests` accepts only an optional WorkRequest `status` filter.
 `read_work_request` returns the scoped WorkRequest plus clarification
 questions, decision log entries, planned slices, and status/count summaries.
-Missing and out-of-scope WorkRequests fail closed as not found without leaking
-sibling request content. Returned payloads are JSON-safe and redact
-secret-looking values; they do not include work-key secrets, private handoff
-payloads, tokens, or worker secret material.
+`read_work_request_product_tree` returns the scoped V3 product-tree projection
+without requiring agents to dump the full WorkRequest detail. Its `view`
+argument defaults to `nodes_with_slice_refs`; use `nodes_only` for a pure
+product-plan outline and `nodes_with_slices` when existing slice bodies are
+needed for rearrangement. Product-tree completion and attention rollups use
+scoped delivery-board operational state, so linked WorkPackage blockers and
+closeout state are reflected without a separate ledger query. Missing and
+out-of-scope WorkRequests fail closed as not found without leaking sibling request content. Returned payloads are
+JSON-safe and redact secret-looking values; they do not include work-key
+secrets, private handoff payloads, tokens, or worker secret material.
 
 `read_work_request_delivery_board(work_request_id)` is the primary
 WorkRequest-led delivery view for closeout. It is read-only and gated by

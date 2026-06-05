@@ -25,6 +25,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase do
     "revoke_child_worker_key",
     "list_work_requests",
     "read_work_request",
+    "read_work_request_product_tree",
     "add_comment",
     "list_comments",
     "resolve_comment",

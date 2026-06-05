@@ -161,8 +161,11 @@ manual architect-handoff replay hint, not a raw-secret fallback.
 
 Explicit phase-scoped architect MCP sessions with `read:work_request` can read
 the same scoped WorkRequest surface through `list_work_requests(status?)` and
-`read_work_request(work_request_id)`. The list tool accepts only optional
-`status` and always uses the grant's frozen repo/base-branch scope. For phases
+`read_work_request(work_request_id)`. Use
+`read_work_request_product_tree(work_request_id, view?)` for compact V3
+product-tree planning reads instead of querying the local ledger directly.
+The list tool accepts only optional `status` and always uses the grant's
+frozen repo/base-branch scope. For phases
 created by local WorkRequest architect handoff, the deterministic phase id also
 pins the MCP WorkRequest tools to that selected WorkRequest, so sibling
 WorkRequests on the same repo/base branch fail closed as out of scope. Legacy
@@ -511,10 +514,12 @@ existing request after the package leaves the worker-active window; this replay
 is read-only and does not create, reopen, or mutate guidance state.
 
 Explicit phase-scoped architect MCP sessions with `read:guidance_request` can
-use `list_guidance_requests(status?, work_package_id?)` and
+use `list_guidance_requests(status?, work_package_id?, work_request_id?)` and
 `read_guidance_request(guidance_request_id)` to see only guidance requests whose
 packages are inside the architect grant's phase plus frozen repo/base-branch
-scope. Requests from unrelated sibling packages fail closed as not found.
+scope. `work_request_id` narrows the list to guidance on WorkPackages linked to
+that WorkRequest's planned slices and requires `read:work_request` on the same
+grant. Requests from unrelated sibling packages fail closed as not found.
 
 Architect sessions with `write:guidance_request` can answer open requests with
 `answer_guidance_request(guidance_request_id, answer, answered_by?)` or escalate

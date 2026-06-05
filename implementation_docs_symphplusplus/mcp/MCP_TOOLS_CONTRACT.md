@@ -121,6 +121,7 @@ ledger identity for operator diagnosis:
 | revoke_child_worker_key | Revoke one live child-delegated worker grant for a same-phase child package inside the architect grant's frozen scope, reset active/interrupted children to `ready_for_worker`, and make immediate remint available. |
 | list_work_requests | List WorkRequests scoped to the architect assignment repo/base branch; trusted local unbound HTTP sessions may list redacted local-ledger summaries. Accepts only optional `status`. |
 | read_work_request | Read one scoped WorkRequest with clarification questions, decision log entries, visible planned slices, and count/status summaries. |
+| read_work_request_product_tree | Read one scoped WorkRequest's V3 product-tree projection with selectable `nodes_only`, `nodes_with_slice_refs`, or `nodes_with_slices` payload size. |
 | read_work_request_delivery_board | Read the scoped WorkRequest delivery-board projection for visible planned-slice closeout without broad package visibility. |
 | set_work_request_status | Move a scoped WorkRequest between valid statuses with optimistic `current_status` checking. |
 | ask_work_request_question | Add a clarification question to a scoped WorkRequest, optionally with a structured human decision prompt. |
@@ -252,9 +253,10 @@ architect-controlled/closed/merged or terminal states. The response and durable
 audit/progress event are redacted and include only safe child package/grant
 metadata, previous and new child statuses, and the redacted recycle reason;
 persisted private handoff cleanup is not performed in this v1 package.
-For claimed architect sessions, `list_work_requests`, `read_work_request`, and
-`read_work_request_delivery_board` require `read:work_request`, are read-only,
-and require an explicit phase-scoped architect grant with frozen
+For claimed architect sessions, `list_work_requests`, `read_work_request`,
+`read_work_request_product_tree`, and `read_work_request_delivery_board` require
+`read:work_request`, are read-only, and require an explicit phase-scoped
+architect grant with frozen
 repo/base-branch scope. They do not accept caller-supplied repo or base-branch
 arguments. Legacy null `phase_id` architect grants are not supported for
 WorkRequest MCP reads and fail closed rather than deriving scope from a mutable
@@ -265,8 +267,14 @@ tools without an architect claim for non-secret local-ledger discovery.
 ledger, accepts only optional `status`, and reports scope as
 `visibility: "local_ledger"` rather than a repo/base authorization snapshot.
 `read_work_request` requires `work_request_id` and accepts optional
-`include_planning_scratch`; `read_work_request_delivery_board` accepts the same
-visibility flag. The unbound read path may inspect only visible local
+`include_planning_scratch`. `read_work_request_product_tree` requires
+`work_request_id`, accepts the same visibility flag, and accepts optional
+`view` values `nodes_only`, `nodes_with_slice_refs`, and `nodes_with_slices`
+for compact product-tree planning reads. Product-tree completion and attention
+rollups use the same scoped delivery-board operational state as WorkRequest
+delivery reads; compact refs/full slices may include that operational summary
+for linked WorkPackages. `read_work_request_delivery_board`
+accepts the same visibility flag. The unbound read path may inspect only visible local
 WorkRequest state and planned-slice/delivery-board projections. It does not
 grant WorkRequest ownership, dispatch authority, lifecycle authority, secret
 access, worker package write authority, or arbitrary local file access.
