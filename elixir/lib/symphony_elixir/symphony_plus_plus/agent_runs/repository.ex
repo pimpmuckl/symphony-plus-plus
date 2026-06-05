@@ -6,6 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
 
   alias Ecto.Changeset
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
+  alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
 
   @active_run_statuses AgentRun.active_statuses()
@@ -25,7 +26,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
 
   @spec migrate(repo()) :: :ok | {:error, error()}
   def migrate(repo) when is_atom(repo) do
-    Ecto.Migrator.run(repo, migrations_path(), :up, all: true, log: false)
+    Ecto.Migrator.run(repo, Migrations.all(), :up, all: true, log: false)
     :ok
   rescue
     error -> {:error, {:migration_failed, error}}
@@ -491,9 +492,5 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
     else
       {:error, {:storage_failed, message}}
     end
-  end
-
-  defp migrations_path do
-    Application.app_dir(:symphony_elixir, "priv/symphony_plus_plus/repo/migrations")
   end
 end

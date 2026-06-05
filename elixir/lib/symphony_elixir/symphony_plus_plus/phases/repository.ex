@@ -5,7 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Phases.Repository do
 
   alias Ecto.Changeset
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
-  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
 
   @type repo :: module()
   @type error ::
@@ -18,7 +18,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Phases.Repository do
 
   @spec migrate(repo()) :: :ok | {:error, error()}
   def migrate(repo) when is_atom(repo) do
-    Ecto.Migrator.run(repo, WorkPackageRepository.migrations_path(), :up, all: true, log: false)
+    Ecto.Migrator.run(repo, Migrations.all(), :up, all: true, log: false)
     :ok
   rescue
     error -> {:error, {:migration_failed, error}}

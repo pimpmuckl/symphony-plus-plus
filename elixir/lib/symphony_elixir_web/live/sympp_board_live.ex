@@ -8,6 +8,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
   alias SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixirWeb.Endpoint
@@ -899,7 +900,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     if migrated_dashboard_database?(database_key) and dashboard_schema_migrated?(repo) do
       :ok
     else
-      Ecto.Migrator.run(repo, WorkPackageRepository.migrations_path(), :up,
+      Ecto.Migrator.run(repo, Migrations.all(), :up,
         all: true,
         dynamic_repo: pid,
         log: false
@@ -925,14 +926,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp expected_migration_versions do
-    WorkPackageRepository.migrations_path()
-    |> File.ls!()
-    |> Enum.flat_map(fn filename ->
-      case Regex.run(~r/^(\d+)_/, filename) do
-        [_match, version] -> [version]
-        nil -> []
-      end
-    end)
+    Migrations.version_strings()
   end
 
   defp migration_version([version]) when is_integer(version), do: Integer.to_string(version)

@@ -3132,6 +3132,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               @refresh_script_path,
               "-CodexHome",
               temp_codex_home,
+              "-PluginName",
+              "symphony-plus-plus",
               "-ValidateInstalledCache"
             ],
             stderr_to_stdout: true,

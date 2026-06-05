@@ -6,6 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Comments.Repository do
   alias Ecto.Changeset
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
+  alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
@@ -27,7 +28,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Comments.Repository do
 
   @spec migrate(repo()) :: :ok | {:error, error()}
   def migrate(repo) when is_atom(repo) do
-    Ecto.Migrator.run(repo, migrations_path(), :up, all: true, log: false)
+    Ecto.Migrator.run(repo, Migrations.all(), :up, all: true, log: false)
     :ok
   rescue
     error -> {:error, {:migration_failed, error}}
@@ -288,10 +289,4 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Comments.Repository do
 
   defp redact_comment_text(attrs), do: Map.update(attrs, "body", nil, &Redactor.redact_text/1)
   defp redact_resolution_text(attrs), do: Map.update(attrs, "resolution_note", nil, &Redactor.redact_text/1)
-
-  @doc false
-  @spec migrations_path() :: Path.t()
-  def migrations_path do
-    Application.app_dir(:symphony_elixir, "priv/symphony_plus_plus/repo/migrations")
-  end
 end

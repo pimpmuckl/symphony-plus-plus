@@ -6,6 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
   alias Ecto.Changeset
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
+  alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
 
   @type repo :: module()
   @type error ::
@@ -24,7 +25,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
 
   @spec migrate(repo()) :: :ok | {:error, error()}
   def migrate(repo) when is_atom(repo) do
-    Ecto.Migrator.run(repo, migrations_path(), :up, all: true, log: false)
+    Ecto.Migrator.run(repo, Migrations.all(), :up, all: true, log: false)
     :ok
   rescue
     error -> {:error, {:migration_failed, error}}
@@ -462,8 +463,4 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
   end
 
   defp now(opts), do: opts |> Keyword.get(:now, DateTime.utc_now(:microsecond)) |> DateTime.truncate(:microsecond)
-
-  defp migrations_path do
-    Application.app_dir(:symphony_elixir, "priv/symphony_plus_plus/repo/migrations")
-  end
 end

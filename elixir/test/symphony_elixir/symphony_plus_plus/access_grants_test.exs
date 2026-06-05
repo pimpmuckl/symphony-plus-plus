@@ -15,6 +15,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
@@ -984,7 +985,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
       pre_scope_snapshot_migration = 20_260_506_120_000
 
       migrated_versions =
-        Ecto.Migrator.run(Repo, WorkPackageRepository.migrations_path(), :up,
+        Ecto.Migrator.run(Repo, Migrations.all(), :up,
           to: pre_scope_snapshot_migration,
           log: false
         )
@@ -1058,7 +1059,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
         ]
       )
 
-      Ecto.Migrator.run(Repo, WorkPackageRepository.migrations_path(), :up, all: true, log: false)
+      Ecto.Migrator.run(Repo, Migrations.all(), :up, all: true, log: false)
 
       result =
         Repo.query!(
@@ -1083,7 +1084,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
       pre_grant_scope_migration = 20_260_527_120_000
 
       migrated_versions =
-        Ecto.Migrator.run(Repo, WorkPackageRepository.migrations_path(), :up,
+        Ecto.Migrator.run(Repo, Migrations.all(), :up,
           to: pre_grant_scope_migration,
           log: false
         )
@@ -1240,7 +1241,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
         ]
       )
 
-      Ecto.Migrator.run(Repo, WorkPackageRepository.migrations_path(), :up, all: true, log: false)
+      Ecto.Migrator.run(Repo, Migrations.all(), :up, all: true, log: false)
 
       worker_scopes =
         Repo.query!(
