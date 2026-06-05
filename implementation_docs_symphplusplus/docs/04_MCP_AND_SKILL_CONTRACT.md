@@ -22,13 +22,23 @@ cwd = "<repo>"
 ```
 
 The launcher bridges stdio MCP traffic into the backend HTTP endpoint, which
-defaults to `http://127.0.0.1:19998/mcp`. A URL-only config can still be used
-for explicit local experiments, but it requires the backend to be listening on
-the configured port before Codex starts and cannot follow dynamic fallback port
+defaults to `http://127.0.0.1:19998/mcp`. Automatic backend reuse requires a
+healthy daemon whose `sympp.health` source revision matches the current plugin
+source; stale-source daemons are ignored and a fallback backend port is selected
+when the default port is occupied. A URL-only config can still be used for
+explicit local experiments, but it requires the backend to be listening on the
+configured port before Codex starts and cannot follow dynamic fallback port
 selection. Normal worker claim still requires a dedicated MCP session that
 preserves the returned `Mcp-Session-Id`/state key across initialize, discovery,
 claim, and follow-up calls; a stateless one-shot URL probe is not a
 worker-claim session.
+
+Each foreground launcher writes a bridge lease while Codex keeps the stdio MCP
+process open. When the last bridge lease exits, the launcher stops only the
+managed backend/frontend PIDs recorded in the runtime file and still verifiable
+as Symphony++ command lines, including managed PIDs superseded by a newer
+backend/dashboard plan. Explicit `SYMPP_BACKEND_URL` and
+`SYMPP_DASHBOARD_ORIGIN` processes are external and remain operator-owned.
 
 The current minimal HTTP slice exposes only the local Streamable HTTP MCP
 endpoint contract:
@@ -78,7 +88,10 @@ intentionally separate from Codex app plugin visibility: if this smoke passes
 but MCP tools are absent in a Codex session, troubleshoot the opt-in
 plugin/config/session startup path rather than the daemon. If the smoke reports
 `stale_or_unverified_daemon` or `stale_daemon_source_revision_mismatch`,
-restart `mix sympp.cockpit` from the current checkout and rerun it.
+an old manual cockpit may still own the port. Dedicated plugin launchers ignore
+stale-source daemons for automatic reuse and pick a fallback port when the
+default is occupied, but operator-started stale listeners still need manual
+shutdown before they can own the default port again.
 
 The operator-safe diagnostic for that split-brain state is:
 
