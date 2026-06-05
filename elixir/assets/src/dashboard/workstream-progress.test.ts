@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { activeBlockerCounts, productTreeCounts, requestProgress } from "./workstream-progress";
+import { activeBlockerCounts, activeBlockerEntityCounts, productTreeCounts, requestProgress } from "./workstream-progress";
 import type { ActiveBlockingEdge, PlannedSlice, WorkRequestDetail, WorkPackageCard } from "@/types/dashboard";
 
 describe("workstream progress", () => {
@@ -44,6 +44,39 @@ describe("workstream progress", () => {
 
     expect(counts.get("wr-progress")).toBe(3);
   });
+
+  it("counts active blockers for child slice and package rows without duplicating matched endpoints", () => {
+    const detail = workRequestDetail([
+      plannedSlice("slice-endpoint", "blocked", "pkg-endpoint"),
+      plannedSlice("slice-package", "blocked", "pkg-shared"),
+    ]);
+
+    const counts = activeBlockerEntityCounts(
+      [
+        blockingEdge(
+          "blocker-linked",
+          { kind: "slice", id: "slice-endpoint" },
+          { kind: "work_package", id: "pkg-endpoint" },
+          undefined,
+          { planned_slice_id: "slice-endpoint", work_package_id: "pkg-endpoint" },
+        ),
+        blockingEdge(
+          "blocker-package",
+          { kind: "work_package", id: "pkg-shared" },
+          { kind: "work_package", id: "unknown-package" },
+          undefined,
+          { work_package_id: "pkg-shared" },
+        ),
+      ],
+      [detail],
+    );
+
+    expect(counts.requests.get("wr-progress")).toBe(2);
+    expect(counts.slices.get("slice-endpoint")).toBe(1);
+    expect(counts.slices.get("slice-package")).toBe(1);
+    expect(counts.packages.get("pkg-endpoint")).toBe(1);
+    expect(counts.packages.get("pkg-shared")).toBe(1);
+  });
 });
 
 function workRequestDetail(plannedSlices: PlannedSlice[]): WorkRequestDetail {
@@ -76,6 +109,7 @@ function blockingEdge(
   from: ActiveBlockingEdge["from"],
   to: ActiveBlockingEdge["to"],
   workRequestId?: string,
+  overrides: Partial<ActiveBlockingEdge> = {},
 ): ActiveBlockingEdge {
   return {
     id,
@@ -83,5 +117,6 @@ function blockingEdge(
     from,
     to,
     work_request_id: workRequestId,
+    ...overrides,
   };
 }

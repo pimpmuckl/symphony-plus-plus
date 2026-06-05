@@ -12,6 +12,7 @@ import { RepoSummaryPlate } from "./dashboard-settings";
 import { WorkstreamBoard } from "./workstream-board";
 import { defaultRepoWorkstreamOpen, readStoredFinishedRequestChildren, readStoredRepoWorkstreamOpen, repoWorkstreamStateKey, writeStoredFinishedRequestChildren, writeStoredRepoWorkstreamOpen } from "./dashboard-persistence";
 import { finishedRequestChildrenStorageKey, linkedPackageIdsForDetails, workstreamCategoryCounts } from "./workstream-data";
+import { repoSummaryMetrics, type RepoSummaryMetricKey } from "./repo-summary-state";
 
 export function RepoWorkstream({
   repo,
@@ -100,22 +101,20 @@ export function RepoWorkstream({
             title={repo.repoRemote || undefined}
             onClick={toggleOpen}
           />
-          <div className="pointer-events-none relative flex select-none flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="flex min-w-0 items-center gap-3">
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
+          <div className="v3-repo-header-grid pointer-events-none relative select-none">
+            <div className="v3-repo-main">
+              <span className="v3-repo-chevron-slot">
                 <ChevronRight className={cn("size-4 transition-transform duration-200", open && "rotate-90")} />
               </span>
-              <div className="min-w-0">
-                <CardTitle className="flex items-center gap-2">
+              <div className="v3-repo-title-group">
+                <CardTitle className="v3-repo-title">
                   <GitBranch className="size-4 text-primary" />
                   <span className="truncate" title={repo.repoRemote || undefined}>{repo.repo}</span>
                 </CardTitle>
-                <p className="mt-1 truncate text-sm text-muted-foreground">{repo.baseBranches.join(", ") || "main"}</p>
+                <p className="v3-repo-meta">{repo.baseBranches.join(", ") || "main"}</p>
               </div>
             </div>
-            <div className="flex min-w-0 flex-col gap-2 md:items-end">
-              <RepoSummaryStrip repo={repo} categoryCounts={categoryCounts} />
-            </div>
+            <RepoSummaryStrip repo={repo} categoryCounts={categoryCounts} />
           </div>
         </CardHeader>
         <CollapsibleContent
@@ -145,29 +144,38 @@ export function RepoWorkstream({
 }
 
 export function RepoSummaryStrip({ repo, categoryCounts }: { repo: RepoSummary; categoryCounts: WorkstreamCategoryCounts }) {
-  const progress = [
-    { icon: <GitPullRequest className="size-3.5" />, label: "Requests", value: categoryCounts.requests, tone: "requested" },
-    { icon: <Layers3 className="size-3.5" />, label: "Plan Nodes", value: categoryCounts.planNodes, tone: "implementing" },
-    { icon: <Split className="size-3.5" />, label: "Slices", value: categoryCounts.slices, tone: "active" },
-  ] as const;
-  const attention = [
-    { icon: <MessageSquareText className="size-3.5" />, label: "Guidance Needed", value: repo.guidanceCount, tone: "guidance" },
-    { icon: <AlertTriangle className="size-3.5" />, label: "Active Blockers", value: repo.blockerCount, tone: "blocker" },
-  ] as const;
+  const metrics = repoSummaryMetrics(repo, categoryCounts);
+  const progress = metrics.filter((item) => item.group === "progress");
+  const attention = metrics.filter((item) => item.group === "attention");
 
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-2 md:justify-end">
-      <div className="flex flex-wrap items-center gap-1.5">
+    <div className="v3-repo-summary-strip">
+      <div className="v3-repo-summary-group" data-kind="progress">
         {progress.map((item) => (
-          <RepoSummaryPlate key={item.label} icon={item.icon} label={item.label} value={item.value} tone={item.tone} />
+          <RepoSummaryPlate key={item.label} className="v3-repo-summary-plate" icon={repoSummaryIcon(item.key)} label={item.label} value={item.value} tone={item.tone} />
         ))}
       </div>
-      <div className="hidden h-6 w-px bg-border md:block" />
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div className="v3-repo-summary-divider" />
+      <div className="v3-repo-summary-group" data-kind="attention">
         {attention.map((item) => (
-          <RepoSummaryPlate key={item.label} icon={item.icon} label={item.label} value={item.value} tone={item.tone} />
+          <RepoSummaryPlate key={item.label} className="v3-repo-summary-plate" icon={repoSummaryIcon(item.key)} label={item.label} value={item.value} tone={item.tone} />
         ))}
       </div>
     </div>
   );
+}
+
+function repoSummaryIcon(key: RepoSummaryMetricKey) {
+  switch (key) {
+    case "requests":
+      return <GitPullRequest className="size-3.5" />;
+    case "planNodes":
+      return <Layers3 className="size-3.5" />;
+    case "slices":
+      return <Split className="size-3.5" />;
+    case "guidance":
+      return <MessageSquareText className="size-3.5" />;
+    case "blockers":
+      return <AlertTriangle className="size-3.5" />;
+  }
 }

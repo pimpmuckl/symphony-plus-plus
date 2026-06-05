@@ -203,7 +203,7 @@ export function DashboardShell({
             updateAnimations={updateAnimations}
           />
 
-          <Tabs value={workspaceTab} onValueChange={(value) => onWorkspaceTabChange(value as WorkspaceTab)} className="w-full motion-card">
+          <Tabs value={workspaceTab} onValueChange={(value) => onWorkspaceTabChange(value as WorkspaceTab)} className="min-w-0 motion-card">
             <div className="dashboard-tabs-row">
               <TabsList className="dashboard-tabs-list">
                 <span className="dashboard-tabs-indicator" data-tab={workspaceTab} aria-hidden="true" />
