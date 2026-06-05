@@ -131,14 +131,16 @@ Repo validation proves only the plugin package contract:
 - `scripts/refresh-local-plugin.ps1` removes stale managed default-cache
   `.mcp.json` files, strips stale manifest `mcpServers` from generated default
   cache entries, prunes removed managed skill directories, and writes a
-  non-secret `.sympp-source-root` hint.
+  non-secret `.sympp-source-root` hint for local developer cache refreshes.
 - `scripts/refresh-local-plugin.ps1 -ValidateInstalledCache` validates the
   installed cache copies, confirms the default manifest remains skill-only,
   confirms default cache roots do not contain `.mcp.json`, checks the opt-in
   `symphony_plus_plus` command-backed launcher entry, and validates the Solo
   Session wrapper from each cache root.
 - `scripts/start-sympp-mcp.cmd -ValidateOnly` can resolve the checkout and
-  launch through `pwsh.exe` or Windows PowerShell.
+  launch through `pwsh.exe` or Windows PowerShell. Installed marketplace
+  launchers discover the full marketplace source clone automatically; they do
+  not require operators to set `SYMPP_REPO_ROOT`.
 - `scripts/sympp-solo.ps1 -ValidateOnly` can resolve the checkout and validate
   the launcher without writing ledger state or requiring a source build.
 
@@ -225,10 +227,10 @@ cannot inspect the tool list already registered inside an open Codex model
 session, so after config/cache changes the final repair step is always to
 restart or reload the dedicated MCP-enabled session and verify the tools there.
 When source-only repair commands are needed, the doctor emits absolute commands
-against the supplied `-RepoRoot`, the current source checkout, or a single
-usable `.sympp-source-root` hint from the selected activation package caches. If
-no source checkout can be inferred from those selected caches, it omits the
-broken command and tells the operator to rerun with
+against the supplied `-RepoRoot`, the current source checkout, the Codex
+marketplace source clone, or a single usable `.sympp-source-root` hint from the
+selected activation package caches. If no source checkout can be inferred, it
+omits the broken command and tells the operator to rerun with
 `-RepoRoot <path-to-symphony-plus-plus-checkout>`.
 If more than one Symphony++ marketplace cache is installed and no
 `-MarketplaceName` is supplied, the doctor does not emit package-specific repair

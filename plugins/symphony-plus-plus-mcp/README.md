@@ -26,6 +26,8 @@ This plugin intentionally bundles:
 - The same `assets/splusplus-logo.png` icon used by the default Symphony++ plugin.
 - The MCP-mode Solo Session, worker, coordinator, architect, and WorkPackage skills.
 - The local MCP launcher plus the Solo wrapper script needed after marketplace/cache packaging.
+  The launcher discovers the full Codex marketplace source clone automatically,
+  so normal marketplace installs do not require users to set `SYMPP_REPO_ROOT`.
 
 The default `symphony-plus-plus` plugin must remain skill-only and should stay
 enabled broadly for non-MCP work. Dedicated MCP homes should enable this

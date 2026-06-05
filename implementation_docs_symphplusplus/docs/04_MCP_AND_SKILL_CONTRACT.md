@@ -110,10 +110,10 @@ dedicated MCP-enabled session before expecting tools to appear. During normal
 feature-branch work, local plugin/cache sync is not part of the normal loop;
 perform cache adoption only at final feature-branch cutover.
 For source-only repair commands such as cockpit startup and HTTP smoke
-verification, the doctor uses `-RepoRoot`, the current source checkout, or a
-single usable `.sympp-source-root` hint from the selected activation package
-caches to print absolute commands. If it cannot infer a source checkout from
-those selected caches, it says so and asks the operator to rerun with
+verification, the doctor uses `-RepoRoot`, the current source checkout, the
+Codex marketplace source clone, or a single usable `.sympp-source-root` hint
+from the selected activation package caches to print absolute commands. If it
+cannot infer a source checkout, it says so and asks the operator to rerun with
 `-RepoRoot <path-to-symphony-plus-plus-checkout>` instead of printing a relative
 command that only works from the repo root.
 When multiple Symphony++ marketplaces are installed, pass the intended
