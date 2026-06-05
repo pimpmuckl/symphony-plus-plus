@@ -431,7 +431,7 @@ function ProductSliceRow({
   const lane = sliceLane(slice, pkg);
   const tone = sliceCardTone(slice, pkg, lane);
   const blockerCount = sliceBlockerCount(slice, pkg, activeBlockerCountBySliceId);
-  const guidanceCount = sliceGuidanceCount(slice, pkg, blockerCount);
+  const guidanceCount = sliceGuidanceCount(slice, pkg);
   const sliceLabel = operationalLabel(operational, rawStatus);
   const progress = sliceProgressPercent(pkg, lane, tone);
   const progressIconState = rowProgressIconState({ blockerCount, guidanceCount, progress, tone });
