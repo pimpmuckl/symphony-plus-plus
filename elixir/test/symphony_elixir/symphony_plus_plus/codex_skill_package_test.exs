@@ -3852,7 +3852,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           "scripts\\start-sympp-mcp.cmd"
         ],
         "cwd" => ".",
-        "startup_timeout_sec" => 180.0,
+        "startup_timeout_sec" => 360.0,
         "tool_timeout_sec" => 300.0
       }
     }

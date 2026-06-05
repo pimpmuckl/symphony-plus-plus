@@ -31,8 +31,9 @@ as a global MCP settings entry. Current-session tools appear only after the host
 loads the MCP configuration for that session.
 
 When Codex starts a dedicated session with the opt-in MCP plugin enabled, the
-plugin launcher starts or reuses the local backend and dashboard before
-bridging MCP traffic. For manual operation, run the local cockpit/daemon from
+plugin launcher starts fresh managed local backend/dashboard processes before
+bridging MCP traffic and reuses them only while another Codex bridge lease is
+alive. For manual operation, run the local cockpit/daemon from
 `elixir/`:
 
 ```bash
@@ -49,8 +50,8 @@ if that home is unavailable, Symphony++ falls back under a temp/relative
 `.agents/splusplus` root. Pass
 `--port 0` for dynamic-port manual tests, or `--port <n>` for a different
 explicit port. The bundled opt-in plugin prefers backend port `19998` and
-dashboard port `19999`, reuses healthy S++ listeners, chooses fallback ports
-when defaults are occupied by other services, and records the actual runtime in
+dashboard port `19999`, chooses fallback ports when defaults are occupied by
+other services, and records the actual runtime in
 `$HOME/.agents/splusplus/runtime/codex-plugin.json` unless
 `SYMPP_RUNTIME_FILE` overrides it.
 

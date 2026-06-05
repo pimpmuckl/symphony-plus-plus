@@ -14,8 +14,8 @@ function Write-Usage {
   Write-Host "Starts the Symphony++ Codex plugin MCP bridge and local operator servers."
   Write-Host ""
   Write-Host "Default behavior:"
-  Write-Host "  - Reuse a healthy Symphony++ backend on 127.0.0.1:$DefaultBackendPort, otherwise wait for that port to clear and start there."
-  Write-Host "  - Reuse a matching healthy dashboard on 127.0.0.1:$DefaultDashboardPort, otherwise start Vite on $DefaultDashboardPort or a safe fallback port."
+  Write-Host "  - Reuse active launcher-managed Symphony++ servers while another Codex bridge is connected."
+  Write-Host "  - Otherwise start a fresh managed backend and dashboard, using fallback ports if defaults are occupied."
   Write-Host "  - Bridge Codex stdio MCP traffic into the HTTP backend /mcp endpoint."
   Write-Host ""
   Write-Host "Environment:"
@@ -36,6 +36,7 @@ function Write-Usage {
   Write-Host "  SYMPP_LOG_DIR                Optional background server log directory. Defaults under %USERPROFILE%\.agents\splusplus\logs."
   Write-Host "  SYMPP_BACKEND_STARTUP_TIMEOUT_SEC    Backend startup wait. Defaults to 60."
   Write-Host "  SYMPP_BACKEND_PORT_RELEASE_TIMEOUT_SEC  Preferred backend port stale-listener wait. Defaults to 15."
+  Write-Host "  SYMPP_FRONTEND_INSTALL_TIMEOUT_SEC   Dashboard npm install wait when dependencies are missing. Defaults to 180."
   Write-Host "  SYMPP_FRONTEND_STARTUP_TIMEOUT_SEC   Frontend startup wait. Defaults to 20."
   Write-Host "  SYMPP_MCP_HTTP_TIMEOUT_SEC           Per-request bridge timeout. Defaults to 300."
   Write-Host "  SYMPP_STARTUP_LOCK_TIMEOUT_SEC       Local startup lock wait. Defaults to the configured startup waits plus 30 seconds, with a 120-second floor."
@@ -1098,7 +1099,14 @@ function Stop-ManagedRuntimeProcess([string]$Role, $ProcessIdValue, [int]$Port) 
   }
 
   Write-Diagnostic "Stopping managed Symphony++ $Role pid=$managedPid after last Codex MCP bridge exited."
+  $process = Get-Process -Id $managedPid -ErrorAction SilentlyContinue
   Stop-Process -Id $managedPid -Force -ErrorAction SilentlyContinue
+  if ($process) {
+    try {
+      [void]$process.WaitForExit(5000)
+    } catch {
+    }
+  }
   return $true
 }
 
@@ -1117,6 +1125,16 @@ function Stop-ManagedRuntimeEntry([string]$Role, $Entry) {
   }
 
   return Stop-ManagedRuntimeProcess $Role $Entry.pid (Get-RuntimeEntryPort $Entry)
+}
+
+function Test-RuntimeEntryEndpointMatches([string]$Role, $Entry, [string]$Endpoint) {
+  if ($null -eq $Entry -or [string]::IsNullOrWhiteSpace($Endpoint)) {
+    return $false
+  }
+
+  $entryEndpoint = if ($Role -eq "backend") { [string]$Entry.url } else { [string]$Entry.origin }
+  return -not [string]::IsNullOrWhiteSpace($entryEndpoint) -and
+    $entryEndpoint.TrimEnd("/") -eq $Endpoint.TrimEnd("/")
 }
 
 function Test-ManagedRuntimeEntrySuperseded([string]$Role, $Entry, [string]$SelectedEndpoint) {
@@ -1174,6 +1192,46 @@ function Stop-SupersededManagedServersIfUnused([string]$RuntimeFile, $Superseded
   return $Superseded
 }
 
+function Stop-ManagedRuntimeStateEntries($State, [string]$PreserveBackendUrl = $null, [string]$PreserveDashboardOrigin = $null) {
+  $stoppedAny = $false
+  if ($null -eq $State) {
+    return $false
+  }
+
+  $supersededProperty = $State.PSObject.Properties["superseded"]
+  if ($supersededProperty) {
+    $superseded = $supersededProperty.Value
+    if ($null -ne $superseded) {
+      if (-not (Test-RuntimeEntryEndpointMatches "frontend" $superseded.frontend $PreserveDashboardOrigin) -and
+          (Stop-ManagedRuntimeEntry "frontend" $superseded.frontend)) {
+        $superseded.frontend = $null
+        $stoppedAny = $true
+      }
+      if (-not (Test-RuntimeEntryEndpointMatches "backend" $superseded.backend $PreserveBackendUrl) -and
+          (Stop-ManagedRuntimeEntry "backend" $superseded.backend)) {
+        $superseded.backend = $null
+        $stoppedAny = $true
+      }
+    }
+  }
+
+  if (-not (Test-RuntimeEntryEndpointMatches "frontend" $State.frontend $PreserveDashboardOrigin) -and
+      (Stop-ManagedRuntimeEntry "frontend" $State.frontend)) {
+    $State.frontend.status = "stopped"
+    $State.frontend.pid = $null
+    $stoppedAny = $true
+  }
+
+  if (-not (Test-RuntimeEntryEndpointMatches "backend" $State.backend $PreserveBackendUrl) -and
+      (Stop-ManagedRuntimeEntry "backend" $State.backend)) {
+    $State.backend.status = "stopped"
+    $State.backend.pid = $null
+    $stoppedAny = $true
+  }
+
+  return $stoppedAny
+}
+
 function Get-ManagedListenerPid([string]$Role, [int]$Port) {
   $rolePattern = if ($Role -eq "backend") { "sympp\.cockpit" } else { "vite" }
   foreach ($owner in @(Get-TcpPortOwners $Port)) {
@@ -1199,28 +1257,7 @@ function Stop-ManagedServersIfUnused([string]$RuntimeFile) {
       return
     }
 
-    $supersededProperty = $state.PSObject.Properties["superseded"]
-    if ($supersededProperty) {
-      $superseded = $supersededProperty.Value
-      if ($null -ne $superseded) {
-        if (Stop-ManagedRuntimeEntry "frontend" $superseded.frontend) {
-          $superseded.frontend = $null
-        }
-        if (Stop-ManagedRuntimeEntry "backend" $superseded.backend) {
-          $superseded.backend = $null
-        }
-      }
-    }
-
-    if (Stop-ManagedRuntimeEntry "frontend" $state.frontend) {
-      $state.frontend.status = "stopped"
-      $state.frontend.pid = $null
-    }
-
-    if (Stop-ManagedRuntimeEntry "backend" $state.backend) {
-      $state.backend.status = "stopped"
-      $state.backend.pid = $null
-    }
+    [void](Stop-ManagedRuntimeStateEntries $state)
 
     Write-RuntimeState $RuntimeFile $state
   } finally {
@@ -1287,7 +1324,7 @@ function Wait-Until([scriptblock]$Predicate, [int]$TimeoutSec) {
   return $false
 }
 
-function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $RuntimeState, [int]$PortReleaseTimeoutSec, [string]$ExpectedSourceRevision) {
+function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $RuntimeState, [int]$PortReleaseTimeoutSec, [string]$ExpectedSourceRevision, [bool]$AllowManagedReuse, [int[]]$AvoidPorts = @()) {
   if (-not [string]::IsNullOrWhiteSpace($ConfiguredUrl)) {
     $url = $ConfiguredUrl.TrimEnd("/")
     Assert-LoopbackHttpOrigin $url "SYMPP_BACKEND_URL"
@@ -1309,43 +1346,7 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
     }
   }
 
-  $stalePreferredPort = $false
-  if ($PreferredPort -gt 0) {
-    $preferredUrl = "http://127.0.0.1:$PreferredPort"
-    $preferredHealth = Get-SymppBackendHealth $preferredUrl
-    if ($preferredHealth.healthy) {
-      if (Test-BackendSourceMatches $preferredHealth $ExpectedSourceRevision) {
-        $managed = $false
-        $managedPid = $null
-        if ($null -ne $RuntimeState) {
-          $runtimeUrl = [string]$RuntimeState.backend.url
-          if (-not [string]::IsNullOrWhiteSpace($runtimeUrl) -and
-              $runtimeUrl.TrimEnd("/") -eq $preferredUrl -and
-              $RuntimeState.backend.managed -eq $true) {
-            $managed = $true
-            $managedPid = $RuntimeState.backend.pid
-          }
-        }
-
-        return [pscustomobject]@{
-          status = "reused"
-          url = $preferredUrl
-          mcp_url = "$preferredUrl/mcp"
-          port = $PreferredPort
-          should_start = $false
-          reused = $true
-          managed = $managed
-          pid = $managedPid
-          source_revision = $preferredHealth.source_revision
-        }
-      }
-
-      $stalePreferredPort = $true
-      Write-Diagnostic "Ignoring healthy Symphony++ backend $preferredUrl because source revision $(Format-SourceRevisionForDiagnostic $preferredHealth.source_revision) does not match expected $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision)."
-    }
-  }
-
-  if ($null -ne $RuntimeState) {
+  if ($AllowManagedReuse -and $null -ne $RuntimeState -and $RuntimeState.backend.managed -eq $true) {
     $runtimeUrl = [string]$RuntimeState.backend.url
     if (-not [string]::IsNullOrWhiteSpace($runtimeUrl)) {
       $runtimeUrl = $runtimeUrl.TrimEnd("/")
@@ -1372,17 +1373,33 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
     }
   }
 
-  if ($PreferredPort -gt 0 -and $stalePreferredPort) {
-    $selectedPort = Select-AvailablePort $PreferredPort @($PreferredPort)
-  } elseif ($PreferredPort -gt 0) {
+  if ($PreferredPort -gt 0) {
+    $preferredUrl = "http://127.0.0.1:$PreferredPort"
+    $preferredHealth = Get-SymppBackendHealth $preferredUrl
+    if ($preferredHealth.healthy) {
+      if (Test-BackendSourceMatches $preferredHealth $ExpectedSourceRevision) {
+        Write-Diagnostic "Ignoring healthy untracked Symphony++ backend $preferredUrl because automatic reuse is limited to active launcher-managed Codex bridges. Set SYMPP_BACKEND_URL=$preferredUrl to reuse it explicitly."
+      } else {
+        Write-Diagnostic "Ignoring healthy Symphony++ backend $preferredUrl because source revision $(Format-SourceRevisionForDiagnostic $preferredHealth.source_revision) does not match expected $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision)."
+      }
+      $selectedPort = Select-AvailablePort $PreferredPort (@($PreferredPort) + @($AvoidPorts))
+    } else {
+      $selectedPort = $null
+    }
+  } else {
+    $selectedPort = $null
+  }
+
+  if ($null -eq $selectedPort -and $PreferredPort -gt 0) {
     $portRelease = Wait-ForTcpPortRelease $PreferredPort $PortReleaseTimeoutSec
     if (-not $portRelease.released) {
-      throw (New-BackendPortOccupiedMessage $PreferredPort @($portRelease.owners))
+      Write-Diagnostic "$(New-BackendPortOccupiedMessage $PreferredPort @($portRelease.owners)) Selecting a fallback managed backend port for this Codex session."
+      $selectedPort = Select-AvailablePort $PreferredPort (@($PreferredPort) + @($AvoidPorts))
+    } else {
+      $selectedPort = $PreferredPort
     }
-
-    $selectedPort = $PreferredPort
-  } else {
-    $selectedPort = Select-AvailablePort $PreferredPort
+  } elseif ($null -eq $selectedPort) {
+    $selectedPort = Select-AvailablePort $PreferredPort @($AvoidPorts)
   }
 
   $url = "http://127.0.0.1:$selectedPort"
@@ -1399,7 +1416,7 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
   }
 }
 
-function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [string]$BackendUrl, $RuntimeState) {
+function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [string]$BackendUrl, $RuntimeState, [bool]$AllowManagedReuse) {
   if (-not [string]::IsNullOrWhiteSpace($ConfiguredOrigin)) {
     $origin = $ConfiguredOrigin.TrimEnd("/")
     return [pscustomobject]@{
@@ -1414,7 +1431,7 @@ function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [
     }
   }
 
-  if ($null -ne $RuntimeState) {
+  if ($AllowManagedReuse -and $null -ne $RuntimeState -and $RuntimeState.frontend.managed -eq $true) {
     $runtimeBackendUrl = [string]$RuntimeState.backend.url
     $runtimeOrigin = [string]$RuntimeState.frontend.origin
     if (-not [string]::IsNullOrWhiteSpace($runtimeBackendUrl) -and
@@ -1483,6 +1500,55 @@ function Start-Backend($Plan, [string]$DashboardOrigin, [string]$ElixirDir, [str
     stdout = $launch.stdout
     stderr = $launch.stderr
     source_revision = if ($health.healthy) { $health.source_revision } else { $null }
+  }
+}
+
+function Test-FrontendDependenciesAvailable([string]$AssetsDir) {
+  foreach ($candidate in @(
+      "node_modules/.bin/vite.cmd",
+      "node_modules/.bin/vite.ps1",
+      "node_modules/.bin/vite"
+    )) {
+    if (Test-Path -LiteralPath (Join-Path $AssetsDir $candidate)) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
+function Install-FrontendDependencies([string]$AssetsDir, [string]$LogDir, [int]$TimeoutSec) {
+  if (Test-FrontendDependenciesAvailable $AssetsDir) {
+    return $null
+  }
+
+  $npm = Resolve-NpmCommand
+  $args = if (Test-Path -LiteralPath (Join-Path $AssetsDir "package-lock.json")) {
+    @("ci", "--no-audit", "--no-fund")
+  } else {
+    @("install", "--no-audit", "--no-fund")
+  }
+
+  Write-Diagnostic "Installing Symphony++ dashboard dependencies in $AssetsDir because Vite is missing."
+  $launch = Start-LoggedProcess $npm $args $AssetsDir @{} "frontend-install" $LogDir
+  $completed = $false
+  try {
+    $completed = $launch.process.WaitForExit($TimeoutSec * 1000)
+    if (-not $completed) {
+      throw "Timed out after $TimeoutSec seconds."
+    }
+
+    if ($launch.process.ExitCode -ne 0) {
+      throw "Exited with code $($launch.process.ExitCode)."
+    }
+
+    return $launch
+  } catch {
+    if (-not $completed) {
+      Stop-LoggedProcess $launch
+    }
+
+    throw "frontend-install failed. detail=$($_.Exception.Message) stdout_log=$($launch.stdout) stderr_log=$($launch.stderr)"
   }
 }
 
@@ -1607,6 +1673,11 @@ function Invoke-DirectStdioMcp([string]$RepoRoot, [string]$ElixirDir, [string]$L
 function Invoke-SelfTest {
   if ((Select-AvailablePort 0) -le 0) {
     throw "Select-AvailablePort did not return an ephemeral port."
+  }
+  $preferredForAvoidTest = Select-AvailablePort 0
+  $fallbackForAvoidTest = Select-AvailablePort $preferredForAvoidTest @($preferredForAvoidTest, ($preferredForAvoidTest + 1))
+  if ($fallbackForAvoidTest -eq $preferredForAvoidTest -or $fallbackForAvoidTest -eq ($preferredForAvoidTest + 1)) {
+    throw "Select-AvailablePort did not honor avoided fallback ports."
   }
 
   $headers = [System.Net.WebHeaderCollection]::new()
@@ -1766,6 +1837,12 @@ function Invoke-SelfTest {
   if ($null -eq $superseded.backend -or $null -eq $superseded.frontend) {
     throw "Superseded managed runtime entries should be preserved for cleanup."
   }
+  if (-not (Test-RuntimeEntryEndpointMatches "backend" $oldRuntimeState.backend "http://127.0.0.1:19998/")) {
+    throw "Runtime backend endpoint matching should normalize trailing slashes."
+  }
+  if (-not (Test-RuntimeEntryEndpointMatches "frontend" $oldRuntimeState.frontend "http://127.0.0.1:19999/")) {
+    throw "Runtime frontend endpoint matching should normalize trailing slashes."
+  }
 
   $runtimePath = Join-Path ([System.IO.Path]::GetTempPath()) "sympp-plugin-selftest-runtime.json"
   $state = [pscustomobject]@{
@@ -1861,6 +1938,7 @@ $backendPort = Get-EnvInteger "SYMPP_BACKEND_PORT" $DefaultBackendPort 0 65535
 $dashboardPort = Get-EnvInteger "SYMPP_DASHBOARD_PORT" $DefaultDashboardPort 0 65535
 $backendTimeout = Get-EnvInteger "SYMPP_BACKEND_STARTUP_TIMEOUT_SEC" 60 1 600
 $backendPortReleaseTimeout = Get-EnvInteger "SYMPP_BACKEND_PORT_RELEASE_TIMEOUT_SEC" 15 0 600
+$frontendInstallTimeout = Get-EnvInteger "SYMPP_FRONTEND_INSTALL_TIMEOUT_SEC" 180 1 1800
 $frontendTimeout = Get-EnvInteger "SYMPP_FRONTEND_STARTUP_TIMEOUT_SEC" 20 1 600
 $bridgeTimeout = Get-EnvInteger "SYMPP_MCP_HTTP_TIMEOUT_SEC" 300 1 3600
 $startupLockMinimum = 30
@@ -1869,6 +1947,7 @@ if ($autostartBackend) {
   $startupLockMinimum += $backendPortReleaseTimeout
 }
 if ($autostartFrontend) {
+  $startupLockMinimum += $frontendInstallTimeout
   $startupLockMinimum += $frontendTimeout
 }
 $startupLockDefault = [Math]::Min(1800, [Math]::Max(120, $startupLockMinimum))
@@ -1879,6 +1958,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:SYMPP_STARTUP_LOCK_TIMEOUT_SEC) -and 
 
 $backendLaunch = $null
 $frontendLaunch = $null
+$frontendInstall = $null
 $frontendError = $null
 $backendPlan = $null
 $dashboardPlan = $null
@@ -1888,12 +1968,22 @@ $expectedSourceRevision = Resolve-ExpectedSourceRevision $repoRoot
 $startupLock = Enter-FileLock (Resolve-StartupLockFile $runtimeFile) $startupLockTimeout
 try {
   $runtimeState = Read-RuntimeState $runtimeFile
-  $backendPlan = Resolve-BackendPlan $backendPort $env:SYMPP_BACKEND_URL $runtimeState $backendPortReleaseTimeout $expectedSourceRevision
+  $activeLeasesAtStart = @(Get-ActiveBridgeLeases $runtimeFile)
+  $allowManagedReuse = $activeLeasesAtStart.Count -gt 0
+  if (-not $allowManagedReuse -and $null -ne $runtimeState) {
+    $preserveBackendUrl = if ([string]::IsNullOrWhiteSpace($env:SYMPP_BACKEND_URL)) { $null } else { $env:SYMPP_BACKEND_URL.TrimEnd("/") }
+    $preserveDashboardOrigin = if ([string]::IsNullOrWhiteSpace($env:SYMPP_DASHBOARD_ORIGIN)) { $null } else { $env:SYMPP_DASHBOARD_ORIGIN.TrimEnd("/") }
+    if (Stop-ManagedRuntimeStateEntries $runtimeState $preserveBackendUrl $preserveDashboardOrigin) {
+      Write-RuntimeState $runtimeFile $runtimeState
+    }
+  }
+
+  $backendPlan = Resolve-BackendPlan $backendPort $env:SYMPP_BACKEND_URL $runtimeState $backendPortReleaseTimeout $expectedSourceRevision $allowManagedReuse @($dashboardPort)
   if ($backendPlan.should_start -and -not $autostartBackend) {
     throw "Backend autostart is disabled and no reusable Symphony++ backend was found at $($backendPlan.url)."
   }
 
-  $dashboardPlan = Resolve-DashboardPlan $dashboardPort $env:SYMPP_DASHBOARD_ORIGIN $backendPlan.url $runtimeState
+  $dashboardPlan = Resolve-DashboardPlan $dashboardPort $env:SYMPP_DASHBOARD_ORIGIN $backendPlan.url $runtimeState $allowManagedReuse
   if ($dashboardPlan.should_start -and -not $autostartFrontend) {
     $dashboardPlan = [pscustomobject]@{
       status = "disabled"
@@ -1917,6 +2007,7 @@ try {
 
   if ($dashboardPlan.should_start) {
     try {
+      $frontendInstall = Install-FrontendDependencies $assetsDir $logDir $frontendInstallTimeout
       $frontendLaunch = Start-Frontend $dashboardPlan $backendPlan.url $assetsDir $logDir $frontendTimeout
       $dashboardPlan.status = "started"
       $dashboardPlan.pid = $frontendLaunch.pid
@@ -1953,6 +2044,8 @@ try {
       reused = $dashboardPlan.reused
       managed = $dashboardPlan.managed -eq $true
       pid = $dashboardPlan.pid
+      install_stdout_log = if ($frontendInstall) { $frontendInstall.stdout } else { $null }
+      install_stderr_log = if ($frontendInstall) { $frontendInstall.stderr } else { $null }
       stdout_log = if ($frontendLaunch) { $frontendLaunch.stdout } else { $null }
       stderr_log = if ($frontendLaunch) { $frontendLaunch.stderr } else { $null }
       error = $frontendError
