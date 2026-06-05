@@ -23,7 +23,6 @@ defmodule Mix.Tasks.CodeQuality.Guard do
 
   @legacy_ratchets %{
     "assets/src/App.tsx" => %{max_lines: 7263},
-    "assets/src/components/dashboard/board-wires.tsx" => %{max_lines: 881},
     "assets/src/types/dashboard.ts" => %{max_lines: 624},
     "lib/mix/tasks/sympp.cockpit.ex" => %{max_lines: 676},
     "lib/mix/tasks/sympp.demo_ledger.ex" => %{

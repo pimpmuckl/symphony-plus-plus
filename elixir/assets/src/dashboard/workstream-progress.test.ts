@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { activeBlockerCounts, activeBlockerEntityCounts, productTreeCounts, requestProgress } from "./workstream-progress";
+import { activeBlockerEntityCounts, productTreeCounts, requestProgress } from "./workstream-progress";
 import type { ActiveBlockingEdge, PlannedSlice, WorkRequestDetail, WorkPackageCard } from "@/types/dashboard";
 
 describe("workstream progress", () => {
@@ -33,14 +33,14 @@ describe("workstream progress", () => {
       plannedSlice("slice-package", "blocked", "pkg-shared"),
     ]);
 
-    const counts = activeBlockerCounts(
+    const counts = activeBlockerEntityCounts(
       [
         blockingEdge("blocker-slice", { kind: "slice", id: "slice-endpoint" }, { kind: "work_package", id: "unknown-package" }),
         blockingEdge("blocker-package", { kind: "work_package", id: "pkg-shared" }, { kind: "work_package", id: "unknown-package" }),
         blockingEdge("blocker-fallback", { kind: "work_package", id: "unknown-package" }, { kind: "work_package", id: "unknown-package" }, "wr-progress"),
       ],
       [detail],
-    );
+    ).requests;
 
     expect(counts.get("wr-progress")).toBe(3);
   });

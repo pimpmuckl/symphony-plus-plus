@@ -30,10 +30,6 @@ export function productTreeCounts(detail: WorkRequestDetail, activeBlockerCount:
   };
 }
 
-export function activeBlockerCounts(edges: ActiveBlockingEdge[], requestDetails: WorkRequestDetail[] = []) {
-  return activeBlockerEntityCounts(edges, requestDetails).requests;
-}
-
 export function activeBlockerEntityCounts(edges: ActiveBlockingEdge[], requestDetails: WorkRequestDetail[] = []): ActiveBlockerEntityCounts {
   const requestIndex = blockerRequestIndex(requestDetails);
   const blockerKeys = edges.reduce<ActiveBlockerEntityKeySets>((keys, edge) => {
