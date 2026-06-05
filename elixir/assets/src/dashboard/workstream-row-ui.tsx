@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { architectHandoffEligibleRequest, operationalBadgeVariant } from "@/lib/operational-state";
 import { cn } from "@/lib/utils";
 import type { CardDetailSelect } from "./runtime";
-import { rowProgressIconState, type RowProgressIconState } from "./workstream-row-state";
+import { rowProgressAttentionState, rowProgressIconState, type RowProgressAttentionState, type RowProgressIconState } from "./workstream-row-state";
 
 type EntityCountChip = {
   key: string;
@@ -18,6 +18,19 @@ type EntityCountChip = {
   label: string;
   tone?: "guidance" | "blocker";
   showZero?: boolean;
+};
+
+const PROGRESS_STATE_ICON: Record<RowProgressIconState, ReactNode> = {
+  active: <span className="v3-progress-state-ring" />,
+  blocked: <CircleAlert className="size-4" />,
+  done: <CheckCircle2 className="size-4" />,
+  guidance: <CircleHelp className="size-4" />,
+  muted: <CircleDashed className="size-4" />,
+};
+
+const PROGRESS_ATTENTION_OVERLAY: Record<NonNullable<RowProgressAttentionState>, { className: string; label: string; text: string }> = {
+  blocked: { className: "v3-progress-state-overlay-blocked", label: "active blocker", text: "!" },
+  guidance: { className: "v3-progress-state-overlay-guidance", label: "guidance needed", text: "?" },
 };
 
 export function EntityCountChips({
@@ -79,6 +92,7 @@ export function EntityKindSlot({
 export function RequestHeaderActions({
   detail,
   progress,
+  progressAttentionState,
   progressIconState,
   progressLabel,
   onSelectCard,
@@ -86,6 +100,7 @@ export function RequestHeaderActions({
 }: {
   detail: WorkRequestDetail;
   progress: number;
+  progressAttentionState: RowProgressAttentionState;
   progressIconState: RowProgressIconState;
   progressLabel: string;
   onSelectCard: CardDetailSelect;
@@ -132,7 +147,7 @@ export function RequestHeaderActions({
 
   return (
     <div className="v3-request-header-actions v3-row-actions">
-      <ProgressStateIcon state={progressIconState} progress={progress} label={progressLabel} />
+      <ProgressStateIcon state={progressIconState} attentionState={progressAttentionState} progress={progress} label={progressLabel} />
       <Button
         type="button"
         variant="secondary"
@@ -168,25 +183,33 @@ export function RequestHeaderActions({
 }
 
 export function ProgressStateIcon({
+  attentionState,
   label,
   progress = 0,
   state,
 }: {
+  attentionState?: RowProgressAttentionState;
   label: string;
   progress?: number;
   state: RowProgressIconState;
 }) {
   const clampedProgress = Math.max(0, Math.min(100, Math.round(progress)));
-  const accessibleLabel = state === "active" ? `${label}, ${clampedProgress}% progress` : label;
+  const showAttentionOverlay = Boolean(attentionState && attentionState !== state);
+  const attentionOverlay = showAttentionOverlay && attentionState ? PROGRESS_ATTENTION_OVERLAY[attentionState] : null;
+  const accessibleLabel = [
+    state === "active" ? `${label}, ${clampedProgress}% progress` : label,
+    attentionOverlay?.label,
+  ].filter(Boolean).join(", ");
   const style = { "--v3-progress-state-value": `${clampedProgress}%` } as CSSProperties;
 
   return (
     <span className={cn("v3-progress-state-icon", `v3-progress-state-${state}`)} title={accessibleLabel} aria-label={accessibleLabel} style={style}>
-      {state === "done" ? <CheckCircle2 className="size-4" /> : null}
-      {state === "blocked" ? <CircleAlert className="size-4" /> : null}
-      {state === "guidance" ? <CircleHelp className="size-4" /> : null}
-      {state === "muted" ? <CircleDashed className="size-4" /> : null}
-      {state === "active" ? <span className="v3-progress-state-ring" /> : null}
+      {PROGRESS_STATE_ICON[state]}
+      {attentionOverlay ? (
+        <span className={cn("v3-progress-state-overlay", attentionOverlay.className)} aria-hidden="true">
+          {attentionOverlay.text}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -248,10 +271,11 @@ export function ProductNodeHeader({
 }) {
   const progress = completionMarkProgress(mark);
   const progressIconState = rowProgressIconState({ blockerCount, guidanceCount, progress, tone });
+  const progressAttentionState = rowProgressAttentionState({ blockerCount, guidanceCount, tone });
 
   return (
     <div className="v3-product-node-header v3-entity-row" data-tone={tone}>
-      <ProgressStateIcon state={progressIconState} progress={progress} label={statusLabel} />
+      <ProgressStateIcon state={progressIconState} attentionState={progressAttentionState} progress={progress} label={statusLabel} />
       <span className="v3-product-node-title-group">
         <span className="v3-product-node-title">{node.title || node.id}</span>
         <span className="v3-product-node-meta">

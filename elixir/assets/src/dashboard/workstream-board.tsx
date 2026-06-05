@@ -12,7 +12,7 @@ import { clarificationGuidanceItem } from "./dashboard-data";
 import { firstParagraph, stripMarkdown } from "./dashboard-text";
 import { finishedRequestChildrenStorageKey, sortPackages, sortPlannedSlices, sortWorkRequestDetails } from "./workstream-data";
 import { activeBlockerEntityCounts, productTreeCounts, requestProgress, rootProductSliceIds } from "./workstream-progress";
-import { productNodeState, rowProgressIconState, sliceBlockerCount, sliceGuidanceCount } from "./workstream-row-state";
+import { productNodeState, rowProgressAttentionState, rowProgressIconState, sliceBlockerCount, sliceGuidanceCount } from "./workstream-row-state";
 import { EntityCountChips, EntityKindSlot, ProductNodeHeader, ProgressPill, ProgressStateIcon, RequestHeaderActions, RowBadgeSlot, SliceKindSlot } from "./workstream-row-ui";
 import { packageUpdateKey, requestUpdateKey, sliceUpdateKey } from "./update-animations";
 import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
@@ -138,6 +138,7 @@ function ProductRequestRow({
         <RequestHeaderActions
           detail={detail}
           progress={progress}
+          progressAttentionState={rowProgressAttentionState({ blockerCount: counts.blockerCount, guidanceCount: counts.guidanceCount, tone })}
           progressIconState={rowProgressIconState({ blockerCount: counts.blockerCount, guidanceCount: counts.guidanceCount, progress, tone })}
           progressLabel={requestLabel}
           onSelectCard={onSelectCard}
@@ -441,6 +442,7 @@ function ProductSliceRow({
   const sliceLabel = operationalLabel(operational, rawStatus);
   const progress = sliceProgressPercent(pkg, lane, tone);
   const progressIconState = rowProgressIconState({ blockerCount, guidanceCount, progress, tone });
+  const progressAttentionState = rowProgressAttentionState({ blockerCount, guidanceCount, tone });
   const openSliceDetail = () => onSelectCard({ kind: "slice", detail, slice, pkg });
 
   return (
@@ -449,7 +451,7 @@ function ProductSliceRow({
       data-tone={tone}
       {...updateMotionAttributes(updateAnimations.motionFor(sliceUpdateKey(slice)))}
     >
-      <ProgressStateIcon state={progressIconState} progress={progress} label={sliceLabel} />
+      <ProgressStateIcon state={progressIconState} attentionState={progressAttentionState} progress={progress} label={sliceLabel} />
       <button type="button" className="v3-slice-main-button" onClick={openSliceDetail}>
         <span>{slice.title || slice.id}</span>
       </button>

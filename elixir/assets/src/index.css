@@ -805,12 +805,12 @@
   }
 
   .v3-workstreams-pane {
-    --v3-repo-plate-width: 7.25rem;
-    --v3-repo-plate-requests-width: 7.4rem;
-    --v3-repo-plate-plan-nodes-width: 8.2rem;
-    --v3-repo-plate-slices-width: 6.6rem;
-    --v3-repo-plate-guidance-width: 9.8rem;
-    --v3-repo-plate-blockers-width: 9.8rem;
+    --v3-repo-plate-width: 6rem;
+    --v3-repo-plate-requests-width: 6.05rem;
+    --v3-repo-plate-plan-nodes-width: 6.35rem;
+    --v3-repo-plate-slices-width: 5.05rem;
+    --v3-repo-plate-guidance-width: 8.95rem;
+    --v3-repo-plate-blockers-width: 8.2rem;
     --v3-row-badge-width: 7rem;
   }
 
@@ -946,8 +946,8 @@
 
   .repo-summary-plate-value {
     display: inline-flex;
-    min-width: 1.2rem;
-    flex: 0 0 1.2rem;
+    min-width: 0.65rem;
+    flex: 0 0 auto;
     justify-content: flex-end;
   }
 
@@ -1330,6 +1330,7 @@
 
   .v3-progress-state-icon {
     --v3-progress-state-color: var(--v3-tone-hsl);
+    position: relative;
     display: inline-flex;
     width: var(--v3-row-progress-icon-width);
     min-width: var(--v3-row-progress-icon-width);
@@ -1338,6 +1339,37 @@
     justify-content: center;
     justify-self: center;
     color: hsl(var(--v3-progress-state-color));
+  }
+
+  .v3-progress-state-overlay {
+    position: absolute;
+    top: 0.17rem;
+    right: 0.2rem;
+    display: inline-flex;
+    width: 0.625rem;
+    height: 0.625rem;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid hsl(var(--background) / 0.98);
+    border-radius: 999px;
+    background: hsl(var(--background));
+    box-shadow: 0 0 0 1px currentColor;
+    font-size: 0.5rem;
+    font-weight: 900;
+    line-height: 1;
+  }
+
+  .dark .v3-progress-state-overlay {
+    border-color: hsl(var(--card) / 0.96);
+    background: hsl(var(--card));
+  }
+
+  .v3-progress-state-overlay-blocked {
+    color: hsl(351 86% 50%);
+  }
+
+  .v3-progress-state-overlay-guidance {
+    color: hsl(262 82% 52%);
   }
 
   .v3-progress-state-icon svg {

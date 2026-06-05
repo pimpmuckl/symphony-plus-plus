@@ -12,10 +12,10 @@ import {
   REPO_SUMMARY_PLATE_WIDTH_VAR_BY_KEY,
   type RepoSummaryMetricKey,
   repoSummaryMetrics,
-  repoSummaryPlateLabel,
+  repoSummaryPlateWidthForMetrics,
 } from "./repo-summary-state";
 import { repoWorkstreamStateKey, workspaceTabDirection } from "./dashboard-persistence";
-import { countPlateWidthForLabels, statusBadgeWidthForRequestDetails } from "./workstream-row-state";
+import { statusBadgeWidthForRequestDetails } from "./workstream-row-state";
 import { workstreamCategoryCounts } from "./workstream-data";
 
 export function WorkstreamsPane({
@@ -38,17 +38,19 @@ export function WorkstreamsPane({
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const repoSummaryPlateWidthVars = useMemo<Record<string, string>>(() => {
-    const labelsByKey = new Map<RepoSummaryMetricKey, string[]>(REPO_SUMMARY_METRIC_KEYS.map((key) => [key, []]));
+    const metricsByKey = new Map<RepoSummaryMetricKey, ReturnType<typeof repoSummaryMetrics>>(
+      REPO_SUMMARY_METRIC_KEYS.map((key) => [key, []]),
+    );
 
     for (const repo of repos) {
       const categoryCounts = workstreamCategoryCounts(requestDetailsByRepo.get(repo.repoKey) ?? []);
       for (const metric of repoSummaryMetrics(repo, categoryCounts)) {
-        labelsByKey.get(metric.key)?.push(repoSummaryPlateLabel(metric));
+        metricsByKey.get(metric.key)?.push(metric);
       }
     }
 
     return Object.fromEntries(
-      REPO_SUMMARY_METRIC_KEYS.map((key) => [REPO_SUMMARY_PLATE_WIDTH_VAR_BY_KEY[key], countPlateWidthForLabels(labelsByKey.get(key) ?? [])]),
+      REPO_SUMMARY_METRIC_KEYS.map((key) => [REPO_SUMMARY_PLATE_WIDTH_VAR_BY_KEY[key], repoSummaryPlateWidthForMetrics(key, metricsByKey.get(key) ?? [])]),
     );
   }, [repos, requestDetailsByRepo]);
   const rowStatusBadgeWidth = useMemo(() => {

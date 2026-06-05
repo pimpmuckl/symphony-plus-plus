@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { RepoSummary } from "./dashboard-data";
 import type { WorkstreamCategoryCounts } from "./dashboard-state";
-import { REPO_SUMMARY_PLATE_WIDTH_VAR_BY_KEY, repoSummaryMetrics, repoSummaryPlateLabels } from "./repo-summary-state";
+import { REPO_SUMMARY_PLATE_WIDTH_VAR_BY_KEY, repoSummaryMetrics, repoSummaryPlateLabels, repoSummaryPlateWidthForMetrics } from "./repo-summary-state";
 
 describe("repo summary state", () => {
   it("builds the rendered repo summary labels that drive shared plate sizing", () => {
@@ -47,4 +47,41 @@ describe("repo summary state", () => {
       blockers: "--v3-repo-plate-blockers-width",
     });
   });
+
+  it("sizes repo plates per metric key and only widens the affected count category", () => {
+    const baseRepo = repoSummary({ blockerCount: 3, guidanceCount: 0 });
+    const busyRepo = repoSummary({ blockerCount: 120, guidanceCount: 0 });
+    const baseCounts: WorkstreamCategoryCounts = { requests: 6, planNodes: 0, slices: 64 };
+
+    const metrics = [...repoSummaryMetrics(baseRepo, baseCounts), ...repoSummaryMetrics(busyRepo, baseCounts)];
+
+    expect(widthFor(metrics, "requests")).toBe("6.03rem");
+    expect(widthFor(metrics, "planNodes")).toBe("6.72rem");
+    expect(widthFor(metrics, "slices")).toBe("5.01rem");
+    expect(widthFor(metrics, "guidance")).toBe("8.93rem");
+    expect(widthFor(metrics, "blockers")).toBe("8.79rem");
+  });
 });
+
+function widthFor(metrics: ReturnType<typeof repoSummaryMetrics>, key: "requests" | "planNodes" | "slices" | "guidance" | "blockers") {
+  return repoSummaryPlateWidthForMetrics(
+    key,
+    metrics.filter((metric) => metric.key === key),
+  );
+}
+
+function repoSummary({ blockerCount, guidanceCount }: { blockerCount: number; guidanceCount: number }): RepoSummary {
+  return {
+    repoKey: `repo-summary-${blockerCount}-${guidanceCount}`,
+    repo: "repo-summary",
+    baseBranches: ["main"],
+    requested: 0,
+    active: 0,
+    implementing: 0,
+    finished: 0,
+    guidanceCount,
+    blockerCount,
+    packages: [],
+    requests: [],
+  };
+}

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
 import {
-  countPlateWidthForLabels,
+  rowProgressAttentionState,
   rowProgressIconState,
   requestStatusLabels,
   statusBadgeWidthForLabels,
@@ -15,15 +15,15 @@ describe("workstream row state", () => {
     expect(statusBadgeWidthForLabels(["Delivered", "Completed Without PR", "Ready For Worker"])).toBe("9.2rem");
   });
 
-  it("sizes repo count plates from the longest rendered count label", () => {
-    expect(countPlateWidthForLabels(["3 Requests", "0 Plan Nodes", "0 Active Blockers"])).toBe("9.8rem");
-    expect(countPlateWidthForLabels(["0 Guidance Needed"])).toBe("9.8rem");
-  });
-
   it("maps row progress icons by attention, completion, and active progress priority", () => {
     expect(rowProgressIconState({ progress: 100, tone: "finished" })).toBe("done");
-    expect(rowProgressIconState({ progress: 100, blockerCount: 1, tone: "finished" })).toBe("blocked");
-    expect(rowProgressIconState({ progress: 100, guidanceCount: 1, tone: "finished" })).toBe("guidance");
+    expect(rowProgressIconState({ progress: 100, blockerCount: 1, tone: "finished" })).toBe("done");
+    expect(rowProgressIconState({ progress: 100, guidanceCount: 1, tone: "finished" })).toBe("done");
+    expect(rowProgressIconState({ progress: 100, blockerCount: 1, tone: "blocked" })).toBe("done");
+    expect(rowProgressAttentionState({ blockerCount: 1, tone: "finished" })).toBe("blocked");
+    expect(rowProgressAttentionState({ guidanceCount: 1, tone: "finished" })).toBe("guidance");
+    expect(rowProgressIconState({ progress: 45, blockerCount: 1, tone: "implementing" })).toBe("blocked");
+    expect(rowProgressIconState({ progress: 45, guidanceCount: 1, tone: "implementing" })).toBe("guidance");
     expect(rowProgressIconState({ tone: "muted" })).toBe("muted");
     expect(rowProgressIconState({ progress: 100, tone: "muted" })).toBe("muted");
     expect(rowProgressIconState({ progress: 45, tone: "implementing" })).toBe("active");

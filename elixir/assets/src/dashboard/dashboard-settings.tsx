@@ -317,7 +317,7 @@ export function RepoSummaryPlate({
 
   return (
     <div
-      className={cn("inline-flex items-center gap-1 rounded-md border px-1.5 py-1 text-xs font-medium", REPO_SUMMARY_PLATE_TONES[tone], className)}
+      className={cn("inline-flex items-center gap-0.5 rounded-md border px-1 py-1 text-xs font-medium", REPO_SUMMARY_PLATE_TONES[tone], className)}
       data-summary-key={summaryKey}
     >
       {icon ? <span className="repo-summary-plate-icon">{icon}</span> : null}

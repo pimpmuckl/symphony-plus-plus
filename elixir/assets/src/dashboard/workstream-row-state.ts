@@ -5,10 +5,9 @@ import { operationalLabel, sliceOperationalState } from "@/lib/operational-state
 const MIN_STATUS_LABEL_LENGTH = 8;
 const MIN_STATUS_BADGE_WIDTH_REM = 6.1;
 const MAX_STATUS_BADGE_WIDTH_REM = 11;
-const MIN_COUNT_PLATE_WIDTH_REM = 6.6;
-const MAX_COUNT_PLATE_WIDTH_REM = 12;
 
 export type RowProgressIconState = "active" | "blocked" | "done" | "guidance" | "muted";
+export type RowProgressAttentionState = "blocked" | "guidance" | null;
 
 export function rowProgressIconState({
   blockerCount = 0,
@@ -21,11 +20,25 @@ export function rowProgressIconState({
   progress?: number;
   tone?: string | null;
 }): RowProgressIconState {
-  if (blockerCount > 0 || tone === "blocked") return "blocked";
-  if (guidanceCount > 0 || tone === "guidance") return "guidance";
   if (tone === "muted") return "muted";
   if (progress >= 100 || tone === "finished") return "done";
+  if (blockerCount > 0 || tone === "blocked") return "blocked";
+  if (guidanceCount > 0 || tone === "guidance") return "guidance";
   return "active";
+}
+
+export function rowProgressAttentionState({
+  blockerCount = 0,
+  guidanceCount = 0,
+  tone,
+}: {
+  blockerCount?: number;
+  guidanceCount?: number;
+  tone?: string | null;
+}): RowProgressAttentionState {
+  if (blockerCount > 0 || tone === "blocked") return "blocked";
+  if (guidanceCount > 0 || tone === "guidance") return "guidance";
+  return null;
 }
 
 export function statusBadgeWidthForLabels(labels: Iterable<string | null | undefined>) {
@@ -35,11 +48,6 @@ export function statusBadgeWidthForLabels(labels: Iterable<string | null | undef
 
 export function statusBadgeWidthForRequestDetails(details: WorkRequestDetail[], packageById: Map<string, WorkPackageCard>) {
   return statusBadgeWidthForLabels(details.flatMap((detail) => requestStatusLabels(detail, packageById)));
-}
-
-export function countPlateWidthForLabels(labels: Iterable<string | null | undefined>) {
-  const width = Math.min(MAX_COUNT_PLATE_WIDTH_REM, Math.max(MIN_COUNT_PLATE_WIDTH_REM, longestStatusLabelLength(labels) * 0.4 + 3));
-  return `${Number(width.toFixed(2))}rem`;
 }
 
 export function requestStatusLabels(detail: WorkRequestDetail, packageById: Map<string, WorkPackageCard>) {
