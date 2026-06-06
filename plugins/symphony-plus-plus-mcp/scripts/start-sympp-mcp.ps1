@@ -16,8 +16,8 @@ function Write-Usage {
   Write-Host "Starts the Symphony++ Codex plugin MCP bridge and local operator servers."
   Write-Host ""
   Write-Host "Default behavior:"
-  Write-Host "  - Reuse active launcher-managed Symphony++ servers while another Codex bridge is connected."
-  Write-Host "  - Otherwise start a fresh managed backend and dashboard, using fallback ports if defaults are occupied."
+  Write-Host "  - Reuse a healthy Symphony++ runtime when its source revision matches this launcher."
+  Write-Host "  - Start a fresh managed backend and dashboard for a new source revision, leaving old leased runtimes to drain."
   Write-Host "  - Bridge Codex stdio MCP traffic into the HTTP backend /mcp endpoint."
   Write-Host ""
   Write-Host "Environment:"
@@ -864,6 +864,34 @@ function Test-BackendSourceMatches($Health, [string]$ExpectedSourceRevision) {
     [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$Health.source_revision, $ExpectedSourceRevision)
 }
 
+function New-RuntimeKey([string]$BackendUrl, [string]$DashboardOrigin, [string]$SourceRevision) {
+  $backend = if ([string]::IsNullOrWhiteSpace($BackendUrl)) { "none" } else { $BackendUrl.TrimEnd("/").ToLowerInvariant() }
+  $dashboard = if ([string]::IsNullOrWhiteSpace($DashboardOrigin)) { "none" } else { $DashboardOrigin.TrimEnd("/").ToLowerInvariant() }
+  $source = if ([string]::IsNullOrWhiteSpace($SourceRevision)) { "unknown" } else { $SourceRevision.Trim().ToLowerInvariant() }
+  return "source=$source;backend=$backend;dashboard=$dashboard"
+}
+
+function Get-RuntimeStateKey($State) {
+  if ($null -eq $State) {
+    return $null
+  }
+
+  if ($State.PSObject.Properties["runtime_key"] -and -not [string]::IsNullOrWhiteSpace([string]$State.runtime_key)) {
+    return [string]$State.runtime_key
+  }
+
+  $sourceRevision = $null
+  if ($null -ne $State.backend -and $State.backend.PSObject.Properties["source_revision"]) {
+    $sourceRevision = [string]$State.backend.source_revision
+  }
+
+  if ($null -eq $State.backend) {
+    return $null
+  }
+
+  return New-RuntimeKey ([string]$State.backend.url) ([string]$State.frontend.origin) $sourceRevision
+}
+
 function Format-SourceRevisionForDiagnostic([string]$Revision) {
   if ([string]::IsNullOrWhiteSpace($Revision)) {
     return "unknown"
@@ -895,15 +923,6 @@ function Get-PortFromOrigin([string]$Origin) {
   }
 }
 
-function Test-RuntimeBackendPortAllowed([int]$PreferredPort, [string]$RuntimeUrl) {
-  if ($PreferredPort -eq 0) {
-    return $true
-  }
-
-  $runtimePort = Get-PortFromOrigin $RuntimeUrl
-  return $runtimePort -eq $PreferredPort
-}
-
 function Read-RuntimeState([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path)) {
     return $null
@@ -928,13 +947,16 @@ function Resolve-BridgeLeaseDir([string]$RuntimeFile) {
   return [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $RuntimeFile) "codex-plugin-leases"))
 }
 
-function New-BridgeLease([string]$RuntimeFile, $BackendPlan, $DashboardPlan) {
+function New-BridgeLease([string]$RuntimeFile, $BackendPlan, $DashboardPlan, [string]$RuntimeKey) {
   $leaseDir = Resolve-BridgeLeaseDir $RuntimeFile
   New-Item -ItemType Directory -Path $leaseDir -Force | Out-Null
   $leasePath = Join-Path $leaseDir ("bridge-$PID-$([guid]::NewGuid().ToString('N')).json")
   $lease = [pscustomobject]@{
     pid = $PID
     created_at = (Get-Date).ToString("o")
+    runtime_key = $RuntimeKey
+    runtime_kind = if ($BackendPlan.managed -eq $true) { "managed" } else { [string]$BackendPlan.status }
+    source_revision = $BackendPlan.source_revision
     backend_url = $BackendPlan.url
     dashboard_origin = $DashboardPlan.origin
   }
@@ -1030,6 +1052,39 @@ function Get-ActiveBridgeLeases([string]$RuntimeFile) {
   return @($active)
 }
 
+function Test-BridgeLeaseMatchesRuntimeKey($Lease, [string]$RuntimeKey) {
+  if ($null -eq $Lease -or [string]::IsNullOrWhiteSpace($RuntimeKey)) {
+    return $false
+  }
+
+  if (-not $Lease.PSObject.Properties["runtime_key"] -or [string]::IsNullOrWhiteSpace([string]$Lease.runtime_key)) {
+    return $false
+  }
+
+  return [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$Lease.runtime_key, $RuntimeKey)
+}
+
+function Test-ActiveLegacyBridgeLease($ActiveLeases) {
+  foreach ($activeLease in @($ActiveLeases)) {
+    $lease = $activeLease.lease
+    if ($null -eq $lease -or -not $lease.PSObject.Properties["runtime_key"] -or [string]::IsNullOrWhiteSpace([string]$lease.runtime_key)) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
+function Test-ActiveBridgeLeaseForRuntimeKey($ActiveLeases, [string]$RuntimeKey) {
+  foreach ($activeLease in @($ActiveLeases)) {
+    if (Test-BridgeLeaseMatchesRuntimeKey $activeLease.lease $RuntimeKey) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
 function Stop-ManagedRuntimeProcess([string]$Role, $ProcessIdValue, [int]$Port) {
   $managedPid = 0
   if (-not [int]::TryParse([string]$ProcessIdValue, [ref]$managedPid) -or $managedPid -le 0) {
@@ -1105,9 +1160,68 @@ function Test-ManagedRuntimeEntrySuperseded([string]$Role, $Entry, [string]$Sele
   return $entryEndpoint.TrimEnd("/") -ne $SelectedEndpoint.TrimEnd("/")
 }
 
+function Test-PortSelectionAllowsReuse([int]$PreferredPort, [string]$Endpoint, [bool]$EnforcePreferredPort) {
+  if (-not $EnforcePreferredPort -or $PreferredPort -eq 0) {
+    return $true
+  }
+
+  return (Get-PortFromOrigin $Endpoint) -eq $PreferredPort
+}
+
+function Test-RuntimeEntryExternalOverride($Entry, [string]$Endpoint, [string]$Role) {
+  if ($null -eq $Entry -or [string]$Entry.status -ne "external_override") {
+    return $false
+  }
+
+  return Test-RuntimeEntryEndpointMatches $Role $Entry $Endpoint
+}
+
+function Test-EndpointMatches([string]$RecordedEndpoint, [string]$ExpectedEndpoint) {
+  return -not [string]::IsNullOrWhiteSpace($RecordedEndpoint) -and
+    -not [string]::IsNullOrWhiteSpace($ExpectedEndpoint) -and
+    $RecordedEndpoint.TrimEnd("/") -eq $ExpectedEndpoint.TrimEnd("/")
+}
+
+function Test-BridgeLeaseMatchesBackend($Lease, [string]$BackendUrl) {
+  if ($null -eq $Lease -or -not $Lease.PSObject.Properties["backend_url"]) {
+    return $false
+  }
+
+  return Test-EndpointMatches ([string]$Lease.backend_url) $BackendUrl
+}
+
+function Test-BridgeLeaseMatchesDashboard($Lease, [string]$DashboardOrigin) {
+  if ($null -eq $Lease -or -not $Lease.PSObject.Properties["dashboard_origin"]) {
+    return $false
+  }
+
+  return Test-EndpointMatches ([string]$Lease.dashboard_origin) $DashboardOrigin
+}
+
+function Test-ActiveBridgeLeaseForBackend($ActiveLeases, [string]$BackendUrl) {
+  foreach ($activeLease in @($ActiveLeases)) {
+    if (Test-BridgeLeaseMatchesBackend $activeLease.lease $BackendUrl) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
+function Test-ActiveBridgeLeaseForDashboard($ActiveLeases, [string]$DashboardOrigin) {
+  foreach ($activeLease in @($ActiveLeases)) {
+    if (Test-BridgeLeaseMatchesDashboard $activeLease.lease $DashboardOrigin) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
 function New-SupersededRuntimeState($RuntimeState, $BackendPlan, $DashboardPlan) {
   $backend = $null
   $frontend = $null
+  $runtimeKey = $null
   if ($null -ne $RuntimeState) {
     if (Test-ManagedRuntimeEntrySuperseded "backend" $RuntimeState.backend ([string]$BackendPlan.url)) {
       $backend = $RuntimeState.backend
@@ -1115,12 +1229,99 @@ function New-SupersededRuntimeState($RuntimeState, $BackendPlan, $DashboardPlan)
     if (Test-ManagedRuntimeEntrySuperseded "frontend" $RuntimeState.frontend ([string]$DashboardPlan.origin)) {
       $frontend = $RuntimeState.frontend
     }
+    if ($null -ne $backend -or $null -ne $frontend) {
+      $runtimeKey = Get-RuntimeStateKey $RuntimeState
+    }
   }
 
   return [pscustomobject]@{
+    runtime_key = $runtimeKey
     backend = $backend
     frontend = $frontend
   }
+}
+
+function Get-SupersededRuntimeKey($Superseded) {
+  if ($null -eq $Superseded -or -not $Superseded.PSObject.Properties["runtime_key"]) {
+    return $null
+  }
+
+  $runtimeKey = [string]$Superseded.runtime_key
+  if ([string]::IsNullOrWhiteSpace($runtimeKey)) {
+    return $null
+  }
+
+  return $runtimeKey
+}
+
+function Test-SupersededRuntimeStateHasEntries($Superseded) {
+  return $null -ne $Superseded -and ($null -ne $Superseded.backend -or $null -ne $Superseded.frontend)
+}
+
+function Get-SupersededRuntimeStates($State) {
+  $states = [System.Collections.ArrayList]::new()
+  $seen = @{}
+  if ($null -eq $State) {
+    return @()
+  }
+
+  foreach ($entry in @($State.superseded_runtimes)) {
+    if (-not (Test-SupersededRuntimeStateHasEntries $entry)) {
+      continue
+    }
+
+    $runtimeKey = Get-SupersededRuntimeKey $entry
+    if (-not [string]::IsNullOrWhiteSpace($runtimeKey)) {
+      if ($seen.ContainsKey($runtimeKey)) {
+        continue
+      }
+      $seen[$runtimeKey] = $true
+    }
+
+    [void]$states.Add($entry)
+  }
+
+  if ($State.PSObject.Properties["superseded"] -and (Test-SupersededRuntimeStateHasEntries $State.superseded)) {
+    $runtimeKey = Get-SupersededRuntimeKey $State.superseded
+    if ([string]::IsNullOrWhiteSpace($runtimeKey) -or -not $seen.ContainsKey($runtimeKey)) {
+      [void]$states.Add($State.superseded)
+    }
+  }
+
+  return @($states)
+}
+
+function Merge-SupersededRuntimeStates($Existing, $Candidate) {
+  $states = [System.Collections.ArrayList]::new()
+  $seen = @{}
+  foreach ($entry in @($Candidate) + @($Existing)) {
+    if (-not (Test-SupersededRuntimeStateHasEntries $entry)) {
+      continue
+    }
+
+    $runtimeKey = Get-SupersededRuntimeKey $entry
+    if (-not [string]::IsNullOrWhiteSpace($runtimeKey)) {
+      if ($seen.ContainsKey($runtimeKey)) {
+        continue
+      }
+      $seen[$runtimeKey] = $true
+    }
+
+    [void]$states.Add($entry)
+  }
+
+  return @($states)
+}
+
+function Set-SupersededRuntimeStates($State, $SupersededStates) {
+  if ($null -eq $State) {
+    return
+  }
+
+  $states = @($SupersededStates | Where-Object { Test-SupersededRuntimeStateHasEntries $_ })
+  $legacyState = if ($states.Count -gt 0) { $states[0] } else { $null }
+  $State | Add-Member -NotePropertyName superseded -NotePropertyValue $legacyState -Force
+  $State | Add-Member -NotePropertyName superseded_runtimes -NotePropertyValue $states -Force
 }
 
 function Stop-SupersededManagedServersIfUnused([string]$RuntimeFile, $Superseded) {
@@ -1129,18 +1330,32 @@ function Stop-SupersededManagedServersIfUnused([string]$RuntimeFile, $Superseded
   }
 
   $activeLeases = @(Get-ActiveBridgeLeases $RuntimeFile)
-  if ($activeLeases.Count -gt 0) {
+  if (Test-ActiveLegacyBridgeLease $activeLeases) {
     return $Superseded
   }
 
-  if (Stop-ManagedRuntimeEntry "frontend" $Superseded.frontend) {
+  if (-not (Test-ActiveBridgeLeaseForDashboard $activeLeases ([string]$Superseded.frontend.origin)) -and
+      (Stop-ManagedRuntimeEntry "frontend" $Superseded.frontend)) {
     $Superseded.frontend = $null
   }
-  if (Stop-ManagedRuntimeEntry "backend" $Superseded.backend) {
+  if (-not (Test-ActiveBridgeLeaseForBackend $activeLeases ([string]$Superseded.backend.url)) -and
+      (Stop-ManagedRuntimeEntry "backend" $Superseded.backend)) {
     $Superseded.backend = $null
   }
 
   return $Superseded
+}
+
+function Stop-SupersededRuntimeStatesIfUnused([string]$RuntimeFile, $SupersededStates) {
+  $remaining = [System.Collections.ArrayList]::new()
+  foreach ($superseded in @($SupersededStates)) {
+    $updated = Stop-SupersededManagedServersIfUnused $RuntimeFile $superseded
+    if (Test-SupersededRuntimeStateHasEntries $updated) {
+      [void]$remaining.Add($updated)
+    }
+  }
+
+  return @($remaining)
 }
 
 function Stop-ManagedRuntimeStateEntries($State, [string]$PreserveBackendUrl = $null, [string]$PreserveDashboardOrigin = $null) {
@@ -1149,22 +1364,23 @@ function Stop-ManagedRuntimeStateEntries($State, [string]$PreserveBackendUrl = $
     return $false
   }
 
-  $supersededProperty = $State.PSObject.Properties["superseded"]
-  if ($supersededProperty) {
-    $superseded = $supersededProperty.Value
-    if ($null -ne $superseded) {
-      if (-not (Test-RuntimeEntryEndpointMatches "frontend" $superseded.frontend $PreserveDashboardOrigin) -and
-          (Stop-ManagedRuntimeEntry "frontend" $superseded.frontend)) {
-        $superseded.frontend = $null
-        $stoppedAny = $true
-      }
-      if (-not (Test-RuntimeEntryEndpointMatches "backend" $superseded.backend $PreserveBackendUrl) -and
-          (Stop-ManagedRuntimeEntry "backend" $superseded.backend)) {
-        $superseded.backend = $null
-        $stoppedAny = $true
-      }
+  $supersededStates = [System.Collections.ArrayList]::new()
+  foreach ($superseded in @(Get-SupersededRuntimeStates $State)) {
+    if (-not (Test-RuntimeEntryEndpointMatches "frontend" $superseded.frontend $PreserveDashboardOrigin) -and
+        (Stop-ManagedRuntimeEntry "frontend" $superseded.frontend)) {
+      $superseded.frontend = $null
+      $stoppedAny = $true
+    }
+    if (-not (Test-RuntimeEntryEndpointMatches "backend" $superseded.backend $PreserveBackendUrl) -and
+        (Stop-ManagedRuntimeEntry "backend" $superseded.backend)) {
+      $superseded.backend = $null
+      $stoppedAny = $true
+    }
+    if (Test-SupersededRuntimeStateHasEntries $superseded) {
+      [void]$supersededStates.Add($superseded)
     }
   }
+  Set-SupersededRuntimeStates $State $supersededStates
 
   if (-not (Test-RuntimeEntryEndpointMatches "frontend" $State.frontend $PreserveDashboardOrigin) -and
       (Stop-ManagedRuntimeEntry "frontend" $State.frontend)) {
@@ -1174,6 +1390,29 @@ function Stop-ManagedRuntimeStateEntries($State, [string]$PreserveBackendUrl = $
   }
 
   if (-not (Test-RuntimeEntryEndpointMatches "backend" $State.backend $PreserveBackendUrl) -and
+      (Stop-ManagedRuntimeEntry "backend" $State.backend)) {
+    $State.backend.status = "stopped"
+    $State.backend.pid = $null
+    $stoppedAny = $true
+  }
+
+  return $stoppedAny
+}
+
+function Stop-CurrentManagedRuntimeStateEntries($State, $ActiveLeases) {
+  $stoppedAny = $false
+  if ($null -eq $State) {
+    return $false
+  }
+
+  if (-not (Test-ActiveBridgeLeaseForDashboard $ActiveLeases ([string]$State.frontend.origin)) -and
+      (Stop-ManagedRuntimeEntry "frontend" $State.frontend)) {
+    $State.frontend.status = "stopped"
+    $State.frontend.pid = $null
+    $stoppedAny = $true
+  }
+
+  if (-not (Test-ActiveBridgeLeaseForBackend $ActiveLeases ([string]$State.backend.url)) -and
       (Stop-ManagedRuntimeEntry "backend" $State.backend)) {
     $State.backend.status = "stopped"
     $State.backend.pid = $null
@@ -1195,11 +1434,11 @@ function Get-ManagedListenerPid([string]$Role, [int]$Port) {
   return $null
 }
 
-function Stop-ManagedServersIfUnused([string]$RuntimeFile) {
+function Stop-ManagedServersIfUnused([string]$RuntimeFile, [string]$RuntimeKey) {
   $lock = Enter-FileLock (Resolve-StartupLockFile $RuntimeFile) 30
   try {
     $activeLeases = @(Get-ActiveBridgeLeases $RuntimeFile)
-    if ($activeLeases.Count -gt 0) {
+    if ((Test-ActiveLegacyBridgeLease $activeLeases) -or (Test-ActiveBridgeLeaseForRuntimeKey $activeLeases $RuntimeKey)) {
       return
     }
 
@@ -1208,7 +1447,12 @@ function Stop-ManagedServersIfUnused([string]$RuntimeFile) {
       return
     }
 
-    [void](Stop-ManagedRuntimeStateEntries $state)
+    $stateKey = Get-RuntimeStateKey $state
+    if ([System.StringComparer]::OrdinalIgnoreCase.Equals($stateKey, $RuntimeKey)) {
+      [void](Stop-CurrentManagedRuntimeStateEntries $state $activeLeases)
+    }
+    $supersededStates = Stop-SupersededRuntimeStatesIfUnused $RuntimeFile (Get-SupersededRuntimeStates $state)
+    Set-SupersededRuntimeStates $state $supersededStates
 
     Write-RuntimeState $RuntimeFile $state
   } finally {
@@ -1275,7 +1519,22 @@ function Wait-Until([scriptblock]$Predicate, [int]$TimeoutSec) {
   return $false
 }
 
-function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $RuntimeState, [int]$PortReleaseTimeoutSec, [string]$ExpectedSourceRevision, [bool]$AllowManagedReuse, [int[]]$AvoidPorts = @()) {
+function New-ReusedBackendPlan([string]$Status, [string]$Url, $Health, [bool]$Managed, $Pid) {
+  $url = $Url.TrimEnd("/")
+  return [pscustomobject]@{
+    status = $Status
+    url = $url
+    mcp_url = "$url/mcp"
+    port = Get-PortFromOrigin $url
+    should_start = $false
+    reused = $true
+    managed = $Managed -eq $true
+    pid = $Pid
+    source_revision = $Health.source_revision
+  }
+}
+
+function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $RuntimeState, [int]$PortReleaseTimeoutSec, [string]$ExpectedSourceRevision, [bool]$EnforcePreferredPort, [int[]]$AvoidPorts = @()) {
   if (-not [string]::IsNullOrWhiteSpace($ConfiguredUrl)) {
     $url = $ConfiguredUrl.TrimEnd("/")
     Assert-LoopbackHttpOrigin $url "SYMPP_BACKEND_URL"
@@ -1284,42 +1543,26 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
       throw "SYMPP_BACKEND_URL is not a healthy Symphony++ backend: $url"
     }
 
-    return [pscustomobject]@{
-      status = "external"
-      url = $url
-      mcp_url = "$url/mcp"
-      port = Get-PortFromOrigin $url
-      should_start = $false
-      reused = $true
-      managed = $false
-      pid = $null
-      source_revision = $health.source_revision
-    }
+    return New-ReusedBackendPlan "external_override" $url $health $false $null
   }
 
-  if ($AllowManagedReuse -and $null -ne $RuntimeState -and $RuntimeState.backend.managed -eq $true) {
+  if ($null -ne $RuntimeState -and $null -ne $RuntimeState.backend) {
     $runtimeUrl = [string]$RuntimeState.backend.url
     if (-not [string]::IsNullOrWhiteSpace($runtimeUrl)) {
       $runtimeUrl = $runtimeUrl.TrimEnd("/")
       $runtimeHealth = Get-SymppBackendHealth $runtimeUrl
-      if ($runtimeHealth.healthy -and (Test-RuntimeBackendPortAllowed $PreferredPort $runtimeUrl) -and (Test-BackendSourceMatches $runtimeHealth $ExpectedSourceRevision)) {
-        return [pscustomobject]@{
-          status = "reused"
-          url = $runtimeUrl
-          mcp_url = "$runtimeUrl/mcp"
-          port = Get-PortFromOrigin $runtimeUrl
-          should_start = $false
-          reused = $true
-          managed = $RuntimeState.backend.managed -eq $true
-          pid = $RuntimeState.backend.pid
-          source_revision = $runtimeHealth.source_revision
-        }
+      $runtimeManaged = $RuntimeState.backend.managed -eq $true
+      $portAllowed = Test-PortSelectionAllowsReuse $PreferredPort $runtimeUrl $EnforcePreferredPort
+      if ($runtimeManaged -and $portAllowed -and $runtimeHealth.healthy -and (Test-BackendSourceMatches $runtimeHealth $ExpectedSourceRevision)) {
+        return New-ReusedBackendPlan "reused" $runtimeUrl $runtimeHealth ($RuntimeState.backend.managed -eq $true) $RuntimeState.backend.pid
       }
 
       if ($runtimeHealth.healthy -and -not (Test-BackendSourceMatches $runtimeHealth $ExpectedSourceRevision)) {
         Write-Diagnostic "Ignoring healthy runtime backend $runtimeUrl because source revision $(Format-SourceRevisionForDiagnostic $runtimeHealth.source_revision) does not match expected $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision)."
-      } elseif ($runtimeHealth.healthy) {
-        Write-Diagnostic "Ignoring healthy runtime backend $runtimeUrl because configured backend port is $PreferredPort. Set SYMPP_BACKEND_PORT=0 or SYMPP_BACKEND_URL=$runtimeUrl to reuse it explicitly."
+      } elseif ($runtimeHealth.healthy -and -not $runtimeManaged) {
+        Write-Diagnostic "Ignoring recorded external backend $runtimeUrl for implicit reuse. Set SYMPP_BACKEND_URL=$runtimeUrl to reuse it explicitly."
+      } elseif ($runtimeHealth.healthy -and -not $portAllowed) {
+        Write-Diagnostic "Ignoring healthy runtime backend $runtimeUrl because SYMPP_BACKEND_PORT requests $PreferredPort. Set SYMPP_BACKEND_URL=$runtimeUrl to reuse it explicitly."
       }
     }
   }
@@ -1328,8 +1571,10 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
     $preferredUrl = "http://127.0.0.1:$PreferredPort"
     $preferredHealth = Get-SymppBackendHealth $preferredUrl
     if ($preferredHealth.healthy) {
-      if (Test-BackendSourceMatches $preferredHealth $ExpectedSourceRevision) {
-        Write-Diagnostic "Ignoring healthy untracked Symphony++ backend $preferredUrl because automatic reuse is limited to active launcher-managed Codex bridges. Set SYMPP_BACKEND_URL=$preferredUrl to reuse it explicitly."
+      if (Test-RuntimeEntryExternalOverride $RuntimeState.backend $preferredUrl "backend") {
+        Write-Diagnostic "Ignoring recorded external backend $preferredUrl for implicit reuse. Set SYMPP_BACKEND_URL=$preferredUrl to reuse it explicitly."
+      } elseif (Test-BackendSourceMatches $preferredHealth $ExpectedSourceRevision) {
+        return New-ReusedBackendPlan "external_loopback" $preferredUrl $preferredHealth $false $null
       } else {
         Write-Diagnostic "Ignoring healthy Symphony++ backend $preferredUrl because source revision $(Format-SourceRevisionForDiagnostic $preferredHealth.source_revision) does not match expected $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision)."
       }
@@ -1367,36 +1612,41 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
   }
 }
 
-function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [string]$BackendUrl, $RuntimeState, [bool]$AllowManagedReuse) {
+function New-ReusedDashboardPlan([string]$Status, [string]$Origin, [bool]$Managed, $Pid) {
+  $origin = $Origin.TrimEnd("/")
+  return [pscustomobject]@{
+    status = $Status
+    origin = $origin
+    url = "$origin$BoardPath"
+    port = Get-PortFromOrigin $origin
+    should_start = $false
+    reused = $true
+    managed = $Managed -eq $true
+    pid = $Pid
+  }
+}
+
+function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [string]$BackendUrl, $RuntimeState, [bool]$EnforcePreferredPort, [bool]$AllowRecordedRuntimeReuse) {
   if (-not [string]::IsNullOrWhiteSpace($ConfiguredOrigin)) {
     $origin = $ConfiguredOrigin.TrimEnd("/")
-    return [pscustomobject]@{
-      status = "external"
-      origin = $origin
-      url = "$origin$BoardPath"
-      port = Get-PortFromOrigin $origin
-      should_start = $false
-      reused = $true
-      managed = $false
-      pid = $null
-    }
+    return New-ReusedDashboardPlan "external_override" $origin $false $null
   }
 
-  if ($AllowManagedReuse -and $null -ne $RuntimeState -and $RuntimeState.frontend.managed -eq $true) {
+  if ($AllowRecordedRuntimeReuse -and $null -ne $RuntimeState -and $null -ne $RuntimeState.frontend) {
     $runtimeBackendUrl = [string]$RuntimeState.backend.url
     $runtimeOrigin = [string]$RuntimeState.frontend.origin
     if (-not [string]::IsNullOrWhiteSpace($runtimeBackendUrl) -and
         $runtimeBackendUrl.TrimEnd("/") -eq $BackendUrl.TrimEnd("/")) {
+      $runtimeManaged = $RuntimeState.frontend.managed -eq $true
+      $portAllowed = Test-PortSelectionAllowsReuse $PreferredPort $runtimeOrigin $EnforcePreferredPort
+      if ($runtimeManaged -and $portAllowed -and -not [string]::IsNullOrWhiteSpace($runtimeOrigin) -and (Test-HealthySymppDashboard $runtimeOrigin)) {
+        return New-ReusedDashboardPlan "reused" $runtimeOrigin ($RuntimeState.frontend.managed -eq $true) $RuntimeState.frontend.pid
+      }
       if (-not [string]::IsNullOrWhiteSpace($runtimeOrigin) -and (Test-HealthySymppDashboard $runtimeOrigin)) {
-        return [pscustomobject]@{
-          status = "reused"
-          origin = $runtimeOrigin.TrimEnd("/")
-          url = "$($runtimeOrigin.TrimEnd('/'))$BoardPath"
-          port = Get-PortFromOrigin $runtimeOrigin
-          should_start = $false
-          reused = $true
-          managed = $RuntimeState.frontend.managed -eq $true
-          pid = $RuntimeState.frontend.pid
+        if (-not $runtimeManaged) {
+          Write-Diagnostic "Ignoring recorded external dashboard $($runtimeOrigin.TrimEnd('/')) for implicit reuse. Set SYMPP_DASHBOARD_ORIGIN=$($runtimeOrigin.TrimEnd('/')) to reuse it explicitly."
+        } elseif (-not $portAllowed) {
+          Write-Diagnostic "Ignoring healthy runtime dashboard $($runtimeOrigin.TrimEnd('/')) because SYMPP_DASHBOARD_PORT requests $PreferredPort. Set SYMPP_DASHBOARD_ORIGIN=$($runtimeOrigin.TrimEnd('/')) to reuse it explicitly."
         }
       }
     } elseif (-not [string]::IsNullOrWhiteSpace($runtimeOrigin) -and (Test-HealthySymppDashboard $runtimeOrigin)) {
@@ -1790,24 +2040,34 @@ function Invoke-SelfTest {
     throw "Unhealthy backend should not be reusable."
   }
 
-  if (-not (Test-RuntimeBackendPortAllowed 0 "http://127.0.0.1:45678")) {
-    throw "Runtime backend reuse should be allowed when SYMPP_BACKEND_PORT=0."
+  $runtimeKeyA = New-RuntimeKey "http://127.0.0.1:45678/" "http://127.0.0.1:45679/" $revisionA
+  $runtimeKeyANormalized = New-RuntimeKey "http://127.0.0.1:45678" "http://127.0.0.1:45679" $revisionA
+  if ($runtimeKeyA -ne $runtimeKeyANormalized -or $runtimeKeyA -notmatch $revisionA) {
+    throw "Runtime keys should normalize endpoint slashes and include the source revision."
+  }
+  if (-not (Test-PortSelectionAllowsReuse 19998 "http://127.0.0.1:20000" $false)) {
+    throw "Implicit port selection should allow existing managed runtime reuse."
+  }
+  if (Test-PortSelectionAllowsReuse 19998 "http://127.0.0.1:20000" $true) {
+    throw "Explicit backend/dashboard port selection should block reuse from another port."
+  }
+  $externalOverrideEntry = [pscustomobject]@{ status = "external_override"; url = "http://127.0.0.1:19998" }
+  if (-not (Test-RuntimeEntryExternalOverride $externalOverrideEntry "http://127.0.0.1:19998/" "backend")) {
+    throw "Recorded external override entries should be identifiable by endpoint."
+  }
+  if (Test-RuntimeEntryExternalOverride $externalOverrideEntry "http://127.0.0.1:20000" "backend") {
+    throw "Recorded external override entries should not match different endpoints."
   }
 
-  if (-not (Test-RuntimeBackendPortAllowed 45678 "http://127.0.0.1:45678")) {
-    throw "Runtime backend reuse should be allowed on the configured backend port."
-  }
-
-  if (Test-RuntimeBackendPortAllowed 19998 "http://127.0.0.1:45678") {
-    throw "Runtime backend reuse should not bypass the configured backend port."
-  }
-
+  $oldRuntimeKey = New-RuntimeKey "http://127.0.0.1:19998" "http://127.0.0.1:19999" $revisionA
   $oldRuntimeState = [pscustomobject]@{
+    runtime_key = $oldRuntimeKey
     backend = [pscustomobject]@{
       managed = $true
       url = "http://127.0.0.1:19998"
       port = 19998
       pid = 1234
+      source_revision = $revisionA
     }
     frontend = [pscustomobject]@{
       managed = $true
@@ -1822,6 +2082,24 @@ function Invoke-SelfTest {
   if ($null -eq $superseded.backend -or $null -eq $superseded.frontend) {
     throw "Superseded managed runtime entries should be preserved for cleanup."
   }
+  if ($superseded.runtime_key -ne $oldRuntimeKey) {
+    throw "Superseded runtime state should retain the old runtime key for key-scoped cleanup."
+  }
+  $olderRuntimeKey = New-RuntimeKey "http://127.0.0.1:19996" "http://127.0.0.1:19997" $revisionA
+  $olderSuperseded = [pscustomobject]@{
+    runtime_key = $olderRuntimeKey
+    backend = [pscustomobject]@{ managed = $true; url = "http://127.0.0.1:19996"; port = 19996; pid = 4321 }
+    frontend = [pscustomobject]@{ managed = $true; origin = "http://127.0.0.1:19997"; port = 19997; pid = 4322 }
+  }
+  $mergedSuperseded = @(Merge-SupersededRuntimeStates @($olderSuperseded) $superseded)
+  if ($mergedSuperseded.Count -ne 2 -or $mergedSuperseded[0].runtime_key -ne $oldRuntimeKey -or $mergedSuperseded[1].runtime_key -ne $olderRuntimeKey) {
+    throw "Superseded runtime merge should retain multiple old runtime keys newest-first."
+  }
+  $mergedState = [pscustomobject]@{}
+  Set-SupersededRuntimeStates $mergedState $mergedSuperseded
+  if (@($mergedState.superseded_runtimes).Count -ne 2 -or $mergedState.superseded.runtime_key -ne $oldRuntimeKey) {
+    throw "Superseded runtime state should expose both list and newest legacy field."
+  }
   if (-not (Test-RuntimeEntryEndpointMatches "backend" $oldRuntimeState.backend "http://127.0.0.1:19998/")) {
     throw "Runtime backend endpoint matching should normalize trailing slashes."
   }
@@ -1831,7 +2109,13 @@ function Invoke-SelfTest {
 
   $runtimePath = Join-Path ([System.IO.Path]::GetTempPath()) "sympp-plugin-selftest-runtime.json"
   $state = [pscustomobject]@{
-    backend = [pscustomobject]@{ url = "http://127.0.0.1:$DefaultBackendPort" }
+    runtime_key = $oldRuntimeKey
+    backend = [pscustomobject]@{
+      status = "reused"
+      managed = $false
+      url = "http://127.0.0.1:$DefaultBackendPort"
+      source_revision = $revisionA
+    }
     frontend = [pscustomobject]@{ origin = "http://127.0.0.1:$DefaultDashboardPort" }
   }
   Write-RuntimeState $runtimePath $state
@@ -1840,10 +2124,25 @@ function Invoke-SelfTest {
     throw "Runtime state did not round-trip."
   }
 
-  $leasePath = New-BridgeLease $runtimePath $state.backend $state.frontend
+  $leasePath = New-BridgeLease $runtimePath $state.backend $state.frontend $oldRuntimeKey
   $activeLeases = @(Get-ActiveBridgeLeases $runtimePath)
   if ($activeLeases.Count -ne 1 -or $activeLeases[0].path -ne $leasePath) {
     throw "Bridge lease did not appear active for the current launcher process."
+  }
+  if (-not (Test-ActiveBridgeLeaseForRuntimeKey $activeLeases $oldRuntimeKey)) {
+    throw "Bridge lease should be discoverable by runtime key."
+  }
+  if (Test-ActiveBridgeLeaseForRuntimeKey $activeLeases (New-RuntimeKey "http://127.0.0.1:20000" "http://127.0.0.1:20001" $revisionB)) {
+    throw "Bridge lease should not match a different runtime key."
+  }
+  if (-not (Test-ActiveBridgeLeaseForBackend $activeLeases $state.backend.url)) {
+    throw "Bridge lease should keep shared backend runtime entries alive."
+  }
+  if (-not (Test-ActiveBridgeLeaseForDashboard $activeLeases $state.frontend.origin)) {
+    throw "Bridge lease should keep shared dashboard runtime entries alive."
+  }
+  if (Test-ActiveBridgeLeaseForDashboard $activeLeases "http://127.0.0.1:29999") {
+    throw "Bridge lease should not match a different dashboard endpoint."
   }
   Remove-BridgeLease $leasePath
   $activeAfterRemove = @(Get-ActiveBridgeLeases $runtimePath)
@@ -1927,6 +2226,8 @@ if ($bridgeMode -eq "direct_stdio") {
 $autostartServers = -not (Test-EnvDisabled "SYMPP_AUTOSTART_SERVERS")
 $autostartBackend = $autostartServers -and -not (Test-EnvDisabled "SYMPP_AUTOSTART_BACKEND")
 $autostartFrontend = $autostartServers -and -not (Test-EnvDisabled "SYMPP_AUTOSTART_FRONTEND")
+$backendPortExplicit = -not [string]::IsNullOrWhiteSpace($env:SYMPP_BACKEND_PORT)
+$dashboardPortExplicit = -not [string]::IsNullOrWhiteSpace($env:SYMPP_DASHBOARD_PORT)
 $backendPort = Get-EnvInteger "SYMPP_BACKEND_PORT" $DefaultBackendPort 0 65535
 $dashboardPort = Get-EnvInteger "SYMPP_DASHBOARD_PORT" $DefaultDashboardPort 0 65535
 $backendTimeout = Get-EnvInteger "SYMPP_BACKEND_STARTUP_TIMEOUT_SEC" 60 1 600
@@ -1957,27 +2258,30 @@ $frontendError = $null
 $backendPlan = $null
 $dashboardPlan = $null
 $bridgeLeasePath = $null
-$supersededState = $null
+$runtimeKey = $null
+$supersededStates = @()
 $expectedSourceRevision = Resolve-SymppSourceRevision $repoRoot
 $startupLock = Enter-FileLock (Resolve-StartupLockFile $runtimeFile) $startupLockTimeout
 try {
   $runtimeState = Read-RuntimeState $runtimeFile
   $activeLeasesAtStart = @(Get-ActiveBridgeLeases $runtimeFile)
-  $allowManagedReuse = $activeLeasesAtStart.Count -gt 0
-  if (-not $allowManagedReuse -and $null -ne $runtimeState) {
+  if ($activeLeasesAtStart.Count -eq 0 -and $null -ne $runtimeState -and $null -ne $runtimeState.backend) {
+    $runtimeHealth = Get-SymppBackendHealth ([string]$runtimeState.backend.url)
     $preserveBackendUrl = if ([string]::IsNullOrWhiteSpace($env:SYMPP_BACKEND_URL)) { $null } else { $env:SYMPP_BACKEND_URL.TrimEnd("/") }
     $preserveDashboardOrigin = if ([string]::IsNullOrWhiteSpace($env:SYMPP_DASHBOARD_ORIGIN)) { $null } else { $env:SYMPP_DASHBOARD_ORIGIN.TrimEnd("/") }
-    if (Stop-ManagedRuntimeStateEntries $runtimeState $preserveBackendUrl $preserveDashboardOrigin) {
+    if (-not (Test-BackendSourceMatches $runtimeHealth $expectedSourceRevision) -and
+        (Stop-ManagedRuntimeStateEntries $runtimeState $preserveBackendUrl $preserveDashboardOrigin)) {
       Write-RuntimeState $runtimeFile $runtimeState
     }
   }
 
-  $backendPlan = Resolve-BackendPlan $backendPort $env:SYMPP_BACKEND_URL $runtimeState $backendPortReleaseTimeout $expectedSourceRevision $allowManagedReuse @($dashboardPort)
+  $backendPlan = Resolve-BackendPlan $backendPort $env:SYMPP_BACKEND_URL $runtimeState $backendPortReleaseTimeout $expectedSourceRevision $backendPortExplicit @($dashboardPort)
   if ($backendPlan.should_start -and -not $autostartBackend) {
     throw "Backend autostart is disabled and no reusable Symphony++ backend was found at $($backendPlan.url)."
   }
 
-  $dashboardPlan = Resolve-DashboardPlan $dashboardPort $env:SYMPP_DASHBOARD_ORIGIN $backendPlan.url $runtimeState $allowManagedReuse
+  $allowRecordedDashboardReuse = $backendPlan.managed -eq $true -and [string]$backendPlan.status -eq "reused"
+  $dashboardPlan = Resolve-DashboardPlan $dashboardPort $env:SYMPP_DASHBOARD_ORIGIN $backendPlan.url $runtimeState $dashboardPortExplicit $allowRecordedDashboardReuse
   if ($dashboardPlan.should_start -and -not $autostartFrontend) {
     $dashboardPlan = [pscustomobject]@{
       status = "disabled"
@@ -1989,8 +2293,8 @@ try {
     }
   }
 
-  $supersededState = New-SupersededRuntimeState $runtimeState $backendPlan $dashboardPlan
-  $supersededState = Stop-SupersededManagedServersIfUnused $runtimeFile $supersededState
+  $supersededStates = Merge-SupersededRuntimeStates (Get-SupersededRuntimeStates $runtimeState) (New-SupersededRuntimeState $runtimeState $backendPlan $dashboardPlan)
+  $supersededStates = Stop-SupersededRuntimeStatesIfUnused $runtimeFile $supersededStates
 
   if ($backendPlan.should_start) {
     [void](Initialize-ElixirRuntime $elixirDir $launcher $mix $mise $logDir $elixirSetupTimeout)
@@ -2013,11 +2317,15 @@ try {
     }
   }
 
+  $runtimeSourceRevision = if ([string]::IsNullOrWhiteSpace([string]$backendPlan.source_revision)) { $expectedSourceRevision } else { [string]$backendPlan.source_revision }
+  $runtimeKey = New-RuntimeKey $backendPlan.url $dashboardPlan.origin $runtimeSourceRevision
   $state = [pscustomobject]@{
     generated_at = (Get-Date).ToString("o")
     repo_root = $repoRoot
     plugin_root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
     mcp_transport = "stdio_to_http_bridge"
+    runtime_key = $runtimeKey
+    runtime_kind = if ($backendPlan.managed -eq $true) { "managed" } else { [string]$backendPlan.status }
     backend = [pscustomobject]@{
       status = $backendPlan.status
       url = $backendPlan.url
@@ -2053,10 +2361,11 @@ try {
       autostart_env = "SYMPP_AUTOSTART_SERVERS"
       bridge_mode_env = "SYMPP_MCP_BRIDGE_MODE"
     }
-    superseded = $supersededState
+    superseded = if ($supersededStates.Count -gt 0) { $supersededStates[0] } else { $null }
+    superseded_runtimes = $supersededStates
   }
   Write-RuntimeState $runtimeFile $state
-  $bridgeLeasePath = New-BridgeLease $runtimeFile $backendPlan $dashboardPlan
+  $bridgeLeasePath = New-BridgeLease $runtimeFile $backendPlan $dashboardPlan $runtimeKey
 
   $dashboardSummary = if ($dashboardPlan.url) { "$($dashboardPlan.url) [$($dashboardPlan.status)]" } else { $dashboardPlan.status }
   Write-Diagnostic "Symphony++ MCP bridge ready: backend=$($backendPlan.url) dashboard=$dashboardSummary runtime=$runtimeFile"
@@ -2067,5 +2376,5 @@ try {
   Invoke-HttpMcpBridge $backendPlan.mcp_url $bridgeTimeout
 } finally {
   Remove-BridgeLease $bridgeLeasePath
-  Stop-ManagedServersIfUnused $runtimeFile
+  Stop-ManagedServersIfUnused $runtimeFile $runtimeKey
 }
