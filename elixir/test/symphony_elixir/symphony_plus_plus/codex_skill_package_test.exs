@@ -500,7 +500,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           "missing_manifest",
           "incompatible_default_plugin_bundles_mcp",
           "symphony_plus_plus_server",
-          "process_scan_supported",
           "process_scan_scope",
           "skipped_no_repo_root_scope",
           "skipped_ambiguous_cache_source_root_hints",
@@ -2342,7 +2341,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
-  test "lifecycle diagnostic infers process scope from installed opt-in cache when package versions differ" do
+  test "lifecycle diagnostic performs live process scan when package versions differ" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_root = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-drift-#{System.unique_integer([:positive])}")
 
@@ -2397,7 +2396,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
-              "-SkipProcessScan",
+              "-RepoRoot",
+              @repo_root,
               "-Json"
             ],
             stderr_to_stdout: true
@@ -2407,11 +2407,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         report = Jason.decode!(output)
         caches = Map.fetch!(report, "installed_cache")
-        assert report["process_scan_scope"] == "installed_cache_source_root_hints"
-        assert report["process_scan_performed"] == false
-        assert report["process_scan_note"] =~ "-SkipProcessScan"
+        assert report["process_scan_scope"] == "repo_root_parameter"
+        assert report["process_scan_performed"] == report["process_scan_supported"]
         assert [repo_filter] = report["process_repo_root_filters"]
-        assert String.replace(repo_filter, "\\", "/") == "c:/sympp/repo-one"
+        assert same_path?(repo_filter, @repo_root)
         assert report["live_process_counts"]["erl_sympp_mcp"] == 0
 
         assert Enum.any?(

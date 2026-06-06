@@ -126,8 +126,9 @@ defmodule SymphonyElixir.TestSupport do
     repo_root = Path.join(root, "repo")
 
     File.mkdir_p!(root)
-    git!(root, ["init", "--bare", "--initial-branch=#{base_branch}", origin])
-    git!(root, ["init", "-b", base_branch, repo_root])
+    git!(root, ["init", "--bare", origin])
+    git!(root, ["init", repo_root])
+    git!(repo_root, ["checkout", "-b", base_branch])
     git!(repo_root, ["config", "user.email", "sympp@example.com"])
     git!(repo_root, ["config", "user.name", "Symphony Test"])
     File.write!(Path.join(repo_root, "README.md"), "# fixture\n")

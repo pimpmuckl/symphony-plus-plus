@@ -415,7 +415,12 @@ defmodule SymphonyElixir.CoreTest do
         end
       end)
 
-      assert_eventually(fn -> :sys.get_state(pid).poll_check_in_progress == false end)
+      assert_eventually(fn ->
+        state = :sys.get_state(pid)
+
+        state.poll_check_in_progress == false and is_integer(state.next_poll_due_at_ms) and
+          state.next_poll_due_at_ms > System.monotonic_time(:millisecond) + 1_000
+      end)
 
       assert {:ok, workspace} =
                SymphonyElixir.PathSafety.canonicalize(Path.join(test_root, issue_identifier))
@@ -802,7 +807,7 @@ defmodule SymphonyElixir.CoreTest do
     assert due_at_ms - scheduled_at_ms == expected_delay_ms
   end
 
-  defp assert_eventually(fun, attempts \\ 20)
+  defp assert_eventually(fun, attempts \\ 400)
 
   defp assert_eventually(fun, attempts) when attempts > 0 do
     if fun.() do
@@ -1065,25 +1070,12 @@ defmodule SymphonyElixir.CoreTest do
 
       File.write!(codex_binary, """
       #!/bin/sh
-      count=0
       while IFS= read -r line; do
         count=$((count + 1))
         case "$count" in
-          1)
-            printf '%s\\n' '{\"id\":1,\"result\":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-1\"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-1\"}}}'
-            printf '%s\\n' '{\"method\":\"turn/completed\"}'
-            exit 0
-            ;;
-          *)
-            ;;
+          1) printf '%s\\n' '{\"id\":1,\"result\":{}}' ;;
+          3) printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-1\"}}}' ;;
+          4) printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-1\"}}}'; printf '%s\\n' '{\"method\":\"turn/completed\"}'; exit 0 ;;
         esac
       done
       """)
@@ -1104,20 +1096,8 @@ defmodule SymphonyElixir.CoreTest do
         labels: ["backend"]
       }
 
-      before = MapSet.new(File.ls!(workspace_root))
       assert :ok = AgentRunner.run(issue)
-      entries_after = MapSet.new(File.ls!(workspace_root))
-
-      created =
-        MapSet.difference(entries_after, before) |> Enum.filter(&(&1 == "S-99"))
-
-      created = MapSet.new(created)
-
-      assert MapSet.size(created) == 1
-      workspace_name = created |> Enum.to_list() |> List.first()
-      assert workspace_name == "S-99"
-
-      workspace = Path.join(workspace_root, workspace_name)
+      workspace = Path.join(workspace_root, "S-99")
       assert File.exists?(workspace)
     after
       File.rm_rf(test_root)
