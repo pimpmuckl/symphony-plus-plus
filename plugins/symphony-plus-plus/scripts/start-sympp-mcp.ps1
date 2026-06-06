@@ -5,15 +5,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot "sympp-launcher-runtime.ps1")
+
 function Write-Usage {
   Write-Host "Starts the generic Symphony++ MCP stdio server for the Codex plugin."
   Write-Host ""
   Write-Host "Environment:"
   Write-Host "  SYMPP_REPO_ROOT   Optional repo checkout root. Required when the plugin runs from installed cache."
   Write-Host "  SYMPP_DATABASE    Optional SQLite ledger override passed to mix sympp.mcp. When omitted, mix sympp.mcp prefers %USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3 and falls back under temp/relative .agents\splusplus if home is unavailable."
-  Write-Host "  SYMPP_LAUNCHER    Optional launcher: 'direct' or 'mise'. Defaults to 'direct'."
+  Write-Host "  SYMPP_LAUNCHER    Optional launcher: 'direct' or 'mise'. Defaults to 'mise' when elixir/mise.toml is present and mise is available; otherwise 'direct'."
   Write-Host "  SYMPP_MIX         Optional mix executable path or name for direct launcher. Defaults to 'mix'."
   Write-Host "  SYMPP_MISE        Optional mise executable path or name for mise launcher. Defaults to 'mise'."
+  Write-Host "  MIX_BUILD_ROOT    Optional Mix build-root override. Defaults under %USERPROFILE%\.agents\splusplus\build\mcp for plugin launcher runs."
   Write-Host ""
   Write-Host "The local refresh script writes a non-secret .sympp-source-root hint into the installed cache."
 }
@@ -63,9 +66,13 @@ if ($Help) {
 
 $repoRoot = Resolve-RepoRoot
 $elixirDir = Join-Path $repoRoot "elixir"
-$launcher = if ([string]::IsNullOrWhiteSpace($env:SYMPP_LAUNCHER)) { "direct" } else { $env:SYMPP_LAUNCHER.Trim().ToLowerInvariant() }
 $mix = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MIX)) { "mix" } else { $env:SYMPP_MIX }
 $mise = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MISE)) { "mise" } else { $env:SYMPP_MISE }
+$launcher = if ([string]::IsNullOrWhiteSpace($env:SYMPP_LAUNCHER)) { Resolve-SymppDefaultLauncher $elixirDir $mise } else { $env:SYMPP_LAUNCHER.Trim().ToLowerInvariant() }
+$defaultMixBuildRoot = Resolve-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp"
+if (-not $ValidateOnly) {
+  Set-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp"
+}
 $mcpArgs = @("sympp.mcp", "--mode", "stdio", "--repo-root", $repoRoot)
 
 if (-not [string]::IsNullOrWhiteSpace($env:SYMPP_DATABASE)) {
@@ -152,6 +159,7 @@ if ($ValidateOnly) {
   Write-Host "  repoRoot: $repoRoot"
   Write-Host "  elixirDir: $elixirDir"
   Write-Host "  launcher: $launcher"
+  Write-Host "  mixBuildRoot: $defaultMixBuildRoot"
   if (-not [string]::IsNullOrWhiteSpace($env:SYMPP_DATABASE)) {
     Write-Host "  database: $([System.IO.Path]::GetFullPath($env:SYMPP_DATABASE))"
   }
