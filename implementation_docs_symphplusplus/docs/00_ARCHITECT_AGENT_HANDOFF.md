@@ -18,6 +18,11 @@ identity.
 4. Call `read_work_request`, `read_work_request_product_tree`, and
 `read_work_request_delivery_board` before slicing or dispatch.
 
+## Product Tree Shape
+
+Do not create a plan node solely to wrap one slice. Leave simple slices direct
+unless the node groups multiple units or records a real product boundary.
+
 ## Dispatch
 
 Dispatch planned slices with `dispatch_work_request_planned_slice` using only

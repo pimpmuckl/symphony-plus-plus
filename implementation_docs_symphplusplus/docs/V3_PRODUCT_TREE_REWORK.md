@@ -82,6 +82,9 @@ A planned slice remains the architect-to-worker execution unit.
 In V3, slices can link to one product plan node or remain direct children of
 the WorkRequest. Direct slices are valid and expected for simple work.
 
+Do not create a plan node solely to wrap one slice. Leave simple slices direct
+unless the node groups multiple units or records a real product boundary.
+
 ### WorkPackage
 
 WorkPackages remain execution and audit records:
