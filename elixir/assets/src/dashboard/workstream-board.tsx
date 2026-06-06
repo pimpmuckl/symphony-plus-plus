@@ -13,7 +13,7 @@ import { finishedRequestChildrenStorageKey, sortPackages, sortPlannedSlices, sor
 import { activeBlockerEntityCounts, productTreeCounts, requestProgress, rootProductSliceIds } from "./workstream-progress";
 import { productNodeState, rowProgressAttentionState, rowProgressIconState, sliceBlockerCount, sliceGuidanceCount } from "./workstream-row-state";
 import { EntityCountChips, EntityKindSlot, ProductNodeHeader, ProgressPill, ProgressStateIcon, RequestHeaderActions, RowBadgeSlot, SliceKindSlot } from "./workstream-row-ui";
-import { openBlockersForSlices, openGuidanceForSlices, productNodeSubtreeSlices, requestGuidanceItem } from "./workstream-board-actions";
+import { openBlockersForSlices, openGuidanceForSlice, openGuidanceForSlices, productNodeSubtreeSlices, requestGuidanceItem } from "./workstream-board-actions";
 import { requestUpdateKey, sliceUpdateKey } from "./update-animations";
 import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
 import { UnlinkedExecutionSection } from "./workstream-unlinked-section";
@@ -531,8 +531,7 @@ function ProductSliceRow({
   const progressIconState = rowProgressIconState({ blockerCount, guidanceCount, progress, tone });
   const progressAttentionState = rowProgressAttentionState({ blockerCount, guidanceCount, tone });
   const openSliceDetail = () => onSelectCard({ kind: "slice", detail, slice, pkg });
-  const slicePackageById = pkg ? new Map([[pkg.id, pkg]]) : new Map<string, WorkPackageCard>();
-  const openGuidance = () => openGuidanceForSlices(detail, [slice], slicePackageById, guidanceItems, onSelectGuidance, onSelectCard);
+  const openGuidance = () => openGuidanceForSlice(detail, slice, pkg, guidanceItems, onSelectGuidance, onSelectCard);
   const openBlockers = () => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice, pkg });
 
   return (

@@ -34,6 +34,23 @@ export function openGuidanceForSlices(
   onSelectCard({ kind: "request", detail });
 }
 
+export function openGuidanceForSlice(
+  detail: WorkRequestDetail,
+  slice: PlannedSlice,
+  pkg: WorkPackageCard | undefined,
+  guidanceItems: GuidanceItem[],
+  onSelectGuidance: (item: GuidanceItem) => void,
+  onSelectCard: CardDetailSelect,
+) {
+  const item = packageGuidanceItem(pkg, guidanceItems) ?? requestGuidanceItem(detail, guidanceItems);
+  if (item) {
+    onSelectGuidance(item);
+    return;
+  }
+
+  onSelectCard({ kind: "slice", detail, slice, pkg });
+}
+
 export function openBlockersForSlices(
   detail: WorkRequestDetail,
   slices: PlannedSlice[],
