@@ -445,75 +445,83 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@refresh_script_path) =~ "-CodexHome $(Quote-PowerShellLiteral $codexHomePath)"
     assert File.read!(@refresh_script_path) =~ "-MarketplaceName $(Quote-PowerShellLiteral $marketplaceName)"
     refute File.read!(@refresh_script_path) =~ " -File plugins\\symphony-plus-plus"
+
+    lifecycle_diagnostic = File.read!(@plugin_lifecycle_diagnostic_path)
+
     assert File.exists?(@plugin_lifecycle_diagnostic_path)
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "start-sympp-mcp.ps1"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "sympp\\.mcp --mode stdio"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "Resolve-ComparableFileSystemPath"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "Update-TomlMultilineStringState"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "New-CurrentDiagnosticCommand"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "diagnose-mcp-lifecycle self-test passed"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "installed_cache = @($cachePackages)"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "live_repo_roots = @($repoRoots)"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "launcher_parents = @($launcherParents)"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "repo_root_filter = $RepoRoot"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "other_marketplace_mcp_companion_enabled"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "RepoRoot does not look like a Symphony++ checkout"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "mise_sympp_mcp = $miseProcesses.Count"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "Find-AncestorLauncherProcessIds"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "foreach ($processId in $found)"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "Find-TomlBooleanKeyAssignment"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "quoted boolean key"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "$filterAnchorProcesses"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "manifest_parse_error"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "mcp_parse_error"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "manifest_mcpServers_declared"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "manifest_exists"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "default_plugin_lifecycle_status"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "symphony-plus-plus-mcp"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "package_name"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "package.marketplace_name"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "ready_priority"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "version_sort_key"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "current_working_directory"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "multiple_marketplaces_need_selection"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "relocate_global_sympp_mcp_entry"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "-CodexHome $(Quote-PowerShellLiteral $CodexHomePath)"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "$($package.marketplace_name)/$($package.package_name)/$($package.label)"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "opt_in_mcp_plugin_bundles_mcp"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "reference_mcp_server_status"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "invalid_url"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "invalid_mixed_http_stdio"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "non_default_http_url"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "http_mcp_reachability_status"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "mcp_endpoint_available"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "unexpected_http_status_"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "unreachable"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "invalid_cwd"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "invalid_args"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "Test-CachePackageIsCurrentForProcessScope"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "Test-CachePackageCanScopeProcesses"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "missing_manifest"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "incompatible_default_plugin_bundles_mcp"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "symphony_plus_plus_server"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "process_scan_supported"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "process_scan_scope"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "skipped_no_repo_root_scope"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "skipped_ambiguous_cache_source_root_hints"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "installed_cache_source_root_hints"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "directLauncherProcesses"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "start_sympp_mcp_pwsh_unattributed"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "unattributed_launcher_parents"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "MarketplaceName = \"*\""
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "[System.Boolean]::Parse"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "Get-ReadinessSummary"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "solo_ready_mcp_companion_not_enabled"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "Get-ActivationConfigKey"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "EnableMcpCompanion"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "Set-PluginEnabledInConfig"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "sympp-backup"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "Keep symphony-plus-plus-mcp out of generic worker"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "ready_via_mcp_companion"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "session_visibility_note"
+
+    for marker <- [
+          "start-sympp-mcp.ps1",
+          "sympp\\.mcp --mode stdio",
+          "Resolve-ComparableFileSystemPath",
+          "Update-TomlMultilineStringState",
+          "New-CurrentDiagnosticCommand",
+          "diagnose-mcp-lifecycle self-test passed",
+          "installed_cache = @($cachePackages)",
+          "live_repo_roots = @($repoRoots)",
+          "launcher_parents = @($launcherParents)",
+          "repo_root_filter = $RepoRoot",
+          "other_marketplace_mcp_companion_enabled",
+          "RepoRoot does not look like a Symphony++ checkout",
+          "mise_sympp_mcp = $miseProcesses.Count",
+          "Find-AncestorLauncherProcessIds",
+          "foreach ($processId in $found)",
+          "Find-TomlBooleanKeyAssignment",
+          "quoted boolean key",
+          "$filterAnchorProcesses",
+          "manifest_parse_error",
+          "mcp_parse_error",
+          "manifest_mcpServers_declared",
+          "manifest_exists",
+          "default_plugin_lifecycle_status",
+          "symphony-plus-plus-mcp",
+          "package_name",
+          "package.marketplace_name",
+          "ready_priority",
+          "version_sort_key",
+          "current_working_directory",
+          "multiple_marketplaces_need_selection",
+          "relocate_global_sympp_mcp_entry",
+          "-CodexHome $(Quote-PowerShellLiteral $CodexHomePath)",
+          "$($package.marketplace_name)/$($package.package_name)/$($package.label)",
+          "opt_in_mcp_plugin_bundles_mcp",
+          "reference_mcp_server_status",
+          "invalid_url",
+          "invalid_mixed_http_stdio",
+          "non_default_http_url",
+          "http_mcp_reachability_status",
+          "mcp_endpoint_available",
+          "unexpected_http_status_",
+          "unreachable",
+          "invalid_cwd",
+          "invalid_args",
+          "Test-CachePackageIsCurrentForProcessScope",
+          "Test-CachePackageCanScopeProcesses",
+          "missing_manifest",
+          "incompatible_default_plugin_bundles_mcp",
+          "symphony_plus_plus_server",
+          "process_scan_supported",
+          "process_scan_scope",
+          "skipped_no_repo_root_scope",
+          "skipped_ambiguous_cache_source_root_hints",
+          "installed_cache_source_root_hints",
+          "directLauncherProcesses",
+          "start_sympp_mcp_pwsh_unattributed",
+          "unattributed_launcher_parents",
+          "MarketplaceName = \"*\"",
+          "[System.Boolean]::Parse",
+          "Get-ReadinessSummary",
+          "solo_ready_mcp_companion_not_enabled",
+          "Get-ActivationConfigKey",
+          "EnableMcpCompanion",
+          "Set-PluginEnabledInConfig",
+          "sympp-backup",
+          "Keep symphony-plus-plus-mcp out of generic worker",
+          "ready_via_mcp_companion",
+          "session_visibility_note"
+        ] do
+      assert lifecycle_diagnostic =~ marker
+    end
 
     assert File.read!(@refresh_script_path) =~
              "Assert-ExistingCachePathNotReparsePoint @($codexHomePath, $pluginsRoot, $cacheRoot, $marketplaceCacheRoot, $pluginCacheRoot)"
@@ -649,6 +657,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true
@@ -859,6 +868,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true
@@ -907,6 +917,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true
@@ -2261,6 +2272,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true
@@ -2318,7 +2330,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         assert Enum.any?(config_entries, &(&1["plugin_name"] == "symphony-plus-plus-mcp" and &1["enabled"] == true))
 
         assert report["process_scan_scope"] == "installed_cache_source_root_hints"
-        assert report["process_scan_performed"] == true
+        assert report["process_scan_performed"] == false
+        assert report["process_scan_note"] =~ "-SkipProcessScan"
         assert [repo_filter] = report["process_repo_root_filters"]
         assert String.replace(repo_filter, "\\", "/") == "c:/sympp/repo-one"
         assert report["live_process_counts"]["erl_sympp_mcp"] == 0

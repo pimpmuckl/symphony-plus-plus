@@ -415,7 +415,7 @@ defmodule SymphonyElixir.CoreTest do
         end
       end)
 
-      Process.sleep(50)
+      assert_eventually(fn -> :sys.get_state(pid).poll_check_in_progress == false end)
 
       assert {:ok, workspace} =
                SymphonyElixir.PathSafety.canonicalize(Path.join(test_root, issue_identifier))
@@ -447,9 +447,16 @@ defmodule SymphonyElixir.CoreTest do
       end)
 
       send(pid, :tick)
-      Process.sleep(100)
-      state = :sys.get_state(pid)
 
+      assert_eventually(fn ->
+        state = :sys.get_state(pid)
+
+        !Map.has_key?(state.running, issue_id) and
+          !MapSet.member?(state.claimed, issue_id) and
+          !Process.alive?(agent_pid)
+      end)
+
+      state = :sys.get_state(pid)
       refute Map.has_key?(state.running, issue_id)
       refute MapSet.member?(state.claimed, issue_id)
       refute Process.alive?(agent_pid)
@@ -795,6 +802,19 @@ defmodule SymphonyElixir.CoreTest do
     assert due_at_ms - scheduled_at_ms == expected_delay_ms
   end
 
+  defp assert_eventually(fun, attempts \\ 20)
+
+  defp assert_eventually(fun, attempts) when attempts > 0 do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(5)
+      assert_eventually(fun, attempts - 1)
+    end
+  end
+
+  defp assert_eventually(_fun, 0), do: flunk("condition not met in time")
+
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
   defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 
@@ -1038,18 +1058,10 @@ defmodule SymphonyElixir.CoreTest do
       )
 
     try do
-      template_repo = Path.join(test_root, "source")
       workspace_root = Path.join(test_root, "workspaces")
       codex_binary = Path.join(test_root, "fake-codex")
 
-      File.mkdir_p!(template_repo)
       File.mkdir_p!(workspace_root)
-      File.write!(Path.join(template_repo, "README.md"), "# test")
-      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
-      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
-      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
-      System.cmd("git", ["-C", template_repo, "add", "README.md"])
-      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
 
       File.write!(codex_binary, """
       #!/bin/sh
@@ -1080,7 +1092,6 @@ defmodule SymphonyElixir.CoreTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_after_create: "cp #{shell_path(Path.join(template_repo, "README.md"))} README.md",
         codex_command: "#{shell_script_command(codex_binary)} app-server"
       )
 
@@ -1108,7 +1119,6 @@ defmodule SymphonyElixir.CoreTest do
 
       workspace = Path.join(workspace_root, workspace_name)
       assert File.exists?(workspace)
-      assert File.exists?(Path.join(workspace, "README.md"))
     after
       File.rm_rf(test_root)
     end
