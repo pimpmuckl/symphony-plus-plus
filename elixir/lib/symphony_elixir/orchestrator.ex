@@ -592,8 +592,6 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
-  defp terminate_running_issue_for_retry(%State{} = state, _issue_id, _running_entry, _reason), do: state
-
   defp reconcile_stalled_running_issues(%State{} = state) do
     timeout_ms = Config.settings!().codex.stall_timeout_ms
 
@@ -1538,8 +1536,6 @@ defmodule SymphonyElixir.Orchestrator do
   defp claim_issue(%State{} = state, issue_id) when is_binary(issue_id) do
     %{state | claimed: MapSet.put(state.claimed, issue_id)}
   end
-
-  defp claim_issue(%State{} = state, _issue_id), do: state
 
   defp maybe_put_retry_agent_run_id(metadata, {:error, _reason}, agent_run_id) when is_binary(agent_run_id) do
     Map.put(metadata, :agent_run_id, agent_run_id)

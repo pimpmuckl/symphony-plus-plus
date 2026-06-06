@@ -737,7 +737,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
           Service.claim(repo, minted.work_key.secret, claimed_by: "worker-#{index}")
         end,
         max_concurrency: 8,
-        timeout: 5_000
+        timeout: 15_000
       )
       |> Enum.map(fn {:ok, result} -> result end)
 

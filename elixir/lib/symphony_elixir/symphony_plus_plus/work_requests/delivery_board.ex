@@ -173,7 +173,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
     slice_work_request_id == work_request_id
   end
 
-  defp planned_slice_for_work_request?(%PlannedSlice{}, _work_request_id), do: false
   defp planned_slice_for_work_request?(_value, _work_request_id), do: false
 
   defp planned_slice_deliveries_by_id(_repo, _work_request_id, []), do: {:ok, %{}}

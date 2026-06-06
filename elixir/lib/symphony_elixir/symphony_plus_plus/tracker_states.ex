@@ -122,11 +122,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerStates do
 
   defp state_set(_state_names, default), do: MapSet.new(default)
 
-  @spec normalized_state_names(term()) :: [String.t()]
+  @spec normalized_state_names([term()]) :: [String.t()]
   defp normalized_state_names(state_names) when is_list(state_names) do
     state_names
     |> Enum.map(&canonical_state_name/1)
   end
-
-  defp normalized_state_names(_state_names), do: []
 end

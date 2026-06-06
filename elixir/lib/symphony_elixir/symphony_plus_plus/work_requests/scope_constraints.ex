@@ -314,12 +314,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints do
       path_subset?(owned_segments, [:globstar | allowed_segments], descendant_scope?)
   end
 
-  defp path_subset?(owned_segments, [:globstar | allowed_segments], descendant_scope?) do
+  defp path_subset?([_owned_segment | rest_owned] = owned_segments, [:globstar | allowed_segments], descendant_scope?) do
     path_subset?(owned_segments, allowed_segments, descendant_scope?) or
-      case owned_segments do
-        [_owned_segment | rest_owned] -> path_subset?(rest_owned, [:globstar | allowed_segments], descendant_scope?)
-        [] -> false
-      end
+      path_subset?(rest_owned, [:globstar | allowed_segments], descendant_scope?)
   end
 
   defp path_subset?([:globstar | _owned_segments], [{:wildcard, "*", _regex}, :globstar], _descendant_scope?), do: true
@@ -359,12 +356,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints do
 
   defp can_match_prefix?([_owned_segment | _rest_owned], [:globstar]), do: true
 
-  defp can_match_prefix?(owned_segments, [:globstar | rest_forbidden]) do
+  defp can_match_prefix?([_owned_segment | rest_owned] = owned_segments, [:globstar | rest_forbidden]) do
     can_match_prefix?(owned_segments, rest_forbidden) or
-      case owned_segments do
-        [] -> false
-        [_owned_segment | rest_owned] -> can_match_prefix?(rest_owned, [:globstar | rest_forbidden])
-      end
+      can_match_prefix?(rest_owned, [:globstar | rest_forbidden])
   end
 
   defp can_match_prefix?([owned_segment | rest_owned], [forbidden_segment | rest_forbidden]) do

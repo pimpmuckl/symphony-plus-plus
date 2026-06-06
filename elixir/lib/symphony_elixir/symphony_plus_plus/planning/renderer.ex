@@ -328,7 +328,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     ]
   end
 
-  defp list_or_empty([]), do: ["None."]
   defp list_or_empty(values), do: Enum.map(values, &("- " <> &1))
 
   defp inline_list([]), do: "none"

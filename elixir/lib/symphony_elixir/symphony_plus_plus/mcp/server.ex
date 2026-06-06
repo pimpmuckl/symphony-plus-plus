@@ -2594,8 +2594,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp unbound_tool_specs(%Config{} = config), do: unbound_tool_specs_for_config(config)
 
-  defp unbound_tool_specs(%__MODULE__{config: config}), do: unbound_tool_specs_for_config(config)
-
   defp unbound_tool_specs_for_config(%Config{} = config) do
     [health_tool_spec(), assignment_release_tool_spec()] ++
       Enum.map(@solo_tools, &solo_tool_spec/1) ++
@@ -2636,10 +2634,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp tool_specs_for_server(%__MODULE__{session_refresh_required: true, config: config} = server) do
     {:ok, claimable_tool_specs(config) ++ local_operator_tool_specs(server)}
-  end
-
-  defp tool_specs_for_server(%__MODULE__{session: nil} = server) do
-    {:ok, unbound_tool_specs(server) ++ local_operator_tool_specs(server)}
   end
 
   defp tool_specs_for_server(%__MODULE__{config: config, session: session} = server) do
@@ -13124,9 +13118,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       not review_artifacts_present?(state.progress_events, state.artifacts, state.work_package.id)
   end
 
-  defp review_lanes_missing?(state, required_review_lanes) do
-    required_review_lanes != [] and not review_lanes_present?(state, required_review_lanes)
-  end
+  defp review_lanes_missing?(state, required_review_lanes), do: not review_lanes_present?(state, required_review_lanes)
 
   defp investigation_findings_missing?(state), do: state.work_package.kind == "investigation" and state.findings == []
 

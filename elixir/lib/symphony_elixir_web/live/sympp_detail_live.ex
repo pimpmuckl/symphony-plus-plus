@@ -779,8 +779,8 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     if value == "", do: nil, else: value
   end
 
-  defp compact_state_value(value) when is_atom(value), do: Atom.to_string(value)
   defp compact_state_value(value) when is_boolean(value), do: to_string(value)
+  defp compact_state_value(value) when is_atom(value), do: Atom.to_string(value)
   defp compact_state_value(value) when is_number(value), do: to_string(value)
   defp compact_state_value(_value), do: nil
 

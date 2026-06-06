@@ -740,7 +740,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   defp omitted_count(repo, schema, work_package_id, loaded_rows) do
     total = count_records(repo, schema, work_package_id)
 
-    max((total || 0) - length(loaded_rows), 0)
+    max(total - length(loaded_rows), 0)
   end
 
   defp count_records(repo, schema, work_package_id) do

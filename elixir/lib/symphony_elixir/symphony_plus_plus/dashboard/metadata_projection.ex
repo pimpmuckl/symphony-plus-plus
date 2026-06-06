@@ -304,7 +304,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection do
       %ProgressEvent{payload: payload} ->
         if valid_review_suite_result_payload?(payload, work_package_id, head_sha) and
              persisted_review_suite_artifact?(artifacts, work_package_id, Map.fetch!(payload, "head_sha")) do
-          Sanitizer.redacted_json(payload || %{})
+          Sanitizer.redacted_json(payload)
         else
           nil
         end
@@ -327,7 +327,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection do
   end
 
   defp pr_metadata(%{} = pr, :none), do: pr
-  defp pr_metadata(%{} = _pr, _head_filter), do: nil
 
   defp latest_pr_payload(progress_events, :none) do
     case latest_attached_pr_ref_with_sequence(progress_events) do

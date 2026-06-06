@@ -5,8 +5,10 @@ name = "symphony-plus-plus"
 [setup]
 script = '''
 cd elixir
-mix deps.get
-mix compile
+mise trust -y
+mise install
+mise exec -- mix deps.get
+mise exec -- mix compile
 cd ..
 npm --prefix elixir/assets ci
 '''
