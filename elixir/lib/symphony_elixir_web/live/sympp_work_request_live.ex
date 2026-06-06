@@ -1943,8 +1943,8 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp can_create_work_request?(true, _grant), do: true
   defp can_create_work_request?(_operator_mode?, grant), do: can_create_work_request?(grant)
 
-  defp can_manage_work_request?(_operator_mode?, %AccessGrant{}), do: true
-  defp can_manage_work_request?(_operator_mode?, _grant), do: false
+  defp can_manage_work_request?(%AccessGrant{}), do: true
+  defp can_manage_work_request?(_grant), do: false
 
   defp intake_scope(%AccessGrant{} = grant) do
     case SymppBoardLive.with_dashboard_repo(&intake_scope(&1, grant)) do
@@ -2510,7 +2510,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
       ]
 
   defp show_architect_work_request_controls?(operator_mode?, board_grant) do
-    not operator_mode? and can_manage_work_request?(operator_mode?, board_grant)
+    not operator_mode? and can_manage_work_request?(board_grant)
   end
 
   defp can_start_agent_questions?(true, nil, work_request), do: value(work_request, :status) == "draft"
