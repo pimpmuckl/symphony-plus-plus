@@ -271,7 +271,9 @@ defmodule Mix.Tasks.Sympp.Cockpit do
         Mix.raise("Symphony++ dashboard assets are missing and npm was not found. Run npm install/build in #{assets_dir}.")
 
       true ->
-        case System.cmd(npm, ["run", "build"], cd: assets_dir, stderr_to_stdout: true) do
+        {executable, args} = SymphonyElixir.LocalCommand.executable_invocation(npm, ["run", "build"])
+
+        case System.cmd(executable, args, cd: assets_dir, stderr_to_stdout: true) do
           {_output, 0} ->
             sync_dashboard_static_assets()
 
