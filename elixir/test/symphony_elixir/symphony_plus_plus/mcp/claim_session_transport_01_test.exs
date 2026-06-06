@@ -673,9 +673,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
   end
 
-  test "claim_local_assignment rejects heartbeat from a different caller_id identity", %{repo: repo} do
+  test "claim_local_assignment reconnects same owner across a different caller_id", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-CALLER-ISOLATION")
-    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     arguments = local_assignment_claim_args(package)
 
     {claim_response, _claimed_server} =
@@ -692,7 +692,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
     assert get_in(claim_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "created"
     assert {:ok, %ClaimLease{id: lease_id, last_seen_at: last_seen_at}} = ClaimLeaseService.current_for_work_package(repo, package.id)
 
-    {other_caller_response, _server} =
+    {other_caller_response, other_caller_server} =
       Server.handle_state(
         %{
           "jsonrpc" => "2.0",
@@ -706,12 +706,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
         local_mcp_server(local_mcp_config(repo), "local-caller-isolation-other-state")
       )
 
-    assert get_in(other_caller_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
-    assert get_in(other_caller_response, ["error", "data", "action"]) == "reuse_claim_identity_or_recycle_stale_claim"
-    assert get_in(other_caller_response, ["error", "data", "hint"]) =~ "Reuse the same work_package_id, claimed_by, and caller_id"
+    assert get_in(other_caller_response, ["result", "structuredContent", "assignment", "grant_id"]) == minted.grant.id
+    assert get_in(other_caller_response, ["result", "structuredContent", "local_claim", "caller_id"]) == "codex-local-other"
+    assert get_in(other_caller_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "heartbeat"
+    assert other_caller_server.session.assignment.work_package_id == package.id
 
-    assert {:ok, %ClaimLease{id: ^lease_id, status: "active", last_seen_at: ^last_seen_at}} =
+    assert {:ok, %ClaimLease{id: ^lease_id, status: "active", last_seen_at: refreshed_at}} =
              ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    assert DateTime.compare(refreshed_at, last_seen_at) != :lt
 
     assert repo.aggregate(
              from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id and claim_lease.status != "active"),
@@ -719,7 +722,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
            ) == 0
   end
 
-  test "claim_local_assignment derives distinct implicit caller ids per local MCP state", %{repo: repo} do
+  test "claim_local_assignment reconnects implicit same owner across local MCP states", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-IMPLICIT-CALLER")
     assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     arguments = package |> local_assignment_claim_args() |> Map.delete("caller_id")
@@ -737,6 +740,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
       )
 
     assert get_in(claim_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "created"
+    initial_caller_id = get_in(claim_response, ["result", "structuredContent", "local_claim", "caller_id"])
 
     {other_state_response, _server} =
       Server.handle_state(
@@ -749,7 +753,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
         local_mcp_server(config, "local-implicit-caller-other-state")
       )
 
-    assert get_in(other_state_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
+    assert get_in(other_state_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert get_in(other_state_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "heartbeat"
+    other_caller_id = get_in(other_state_response, ["result", "structuredContent", "local_claim", "caller_id"])
+    assert is_binary(initial_caller_id)
+    assert is_binary(other_caller_id)
+    refute initial_caller_id == other_caller_id
   end
 
   test "claim_local_assignment rejects active orphaned claim lease before grant binding", %{repo: repo} do

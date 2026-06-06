@@ -21,12 +21,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
     repo.delete_all(from(scope in GrantScope, where: scope.access_grant_id == ^handoff.grant.id))
     assert {:ok, []} = AccessGrantRepository.list_scopes(repo, handoff.grant.id)
 
-    arguments = %{
-      "work_request_id" => work_request.id,
-      "claimed_by" => "local-architect-1"
-    }
+    arguments = %{"work_request_id" => work_request.id}
 
     state_key = "local-architect-claim-state"
+    config = %{local_mcp_config(repo) | claimed_by: "generic-config-owner"}
 
     {claim_response, claimed_server} =
       Server.handle_state(
@@ -36,11 +34,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
           "method" => "tools/call",
           "params" => %{"name" => "claim_local_architect_assignment", "arguments" => arguments}
         },
-        local_mcp_server(local_mcp_config(repo), state_key)
+        local_mcp_server(config, state_key)
       )
 
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == handoff.anchor_package.id
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "claimed_by"]) == ArchitectHandoff.claimed_by()
     assert get_in(claim_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "created"
     assert claimed_server.session.assignment.grant_role == "architect"
     assert Scope.work_request(work_request.id) in claimed_server.session.assignment.scopes
@@ -49,7 +48,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
     refute inspect(claim_response) =~ "private_handoff"
 
     assert {:ok, claimed_grant} = AccessGrantRepository.get(repo, handoff.grant.id)
-    assert claimed_grant.claimed_by == "local-architect-1"
+    assert claimed_grant.claimed_by == ArchitectHandoff.claimed_by()
     assert {:ok, scope_rows} = AccessGrantRepository.list_scopes(repo, handoff.grant.id)
     assert Enum.any?(scope_rows, &(&1.scope_type == "work_request" and &1.scope_id == work_request.id))
 
@@ -74,13 +73,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
           "method" => "tools/call",
           "params" => %{"name" => "claim_local_architect_assignment", "arguments" => arguments}
         },
-        local_mcp_server(local_mcp_config(repo), state_key)
+        local_mcp_server(config, state_key)
       )
 
     assert get_in(reconnect_response, ["result", "structuredContent", "assignment", "grant_id"]) == handoff.grant.id
     assert get_in(reconnect_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "heartbeat"
     assert reconnected_server.session.assignment.grant_role == "architect"
     assert Scope.work_request(work_request.id) in reconnected_server.session.assignment.scopes
+
+    {reboot_response, rebooted_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-reboot-reclaim",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_architect_assignment",
+            "arguments" => Map.put(arguments, "caller_id", "codex-local-architect-reboot")
+          }
+        },
+        local_mcp_server(config, "local-architect-reboot-state")
+      )
+
+    assert get_in(reboot_response, ["result", "structuredContent", "assignment", "grant_id"]) == handoff.grant.id
+    assert get_in(reboot_response, ["result", "structuredContent", "local_claim", "caller_id"]) == "codex-local-architect-reboot"
+    assert get_in(reboot_response, ["result", "structuredContent", "local_claim", "claimed_by"]) == ArchitectHandoff.claimed_by()
+    assert get_in(reboot_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "heartbeat"
+    assert rebooted_server.session.assignment.grant_role == "architect"
+    assert Scope.work_request(work_request.id) in rebooted_server.session.assignment.scopes
   end
 
   test "claim_local_architect_assignment can read trusted same-repo WorkRequests without widening writes", %{repo: repo} do

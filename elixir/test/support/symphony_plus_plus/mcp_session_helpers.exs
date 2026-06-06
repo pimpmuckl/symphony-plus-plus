@@ -378,18 +378,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase.SessionHelpers do
       ]
       |> Enum.join("\0")
 
-    material =
-      [
-        "worker",
-        arguments["work_package_id"],
-        arguments["claimed_by"],
-        Map.get(arguments, "caller_id", "codex-local-test")
-      ]
-      |> Enum.join("\0")
-
     %{
       "actor_kind" => "agent",
-      "actor_id" => "local:" <> local_assignment_actor_hash(owner_material) <> ":" <> local_assignment_actor_hash(material),
+      "actor_id" => "local:" <> local_assignment_actor_hash(owner_material),
       "actor_display_name" => arguments["claimed_by"]
     }
   end

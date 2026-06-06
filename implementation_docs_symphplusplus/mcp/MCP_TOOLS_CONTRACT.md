@@ -27,7 +27,9 @@ Dispatch and mint responses return non-secret `worker_bootstrap` metadata:
 
 `claimed_by` is useful for stable audit ownership but is no longer a secret
 carrier. Raw grant secrets, private files, and secret stores are not part of the
-agent-facing surface.
+agent-facing surface. `caller_id`, when present, is correlation metadata only;
+the active local claim owner is the ledger id plus `claimed_by`. Id-only
+architect claims default to the standard architect handoff owner.
 
 ## Worker Tools
 

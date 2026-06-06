@@ -3251,10 +3251,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       ClaimLease.stale?(lease, now) ->
         reclaim_local_assignment_claim_lease(repo, work_package_id, actor, "local_assignment_claim_stale")
 
-      lease.actor_id == actor["actor_id"] and lease.status == "active" ->
+      local_claim_same_owner?(lease, actor) and lease.status == "active" ->
         heartbeat_local_assignment_claim_lease(repo, work_package_id, lease, actor)
 
-      lease.actor_id == actor["actor_id"] ->
+      local_claim_same_owner?(lease, actor) ->
         {:error, :claim_lease_not_active}
 
       true ->
@@ -3284,14 +3284,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp renew_current_local_assignment_claim_lease(repo, work_package_id, actor) do
-    requested_actor_id = actor["actor_id"]
-
     case ClaimLeaseService.current_for_work_package(repo, work_package_id) do
-      {:ok, %ClaimLease{actor_id: ^requested_actor_id} = lease} ->
-        renew_local_assignment_claim_lease(repo, work_package_id, lease, actor)
-
-      {:ok, %ClaimLease{}} ->
-        {:error, :active_claim_exists}
+      {:ok, %ClaimLease{} = lease} ->
+        if local_claim_same_owner?(lease, actor) do
+          renew_local_assignment_claim_lease(repo, work_package_id, lease, actor)
+        else
+          {:error, :active_claim_exists}
+        end
 
       {:error, reason} ->
         {:error, reason}
@@ -3359,23 +3358,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     owner_id = local_assignment_actor_hash(owner_material)
 
-    actor_material =
-      [
-        "worker",
-        claim.work_package_id,
-        claim.claimed_by,
-        claim.caller_id
-      ]
-      |> Enum.join("\0")
-
-    actor_id = local_assignment_actor_hash(actor_material)
-
     %{
       "actor_kind" => "agent",
-      "actor_id" => "local:" <> owner_id <> ":" <> actor_id,
+      "actor_id" => "local:" <> owner_id,
       "actor_display_name" => claim.claimed_by
     }
   end
+
+  defp local_claim_same_owner?(%ClaimLease{} = lease, actor) when is_map(actor) do
+    lease.actor_kind == Map.get(actor, "actor_kind") and
+      lease.actor_display_name == Map.get(actor, "actor_display_name") and
+      local_claim_actor_id_match?(lease.actor_id, Map.get(actor, "actor_id"))
+  end
+
+  defp local_claim_actor_id_match?(actor_id, actor_id) when is_binary(actor_id), do: true
+
+  defp local_claim_actor_id_match?(lease_actor_id, actor_id) when is_binary(lease_actor_id) and is_binary(actor_id) do
+    String.starts_with?(lease_actor_id, actor_id <> ":")
+  end
+
+  defp local_claim_actor_id_match?(_lease_actor_id, _actor_id), do: false
 
   defp local_assignment_actor_hash(material) when is_binary(material) do
     Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
@@ -3526,7 +3528,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, base_branch} <- optional_string_argument(arguments, "base_branch"),
          {:ok, phase_id} <- optional_string_argument(arguments, "phase_id"),
          {:ok, caller_id} <- optional_string_argument(arguments, "caller_id", default_caller_id(server)),
-         {:ok, claimed_by} <- optional_string_argument(arguments, "claimed_by", default_claimed_by(server)) do
+         {:ok, claimed_by} <- optional_string_argument(arguments, "claimed_by", default_architect_claimed_by(server)) do
       {:ok,
        %{
          work_request_id: work_request_id,
@@ -3632,10 +3634,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       ClaimLease.stale?(lease, now) ->
         reclaim_local_architect_assignment_claim_lease(repo, anchor.id, actor, "local_architect_assignment_claim_stale")
 
-      lease.actor_id == actor["actor_id"] and lease.status == "active" ->
+      local_claim_same_owner?(lease, actor) and lease.status == "active" ->
         heartbeat_local_architect_assignment_claim_lease(repo, anchor.id, lease, actor)
 
-      lease.actor_id == actor["actor_id"] ->
+      local_claim_same_owner?(lease, actor) ->
         {:error, :claim_lease_not_active}
 
       true ->
@@ -3665,14 +3667,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp renew_current_local_architect_assignment_claim_lease(repo, anchor_id, actor) do
-    requested_actor_id = actor["actor_id"]
-
     case ClaimLeaseService.current_for_work_package(repo, anchor_id) do
-      {:ok, %ClaimLease{actor_id: ^requested_actor_id} = lease} ->
-        renew_local_architect_assignment_claim_lease(repo, %WorkPackage{id: anchor_id}, lease, actor)
-
-      {:ok, %ClaimLease{}} ->
-        {:error, :active_claim_exists}
+      {:ok, %ClaimLease{} = lease} ->
+        if local_claim_same_owner?(lease, actor) do
+          renew_local_architect_assignment_claim_lease(repo, %WorkPackage{id: anchor_id}, lease, actor)
+        else
+          {:error, :active_claim_exists}
+        end
 
       {:error, reason} ->
         {:error, reason}
@@ -3757,21 +3758,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     owner_id = local_assignment_actor_hash(owner_material)
 
-    actor_material =
-      [
-        "architect",
-        claim.work_request_id,
-        claim.architect_anchor_work_package_id,
-        claim.claimed_by,
-        claim.caller_id
-      ]
-      |> Enum.join("\0")
-
-    actor_id = local_assignment_actor_hash(actor_material)
-
     %{
       "actor_kind" => "agent",
-      "actor_id" => "local:" <> owner_id <> ":" <> actor_id,
+      "actor_id" => "local:" <> owner_id,
       "actor_display_name" => claim.claimed_by
     }
   end
@@ -3893,6 +3882,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp default_architect_claimed_by(%__MODULE__{}), do: ArchitectHandoff.claimed_by()
+
   defp default_caller_id(%__MODULE__{state_key_explicit: true} = server) do
     material =
       :erlang.term_to_binary({server.config.mode, server.state_key})
@@ -3990,7 +3981,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_001, "Unauthorized",
      claim_lease_active_for_other_actor_data(
        @local_assignment_claim_tool,
-       "Reuse the same work_package_id, claimed_by, and caller_id. If the live claim is stale, ask the architect or operator to recycle it."
+       "Reuse the same work_package_id and claimed_by. If the live claim belongs to another owner or is stale, ask the architect or operator to recycle it."
      )}
   end
 
@@ -4010,7 +4001,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_001, "Unauthorized",
      claim_lease_active_for_other_actor_data(
        @local_architect_assignment_claim_tool,
-       "Reuse the same work_request_id, claimed_by, and caller_id. If the live claim is stale, ask the operator to recycle it."
+       "Reuse the same work_request_id and claimed_by. If the live claim belongs to another owner or is stale, ask the operator to recycle it."
      )}
   end
 

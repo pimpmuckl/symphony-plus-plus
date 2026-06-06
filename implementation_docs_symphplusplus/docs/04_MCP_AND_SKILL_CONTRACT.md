@@ -18,8 +18,10 @@ Architect:
 {"tool":"claim_local_architect_assignment","arguments":{"work_request_id":"<WR id>"}}
 ```
 
-`claimed_by` may be supplied for stable audit identity. Other claim fields are
-optional validation context and should be omitted unless already known.
+`claimed_by` may be supplied for stable audit identity; id-only architect claims
+default to the standard architect handoff owner. `caller_id` is optional
+correlation metadata, not claim ownership. Other claim fields are optional
+validation context and should be omitted unless already known.
 
 ## Skill Responsibilities
 
