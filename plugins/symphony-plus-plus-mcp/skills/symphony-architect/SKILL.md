@@ -15,10 +15,8 @@ packages yourself.
    Tool visibility is not authorization; if a tool returns `claim_required` or
    another binding denial, use the assignment's configured bootstrap. Normal
    local WorkRequest architect bootstrap is `claim_local_architect_assignment`
-   when non-secret `local_architect_claim` metadata is present. Redacted
-   private handoff is recovery-only for that path and the fallback otherwise.
-   Pass the handoff's `claimed_by` value unchanged; use `caller_id` only for
-   the current runtime/thread identity.
+   with the WorkRequest id and optional non-secret `claimed_by`. Use
+   `caller_id` only for the current runtime/thread identity.
 2. For WorkRequest lanes, read `read_work_request(work_request_id)`,
    `read_work_request_product_tree(work_request_id, view?)`, and
    `list_guidance_requests(work_request_id?)` before slicing or rearranging

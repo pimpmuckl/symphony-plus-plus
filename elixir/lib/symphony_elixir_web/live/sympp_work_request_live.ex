@@ -12,7 +12,6 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
   alias SymphonyElixir.SymphonyPlusPlus.Repo
-  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
@@ -48,25 +47,6 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   ]
   @local_operator_actor "local-operator"
   @local_operator_worker "local-operator-worker"
-  @dispatch_handoff_display_fields [
-    {"Mode", :mode},
-    {"Status", :status},
-    {"Claimed by", :claimed_by},
-    {"Secret in stdout", :secret_in_stdout},
-    {"Target", :target},
-    {"Path", :path},
-    {"Run MCP", :run_mcp_command}
-  ]
-  @architect_handoff_display_fields [
-    {"Mode", :mode},
-    {"Status", :status},
-    {"Suggested claimed by", :suggested_claimed_by},
-    {"Claimed by", :claimed_by},
-    {"Secret in stdout", :secret_in_stdout},
-    {"Ledger database", :database},
-    {"Target", :target},
-    {"Path", :path}
-  ]
 
   @impl true
   def mount(params, session, socket) do
@@ -411,7 +391,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
             <div :if={@page.dispatch_notice} class="sympp-stack-item sympp-dispatch-notice">
               <div class="sympp-work-request-row-heading">
                 <span class="state-badge state-badge-active">dispatched</span>
-                <span class="sympp-readiness">Private worker handoff stored</span>
+                <span class="sympp-readiness">Worker ledger claim ready</span>
               </div>
               <dl class="sympp-work-request-meta">
                 <div>
@@ -547,10 +527,6 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                 <dd class="mono"><%= value(@page.architect_handoff.grant, :id) %></dd>
               </div>
               <div>
-                <dt>Display key</dt>
-                <dd class="mono"><%= value(@page.architect_handoff.grant, :display_key) %></dd>
-              </div>
-              <div>
                 <dt>Scope</dt>
                 <dd><%= architect_handoff_scope(@page.architect_handoff) %></dd>
               </div>
@@ -561,10 +537,6 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
               <div>
                 <dt>Expires</dt>
                 <dd class="numeric"><%= exact_value(value(@page.architect_handoff.grant, :expires_at)) %></dd>
-              </div>
-              <div :for={{label, value} <- architect_handoff_items(@page.architect_handoff)}>
-                <dt><%= label %></dt>
-                <dd class="mono"><%= exact_value(value) %></dd>
               </div>
             </dl>
             <div :if={architect_launch_brief(@page, @operator_mode?)} class="sympp-launch-brief">
@@ -1288,7 +1260,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp existing_architect_handoff(repo, work_request_id) do
     case ArchitectHandoff.existing_display(repo, work_request_id,
            local_operator?: true,
-           secret_handoff_opts: architect_handoff_opts(repo)
+           handoff_opts: architect_handoff_opts(repo)
          ) do
       {:ok, handoff} -> handoff
       {:error, _reason} -> nil
@@ -1635,7 +1607,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     SymppBoardLive.with_dashboard_repo(fn repo ->
       ArchitectHandoff.create_or_replay(repo, work_request_id,
         local_operator?: true,
-        secret_handoff_opts: architect_handoff_opts(repo)
+        handoff_opts: architect_handoff_opts(repo)
       )
     end)
   end
@@ -2565,34 +2537,22 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp dispatch_handoff_opts(repo) do
     [
-      mode: "auto",
       database: dashboard_ledger_database(repo),
-      repo_root: SecretHandoff.local_operator_repo_root(),
       claimed_by: @local_operator_worker
     ]
-    |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))
   end
 
   defp architect_handoff_opts(repo) do
     [
-      mode: local_operator_secret_handoff_mode(),
       database: dashboard_ledger_database(repo),
-      repo_root: SecretHandoff.local_operator_repo_root(),
-      claimed_by: ArchitectHandoff.claimed_by()
+      claimed_by: ArchitectHandoff.claimed_by(),
+      local_architect_claim?: true
     ]
-    |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))
-  end
-
-  defp local_operator_secret_handoff_mode do
-    "auto"
   end
 
   defp dashboard_ledger_database(repo) do
     Repo.operator_database_path(repo)
   end
-
-  defp put_optional_handoff_opt(opts, _key, nil), do: opts
-  defp put_optional_handoff_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp dispatch_notice(dispatch) do
     create_work =
@@ -2605,33 +2565,25 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     %{
       work_package_id: value(work_package, :id),
       work_package_status: value(work_package, :status),
-      handoff_items: handoff_items(Map.get(create_work, :worker_secret_handoff))
+      handoff_items: bootstrap_items(Map.get(create_work, :worker_bootstrap))
     }
   end
 
-  defp handoff_items(handoff) when is_map(handoff) do
-    Enum.flat_map(@dispatch_handoff_display_fields, fn {label, key} ->
-      case value(handoff, key) do
-        nil -> []
-        "" -> []
-        value -> [{label, value}]
-      end
-    end)
+  defp bootstrap_items(%{claim: %{tool: tool, arguments: arguments}}) when is_map(arguments) do
+    [
+      {"Claim tool", tool},
+      {"Claim args", Jason.encode!(arguments)}
+    ]
   end
 
-  defp handoff_items(_handoff), do: []
-
-  defp architect_handoff_items(%{secret_handoff: handoff}) when is_map(handoff) do
-    Enum.flat_map(@architect_handoff_display_fields, fn {label, key} ->
-      case value(handoff, key) do
-        nil -> []
-        "" -> []
-        value -> [{label, value}]
-      end
-    end)
+  defp bootstrap_items(%{"claim" => %{"tool" => tool, "arguments" => arguments}}) when is_map(arguments) do
+    [
+      {"Claim tool", tool},
+      {"Claim args", Jason.encode!(arguments)}
+    ]
   end
 
-  defp architect_handoff_items(_handoff), do: []
+  defp bootstrap_items(_bootstrap), do: []
 
   defp architect_handoff_scope(%{grant: grant}) when is_map(grant) do
     [value(grant, :scope_repo), value(grant, :scope_base_branch)]

@@ -120,7 +120,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.ArchitectContext do
 
   defp handoff_reference_payload(reference_identifiers) do
     local_claim = map_value(reference_identifiers, "local_architect_claim")
-    private_handoff = map_value(reference_identifiers, "private_handoff")
 
     %{
       "agent_context" => "architect_handoff_reference",
@@ -133,16 +132,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.ArchitectContext do
       "ledger_database" => exact_text_value(map_value(reference_identifiers, "ledger_database")),
       "claim_tool" => handoff_claim_tool(local_claim),
       "claim_required_runtime_arguments" => local_claim |> map_value("required_runtime_arguments") |> join_list_lossless(),
-      "local_architect_claim_arguments" => local_claim |> map_value("arguments") |> primitive_map_lossless(),
-      "private_handoff" => %{
-        "mode" => private_handoff |> map_value("mode") |> exact_text_value(),
-        "target" => private_handoff |> map_value("target") |> exact_text_value(),
-        "path" => private_handoff |> map_value("path") |> exact_text_value(),
-        "grant_id" => private_handoff |> map_value("grant_id") |> exact_text_value(),
-        "display_key" => private_handoff |> map_value("display_key") |> exact_text_value(),
-        "work_package_id" => private_handoff |> map_value("work_package_id") |> exact_text_value(),
-        "secret_in_response" => false
-      }
+      "local_architect_claim_arguments" => local_claim |> map_value("arguments") |> primitive_map_lossless()
     }
   end
 
@@ -309,7 +299,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.ArchitectContext do
   defp claim_row(_value), do: %{}
 
   defp handoff_claim_tool(%{} = local_claim), do: text_value(map_value(local_claim, "tool"))
-  defp handoff_claim_tool(_local_claim), do: "claim_private_handoff"
+  defp handoff_claim_tool(_local_claim), do: nil
 
   defp list_rows(values, mapper) when is_list(values), do: Enum.map(values, mapper)
   defp list_rows(_values, _mapper), do: []

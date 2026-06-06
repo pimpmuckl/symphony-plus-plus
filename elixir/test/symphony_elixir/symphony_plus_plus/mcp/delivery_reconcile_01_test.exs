@@ -183,8 +183,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile01Test do
 
     live_database_path = current_main_database_path(repo)
     configured_database = sqlite_file_uri(live_database_path, "mode=rwc&cache=shared")
-    configured_product_repo_root = Path.join(test_handoff_store_dir(), "configured-product-repo-root")
-    File.mkdir_p!(configured_product_repo_root)
 
     response =
       mcp_tool(
@@ -194,10 +192,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile01Test do
         %{
           "work_request_id" => work_request.id,
           "planned_slice_id" => approved_slice.id,
-          "claimed_by" => "worker-dispatch-1",
-          "symphony_repo_root" => test_repo_root()
+          "claimed_by" => "worker-dispatch-1"
         },
-        config: Config.default(repo: repo, repo_root: configured_product_repo_root, database: configured_database)
+        config: Config.default(repo: repo, database: configured_database)
       )
 
     payload = get_in(response, ["result", "structuredContent"])
@@ -214,23 +211,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile01Test do
     assert payload["work_package"]["title"] == "Dispatch [REDACTED]"
     assert is_binary(payload["work_package"]["inserted_at"])
     assert is_binary(payload["work_package"]["updated_at"])
-    assert payload["worker_handoff"]["worker_grant"]["secret_in_response"] == false
-    refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "display_key")
-    refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "secret_handoff")
-    refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "secret")
-    refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "secret_hash")
-    assert payload["worker_handoff"]["secret_handoff"] == nil
-    refute Map.has_key?(payload["worker_handoff"], "claim_bootstrap")
+    assert payload["worker_grant"]["secret_in_response"] == false
+    refute Map.has_key?(payload["worker_grant"], "display_key")
+    refute Map.has_key?(payload["worker_grant"], "secret_handoff")
+    refute Map.has_key?(payload["worker_grant"], "secret")
+    refute Map.has_key?(payload["worker_grant"], "secret_hash")
+    refute Map.has_key?(payload, "worker_handoff")
     assert payload["worker_bootstrap"]["type"] == "ledger_claim"
     assert_same_ledger_database(payload["worker_bootstrap"]["ledger"], live_database_path, "mode=rwc&cache=shared")
     assert payload["worker_bootstrap"]["claim"]["tool"] == "claim_local_assignment"
-    assert payload["worker_bootstrap"]["claim"]["arguments"]["repo"] == anchor.repo
-    assert payload["worker_bootstrap"]["claim"]["arguments"]["base_branch"] == anchor.base_branch
-    assert payload["worker_bootstrap"]["claim"]["arguments"]["work_request_id"] == work_request.id
     assert payload["worker_bootstrap"]["claim"]["arguments"]["work_package_id"] == payload["work_package"]["id"]
     assert payload["worker_bootstrap"]["claim"]["arguments"]["claimed_by"] == "worker-dispatch-1"
-    refute Map.has_key?(payload["worker_bootstrap"]["claim"]["arguments"], "branch")
-    assert payload["worker_bootstrap"]["claim"]["required_runtime_arguments"] == ["branch", "worktree_path", "caller_id"]
+    assert payload["worker_bootstrap"]["claim"]["required_runtime_arguments"] == []
 
     assert payload["worker_bootstrap"]["preferred_skill_set"] == [
              "symphony-plus-plus-mcp:symphony-worker",
@@ -250,14 +242,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile01Test do
     assert payload["worker_bootstrap"]["launch_prompt"] =~ "symphony-work-package"
     assert payload["worker_bootstrap"]["launch_prompt"] =~ "claim_local_assignment"
     assert payload["worker_bootstrap"]["launch_prompt"] =~ "[REDACTED]"
-    assert payload["worker_bootstrap"]["legacy_private_handoff"] == %{"normal_path" => false, "recovery_only" => true}
+    refute Map.has_key?(payload["worker_bootstrap"], "legacy_private_handoff")
     refute payload["worker_bootstrap"]["launch_prompt"] =~ secret_title_token
     refute serialized_response =~ "raw_secret_value"
     refute serialized_response =~ "secret_hash"
     refute serialized_response =~ secret_title_token
     refute serialized_response =~ "run_mcp_command"
     refute serialized_response =~ "local-private-file"
-    refute serialized_response =~ test_dispatch_handoff_store_dir()
     refute serialized_response =~ ".secret"
 
     assert {:ok, persisted_slice} = WorkRequestRepository.get_planned_slice(repo, work_request.id, approved_slice.id)
@@ -269,7 +260,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile01Test do
     refute serialized_response =~ secret_hash
   end
 
-  test "architect WorkRequest planned-slice dispatch rejects ignored legacy handoff args", %{repo: repo} do
+  test "architect WorkRequest planned-slice dispatch rejects removed legacy handoff args", %{repo: repo} do
     {anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-DISPATCH-IGNORED-LEGACY", [
         "dispatch:work_request"
@@ -302,224 +293,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile01Test do
       mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
         "work_request_id" => work_request.id,
         "planned_slice_id" => approved_slice.id,
-        "claimed_by" => "worker-dispatch-ignored-legacy",
-        "secret_handoff" => test_secret_handoff_mode(),
-        "secret_store_dir" => test_dispatch_handoff_store_dir()
+        "claimed_by" => "worker-dispatch-removed-legacy",
+        "removed_handoff_arg" => "auto"
       })
 
     assert get_in(response, ["error", "code"]) == -32_602
-    assert get_in(response, ["error", "data", "reason"]) == "legacy_private_handoff_required"
-    assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before
-  end
-
-  test "architect WorkRequest planned-slice dispatch keeps legacy recovery handoff actionable", %{repo: repo} do
-    {anchor, session, _grant} =
-      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-DISPATCH-LEGACY", [
-        "dispatch:work_request"
-      ])
-
-    work_request =
-      create_work_request!(repo,
-        id: "WR-MCP-WR-SLICE-DISPATCH-LEGACY",
-        repo: anchor.repo,
-        base_branch: anchor.base_branch,
-        status: "ready_for_slicing"
-      )
-
-    grant_work_request_scope!(repo, session, work_request.id)
-
-    assert {:ok, planned_slice} =
-             WorkRequestRepository.add_planned_slice(
-               repo,
-               work_request.id,
-               work_request_planned_slice_attrs(
-                 id: "WRS-MCP-WR-SLICE-DISPATCH-LEGACY",
-                 target_base_branch: anchor.base_branch
-               )
-             )
-
-    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
-
-    live_database_path = current_main_database_path(repo)
-    configured_database = sqlite_file_uri(live_database_path, "mode=rwc&cache=shared")
-
-    response =
-      mcp_tool(
-        repo,
-        session,
-        "dispatch_work_request_planned_slice",
-        %{
-          "work_request_id" => work_request.id,
-          "planned_slice_id" => approved_slice.id,
-          "claimed_by" => "worker-dispatch-legacy",
-          "legacy_private_handoff" => true,
-          "secret_handoff" => "local-private-file",
-          "secret_store_dir" => test_dispatch_handoff_store_dir()
-        },
-        config: Config.default(repo: repo, repo_root: test_repo_root(), database: configured_database)
-      )
-
-    payload = get_in(response, ["result", "structuredContent"])
-    handoff = payload["worker_handoff"]["secret_handoff"]
-
-    assert payload["planned_slice"]["status"] == "dispatched"
-    assert payload["worker_bootstrap"]["claim"]["required_runtime_arguments"] == ["branch", "worktree_path", "caller_id"]
-    assert handoff["claimed_by"] == "worker-dispatch-legacy"
-    assert handoff["mode"] == "local-private-file"
-    assert handoff["secret_in_stdout"] == false
-    assert is_binary(handoff["path"])
-    assert is_binary(handoff["run_mcp_command"])
-    assert handoff["run_mcp_command"] =~ handoff["path"]
-    refute Map.has_key?(handoff, "display_key")
-    refute Map.has_key?(handoff, "payload")
-    refute Map.has_key?(handoff, "secret")
-    assert handoff_secret_absent?(handoff, inspect(response))
-  end
-
-  test "architect WorkRequest planned-slice dispatch rejects sqlite memory database handoff", %{repo: repo} do
-    {anchor, session, _grant} =
-      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-DISPATCH-MEMORY", [
-        "dispatch:work_request"
-      ])
-
-    work_request =
-      create_work_request!(repo,
-        id: "WR-MCP-WR-SLICE-DISPATCH-MEMORY",
-        repo: anchor.repo,
-        base_branch: anchor.base_branch,
-        status: "ready_for_slicing"
-      )
-
-    grant_work_request_scope!(repo, session, work_request.id)
-
-    assert {:ok, planned_slice} =
-             WorkRequestRepository.add_planned_slice(
-               repo,
-               work_request.id,
-               work_request_planned_slice_attrs(
-                 id: "WRS-MCP-WR-SLICE-DISPATCH-MEMORY",
-                 target_base_branch: anchor.base_branch
-               )
-             )
-
-    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
-
-    counts_before = {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)}
-
-    response =
-      mcp_tool(
-        repo,
-        session,
-        "dispatch_work_request_planned_slice",
-        %{
-          "work_request_id" => work_request.id,
-          "planned_slice_id" => approved_slice.id,
-          "claimed_by" => "worker-dispatch-memory",
-          "legacy_private_handoff" => true,
-          "secret_handoff" => test_secret_handoff_mode(),
-          "secret_store_dir" => test_dispatch_handoff_store_dir()
-        },
-        config: Config.default(repo: repo, repo_root: test_repo_root(), database: ":memory:")
-      )
-
-    assert get_in(response, ["error", "code"]) == -32_602
-    assert get_in(response, ["error", "data", "reason"]) == "file_backed_database_required"
-    assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before
-  end
-
-  test "architect WorkRequest planned-slice dispatch rejects configured database outside the live ledger", %{repo: repo} do
-    {anchor, session, _grant} =
-      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-DISPATCH-DB-SCOPE", [
-        "dispatch:work_request"
-      ])
-
-    work_request =
-      create_work_request!(repo,
-        id: "WR-MCP-WR-SLICE-DISPATCH-DB-SCOPE",
-        repo: anchor.repo,
-        base_branch: anchor.base_branch,
-        status: "ready_for_slicing"
-      )
-
-    grant_work_request_scope!(repo, session, work_request.id)
-
-    assert {:ok, planned_slice} =
-             WorkRequestRepository.add_planned_slice(
-               repo,
-               work_request.id,
-               work_request_planned_slice_attrs(
-                 id: "WRS-MCP-WR-SLICE-DISPATCH-DB-SCOPE",
-                 target_base_branch: anchor.base_branch
-               )
-             )
-
-    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
-
-    counts_before = {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)}
-    other_database = sqlite_file_uri(Path.join(System.tmp_dir!(), "sympp-mcp-other-ledger.sqlite3"), "mode=rwc&cache=shared")
-
-    response =
-      mcp_tool(
-        repo,
-        session,
-        "dispatch_work_request_planned_slice",
-        %{
-          "work_request_id" => work_request.id,
-          "planned_slice_id" => approved_slice.id,
-          "claimed_by" => "worker-dispatch-db-scope",
-          "legacy_private_handoff" => true,
-          "secret_handoff" => test_secret_handoff_mode(),
-          "secret_store_dir" => test_dispatch_handoff_store_dir()
-        },
-        config: Config.default(repo: repo, repo_root: test_repo_root(), database: other_database)
-      )
-
-    assert get_in(response, ["error", "code"]) == -32_602
-    assert get_in(response, ["error", "data", "reason"]) == "database_scope_mismatch"
-    assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before
-
-    read_only_database = sqlite_file_uri(current_main_database_path(repo), "mode=ro")
-
-    read_only_response =
-      mcp_tool(
-        repo,
-        session,
-        "dispatch_work_request_planned_slice",
-        %{
-          "work_request_id" => work_request.id,
-          "planned_slice_id" => approved_slice.id,
-          "claimed_by" => "worker-dispatch-db-read-only",
-          "legacy_private_handoff" => true,
-          "secret_handoff" => test_secret_handoff_mode(),
-          "secret_store_dir" => test_dispatch_handoff_store_dir()
-        },
-        config: Config.default(repo: repo, repo_root: test_repo_root(), database: read_only_database)
-      )
-
-    assert get_in(read_only_response, ["error", "code"]) == -32_602
-    assert get_in(read_only_response, ["error", "data", "reason"]) == "read_only_database"
-    assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before
-
-    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
-
-    default_read_only_response =
-      try do
-        Application.put_env(:symphony_elixir, :sympp_repo_database, read_only_database)
-
-        mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
-          "work_request_id" => work_request.id,
-          "planned_slice_id" => approved_slice.id,
-          "claimed_by" => "worker-dispatch-db-default-read-only",
-          "legacy_private_handoff" => true,
-          "secret_handoff" => test_secret_handoff_mode(),
-          "secret_store_dir" => test_dispatch_handoff_store_dir()
-        })
-      after
-        restore_app_env(:sympp_repo_database, original_database)
-      end
-
-    assert get_in(default_read_only_response, ["error", "code"]) == -32_602
-    assert get_in(default_read_only_response, ["error", "data", "reason"]) == "read_only_database"
+    assert get_in(response, ["error", "data", "reason"]) == "unexpected_argument"
     assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before
   end
 
@@ -595,53 +374,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile01Test do
     assert repo.aggregate(WorkPackage, :count) == 1
     assert repo.aggregate(AccessGrant, :count) == 1
 
-    assert {:ok, root_check_slice} =
-             WorkRequestRepository.add_planned_slice(
-               repo,
-               in_scope.id,
-               work_request_planned_slice_attrs(id: "WRS-MCP-WR-DISPATCH-ROOT-CHECK", target_base_branch: anchor.base_branch)
-             )
-
-    assert {:ok, approved_root_check_slice} =
-             WorkRequestRepository.approve_planned_slice(repo, in_scope.id, root_check_slice.id, "planned")
-
-    bad_repo_root = Path.join(test_handoff_store_dir(), "not-a-symphony-helper-root")
-    File.mkdir_p!(bad_repo_root)
-    counts_before_bad_root = {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)}
-
-    bad_root_response =
-      mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
-        "work_request_id" => in_scope.id,
-        "planned_slice_id" => approved_root_check_slice.id,
-        "claimed_by" => "worker-dispatch-bad-root",
-        "legacy_private_handoff" => true,
-        "secret_handoff" => test_secret_handoff_mode(),
-        "secret_store_dir" => test_dispatch_handoff_store_dir(),
-        "symphony_repo_root" => bad_repo_root
-      })
-
-    assert get_in(bad_root_response, ["error", "code"]) == -32_602
-    assert get_in(bad_root_response, ["error", "data", "reason"]) == "invalid_repo_root"
-    assert get_in(bad_root_response, ["error", "data", "message"]) =~ "symphony_repo_root"
-    assert get_in(bad_root_response, ["error", "data", "message"]) =~ "worker secret helper script"
-    assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before_bad_root
-
-    legacy_bad_root_response =
-      mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
-        "work_request_id" => in_scope.id,
-        "planned_slice_id" => approved_root_check_slice.id,
-        "claimed_by" => "worker-dispatch-legacy-bad-root",
-        "legacy_private_handoff" => true,
-        "secret_handoff" => test_secret_handoff_mode(),
-        "secret_store_dir" => test_dispatch_handoff_store_dir(),
-        "repo_root" => bad_repo_root
-      })
-
-    assert get_in(legacy_bad_root_response, ["error", "code"]) == -32_602
-    assert get_in(legacy_bad_root_response, ["error", "data", "reason"]) == "invalid_repo_root"
-    refute get_in(legacy_bad_root_response, ["error", "data", "reason"]) == "unexpected_argument"
-    assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before_bad_root
-
     assert {:ok, invalid_glob_slice} =
              WorkRequestRepository.add_planned_slice(
                repo,
@@ -703,7 +435,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile01Test do
 
     live_database_payload = get_in(live_database_response, ["result", "structuredContent"])
     assert live_database_payload["planned_slice"]["status"] == "dispatched"
-    assert live_database_payload["worker_handoff"]["secret_handoff"] == nil
+    refute Map.has_key?(live_database_payload, "worker_handoff")
     assert live_database_payload["worker_bootstrap"]["claim"]["tool"] == "claim_local_assignment"
     assert_same_ledger_database(live_database_payload["worker_bootstrap"]["ledger"], live_database, "mode=rwc&cache=shared")
     refute inspect(live_database_response) =~ "run_mcp_command"
@@ -733,7 +465,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile01Test do
 
     blank_database_payload = get_in(blank_database_response, ["result", "structuredContent"])
     assert blank_database_payload["planned_slice"]["status"] == "dispatched"
-    assert blank_database_payload["worker_handoff"]["secret_handoff"] == nil
+    refute Map.has_key?(blank_database_payload, "worker_handoff")
     assert blank_database_payload["worker_bootstrap"]["claim"]["tool"] == "claim_local_assignment"
     assert_same_ledger_database(blank_database_payload["worker_bootstrap"]["ledger"], live_database)
     refute inspect(blank_database_response) =~ "run_mcp_command"
@@ -764,6 +496,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile01Test do
     assert delivery_base_payload["scope"] == %{"repo" => anchor.repo, "base_branch" => anchor.base_branch}
     assert delivery_base_payload["planned_slice"]["status"] == "dispatched"
     assert delivery_base_payload["work_package"]["base_branch"] == delivery_base
-    assert delivery_base_payload["worker_bootstrap"]["claim"]["arguments"]["base_branch"] == delivery_base
+    refute Map.has_key?(delivery_base_payload["worker_bootstrap"]["claim"]["arguments"], "base_branch")
   end
 end

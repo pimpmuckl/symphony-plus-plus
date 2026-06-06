@@ -74,8 +74,8 @@ generic visible app thread that does not already show S++ MCP tools; use the
 Solo/cockpit handoff path instead.
 
 The opt-in MCP package reference is intentionally generic. It should not embed
-raw work-key secrets or bearer tokens, private-store handoff targets, or
-operator-local secret material. Repo-local refresh scripts update installed
+bearer tokens, access-grant verifiers, or operator-local secret material.
+Repo-local refresh scripts update installed
 caches only during final cutover or explicit manual cache maintenance; they
 write a non-secret source-root hint for the Solo wrapper and MCP launcher. The
 bundled MCP target itself is a local command-backed stdio-to-HTTP bridge, not a
@@ -83,13 +83,11 @@ static URL.
 Do not refresh user-local plugin caches as part of normal feature-branch
 worker dispatch.
 
-Plugin installation is not worker package dispatch. Normal planned-slice worker dispatch
-emits a `worker_bootstrap` payload with `type: ledger_claim`, `mode:
-local_assignment`, and `claim.tool: claim_local_assignment`. The worker uses
-that ledger-backed claim plus local runtime `branch`, `worktree_path`, and
-`caller_id` values to bind exactly one WorkPackage. Do not ask for private
-handoff metadata or a raw work key unless the assignment is explicitly marked
-legacy/recovery.
+Plugin installation is not worker package dispatch. Normal planned-slice worker
+dispatch emits a `worker_bootstrap` payload with `type: ledger_claim`, `mode:
+local_assignment`, and `claim.tool: claim_local_assignment`. The worker claims
+with only the WorkPackage id and optional `claimed_by` owner, then calls
+`get_current_assignment`.
 
 ## Local HTTP Server
 
@@ -128,70 +126,19 @@ url = "http://127.0.0.1:19998/mcp"
 That URL-only shape works only when the backend is already listening on the
 configured port before Codex starts; it cannot follow the launcher's dynamic
 fallback port selection. Stateless one-shot URL probes may prove health, but
-they are not normal worker-claim sessions and must not be expected to advertise
-or authorize `claim_local_assignment`.
-
-## Legacy/Recovery Bootstrap
-
-For explicit stdio fallback/dev recovery, prefer a private-store wrapper that
-reads the one-time secret from the local OS/user store, injects it only into
-the MCP child process environment, and starts `sympp.mcp` with both the
-environment variable name and the stable worker identity. This path exists only
-for explicit legacy recovery; it is not the normal ledger-backed worker claim
-path.
-
-Windows local private-file example:
-
-```toml
-[mcp_servers.symphony_plus_plus]
-command = "powershell"
-args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "<repo>/scripts/sympp-worker-secret.ps1", "run-mcp-local-file", "-SecretFile", "<secret-file>", "-Database", "<ledger-path>", "-ClaimedBy", "<stable-worker-id>"]
-cwd = "<repo>"
-```
-
-Windows Credential Manager opt-in example:
-
-```toml
-[mcp_servers.symphony_plus_plus]
-command = "powershell"
-args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "<repo>/scripts/sympp-worker-secret.ps1", "run-mcp", "-Target", "<handoff-target>", "-Database", "<ledger-path>", "-ClaimedBy", "<stable-worker-id>"]
-cwd = "<repo>"
-```
-
-Non-Windows local private-file example:
-
-```toml
-[mcp_servers.symphony_plus_plus]
-command = "sh"
-args = ["<repo>/scripts/sympp-worker-secret.sh", "run-mcp-local-file", "--path", "<secret-file>", "--database", "<ledger-path>", "--claimed-by", "<stable-worker-id>"]
-cwd = "<repo>"
-```
-
-The wrapper does not print the secret. It sets `SYMPP_WORK_KEY_SECRET` only for
-the MCP child process, and `sympp.mcp` claims or reconnects the grant with
-`--work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by <stable-worker-id>`.
-
-For one-shot diagnostics, do not run the long-lived stdio server under a parent
-that waits for exit before draining stdout. Claimed architect/worker
-`tools/list` responses can be large enough to fill the pipe. Use the spooling
-mode instead: `run-mcp-local-file-once -InputFile <jsonl> -OutputFile <jsonl>`
-on Windows, or `run-mcp-local-file-once --input-file <jsonl> --output-file
-<jsonl>` on non-Windows. Caller-supplied output/error files must not already
-exist. The secret still stays in the child process environment only, and the
-wrapper prints only a small JSON summary.
+do not treat a fresh probe as a recovered worker session. Claim on the actual
+MCP session that will do the WorkPackage work.
 
 ## Worker Claim
 
-Workers start by calling `claim_local_assignment` in the dedicated local HTTP
-MCP session that preserves `Mcp-Session-Id`/state-key continuity. Pass the
-dispatch-provided claim fields and local runtime `branch`, `worktree_path`,
-`caller_id`, and `claimed_by` when needed. Then call
+Workers start by calling `claim_local_assignment` in a dedicated S++ MCP
+session connected to the same ledger as dispatch. Pass `work_package_id` and,
+when provided, `claimed_by`. Then call
 `get_current_assignment()` and read package context.
 
 Replaying the same claim heartbeats the current claim lease. If the prior lease
 is stale, the server may reclaim it and records audit evidence. If the lease is
-paused, the same local owner changes `caller_id`, the worktree scope mismatches,
-or another active owner still has authority, stop and ask the architect/operator
-to repair that state. A configured `state_key` only preserves initialized
-handshake continuity for stateless transports; it does not restore worker
-authorization by itself.
+paused or another active owner still has authority, stop and ask the
+architect/operator to repair that state. A configured `state_key` only
+preserves initialized handshake continuity for stateless transports; it does
+not restore worker authorization by itself.

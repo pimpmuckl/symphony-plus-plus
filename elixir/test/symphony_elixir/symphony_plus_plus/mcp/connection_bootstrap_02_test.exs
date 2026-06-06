@@ -104,8 +104,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     assert length(unbound_tool_names) == length(Enum.uniq(unbound_tool_names))
 
     for tool <- [
-          "claim_private_handoff",
-          "claim_work_key",
+          "claim_local_assignment",
+          "claim_local_architect_assignment",
           "create_work_request",
           "solo_append",
           "solo_attach",
@@ -125,18 +125,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
       assert Map.has_key?(unbound_tools_by_name, tool)
     end
 
-    assert get_in(unbound_tools_by_name, ["claim_work_key", "inputSchema", "required"]) == ["secret", "claimed_by"]
-    assert get_in(unbound_tools_by_name, ["claim_work_key", "inputSchema", "properties", "secret", "type"]) == "string"
+    assert get_in(unbound_tools_by_name, ["claim_local_assignment", "inputSchema", "required"]) == ["work_package_id"]
+    assert get_in(unbound_tools_by_name, ["claim_local_assignment", "inputSchema", "properties", "work_package_id", "type"]) == "string"
+    assert get_in(unbound_tools_by_name, ["claim_local_architect_assignment", "inputSchema", "required"]) == ["work_request_id"]
+    assert get_in(unbound_tools_by_name, ["claim_local_architect_assignment", "inputSchema", "properties", "work_request_id", "type"]) == "string"
     assert get_in(unbound_tools_by_name, ["release_current_assignment", "inputSchema", "required"]) == []
     assert get_in(unbound_tools_by_name, ["release_current_assignment", "inputSchema", "properties", "reason", "type"]) == "string"
     assert get_in(unbound_tools_by_name, ["solo_append", "inputSchema", "properties", "body", "description"]) =~ "Markdown"
-    assert get_in(unbound_tools_by_name, ["claim_private_handoff", "inputSchema", "required"]) == ["claimed_by"]
-    assert get_in(unbound_tools_by_name, ["claim_private_handoff", "inputSchema", "properties", "private_handoff", "type"]) == "object"
-
-    assert get_in(unbound_tools_by_name, ["claim_private_handoff", "inputSchema", "then", "anyOf"]) == [
-             %{"required" => ["private_handoff"]},
-             %{"required" => ["mode", "path", "target", "grant_id", "display_key", "work_package_id"]}
-           ]
 
     assert get_in(unbound_tools_by_name, ["create_work_request", "inputSchema", "required"]) == [
              "repo",
@@ -174,8 +169,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
 
     assert get_in(unbound_tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "required"]) == [
              "work_request_id",
-             "planned_slice_id",
-             "claimed_by"
+             "planned_slice_id"
            ]
 
     unclaimed_read_response =
@@ -207,16 +201,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     assert get_in(unclaimed_progress_response, ["error", "code"]) == -32_001
     assert get_in(unclaimed_progress_response, ["error", "data", "resource"]) == "append_progress"
     assert get_in(unclaimed_progress_response, ["error", "data", "reason"]) == "claim_required"
-    assert get_in(unclaimed_progress_response, ["error", "data", "action"]) == "claim_work_key"
+    assert get_in(unclaimed_progress_response, ["error", "data", "action"]) == "claim_local_assignment"
 
-    assert {:ok, claim_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-UNBOUND-CLAIM-CALL", kind: "mcp"))
-    assert {:ok, claim_minted} = AccessGrantService.mint_worker_grant(repo, claim_package.id)
+    claim_package = create_local_claim_package!(repo, "SYMPP-UNBOUND-CLAIM-CALL")
+    assert {:ok, _claim_minted} = AccessGrantService.mint_worker_grant(repo, claim_package.id)
 
     claim_response =
-      mcp_tool(repo, nil, "claim_work_key", %{
-        "secret" => claim_minted.work_key.secret,
-        "claimed_by" => "worker-1"
-      })
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-local-assignment",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(claim_package)}
+        },
+        local_mcp_server(local_mcp_config(repo), "unbound-claim-call-state")
+      )
 
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-UNBOUND-CLAIM-CALL"
 
@@ -303,6 +302,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     refute Map.has_key?(tools_by_name, "mint_child_worker_key")
 
     refute Map.has_key?(tools_by_name, "claim_work_key")
+    refute Map.has_key?(tools_by_name, "claim_private_handoff")
   end
 
   test "tools list returns Codex-compatible top-level input schemas for every surface", %{repo: repo} do

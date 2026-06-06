@@ -55,7 +55,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema02Test do
     assert get_in(unbound_response, ["error", "code"]) == -32_001
     assert get_in(unbound_response, ["error", "data", "resource"]) == "append_progress"
     assert get_in(unbound_response, ["error", "data", "reason"]) == "claim_required"
-    assert get_in(unbound_response, ["error", "data", "action"]) == "claim_work_key"
+    assert get_in(unbound_response, ["error", "data", "action"]) == "claim_local_assignment"
 
     unbound_guidance_response =
       Server.handle(
@@ -71,7 +71,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema02Test do
     assert get_in(unbound_guidance_response, ["error", "code"]) == -32_001
     assert get_in(unbound_guidance_response, ["error", "data", "resource"]) == "read_guidance_request"
     assert get_in(unbound_guidance_response, ["error", "data", "reason"]) == "claim_required"
-    assert get_in(unbound_guidance_response, ["error", "data", "action"]) == "claim_work_key"
+    assert get_in(unbound_guidance_response, ["error", "data", "action"]) == "claim_local_architect_assignment"
 
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-WORKER-CALL", kind: "mcp"))
     assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])

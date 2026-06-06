@@ -3,7 +3,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
   Route-free HTTP MCP transport core for decoded JSON-RPC payloads.
 
   This module preserves initialized HTTP MCP state, including bound sessions
-  returned by `claim_work_key`. It does not own Plug, CORS, cookie,
+  returned by local WR/WP claim tools. It does not own Plug, CORS, cookie,
   current-alias, explicit reconnect, or browser auth semantics.
   """
 

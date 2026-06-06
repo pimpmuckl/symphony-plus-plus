@@ -388,7 +388,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools03Test do
 
     assert get_in(anonymous_response, ["error", "code"]) == -32_001
     assert get_in(anonymous_response, ["error", "data", "reason"]) == "claim_required"
-    assert get_in(anonymous_response, ["error", "data", "action"]) == "claim_work_key"
+    assert get_in(anonymous_response, ["error", "data", "action"]) == "claim_local_architect_assignment"
 
     anonymous_slice_response =
       mcp_tool(repo, nil, "mark_work_request_sliced", %{
@@ -398,7 +398,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools03Test do
 
     assert get_in(anonymous_slice_response, ["error", "code"]) == -32_001
     assert get_in(anonymous_slice_response, ["error", "data", "reason"]) == "claim_required"
-    assert get_in(anonymous_slice_response, ["error", "data", "action"]) == "claim_work_key"
+    assert get_in(anonymous_slice_response, ["error", "data", "action"]) == "claim_local_architect_assignment"
 
     anonymous_dispatch_response =
       mcp_tool(repo, nil, "dispatch_work_request_planned_slice", %{
@@ -409,7 +409,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools03Test do
 
     assert get_in(anonymous_dispatch_response, ["error", "code"]) == -32_001
     assert get_in(anonymous_dispatch_response, ["error", "data", "reason"]) == "claim_required"
-    assert get_in(anonymous_dispatch_response, ["error", "data", "action"]) == "claim_work_key"
+    assert get_in(anonymous_dispatch_response, ["error", "data", "action"]) == "claim_local_architect_assignment"
   end
 
   test "WorkRequest MCP question mutations fail closed for sibling question ids", %{repo: repo} do

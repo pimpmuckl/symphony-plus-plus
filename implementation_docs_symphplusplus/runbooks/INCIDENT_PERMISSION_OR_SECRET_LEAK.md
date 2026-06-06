@@ -2,7 +2,7 @@
 
 Use this when a worker grant, raw claim secret, bearer token, GitHub token,
 Linear token, MCP auth token, private key, signed URL, or secret-bearing claim
-URL may have appeared outside the private handoff path.
+URL may have appeared outside an approved local credential boundary.
 
 ## Contain
 
@@ -38,7 +38,7 @@ comments. Use redacted fingerprints where possible.
    is in scope.
 4. Record the incident, affected package/grant ids, containment steps, and
    residual risk in package progress or incident notes.
-5. Resume only with a new grant and clean private handoff.
+5. Resume only with a new grant and the id-only local claim/bootstrap flow.
 
 Do not resume the affected package with the exposed grant, and do not preserve
 secret values in durable incident text.

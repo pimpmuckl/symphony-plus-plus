@@ -370,28 +370,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase.SessionHelpers do
   end
 
   def local_assignment_claim_actor(arguments) do
-    worktree_path = local_assignment_actor_worktree_path(arguments["worktree_path"])
-
     owner_material =
       [
-        arguments["repo"],
-        arguments["base_branch"],
+        "worker",
         arguments["work_package_id"],
-        arguments["branch"],
-        worktree_path,
         arguments["claimed_by"]
       ]
       |> Enum.join("\0")
 
     material =
       [
-        arguments["repo"],
-        arguments["base_branch"],
+        "worker",
         arguments["work_package_id"],
-        arguments["branch"],
-        worktree_path,
-        arguments["caller_id"],
-        arguments["claimed_by"]
+        arguments["claimed_by"],
+        Map.get(arguments, "caller_id", "codex-local-test")
       ]
       |> Enum.join("\0")
 
@@ -400,15 +392,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase.SessionHelpers do
       "actor_id" => "local:" <> local_assignment_actor_hash(owner_material) <> ":" <> local_assignment_actor_hash(material),
       "actor_display_name" => arguments["claimed_by"]
     }
-  end
-
-  def local_assignment_actor_worktree_path(path) do
-    path = path |> String.trim() |> Path.expand()
-
-    case :os.type() do
-      {:win32, _name} -> String.downcase(path)
-      _type -> path
-    end
   end
 
   def local_assignment_actor_hash(material) do

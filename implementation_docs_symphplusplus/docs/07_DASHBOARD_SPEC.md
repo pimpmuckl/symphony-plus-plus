@@ -64,7 +64,7 @@ Local operator mode:
   WorkPackages through the ledger-backed local assignment claim flow;
 - lets the local operator prepare/replay a WorkRequest architect handoff with a
   scoped phase, architect anchor package, unclaimed architect grant, and
-  redacted private handoff metadata;
+  non-secret local architect claim metadata;
 - lets the local operator add and resolve contextual comments on WorkRequests,
   planned slices, and WorkPackages from detail views;
 - shows package guidance requests that need human input in the operator
@@ -391,7 +391,7 @@ replayable; the load-time path is read-only and does not mint, renew, revoke, or
 clean up handoffs.
 The panel may show WorkRequest id, phase id, anchor package id, grant display
 metadata, capability/scope metadata, redacted handoff coordinates, and the
-plugin skill prompt. It must not show raw work-key secrets, secret hashes, or
+plugin skill prompt. It must not show raw grant secrets, secret hashes, or
 full MCP secret-retrieval commands. Board-grant WorkRequest detail does not show
 or run this control.
 
@@ -410,15 +410,11 @@ Dispatch does not spawn Codex agents and does not call Linear.
 Board-grant WorkRequest detail remains scoped to planning controls and does not
 show the local dispatch control.
 
-The WorkPackage detail handoff panel reads durable handoff metadata only from
-the dashboard's configured/default local secret store. If a CLI or MCP dispatch
-uses a per-call custom secret store, that command output remains the handoff
-source of truth unless the dashboard app is configured to the same store.
-The panel uses the dashboard's configured ledger database identity and local
-repo root when deriving non-secret bootstrap commands.
-It shows handoff rows only for non-expired, non-revoked worker grants, and it
-emits runnable legacy/recovery private-handoff commands only when the repo root
-is configured or discovered with the worker-secret helper script present.
+The WorkPackage detail handoff panel reads durable non-secret bootstrap
+metadata from the ledger. The panel may show claim rows for non-expired,
+non-revoked worker grants, but it must present `claim_local_assignment` with
+the WorkPackage id and optional `claimed_by` only. It must not emit helper
+script commands, private-store payloads, or raw grant material.
 
 ### Runtime view
 

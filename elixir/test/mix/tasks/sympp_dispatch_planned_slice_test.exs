@@ -24,7 +24,8 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
     DispatchTask.run(["--help"])
     assert_received {:mix_shell, :info, [message]}
     assert message =~ "mix sympp.dispatch_planned_slice"
-    assert message =~ "--legacy-private-handoff"
+    refute message =~ "secret"
+    refute message =~ "legacy"
   end
 
   test "dispatches an approved planned slice and prints redacted JSON" do
@@ -58,9 +59,6 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
       refute create_work["worker_grant"]["display_key"]
       refute create_work["worker_grant"]["secret_handoff"]
       assert create_work["worker_grant"]["secret_in_response"] == false
-      assert create_work["secret_returned_once"] == false
-      assert create_work["secret_not_persisted"] == true
-      assert create_work["secret_in_stdout"] == false
       refute create_work["worker_secret_handoff"]
 
       bootstrap = create_work["worker_bootstrap"]
@@ -68,10 +66,11 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
       assert_same_database_path(bootstrap["ledger"]["database"], database_path)
       assert bootstrap["claim"]["tool"] == "claim_local_assignment"
       assert bootstrap["claim"]["arguments"]["claimed_by"] == "worker-dispatch-planned-slice"
-      assert bootstrap["claim"]["arguments"]["work_request_id"] == work_request.id
       assert bootstrap["claim"]["arguments"]["work_package_id"] == create_work["work_package"]["id"]
+      refute Map.has_key?(bootstrap["claim"]["arguments"], "caller_id")
+      refute Map.has_key?(bootstrap["claim"]["arguments"], "work_request_id")
       refute Map.has_key?(bootstrap["claim"]["arguments"], "branch")
-      assert bootstrap["claim"]["required_runtime_arguments"] == ["branch", "worktree_path", "caller_id"]
+      assert bootstrap["claim"]["required_runtime_arguments"] == []
 
       assert bootstrap["preferred_skill_set"] == [
                "symphony-plus-plus-mcp:symphony-worker",
@@ -109,7 +108,7 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
     end
   end
 
-  test "requires dispatch identifiers and claimed-by before opening the ledger" do
+  test "requires dispatch identifiers before opening the ledger" do
     database_path = WorkPackageFactory.database_path()
 
     assert_raise Mix.Error, ~r/Usage: mix sympp.dispatch_planned_slice/, fn ->
@@ -138,10 +137,10 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
     refute File.exists?(database_path)
   end
 
-  test "rejects legacy handoff flags without recovery opt before opening the ledger" do
+  test "rejects removed secret handoff flags before opening the ledger" do
     database_path = WorkPackageFactory.database_path()
 
-    assert_raise Mix.Error, ~r/Legacy private handoff options require --legacy-private-handoff/, fn ->
+    assert_raise Mix.Error, ~r/Usage: mix sympp.dispatch_planned_slice/, fn ->
       DispatchTask.run([
         "--database",
         database_path,

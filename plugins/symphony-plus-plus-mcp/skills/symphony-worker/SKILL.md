@@ -14,13 +14,11 @@ PR-sized assignment.
    review profile, branch/base target, stop conditions, and any line or PR-size
    budget before coding.
 2. Pick the correct state layer:
-   - Assigned WorkPackage or explicit legacy/recovery WorkKey/private-handoff
-     assignment: use
-     `symphony-plus-plus-mcp:symphony-work-package`.
+   - Assigned WorkPackage: use
+     `symphony-plus-plus-mcp:symphony-work-package` and claim by WorkPackage
+     id.
      If that MCP adapter is unavailable, report a blocker; do not fall back to
      Solo.
-     WorkKey/private-handoff bootstrap is recovery/current-main compatibility
-     only; it is not the normal worker path.
    - No WorkPackage: use
      `symphony-plus-plus-mcp:symphony-solo-session`.
      Each worker uses its own session.
@@ -67,6 +65,6 @@ PR-sized assignment.
 ## Safety
 
 Never print, store, commit, or paste raw API keys, bearer tokens, GitHub tokens,
-Linear tokens, MCP auth tokens, worker secrets, WorkKeys, grant verifiers,
-private handoff payloads, claim lease internals, or full secret-bearing
+Linear tokens, MCP auth tokens, worker secrets, raw WorkKeys, private handoff
+payloads, grant verifiers, claim lease internals, or full secret-bearing
 commands.

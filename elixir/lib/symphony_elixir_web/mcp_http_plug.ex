@@ -4,7 +4,6 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
   alias Plug.Conn
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, HTTPStateStore, HTTPTransport, Server, Session}
   alias SymphonyElixir.SymphonyPlusPlus.Repo
-  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixirWeb.Endpoint
   alias SymphonyElixirWeb.SymppBoardLive
 
@@ -397,8 +396,7 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
       database: configured_database(repo),
       repo_root:
         endpoint_config(:sympp_repo_root) ||
-          Application.get_env(:symphony_elixir, :sympp_repo_root) ||
-          SecretHandoff.local_operator_repo_root(),
+          Application.get_env(:symphony_elixir, :sympp_repo_root),
       local_daemon_trusted: local_daemon_trusted?
     )
   end

@@ -102,7 +102,7 @@ Covered scenarios:
   persisted review-suite artifacts.
 - Two-package phase architect delegation, child worker readiness, architect
   approval, and phase merge records.
-- Security denials for invalid work-key claims, revoked grants, sibling
+- Security denials for invalid local claims, revoked grants, sibling
   resource access, and architect phase-scope drift.
 
 CI feasibility:

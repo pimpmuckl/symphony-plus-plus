@@ -15,19 +15,9 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSlice do
     work_request_id: :string,
     planned_slice_id: :string,
     claimed_by: :string,
-    legacy_private_handoff: :boolean,
-    secret_handoff: :string,
-    secret_store_dir: :string,
     help: :boolean
   ]
-  @blank_checked_options [
-    :database,
-    :work_request_id,
-    :planned_slice_id,
-    :claimed_by,
-    :secret_handoff,
-    :secret_store_dir
-  ]
+  @blank_checked_options [:database, :work_request_id, :planned_slice_id, :claimed_by]
 
   @impl Mix.Task
   def run(args) do
@@ -46,9 +36,9 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSlice do
   @spec usage() :: String.t()
   def usage do
     [
-      "Usage: mix sympp.dispatch_planned_slice --work-request-id <id> --planned-slice-id <id> --claimed-by <worker-id>",
+      "Usage: mix sympp.dispatch_planned_slice --work-request-id <id> --planned-slice-id <id>",
       "[--database <sqlite-path>]",
-      "[--legacy-private-handoff --secret-handoff auto|windows-credential-manager|local-private-file --secret-store-dir <path>]",
+      "[--claimed-by <worker-id>]",
       Repo.default_database_help_text()
     ]
     |> Enum.join(" ")
@@ -72,14 +62,8 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSlice do
       blank?(Keyword.get(opts, :planned_slice_id)) ->
         {:error, usage()}
 
-      blank?(Keyword.get(opts, :claimed_by)) ->
-        {:error, usage()}
-
       has_blank_option?(opts, @blank_checked_options) ->
         {:error, usage()}
-
-      legacy_handoff_option_present?(opts) and not Keyword.get(opts, :legacy_private_handoff, false) ->
-        {:error, "Legacy private handoff options require --legacy-private-handoff. #{usage()}"}
 
       true ->
         {:ok, opts}
@@ -90,7 +74,7 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSlice do
     original_repo = Repo.get_dynamic_repo()
 
     case start_repo(Keyword.get(opts, :database)) do
-      {:ok, repo_pid} ->
+      {:ok, repo_pid, database} ->
         try do
           with :ok <- WorkRequestRepository.migrate(Repo),
                {:ok, dispatch} <-
@@ -98,8 +82,7 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSlice do
                    Repo,
                    Keyword.fetch!(opts, :work_request_id),
                    Keyword.fetch!(opts, :planned_slice_id),
-                   secret_handoff_opts(opts),
-                   dispatch_opts(opts)
+                   dispatch_bootstrap_opts(opts, database)
                  ) do
             dispatch
             |> PlannedSliceDispatch.response_payload()
@@ -126,11 +109,11 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSlice do
       case Repo.start_link(database: database, name: Repo.process_name(database), pool_size: 1, log: false) do
         {:ok, pid} ->
           Repo.put_dynamic_repo(pid)
-          {:ok, pid}
+          {:ok, pid, database}
 
         {:error, {:already_started, pid}} ->
           Repo.put_dynamic_repo(pid)
-          {:ok, nil}
+          {:ok, nil, database}
 
         {:error, reason} ->
           {:error, {:repo_start_failed, reason}}
@@ -141,35 +124,15 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSlice do
   defp stop_repo(pid) when is_pid(pid), do: GenServer.stop(pid)
   defp stop_repo(_pid), do: :ok
 
-  defp secret_handoff_opts(opts) do
+  defp dispatch_bootstrap_opts(opts, database) do
     [
-      mode: Keyword.get(opts, :secret_handoff, "auto"),
-      store_dir: Keyword.get(opts, :secret_store_dir),
       claimed_by: Keyword.get(opts, :claimed_by),
-      database: resolved_database(Keyword.get(opts, :database)),
-      repo_root: repo_root()
+      database: database
     ]
+    |> drop_nil_values()
   end
 
-  defp dispatch_opts(opts) do
-    if Keyword.get(opts, :legacy_private_handoff, false) do
-      [legacy_private_handoff?: true]
-    else
-      []
-    end
-  end
-
-  defp legacy_handoff_option_present?(opts) do
-    Keyword.has_key?(opts, :secret_handoff) or Keyword.has_key?(opts, :secret_store_dir)
-  end
-
-  defp repo_root do
-    Mix.Project.project_file()
-    |> Path.dirname()
-    |> Path.expand()
-    |> Path.join("..")
-    |> Path.expand()
-  end
+  defp drop_nil_values(opts), do: Enum.reject(opts, fn {_key, value} -> is_nil(value) end)
 
   defp ensure_repo_dependencies_started do
     case Application.ensure_all_started(:ecto_sql) do

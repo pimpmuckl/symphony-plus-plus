@@ -567,7 +567,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools01Test do
                 "accessKey" => access_key,
                 "apiKey" => api_key,
                 "grant_verifier" => "verifier-value",
-                "private_handoff" => %{"path" => "C:/private/handoff", "payload" => "handoff-value"},
+                "private_payload" => %{"path" => "C:/private/payload", "payload" => "private-value"},
                 "safe" => "visible"
               }
             }

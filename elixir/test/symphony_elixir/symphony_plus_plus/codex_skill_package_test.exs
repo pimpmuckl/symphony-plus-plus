@@ -53,7 +53,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   @contract_path Path.join(@repo_root, "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json")
 
   @worker_tools [
-    "claim_work_key",
     "get_current_assignment",
     "read_context",
     "read_task_plan",
@@ -101,7 +100,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       assert skill =~ marker
     end
 
-    assert normalize_prose(skill) =~ "Never ask for or paste raw secrets."
+    assert skill =~ ~s({"work_package_id":"<WP id>"})
+    refute skill =~ "claim_work_key"
+    refute skill =~ "claim_private_handoff"
     assert skill =~ "Do not create local `task_plan.md`, `findings.md`, or `progress.md` files as"
     assert skill =~ "Worker grants and local claim leases are scoped to exactly one WorkPackage."
     refute skill =~ "add_comment(target_kind, target_id, body, idempotency_key)"
@@ -178,7 +179,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       assert content =~ "Ledger claim: call `claim_local_assignment`"
       assert content =~ "Worker branch: <PREPARED_BRANCH>"
       assert content =~ "Worktree path: <PREPARED_WORKTREE_PATH>"
-      assert content =~ "Caller id: <CALLER_ID>"
+      assert content =~ ~s({"work_package_id":"<WORK_PACKAGE_ID>"})
       assert content =~ "update_task_plan(patch, expected_version)"
       assert content =~ "resolve_blocker(blocker_id, resolution, summary, idempotency_key)"
       assert content =~ "request_scope_expansion(summary, idempotency_key, payload)"
@@ -206,14 +207,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert wiring =~ "[mcp_servers.symphony_plus_plus]"
     assert wiring =~ "command = \"cmd.exe\""
     assert wiring =~ "scripts/start-sympp-mcp.cmd"
-    assert wiring =~ "sympp-worker-secret.ps1"
-    assert wiring =~ "sympp-worker-secret.sh"
-    assert wiring =~ "run-mcp-local-file-once"
-    assert wiring =~ "waits for exit before draining stdout"
-    assert wiring =~ "--work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by <stable-worker-id>"
+    assert wiring =~ ~s(`work_package_id`)
+    assert wiring =~ "optional `claimed_by`"
+    refute wiring =~ "sympp-worker-secret.ps1"
+    refute wiring =~ "sympp-worker-secret.sh"
+    refute wiring =~ "run-mcp-local-file-once"
+    refute wiring =~ "--work-key-secret-env"
     prose_wiring = normalize_prose(wiring)
 
-    assert prose_wiring =~ "should not embed raw work-key secrets or bearer tokens"
+    assert prose_wiring =~ "should not embed bearer tokens"
     assert wiring =~ "generic Codex sessions, review-suite lanes, and `codex review`"
     assert prose_wiring =~ "open a new session before treating stale skill metadata"
     assert wiring =~ "cache/plugin adoption happens only at final feature-branch cutover"
@@ -226,84 +228,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     refute wiring =~ "sympp_live_"
   end
 
-  test "worker secret wrappers include safe one-shot stdio diagnostics" do
-    powershell = File.read!(@worker_secret_script_path)
-    shell = File.read!(@worker_secret_shell_path)
+  test "worker secret wrappers are no longer packaged" do
     contract = File.read!(@contract_path)
 
-    assert powershell =~ "run-mcp-local-file-once"
-    assert powershell =~ "InputFile"
-    assert powershell =~ "OutputFile"
-    assert powershell =~ "-RedirectStandardOutput $OutputFile"
-    assert powershell =~ "Get-SpoolByteCount"
-    assert powershell =~ "Initialize-SpoolFile"
-    assert powershell =~ "Set-OwnerOnlyFileAcl"
-    assert powershell =~ "[System.IO.FileMode]::CreateNew"
-    assert powershell =~ "SetAccessRuleProtection($true, $false)"
-    assert powershell =~ "FileSystemRights]::FullControl"
-    assert powershell =~ "Test-ExistingSpoolTarget"
-    assert powershell =~ "Test-SamePath"
-    assert powershell =~ "Test-ReparsePoint"
-    assert powershell =~ "Test-ReparsePointAncestor"
-    assert powershell =~ "SecretFilePath"
-    assert powershell =~ "secretFilePath"
-    assert powershell =~ "invalid_paths"
-    assert powershell =~ "$exitCode -in @(126, 127)"
-    assert powershell =~ "-ErrorAction Stop"
-    assert powershell =~ "$null -eq $process"
-    assert powershell =~ "taskkill.exe"
-    assert powershell =~ "/PID $process.Id /T /F"
-    assert powershell =~ "launch_failed"
-    refute powershell =~ "Write-Output $secret"
-
-    assert shell =~ "run-mcp-local-file-once"
-    assert shell =~ "--input-file"
-    assert shell =~ "--output-file"
-    assert shell =~ "mktemp -d"
-    assert shell =~ "TEMP_ROOT=${TMPDIR:-/tmp}"
-    assert shell =~ "pwd -P) && SPOOL_DIR=$(mktemp -d \"$TEMP_ROOT/sympp-mcp.XXXXXX\""
-    assert shell =~ "make_absolute_path"
-    assert shell =~ "emit_one_shot_summary"
-    assert shell =~ "normalize_path_segments"
-    assert shell =~ "canonical_path"
-    assert shell =~ "has_symlink_ancestor"
-    assert shell =~ "CALLER_CWD=${PWD:-}"
-    refute shell =~ "CALLER_CWD=$(pwd -P)"
-    assert shell =~ "OUTPUT_FILE_GENERATED=1"
-    assert shell =~ "[ \"$OUTPUT_FILE_GENERATED\" -eq 0 ]"
-    assert shell =~ "[ \"$SECRET_PATH\" = \"$OUTPUT_FILE\" ]"
-    assert shell =~ "[ -L \"$OUTPUT_FILE\" ]"
-    assert shell =~ "prepare_spool_file"
-    assert shell =~ "SYMPP_MCP_ONCE_TIMEOUT_SECONDS"
-    assert shell =~ "setsid mise exec"
-    assert shell =~ "TIMEOUT_FILE=$OUTPUT_FILE.timeout.$$"
-    assert shell =~ "if kill -0 \"$CHILD_PID\""
-    assert shell =~ "kill -TERM \"-$CHILD_PID\""
-    assert shell =~ "kill_process_tree -TERM \"$CHILD_PID\""
-    assert shell =~ "pgrep -P \"$pid\""
-    assert shell =~ "kill -KILL \"-$CHILD_PID\""
-    assert shell =~ "kill_process_tree -KILL \"$CHILD_PID\""
-    assert shell =~ "old_umask=$(umask)"
-    assert shell =~ "restore_noclobber=1"
-    assert shell =~ "umask 077"
-    assert shell =~ "set -C"
-    assert shell =~ "set +C"
-    assert shell =~ "chmod 600 \"$1\""
-    assert shell =~ "[ -e \"$OUTPUT_FILE\" ]"
-    assert shell =~ "[ -e \"$ERROR_FILE\" ]"
-    assert shell =~ "SYMPP_WORK_KEY_SECRET=$SECRET setsid mise exec"
-    assert shell =~ "unset SECRET"
-    assert shell =~ "SUMMARY_STATUS=invalid_paths"
-    assert shell =~ "SUMMARY_STATUS=timed_out"
-    assert shell =~ "elif ! cd \"$ELIXIR_DIR\" 2>/dev/null; then"
-    assert shell =~ "OUTPUT_FILE_READY=0"
-    assert shell =~ "SUMMARY_STATUS=launch_failed"
-    refute shell =~ "sympp-mcp-stdout.$$"
-    assert shell =~ "json_escape()"
-    assert shell =~ "OUTPUT_FILE_JSON=$(json_escape \"$OUTPUT_FILE\")"
-    refute shell =~ "printf '%s\\n' \"$SECRET\""
-
-    assert contract =~ "run-mcp-local-file-once"
+    refute File.exists?(@worker_secret_script_path)
+    refute File.exists?(@worker_secret_shell_path)
+    refute contract =~ "run-mcp-local-file-once"
+    refute contract =~ "claim_work_key"
+    refute contract =~ "claim_private_handoff"
   end
 
   test "Codex plugin package exposes MCP-free base skills" do
@@ -364,8 +296,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
            end)
 
     assert File.exists?(@refresh_script_path)
-    assert File.exists?(@worker_secret_script_path)
-    assert File.exists?(@worker_secret_shell_path)
+    refute File.exists?(@worker_secret_script_path)
+    refute File.exists?(@worker_secret_shell_path)
     assert File.read!(@plugin_readme_path) =~ ~s("path": "./plugins/symphony-plus-plus")
     assert File.read!(@plugin_readme_path) =~ "manifest-version cache"
     assert File.read!(@plugin_readme_path) =~ "refreshes every Symphony++ package"
@@ -532,8 +464,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     refute File.read!(@refresh_script_path) =~ "Remove-Item -LiteralPath $TargetRoot -Recurse"
     assert File.read!(@refresh_script_path) =~ "Refusing to refresh reparse-point plugin cache directory"
     assert File.read!(@refresh_script_path) =~ "Refusing to refresh plugin cache directory containing a reparse-point child"
-    assert File.read!(@worker_secret_script_path) =~ "CRED_PERSIST_LOCAL_MACHINE"
-    refute File.read!(@worker_secret_script_path) =~ "CRED_PERSIST_SESSION"
   end
 
   test "Codex plugin package is physically MCP-free by default" do
@@ -3715,9 +3645,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       |> File.read!()
       |> Jason.decode!()
 
-    actual_tools = Enum.map(contract["worker_tools"], & &1["name"])
+    actual_tools = get_in(contract, ["discovery_policy", "unbound_schema_sets", "worker_tools"])
+    bound_worker_tools = get_in(contract, ["discovery_policy", "bound_worker_tools"]) -- ["sympp.health", "release_current_assignment"]
 
     assert actual_tools == @worker_tools
+    assert bound_worker_tools == @worker_tools
     refute "request_context" in actual_tools
   end
 
@@ -3727,36 +3659,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       |> File.read!()
       |> Jason.decode!()
 
-    bootstrap_tools = Map.new(contract["bootstrap_tools"], &{&1["name"], &1})
-    claim_tool = Map.fetch!(bootstrap_tools, "claim_local_assignment")
+    worker_claim = get_in(contract, ["claim_policy", "worker_claim"])
+    tool_schemas = Map.new(contract["tool_schemas"], &{&1["name"], &1})
+    claim_tool = Map.fetch!(tool_schemas, "claim_local_assignment")
+
+    assert worker_claim["tool"] == "claim_local_assignment"
+    assert worker_claim["required_arguments"] == ["work_package_id"]
+
+    assert MapSet.new(worker_claim["optional_arguments"]) ==
+             MapSet.new(["claimed_by", "work_request_id", "repo", "base_branch", "branch", "worktree_path", "caller_id"])
 
     assert claim_tool["required_arguments"] == [
-             "repo",
-             "base_branch",
-             "work_package_id",
-             "branch",
-             "worktree_path",
-             "caller_id",
-             "claimed_by"
+             "work_package_id"
            ]
 
-    assert claim_tool["optional_arguments"] == ["work_request_id"]
-    assert claim_tool["scope_policy"] =~ "recorded worktree path"
-    assert claim_tool["reclaim_policy"] =~ "Stale leases may be reclaimed"
+    assert MapSet.new(claim_tool["optional_arguments"]) ==
+             MapSet.new(["claimed_by", "work_request_id", "repo", "base_branch", "branch", "worktree_path", "caller_id"])
+
+    assert get_in(contract, ["claim_policy", "reclaim_policy"]) =~ "Stale leases may be reclaimed"
+    assert get_in(contract, ["claim_policy", "secret_policy"]) =~ "do not require raw grant secrets"
 
     prompt = File.read!(@template_prompt_path)
 
     for marker <- [
-          "Repo: <REPO>",
-          "Base branch: <BASE_BRANCH>",
           "WorkPackage: <WORK_PACKAGE_ID>",
-          "Worker branch: <PREPARED_BRANCH>",
-          "Worktree path: <PREPARED_WORKTREE_PATH>",
-          "Caller id: <CALLER_ID>",
-          "claimed_by: <stable-worker-identity>"
+          ~s({"work_package_id":"<WORK_PACKAGE_ID>"}),
+          "Include `claimed_by` only when"
         ] do
       assert prompt =~ marker
     end
+
+    refute prompt =~ "claimed_by: <stable-worker-identity>"
   end
 
   test "MCP contract enum constraints mirror runtime values" do
@@ -3765,12 +3698,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       |> File.read!()
       |> Jason.decode!()
 
-    architect_tools = Map.new(contract["architect_tools"], &{&1["name"], &1})
+    tool_schemas = Map.new(contract["tool_schemas"], &{&1["name"], &1})
 
-    assert get_in(architect_tools, ["record_work_request_decision", "argument_constraints", "source_type"]) ==
+    assert get_in(tool_schemas, ["record_work_request_decision", "argument_constraints", "source_type"]) ==
              DecisionLogEntry.source_types()
 
-    assert get_in(architect_tools, ["add_work_request_planned_slice", "argument_constraints", "work_package_kind"]) ==
+    assert get_in(tool_schemas, ["add_work_request_planned_slice", "argument_constraints", "work_package_kind"]) ==
              StateMachine.standalone_kinds()
   end
 

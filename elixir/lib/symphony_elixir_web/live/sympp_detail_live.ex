@@ -21,11 +21,11 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     grant_id grant_role grants guidance_request_count guidance_requests human_info_reason mode
     head_sha id inserted_at kind label latest last_seen_at latest_progress_at metadata
     missing open_count path placeholder plan position pr product_description progress_event_count
-    question queued_agent_run_count reason recommended_language repo requested_by revoked_at run_mcp_command runtime runtime_state
-    scope secret_in_stdout severity sequence session_id stale stale_after_seconds stale_agent_run_count
+    question queued_agent_run_count reason recommended_language repo requested_by revoked_at runtime runtime_state
+    scope severity sequence session_id stale stale_after_seconds stale_agent_run_count
     stale_heartbeat_after_seconds status stopped_agent_run_count summary terminal_count
     suggested_claimed_by target timeline_order title total_count turn_count type updated_at
-    uri url work_package worker_host worker_secret_handoffs worker_task_handle workspace_path
+    uri url work_package worker_host worker_task_handle workspace_path
   )
   @known_key_atoms Map.new(@known_keys, &{&1, String.to_atom(&1)})
 
@@ -402,33 +402,6 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
                 <span class="mono"><%= grant.display_key %></span>
               </div>
             </div>
-            <div :if={worker_secret_handoffs(@detail) != []} class="sympp-stack-list">
-              <div :for={handoff <- worker_secret_handoffs(@detail)} class="sympp-stack-item">
-                <span class="state-badge"><%= status_label(handoff.status) %></span>
-                <h3>Worker Handoff <span class="mono"><%= present(handoff.display_key) %></span></h3>
-                <dl class="sympp-detail-list">
-                  <div :for={{label, value} <- worker_handoff_items(handoff)}>
-                    <dt><%= label %></dt>
-                    <dd class="mono"><%= value %></dd>
-                  </div>
-                </dl>
-                <div :if={worker_launch_brief(@detail.work_package, handoff)} class="sympp-launch-brief">
-                  <div class="sympp-launch-brief-header">
-                    <label>Worker Launch Brief</label>
-                    <button
-                      type="button"
-                      class="subtle-button sympp-copy-button"
-                      aria-label="Copy worker launch brief"
-                      data-label="Copy"
-                      onclick="const button = this; const label = button.dataset.label; const reset = (text) => { button.textContent = text; clearTimeout(button._copyTimer); button._copyTimer = setTimeout(() => { button.textContent = label }, 1200); }; const pre = button.closest('.sympp-launch-brief').querySelector('pre'); if (!navigator.clipboard || !navigator.clipboard.writeText) { reset('Copy failed'); return; } navigator.clipboard.writeText(pre.textContent).then(() => reset('Copied'), () => reset('Copy failed'));"
-                    >
-                      Copy
-                    </button>
-                  </div>
-                  <pre class="sympp-copyable-block mono"><%= worker_launch_brief(@detail.work_package, handoff) %></pre>
-                </div>
-              </div>
-            </div>
           </article>
 
           <article class="sympp-panel">
@@ -590,7 +563,6 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     |> Map.put_new(:artifacts, [])
     |> Map.put_new(:guidance_requests, [])
     |> Map.put_new(:grants, [])
-    |> Map.put_new(:worker_secret_handoffs, [])
     |> Map.put_new(:agent_runs, [])
     |> Map.put_new(:alert_indicators, [])
     |> then(fn detail ->
@@ -603,7 +575,6 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
       |> Map.update!(:artifacts, &atomize_list/1)
       |> Map.update!(:guidance_requests, &atomize_list/1)
       |> Map.update!(:grants, &atomize_list/1)
-      |> Map.update!(:worker_secret_handoffs, &atomize_list/1)
       |> Map.update!(:agent_runs, &atomize_list/1)
       |> Map.update!(:alert_indicators, &atomize_list/1)
     end)
@@ -650,7 +621,6 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
       artifacts: [],
       guidance_requests: [],
       grants: [],
-      worker_secret_handoffs: [],
       agent_runs: [],
       alert_indicators: []
     })
@@ -784,95 +754,12 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
   defp compact_state_value(value) when is_number(value), do: to_string(value)
   defp compact_state_value(_value), do: nil
 
-  defp worker_secret_handoffs(detail) do
-    case map_value(detail, :worker_secret_handoffs) do
-      values when is_list(values) -> values
-      _values -> []
-    end
-  end
-
   defp guidance_requests(detail) do
     case map_value(detail, :guidance_requests) do
       values when is_list(values) -> atomize_list(values)
       _values -> []
     end
   end
-
-  defp worker_handoff_items(handoff) do
-    [
-      {"Mode", map_value(handoff, :mode)},
-      worker_handoff_claimed_by_item(handoff),
-      {"Secret in stdout", handoff |> map_value(:secret_in_stdout) |> boolean_text()},
-      {"Target", map_value(handoff, :target)},
-      {"Path", map_value(handoff, :path)},
-      {"Run MCP", map_value(handoff, :run_mcp_command)}
-    ]
-    |> Enum.reject(fn {_label, value} -> blank_value?(value) end)
-  end
-
-  defp worker_handoff_claimed_by_item(handoff) do
-    case map_value(handoff, :claimed_by) do
-      value when is_binary(value) and value != "" -> {"Claimed by", value}
-      _value -> {"Suggested worker", map_value(handoff, :suggested_claimed_by)}
-    end
-  end
-
-  defp worker_launch_brief(work_package, handoff) do
-    lines =
-      [
-        "Worker launch brief",
-        brief_line("Package", package_reference(work_package)),
-        brief_line("Repo/base", repo_base(work_package)),
-        brief_line("Worker branch", map_value(work_package, :branch_pattern)),
-        handoff |> worker_handoff_claimed_by_item() |> brief_item(),
-        brief_line("Handoff mode", map_value(handoff, :mode)),
-        brief_line("Handoff target", map_value(handoff, :target)),
-        brief_line("Handoff path", map_value(handoff, :path)),
-        brief_line("Handoff key", map_value(handoff, :display_key)),
-        "Launch requirement: start this worker in a Codex session that has the opt-in Symphony++ MCP plugin/config loaded; the default Symphony++ plugin only provides Solo planning.",
-        "Required skill: symphony-plus-plus-mcp:symphony-work-package.",
-        "Repo-local fallback: .codex/skills/symphony-work-package/ only when present in the target checkout.",
-        "Bootstrap: start from the displayed Mode, Target, Handoff path, and Run MCP handoff metadata in this Worker Handoff panel.",
-        "Safety: do not paste raw work-key secrets, bearer tokens, hashes, full secret-bearing commands, or private payloads."
-      ]
-      |> Enum.reject(&blank_value?/1)
-
-    if length(lines) > 1, do: Enum.join(lines, "\n")
-  end
-
-  defp brief_line(label, value) do
-    case brief_value(value) do
-      nil -> nil
-      value -> "#{label}: #{value}"
-    end
-  end
-
-  defp brief_item({label, value}), do: brief_line(label, value)
-
-  defp brief_value(value) when is_binary(value) do
-    value =
-      value
-      |> String.replace(~r/[\r\n\t\f\v\x{85}\x{2028}\x{2029}]+/u, " ")
-      |> String.trim()
-
-    if value in ["", "n/a"], do: nil, else: value
-  end
-
-  defp brief_value(value) when is_boolean(value) or is_number(value), do: to_string(value)
-  defp brief_value(_value), do: nil
-
-  defp package_reference(work_package) do
-    [map_value(work_package, :id), map_value(work_package, :title)]
-    |> Enum.reject(&blank_value?/1)
-    |> Enum.join(" - ")
-  end
-
-  defp boolean_text(value) when is_boolean(value), do: to_string(value)
-  defp boolean_text(value), do: value
-
-  defp blank_value?(nil), do: true
-  defp blank_value?(""), do: true
-  defp blank_value?(_value), do: false
 
   defp map_value(%{} = map, key) when is_atom(key) do
     case Map.fetch(map, key) do

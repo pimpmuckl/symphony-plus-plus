@@ -27,14 +27,15 @@ mise exec -- mix sympp.create_work --file ../scratch/hotfix-request.yaml --claim
 Send the worker:
 
 - WorkPackage id, base branch, target branch convention, and PR title format.
-- Private handoff target and stable `claimed_by` identity.
+- WorkPackage claim call and optional stable `claimed_by` identity.
 - Package scope, owned files, acceptance criteria, and stop conditions.
 - Validation target and required review profiles.
 - Reminder to use the `symphony-plus-plus` plugin or repo-local skill with MCP
-  private-store bootstrap.
+  local claim bootstrap.
 
-Do not send the raw secret in chat, prompts, command lines, files, PR bodies,
-review text, or durable logs.
+Do not send raw secrets, raw WorkKeys, private handoff payloads,
+secret-bearing commands, bearer tokens, files, PR bodies, review text, or
+durable logs.
 
 ## Review And Merge
 

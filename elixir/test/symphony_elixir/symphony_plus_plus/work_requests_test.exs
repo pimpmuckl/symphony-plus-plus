@@ -508,7 +508,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert {:ok, visible_requests} = Repository.list(repo)
     expected_requests = Enum.sort_by([release_request | Enum.drop(completed_requests, 2)], &{&1.inserted_at, &1.id})
     assert Enum.map(visible_requests, & &1.id) == Enum.map(expected_requests, & &1.id)
-
     assert {:ok, second_summary} = Service.retention_pass(repo, now: now)
     assert second_summary.archived_ids == []
     assert {:ok, first_overflow_after_second_pass} = Repository.get(repo, "WR-RETENTION-CAP-1")

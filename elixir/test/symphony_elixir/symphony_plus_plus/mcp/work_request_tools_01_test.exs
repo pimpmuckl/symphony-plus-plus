@@ -4,29 +4,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
   test "create_work_request creates provenance and a claimable redacted architect handoff", %{repo: repo} do
-    store_dir = Path.join(test_handoff_store_dir(), "create-work-request")
-    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
-    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
-
-    on_exit(fn ->
-      restore_app_env(:sympp_worker_secret_store_dir, previous_store_dir)
-      File.rm_rf(store_dir)
-    end)
-
-    response =
-      mcp_tool(
-        repo,
-        nil,
-        "create_work_request",
+    {response, _server} =
+      Server.handle_state(
         %{
-          "repo" => "nextide/symphony-plus-plus",
-          "base_branch" => "main",
-          "title" => "Agent-created WorkRequest",
-          "description" => "Create a WorkRequest and continue as architect.",
-          "request_kind" => "feature",
-          "claimed_by" => "kraken-beta-arch"
+          "jsonrpc" => "2.0",
+          "id" => "create-work-request-claimable",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "create_work_request",
+            "arguments" => %{
+              "repo" => "nextide/symphony-plus-plus",
+              "base_branch" => "main",
+              "title" => "Agent-created WorkRequest",
+              "description" => "Create a WorkRequest and continue as architect.",
+              "request_kind" => "feature",
+              "claimed_by" => "kraken-beta-arch"
+            }
+          }
         },
-        config: Config.default(repo: repo, repo_root: test_repo_root())
+        local_mcp_server(local_mcp_config(repo), "create-work-request-claimable-state")
       )
 
     payload = get_in(response, ["result", "structuredContent"])
@@ -34,7 +30,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
     assert payload["work_request"]["creator"] == %{"kind" => "agent", "name" => "kraken-beta-arch", "via" => "mcp"}
     assert payload["work_request"]["status"] == "ready_for_clarification"
     assert is_binary(payload["launch_prompt"])
-    assert payload["launch_prompt"] =~ "claim_private_handoff"
+    assert payload["launch_prompt"] =~ "claim_local_architect_assignment"
     assert payload["launch_prompt"] =~ "Reference identifiers (TOON)"
     assert payload["launch_prompt"] =~ "agent_context: architect_handoff_reference"
     assert get_in(payload, ["architect_handoff", "agent_context"]) =~ "agent_context: architect_handoff_reference"
@@ -42,16 +38,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
     content_text = get_in(response, ["result", "content", Access.at(0), "text"])
     assert content_text =~ "agent_context: create_work_request_handoff"
     assert content_text =~ "launch_prompt:"
-    assert content_text =~ "claim_private_handoff"
+    assert content_text =~ "claim_local_architect_assignment"
     assert content_text =~ "Reference identifiers (TOON)"
 
-    private_handoff = get_in(payload, ["architect_handoff", "secret_handoff"])
-    assert private_handoff["mode"] == "local-private-file"
-    assert private_handoff["secret_in_stdout"] == false
-    refute Map.has_key?(private_handoff, "secret")
-    refute Map.has_key?(private_handoff, "secret_hash")
-    refute Map.has_key?(private_handoff, "run_mcp_command")
-    assert handoff_secret_absent?(private_handoff, inspect(response))
+    local_claim = get_in(payload, ["architect_handoff", "local_architect_claim"])
+    assert local_claim["tool"] == "claim_local_architect_assignment"
+
+    assert local_claim["arguments"] == %{
+             "work_request_id" => get_in(payload, ["work_request", "id"]),
+             "claimed_by" => "kraken-beta-arch"
+           }
+
+    assert local_claim["required_runtime_arguments"] == []
+    assert local_claim["secret_in_response"] == false
+    refute inspect(response) =~ "private_handoff"
+    refute inspect(response) =~ "secret_handoff"
+    refute inspect(response) =~ "claim_private_handoff"
 
     {claim_response, _claimed_server} =
       Server.handle_state(
@@ -60,36 +62,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
           "id" => "claim-created-work-request",
           "method" => "tools/call",
           "params" => %{
-            "name" => "claim_private_handoff",
-            "arguments" => %{"claimed_by" => "kraken-beta-arch", "private_handoff" => private_handoff}
+            "name" => "claim_local_architect_assignment",
+            "arguments" => local_claim["arguments"]
           }
         },
-        Server.new(Config.default(repo: repo), initialized: true)
+        local_mcp_server(local_mcp_config(repo), "claim-created-work-request")
       )
 
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
-    assert handoff_secret_absent?(private_handoff, inspect(claim_response))
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "claimed_by"]) == "kraken-beta-arch"
 
-    default_owner_response =
-      mcp_tool(
-        repo,
-        nil,
-        "create_work_request",
+    {default_owner_response, _default_owner_server} =
+      Server.handle_state(
         %{
-          "repo" => "nextide/symphony-plus-plus",
-          "base_branch" => "main",
-          "title" => "Default-owner WorkRequest",
-          "description" => "Create a WorkRequest without supplying a claim owner.",
-          "request_kind" => "feature"
+          "jsonrpc" => "2.0",
+          "id" => "create-default-owner-work-request",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "create_work_request",
+            "arguments" => %{
+              "repo" => "nextide/symphony-plus-plus",
+              "base_branch" => "main",
+              "title" => "Default-owner WorkRequest",
+              "description" => "Create a WorkRequest without supplying a claim owner.",
+              "request_kind" => "feature"
+            }
+          }
         },
-        config: Config.default(repo: repo, repo_root: test_repo_root())
+        local_mcp_server(local_mcp_config(repo), "create-default-owner-work-request-state")
       )
 
     default_owner_payload = get_in(default_owner_response, ["result", "structuredContent"])
-    assert default_owner_payload["work_request"]["creator"] == %{"kind" => "agent", "name" => "mcp-agent", "via" => "mcp"}
-    assert default_owner_payload["claim"] == %{"tool" => "claim_private_handoff", "claimed_by" => "symphony-architect"}
+    default_owner_claim = get_in(default_owner_payload, ["architect_handoff", "local_architect_claim"])
 
-    default_owner_handoff = get_in(default_owner_payload, ["architect_handoff", "secret_handoff"])
+    assert default_owner_payload["work_request"]["creator"] == %{"kind" => "agent", "name" => "mcp-agent", "via" => "mcp"}
+    refute Map.has_key?(default_owner_payload, "claim")
+    assert default_owner_claim["tool"] == "claim_local_architect_assignment"
+    assert default_owner_claim["arguments"]["claimed_by"] == "symphony-architect"
+    refute Map.has_key?(default_owner_claim["arguments"], "caller_id")
+    assert default_owner_claim["required_runtime_arguments"] == []
 
     {default_claim_response, _default_claimed_server} =
       Server.handle_state(
@@ -98,19 +109,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
           "id" => "claim-default-owner-work-request",
           "method" => "tools/call",
           "params" => %{
-            "name" => "claim_private_handoff",
-            "arguments" => %{
-              "claimed_by" => default_owner_payload["claim"]["claimed_by"],
-              "private_handoff" => default_owner_handoff
-            }
+            "name" => "claim_local_architect_assignment",
+            "arguments" => default_owner_claim["arguments"]
           }
         },
-        Server.new(Config.default(repo: repo), initialized: true)
+        local_mcp_server(local_mcp_config(repo), "claim-default-owner-work-request")
       )
 
     assert get_in(default_claim_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
-    assert handoff_secret_absent?(default_owner_handoff, inspect(default_owner_response))
-    assert handoff_secret_absent?(default_owner_handoff, inspect(default_claim_response))
 
     {local_create_response, _local_create_server} =
       Server.handle_state(
@@ -134,12 +140,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
       )
 
     local_create_payload = get_in(local_create_response, ["result", "structuredContent"])
-    assert local_create_payload["claim"]["tool"] == "claim_local_architect_assignment"
-    assert local_create_payload["claim"]["claimed_by"] == "local-create-arch"
-    assert local_create_payload["claim"]["required_runtime_arguments"] == ["caller_id"]
-    assert local_create_payload["claim"]["arguments"]["claimed_by"] == "local-create-arch"
-    assert local_create_payload["architect_handoff"]["local_architect_claim"]["tool"] == "claim_local_architect_assignment"
-    assert local_create_payload["architect_handoff"]["local_architect_claim"]["arguments"]["claimed_by"] == "local-create-arch"
+    local_create_claim = get_in(local_create_payload, ["architect_handoff", "local_architect_claim"])
+
+    refute Map.has_key?(local_create_payload, "claim")
+    assert local_create_claim["tool"] == "claim_local_architect_assignment"
+    assert local_create_claim["required_runtime_arguments"] == []
+    assert local_create_claim["arguments"]["claimed_by"] == "local-create-arch"
+    refute Map.has_key?(local_create_claim["arguments"], "caller_id")
     assert local_create_payload["launch_prompt"] =~ "claim_local_architect_assignment"
 
     operator_response =
@@ -158,7 +165,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
           "created_via" => "cli",
           "claimed_by" => "operator-arch"
         },
-        config: Config.default(repo: repo, repo_root: test_repo_root())
+        config: local_mcp_config(repo)
       )
 
     assert get_in(operator_response, ["result", "structuredContent", "work_request", "creator"]) == %{
@@ -167,33 +174,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
              "via" => "cli"
            }
 
-    partial_response =
-      mcp_tool(
-        repo,
-        nil,
-        "create_work_request",
-        %{
-          "repo" => "nextide/symphony-plus-plus",
-          "base_branch" => "main",
-          "title" => "Partial handoff WorkRequest",
-          "description" => "Create succeeds even when handoff bootstrap is not configured.",
-          "request_kind" => "feature",
-          "claimed_by" => "partial-arch"
-        },
-        config: Config.default(repo: repo)
-      )
-
-    partial_payload = get_in(partial_response, ["result", "structuredContent"])
-    assert partial_payload["status"] == "partial_success"
-    assert partial_payload["architect_handoff"] == nil
-
-    assert partial_payload["retry"] == %{
-             "type" => "manual_architect_handoff_replay",
-             "work_request_id" => get_in(partial_payload, ["work_request", "id"]),
-             "operator_action" => "prepare_architect_handoff"
-           }
-
-    assert {:ok, %WorkRequest{}} = WorkRequestRepository.get(repo, get_in(partial_payload, ["work_request", "id"]))
+    assert {:ok, %WorkRequest{}} = WorkRequestRepository.get(repo, get_in(operator_response, ["result", "structuredContent", "work_request", "id"]))
   end
 
   test "architect WorkRequest read tools are scoped, filtered, redacted, and read-only", %{repo: repo} do

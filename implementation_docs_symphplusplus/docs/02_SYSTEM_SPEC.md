@@ -136,21 +136,11 @@ revoked_at
 created_at
 ```
 
-### WorkKey
+### Access Grant Verifier
 
-The user/agent-facing claim handle. The display key may be short, but the actual claim secret must be high entropy.
-
-Agent-visible example:
-
-```text
-KRAKEN-HF-91C2#91C2
-```
-
-Actual one-time secret example:
-
-```text
-sympp_live_KRAKEN-HF-91C2_91C2_<high_entropy_secret>
-```
+Internal access-grant verifier material is storage-only. Agents claim by
+WorkRequest or WorkPackage id through the local claim tools and never receive a
+raw verifier as bootstrap input.
 
 ### AgentRun
 

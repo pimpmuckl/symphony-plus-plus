@@ -26,7 +26,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
-  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -900,7 +899,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         with {:ok, handoff} <-
                ArchitectHandoff.create_or_replay(repo, work_request_id,
                  local_operator?: true,
-                 secret_handoff_opts: architect_handoff_opts(repo)
+                 handoff_opts: architect_handoff_opts(repo)
                ),
              {:ok, dashboard} <- operator_dashboard_payload(repo) do
           json(conn, %{architect_handoff: handoff, dashboard: dashboard})
@@ -1728,30 +1727,22 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp architect_handoff_opts(repo) do
     [
-      mode: "auto",
       database: dashboard_ledger_database(repo),
-      repo_root: SecretHandoff.local_operator_repo_root(),
-      claimed_by: ArchitectHandoff.claimed_by()
+      claimed_by: ArchitectHandoff.claimed_by(),
+      local_architect_claim?: true
     ]
-    |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))
   end
 
   defp dispatch_handoff_opts(repo) do
     [
-      mode: "auto",
       database: dashboard_ledger_database(repo),
-      repo_root: SecretHandoff.local_operator_repo_root(),
       claimed_by: @local_operator_worker
     ]
-    |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))
   end
 
   defp dashboard_ledger_database(repo) do
     Repo.operator_database_path(repo)
   end
-
-  defp put_optional_handoff_opt(opts, _key, nil), do: opts
-  defp put_optional_handoff_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp authorize_package_session(conn, work_package_id) do
     package_result =

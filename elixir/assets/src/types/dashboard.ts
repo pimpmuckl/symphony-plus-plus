@@ -209,7 +209,7 @@ export type ArchitectHandoff = {
   phase?: Record<string, unknown> | null;
   anchor_package?: Record<string, unknown> | null;
   grant?: Record<string, unknown> | null;
-  secret_handoff?: Record<string, unknown> | null;
+  local_architect_claim?: Record<string, unknown> | null;
 };
 
 export type ArchitectHandoffPayload = {

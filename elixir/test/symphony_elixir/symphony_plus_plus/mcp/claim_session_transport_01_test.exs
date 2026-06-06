@@ -250,8 +250,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
   end
 
   test "initialized tools call rejects invalid ids without notification side effects", %{repo: repo} do
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BAD-ID-CLAIM", kind: "mcp", status: "ready_for_worker"))
+    package = create_local_claim_package!(repo, "SYMPP-BAD-ID-CLAIM")
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    arguments = local_assignment_claim_args(package)
 
     response =
       Server.handle(
@@ -259,14 +260,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
           "jsonrpc" => "2.0",
           "id" => %{"bad" => "id"},
           "method" => "tools/call",
-          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
         },
         Server.new(Config.default(repo: repo), initialized: true)
       )
 
     assert response["id"] == nil
     assert get_in(response, ["error", "data", "reason"]) == "invalid_request_id"
-    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert unclaimed_grant.claimed_at == nil
   end
 
   test "JSON-RPC batches are handled consistently through direct server calls", %{repo: repo} do
@@ -483,37 +485,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
     assert get_in(sibling_response, ["error", "data", "reason"]) == "outside_session_scope"
   end
 
-  test "claim_work_key binds the server session for worker lifecycle tools", %{repo: repo} do
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-P3-002", kind: "mcp", status: "ready_for_worker"))
+  test "claim_local_assignment binds the server session for worker lifecycle tools", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-P3-002")
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    arguments = local_assignment_claim_args(package)
 
     server = Server.new(Config.default(repo: repo), initialized: true)
-
-    missing_owner_response =
-      Server.handle(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => "claim-missing-owner",
-          "method" => "tools/call",
-          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret}}
-        },
-        server
-      )
-
-    assert get_in(missing_owner_response, ["error", "data", "reason"]) == "missing_claimed_by"
-
-    display_key_response =
-      Server.handle(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => "claim-display-key",
-          "method" => "tools/call",
-          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.display_key, "claimed_by" => "worker-1"}}
-        },
-        server
-      )
-
-    assert get_in(display_key_response, ["error", "data", "reason"]) == "display_key_only"
 
     {extra_argument_response, _server} =
       Server.handle_state(
@@ -522,8 +499,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
           "id" => "claim-extra-argument",
           "method" => "tools/call",
           "params" => %{
-            "name" => "claim_work_key",
-            "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1", "work_package_id" => package.id}
+            "name" => "claim_local_assignment",
+            "arguments" => Map.put(arguments, "unexpected", "value")
           }
         },
         server
@@ -538,8 +515,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
           "id" => "claim",
           "method" => "tools/call",
           "params" => %{
-            "name" => "claim_work_key",
-            "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}
+            "name" => "claim_local_assignment",
+            "arguments" => arguments
           }
         },
         server
@@ -555,8 +532,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
           "id" => "claim-retry",
           "method" => "tools/call",
           "params" => %{
-            "name" => "claim_work_key",
-            "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}
+            "name" => "claim_local_assignment",
+            "arguments" => arguments
           }
         },
         server
@@ -571,7 +548,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
         claimed_server
       )
 
-    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "claimed_by"]) == "worker-1"
+    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "claimed_by"]) == "local-worker-1"
 
     invalid_reason_response =
       Server.handle(
@@ -696,7 +673,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
   end
 
-  test "claim_local_assignment rejects heartbeat from a different caller_id", %{repo: repo} do
+  test "claim_local_assignment rejects heartbeat from a different caller_id identity", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-CALLER-ISOLATION")
     assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     arguments = local_assignment_claim_args(package)
@@ -723,7 +700,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
           "method" => "tools/call",
           "params" => %{
             "name" => "claim_local_assignment",
-            "arguments" => Map.put(arguments, "caller_id", "codex-local-test-other")
+            "arguments" => Map.put(arguments, "caller_id", "codex-local-other")
           }
         },
         local_mcp_server(local_mcp_config(repo), "local-caller-isolation-other-state")
@@ -731,7 +708,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
 
     assert get_in(other_caller_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
     assert get_in(other_caller_response, ["error", "data", "action"]) == "reuse_claim_identity_or_recycle_stale_claim"
-    assert get_in(other_caller_response, ["error", "data", "hint"]) =~ "Reuse the ledger claim values"
+    assert get_in(other_caller_response, ["error", "data", "hint"]) =~ "Reuse the same work_package_id, claimed_by, and caller_id"
 
     assert {:ok, %ClaimLease{id: ^lease_id, status: "active", last_seen_at: ^last_seen_at}} =
              ClaimLeaseService.current_for_work_package(repo, package.id)
@@ -742,7 +719,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
            ) == 0
   end
 
-  test "claim_local_assignment rejects duplicate caller before grant binding", %{repo: repo} do
+  test "claim_local_assignment derives distinct implicit caller ids per local MCP state", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-IMPLICIT-CALLER")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    arguments = package |> local_assignment_claim_args() |> Map.delete("caller_id")
+    config = local_mcp_config(repo)
+
+    {claim_response, _claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-implicit-caller-initial",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(config, "local-implicit-caller-initial-state")
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "created"
+
+    {other_state_response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-implicit-caller-other",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(config, "local-implicit-caller-other-state")
+      )
+
+    assert get_in(other_state_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
+  end
+
+  test "claim_local_assignment rejects active orphaned claim lease before grant binding", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-CALLER-IN-FLIGHT")
     assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     arguments = local_assignment_claim_args(package)
@@ -763,15 +773,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
           "method" => "tools/call",
           "params" => %{
             "name" => "claim_local_assignment",
-            "arguments" => Map.put(arguments, "caller_id", "codex-local-test-overlap")
+            "arguments" => Map.put(arguments, "claimed_by", "local-worker-2")
           }
         },
         local_mcp_server(local_mcp_config(repo), "local-caller-in-flight-other-state")
       )
 
     assert get_in(other_caller_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
-    assert get_in(other_caller_response, ["error", "data", "action"]) == "reuse_claim_identity_or_recycle_stale_claim"
-    assert get_in(other_caller_response, ["error", "data", "hint"]) =~ "Reuse the ledger claim values"
 
     assert {:ok, %ClaimLease{id: ^lease_id, status: "active", actor_display_name: "local-worker-1"}} =
              ClaimLeaseService.current_for_work_package(repo, package.id)
@@ -780,6 +788,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
              from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id and claim_lease.status != "active"),
              :count
            ) == 0
+
+    assert %ClaimLease{id: ^lease_id, status: "active", release_reason: nil} = repo.get(ClaimLease, lease_id)
   end
 
   test "claim_local_assignment claims the newest live worker grant", %{repo: repo} do

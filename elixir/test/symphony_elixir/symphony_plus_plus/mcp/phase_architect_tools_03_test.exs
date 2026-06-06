@@ -24,7 +24,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools03Test do
             "method" => "tools/call",
             "params" => %{
               "name" => "mint_child_worker_key",
-              "arguments" => %{"work_package_id" => child_id, "template" => child_worker_template()}
+              "arguments" => %{"work_package_id" => child_id}
             }
           },
           config: test_mcp_config(MintParentGrantRaceRepo),
@@ -89,8 +89,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools03Test do
 
     response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "work_package_id" => child_id
       })
 
     assert get_in(response, ["result", "structuredContent", "worker_grant", "work_package_id"]) == child_id
@@ -106,7 +105,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools03Test do
     explicit_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
         "work_package_id" => explicit_child_id,
-        "template" => Map.put(child_worker_template(), "expires_at", DateTime.to_iso8601(explicit_expires_at))
+        "template" => %{"expires_at" => DateTime.to_iso8601(explicit_expires_at)}
       })
 
     assert get_in(explicit_response, ["result", "structuredContent", "worker_grant", "work_package_id"]) == explicit_child_id
@@ -120,7 +119,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools03Test do
     expired_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
         "work_package_id" => expired_child_id,
-        "template" => Map.put(child_worker_template(), "expires_at", DateTime.to_iso8601(expired_expires_at))
+        "template" => %{"expires_at" => DateTime.to_iso8601(expired_expires_at)}
       })
 
     assert get_in(expired_response, ["error", "code"]) == -32_602
@@ -168,8 +167,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools03Test do
 
     sibling_anchor_mint_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => sibling_anchor_child.id,
-        "template" => child_worker_template()
+        "work_package_id" => sibling_anchor_child.id
       })
 
     assert get_in(sibling_anchor_mint_response, ["error", "code"]) == -32_003
@@ -204,8 +202,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools03Test do
 
     out_of_phase_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => out_of_phase_child.id,
-        "template" => child_worker_template()
+        "work_package_id" => out_of_phase_child.id
       })
 
     assert get_in(out_of_phase_response, ["error", "code"]) == -32_003
@@ -232,8 +229,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools03Test do
 
     wrong_base_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => wrong_base_child.id,
-        "template" => child_worker_template()
+        "work_package_id" => wrong_base_child.id
       })
 
     assert get_in(wrong_base_response, ["error", "code"]) == -32_602
@@ -270,8 +266,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools03Test do
 
     response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => broader_file_child.id,
-        "template" => child_worker_template()
+        "work_package_id" => broader_file_child.id
       })
 
     assert get_in(response, ["error", "code"]) == -32_602

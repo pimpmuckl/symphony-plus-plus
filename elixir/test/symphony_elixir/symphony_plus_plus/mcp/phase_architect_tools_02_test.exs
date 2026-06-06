@@ -22,8 +22,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
 
     mint_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "work_package_id" => child_id
       })
 
     child_worker_grant_id = get_in(mint_response, ["result", "structuredContent", "worker_grant", "id"])
@@ -34,8 +33,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
 
     remint_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "work_package_id" => child_id
       })
 
     assert get_in(remint_response, ["error", "code"]) == -32_602
@@ -69,8 +67,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
 
     first_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "work_package_id" => child_id
       })
 
     first_grant_id = get_in(first_response, ["result", "structuredContent", "worker_grant", "id"])
@@ -80,8 +77,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
 
     second_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "work_package_id" => child_id
       })
 
     assert get_in(second_response, ["error", "code"]) == -32_602
@@ -93,13 +89,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
     assert first_grant.revoked_at == nil
     assert first_grant.claimed_at == nil
 
-    _worker_session = claim_child_worker_from_mint_response(repo, first_response, "worker-1")
+    _worker_session = claim_child_worker_from_mint_response(repo, first_response, "sympp-child-worker:#{child_id}")
     grants_before_claimed_remint = repo.aggregate(AccessGrant, :count)
 
     third_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "work_package_id" => child_id
       })
 
     assert get_in(third_response, ["error", "code"]) == -32_602
@@ -125,8 +120,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
 
     first_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "work_package_id" => child_id
       })
 
     first_grant_id = get_in(first_response, ["result", "structuredContent", "worker_grant", "id"])
@@ -158,7 +152,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
     assert recycle["new_child_status"] == "ready_for_worker"
     assert recycle["status_reset"] == false
     assert recycle["remint_available"] == true
-    assert recycle["private_handoff_cleanup"] == "not_attempted"
     assert recycle["lifecycle_state"] == "recycled"
     assert recycle["reason_codes"] == ["worker_recycled"]
 
@@ -172,7 +165,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
     assert event["payload"]["previous_status"] == "ready_for_worker"
     assert event["payload"]["new_status"] == "ready_for_worker"
     assert event["payload"]["status_reset"] == false
-    assert event["payload"]["private_handoff_cleanup"] == "not_attempted"
     assert event["payload"]["lifecycle_state"] == "recycled"
     assert event["payload"]["reason_codes"] == ["worker_recycled"]
 
@@ -189,8 +181,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
 
     second_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "work_package_id" => child_id
       })
 
     second_grant_id = get_in(second_response, ["result", "structuredContent", "worker_grant", "id"])
@@ -213,7 +204,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
     first_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
         "work_package_id" => child_id,
-        "template" => child_worker_template(%{"claimed_by" => "worker-1"})
+        "template" => %{"claimed_by" => "worker-1"}
       })
 
     first_grant_id = get_in(first_response, ["result", "structuredContent", "worker_grant", "id"])
@@ -253,8 +244,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
 
     second_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "work_package_id" => child_id
       })
 
     second_grant_id = get_in(second_response, ["result", "structuredContent", "worker_grant", "id"])
@@ -350,8 +340,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
 
     mint_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "work_package_id" => child_id
       })
 
     grant_id = get_in(mint_response, ["result", "structuredContent", "worker_grant", "id"])
@@ -383,8 +372,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
 
     revoked_mint_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => revoked_child_id,
-        "template" => child_worker_template()
+        "work_package_id" => revoked_child_id
       })
 
     revoked_grant_id = get_in(revoked_mint_response, ["result", "structuredContent", "worker_grant", "id"])
@@ -403,8 +391,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
 
     expired_mint_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => expired_child_id,
-        "template" => child_worker_template()
+        "work_package_id" => expired_child_id
       })
 
     expired_grant_id = get_in(expired_mint_response, ["result", "structuredContent", "worker_grant", "id"])
@@ -445,8 +432,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
 
       mint_response =
         mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-          "work_package_id" => child_id,
-          "template" => child_worker_template()
+          "work_package_id" => child_id
         })
 
       grant_id = get_in(mint_response, ["result", "structuredContent", "worker_grant", "id"])
@@ -492,15 +478,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
 
     worker_mint_response =
       mcp_tool(repo, worker_session, "mint_child_worker_key", %{
-        "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "work_package_id" => child_id
       })
 
     assert get_in(worker_mint_response, ["error", "code"]) == -32_001
     assert get_in(worker_mint_response, ["error", "data", "reason"]) == "architect_grant_required"
   end
 
-  test "child worker key minting validates private handoff template narrowly", %{repo: repo} do
+  test "child worker key minting validates its remaining template keys narrowly", %{repo: repo} do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-HANDOFF-TEMPLATE-ANCHOR", [
         "create:child_work_package",
@@ -513,145 +498,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
     invalid_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
         "work_package_id" => child_id,
-        "template" => child_worker_template(%{"claimed_by" => "  "})
+        "template" => %{"claimed_by" => "  "}
       })
 
     assert get_in(invalid_response, ["error", "code"]) == -32_602
-    assert get_in(invalid_response, ["error", "data", "reason"]) == "invalid_secret_handoff"
+    assert get_in(invalid_response, ["error", "data", "reason"]) == "invalid_claimed_by"
 
     unexpected_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
         "work_package_id" => child_id,
-        "template" => child_worker_template(%{"env_var" => "SYMPP_OTHER_SECRET"})
+        "template" => %{"env_var" => "SYMPP_OTHER_SECRET"}
       })
 
     assert get_in(unexpected_response, ["error", "code"]) == -32_602
-    assert get_in(unexpected_response, ["error", "data", "reason"]) == "unexpected_secret_handoff_field"
+    assert get_in(unexpected_response, ["error", "data", "reason"]) == "unexpected_template_field"
     assert {:ok, grants} = AccessGrantRepository.list_for_work_package(repo, child_id)
     assert active_worker_grants(grants) == []
-  end
-
-  test "child worker key minting requires configured repo_root for private handoff", %{repo: repo} do
-    {_anchor, architect_session} =
-      create_architect_session(repo, "SYMPP-P7-002-MINT-MISSING-ROOT-ANCHOR", [
-        "create:child_work_package",
-        "mint:child_worker_key",
-        "read:phase"
-      ])
-
-    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-MISSING-ROOT-CHILD")
-
-    response =
-      MCPHarness.request(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => "mint_child_worker_key",
-          "method" => "tools/call",
-          "params" => %{
-            "name" => "mint_child_worker_key",
-            "arguments" => %{"work_package_id" => child_id, "template" => child_worker_template()}
-          }
-        },
-        config: Config.default(repo: repo),
-        session: architect_session
-      )
-
-    assert get_in(response, ["error", "code"]) == -32_602
-    assert get_in(response, ["error", "data", "reason"]) == "missing_repo_root"
-
-    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(repo, child_id)
-    assert Enum.filter(grants, &(&1.provenance == @child_worker_grant_provenance)) == []
-    assert active_worker_grants(grants) == []
-  end
-
-  test "child worker key minting validates repo_root contains handoff script before minting", %{repo: repo} do
-    {_anchor, architect_session} =
-      create_architect_session(repo, "SYMPP-P7-002-MINT-BAD-ROOT-ANCHOR", [
-        "create:child_work_package",
-        "mint:child_worker_key",
-        "read:phase"
-      ])
-
-    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-BAD-ROOT-CHILD")
-    bad_repo_root = Path.join(System.tmp_dir!(), "sympp-missing-handoff-script-#{System.unique_integer([:positive])}")
-    File.mkdir_p!(bad_repo_root)
-
-    response =
-      MCPHarness.request(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => "mint_child_worker_key",
-          "method" => "tools/call",
-          "params" => %{
-            "name" => "mint_child_worker_key",
-            "arguments" => %{"work_package_id" => child_id, "template" => child_worker_template()}
-          }
-        },
-        config: Config.default(repo: repo, repo_root: bad_repo_root),
-        session: architect_session
-      )
-
-    assert get_in(response, ["error", "code"]) == -32_602
-    assert get_in(response, ["error", "data", "reason"]) == "invalid_repo_root"
-
-    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(repo, child_id)
-    assert Enum.filter(grants, &(&1.provenance == @child_worker_grant_provenance)) == []
-    assert active_worker_grants(grants) == []
-  end
-
-  test "child worker key minting rolls back the new grant when private handoff storage or metadata fails", %{repo: repo} do
-    {_anchor, architect_session} =
-      create_architect_session(repo, "SYMPP-P7-002-HANDOFF-FAIL-ANCHOR", [
-        "create:child_work_package",
-        "mint:child_worker_key",
-        "read:phase"
-      ])
-
-    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-HANDOFF-FAIL-CHILD")
-    bad_store_dir = Path.join(test_handoff_store_dir(), "not-a-directory")
-    File.mkdir_p!(Path.dirname(bad_store_dir))
-    File.write!(bad_store_dir, "blocks handoff directory creation")
-
-    response =
-      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => child_id,
-        "template" => child_worker_template(%{"store_dir" => bad_store_dir})
-      })
-
-    assert get_in(response, ["error", "code"]) == -32_602
-    reason = get_in(response, ["error", "data", "reason"])
-    assert is_binary(reason)
-    refute reason =~ ~s("secret":)
-
-    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(repo, child_id)
-    child_delegated_grants = Enum.filter(grants, &(&1.provenance == @child_worker_grant_provenance))
-    assert child_delegated_grants == []
-    assert active_worker_grants(grants) == []
-
-    metadata_failure_child_id =
-      create_child_work_package(repo, architect_session, "SYMPP-P7-002-HANDOFF-METADATA-FAIL-CHILD")
-
-    metadata_failure_store_dir = Path.join(test_handoff_store_dir(), "metadata-failure")
-    File.rm_rf!(metadata_failure_store_dir)
-    File.mkdir_p!(metadata_failure_store_dir)
-    File.write!(Path.join(metadata_failure_store_dir, "metadata"), "blocks managed metadata directory")
-
-    metadata_response =
-      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => metadata_failure_child_id,
-        "template" => child_worker_template(%{"store_dir" => metadata_failure_store_dir})
-      })
-
-    assert get_in(metadata_response, ["error", "code"]) == -32_602
-    metadata_reason = get_in(metadata_response, ["error", "data", "reason"])
-    assert is_binary(metadata_reason)
-    assert metadata_reason =~ "secret handoff metadata"
-    assert metadata_reason =~ "new_handoff_cleanup="
-    refute metadata_reason =~ ~s("secret":)
-
-    assert {:ok, metadata_failure_grants} = AccessGrantRepository.list_for_work_package(repo, metadata_failure_child_id)
-    assert Enum.filter(metadata_failure_grants, &(&1.provenance == @child_worker_grant_provenance)) == []
-    assert active_worker_grants(metadata_failure_grants) == []
   end
 
   test "child worker key minting rejects child packages not ready for worker", %{repo: repo} do
@@ -669,8 +531,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
 
     response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "work_package_id" => child_id
       })
 
     assert get_in(response, ["error", "code"]) == -32_602
@@ -699,7 +560,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
             "method" => "tools/call",
             "params" => %{
               "name" => "mint_child_worker_key",
-              "arguments" => %{"work_package_id" => child_id, "template" => child_worker_template()}
+              "arguments" => %{"work_package_id" => child_id}
             }
           },
           config: test_mcp_config(MintReadyRaceRepo),
@@ -752,7 +613,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
             "method" => "tools/call",
             "params" => %{
               "name" => "mint_child_worker_key",
-              "arguments" => %{"work_package_id" => child_id, "template" => child_worker_template()}
+              "arguments" => %{"work_package_id" => child_id}
             }
           },
           config: test_mcp_config(MintChildScopeRaceRepo),
@@ -795,7 +656,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools02Test do
               "method" => "tools/call",
               "params" => %{
                 "name" => "mint_child_worker_key",
-                "arguments" => %{"work_package_id" => child_id, "template" => child_worker_template()}
+                "arguments" => %{"work_package_id" => child_id}
               }
             },
             config: test_mcp_config(MintParentGrantRaceRepo),

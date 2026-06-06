@@ -14,8 +14,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
   @lease_stale_after_ms 86_400_000
   @release_current_assignment_tool "release_current_assignment"
   @local_claim_tools ["claim_local_assignment", "claim_local_architect_assignment"]
-  @secret_claim_tools ["claim_work_key", "claim_private_handoff"]
-  @session_claim_tools @secret_claim_tools ++ @local_claim_tools
+  @session_claim_tools @local_claim_tools
 
   @spec remember(Config.t(), String.t(), String.t(), term(), Server.t(), term()) :: :ok
   def remember(%Config{mode: :http, repo: repo} = config, client_key, state_key, payload, %Server{} = server, response)
@@ -81,9 +80,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
     case claim_tool_name(payload, response, session) do
       tool_name when tool_name in @local_claim_tools ->
         remember_session_claim(config, client_key, state_key, session, response, tool_name)
-
-      tool_name when tool_name in @secret_claim_tools ->
-        remember_nonrecoverable_claim(client_key, state_key, session, tool_name)
 
       :ambiguous_claim ->
         remember_nonrecoverable_claim(client_key, state_key, session, "ambiguous_claim")
@@ -482,10 +478,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
        when name in @local_claim_tools and is_map(arguments) do
     if local_claim_payload_matches_session?(name, arguments, session), do: name
   end
-
-  defp notification_claim_tool_name(%{"method" => "tools/call", "params" => %{"name" => name}}, nil, %Session{})
-       when name in ["claim_work_key", "claim_private_handoff"],
-       do: name
 
   defp notification_claim_tool_name(_payload, _response, %Session{}), do: nil
 

@@ -610,7 +610,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     assert get_in(solo_response, ["result", "structuredContent", "action"]) == "solo_attach"
   end
 
-  test "release_current_assignment releases a claim_work_key lease and allows Solo tools in the same server", %{repo: repo} do
+  test "release_current_assignment releases a local assignment lease and allows Solo tools in the same server", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SOLO-RELEASE-WORK-KEY", kind: "mcp"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
 
@@ -620,14 +620,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
           "jsonrpc" => "2.0",
           "id" => "claim-work-key-release",
           "method" => "tools/call",
-          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+          "params" => %{"name" => "claim_local_assignment", "arguments" => %{"work_package_id" => package.id, "claimed_by" => "worker-1"}}
         },
         Server.new(Config.default(repo: repo), initialized: true)
       )
 
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
-    assert {:ok, %ClaimLease{id: lease_id, access_grant_id: grant_id, actor_id: "work_key:" <> _hash}} = ClaimLeaseService.current_for_work_package(repo, package.id)
-    assert grant_id == minted.grant.id
+    assert claimed_server.session.assignment.grant_id == minted.grant.id
+    assert {:ok, %ClaimLease{id: lease_id, actor_id: "local:" <> _hash}} = ClaimLeaseService.current_for_work_package(repo, package.id)
 
     {release_response, released_server} =
       Server.handle_response_state(
@@ -649,7 +649,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     assert get_in(payload, ["claim_lease_release", "claim_lease_id"]) == lease_id
     assert released_server.session == nil
     assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, package.id)
-    refute inspect(release_response) =~ minted.work_key.secret
 
     solo_response =
       Server.handle(
@@ -673,126 +672,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     assert get_in(solo_response, ["result", "structuredContent", "action"]) == "solo_attach"
   end
 
-  test "claim_work_key lease conflicts do not revoke the grant", %{repo: repo} do
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SOLO-WORK-KEY-LEASE-CONFLICT", kind: "mcp"))
-    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
-
-    assert {:ok, %ClaimLease{id: lease_id}} =
-             ClaimLeaseService.claim(
-               repo,
-               package.id,
-               %{
-                 actor_kind: "agent",
-                 actor_id: "other-worker",
-                 actor_display_name: "other-worker"
-               },
-               access_grant_id: minted.grant.id,
-               stale_after_ms: 86_400_000
-             )
-
-    {conflict_response, conflict_server} =
-      Server.handle_response_state(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => "claim-work-key-lease-conflict",
-          "method" => "tools/call",
-          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
-        },
-        Server.new(Config.default(repo: repo), initialized: true)
-      )
-
-    assert get_in(conflict_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
-    assert conflict_server.session == nil
-
-    assert {:ok, grant_after_conflict} = AccessGrantRepository.get(repo, minted.grant.id)
-    assert grant_after_conflict.revoked_at == nil
-    assert grant_after_conflict.claimed_at == nil
-    assert grant_after_conflict.claimed_by == nil
-
-    assert {:ok, %ClaimLease{status: "released"}} = ClaimLeaseService.release(repo, lease_id, reason: "other_worker_done")
-
-    {claim_response, claimed_server} =
-      Server.handle_response_state(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => "claim-work-key-after-lease-conflict",
-          "method" => "tools/call",
-          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
-        },
-        Server.new(Config.default(repo: repo), initialized: true)
-      )
-
-    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
-    assert claimed_server.session.assignment.grant_id == minted.grant.id
-    assert {:ok, %ClaimLease{access_grant_id: grant_id, actor_id: "work_key:" <> _hash}} = ClaimLeaseService.current_for_work_package(repo, package.id)
-    assert grant_id == minted.grant.id
-  end
-
-  test "claim_work_key same-owner claim race keeps the shared lease active", %{repo: repo} do
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SOLO-WORK-KEY-SAME-OWNER-RACE", kind: "mcp"))
-    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
-
-    WorkKeyClaimRaceRepo.arm(minted.grant.id, "worker-1")
-
-    {claim_response, claimed_server} =
-      try do
-        Server.handle_response_state(
-          %{
-            "jsonrpc" => "2.0",
-            "id" => "claim-work-key-same-owner-race",
-            "method" => "tools/call",
-            "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
-          },
-          Server.new(Config.default(repo: WorkKeyClaimRaceRepo), initialized: true)
-        )
-      after
-        WorkKeyClaimRaceRepo.disarm()
-      end
-
-    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
-    assert claimed_server.session.assignment.grant_id == minted.grant.id
-    refute inspect(claim_response) =~ minted.work_key.secret
-
-    assert {:ok, claimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
-    assert claimed_grant.claimed_by == "worker-1"
-
-    claim_leases =
-      repo.all(
-        from(claim_lease in ClaimLease,
-          where: claim_lease.work_package_id == ^package.id,
-          order_by: [asc: claim_lease.inserted_at, asc: claim_lease.id]
-        )
-      )
-
-    assert [
-             %ClaimLease{
-               id: lease_id,
-               status: "active",
-               access_grant_id: grant_id,
-               actor_display_name: "worker-1"
-             }
-           ] = claim_leases
-
-    assert grant_id == minted.grant.id
-    assert claimed_server.session.claim_lease_id == lease_id
-
-    {release_response, released_server} =
-      Server.handle_response_state(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => "release-after-same-owner-race",
-          "method" => "tools/call",
-          "params" => %{"name" => "release_current_assignment", "arguments" => %{"reason" => "done"}}
-        },
-        claimed_server
-      )
-
-    assert get_in(release_response, ["result", "structuredContent", "claim_lease_release", "status"]) == "released"
-    assert get_in(release_response, ["result", "structuredContent", "claim_lease_release", "claim_lease_id"]) == lease_id
-    assert released_server.session == nil
-    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, package.id)
-  end
-
   test "release_current_assignment keeps binding when claim lease identity is unavailable", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SOLO-RELEASE-LEGACY", kind: "mcp"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -803,7 +682,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
           "jsonrpc" => "2.0",
           "id" => "claim-legacy-release",
           "method" => "tools/call",
-          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+          "params" => %{"name" => "claim_local_assignment", "arguments" => %{"work_package_id" => package.id, "claimed_by" => "worker-1"}}
         },
         Server.new(Config.default(repo: repo), initialized: true)
       )
@@ -954,6 +833,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     assert Map.has_key?(tools_by_name, "sympp.health")
     assert Map.has_key?(tools_by_name, "get_current_assignment")
     refute Map.has_key?(tools_by_name, "claim_work_key")
+    refute Map.has_key?(tools_by_name, "claim_private_handoff")
 
     for tool <- @architect_tool_names do
       assert Map.has_key?(tools_by_name, tool)
@@ -1072,33 +952,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
 
     assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "required"]) == [
              "work_request_id",
-             "planned_slice_id",
-             "claimed_by"
+             "planned_slice_id"
            ]
 
-    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_handoff", "type"]) == "string"
-    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_store_dir", "type"]) == "string"
-
-    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_handoff", "description"]) =~
-             "Legacy recovery-only"
-
-    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_store_dir", "description"]) =~
-             "Legacy recovery-only"
-
-    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "legacy_private_handoff", "type"]) == "boolean"
-
-    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "legacy_private_handoff", "description"]) =~
-             "recovery-only"
-
-    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "symphony_repo_root", "type"]) == "string"
-
-    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "symphony_repo_root", "description"]) =~
-             "helper/namespace repo root"
-
-    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "repo_root", "deprecated"]) == true
-
-    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "repo_root", "description"]) =~
-             "Legacy compatibility alias"
+    dispatch_properties = get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties"])
+    assert get_in(dispatch_properties, ["claimed_by", "type"]) == "string"
+    refute Map.has_key?(dispatch_properties, "secret_handoff")
+    refute Map.has_key?(dispatch_properties, "secret_store_dir")
+    refute Map.has_key?(dispatch_properties, "legacy_private_handoff")
+    refute Map.has_key?(dispatch_properties, "symphony_repo_root")
+    refute Map.has_key?(dispatch_properties, "repo_root")
 
     assert get_in(tools_by_name, ["prepare_work_package_worktree", "inputSchema", "required"]) == [
              "work_package_id",
@@ -1128,7 +991,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     assert get_in(tools_by_name, ["approve_scope_expansion", "inputSchema", "properties", "allowed_file_globs", "minItems"]) == 1
     assert get_in(tools_by_name, ["approve_child_ready_state", "inputSchema", "required"]) == ["work_package_id", "rationale"]
     assert get_in(tools_by_name, ["approve_child_ready_state", "inputSchema", "properties", "request_id", "type"]) == "string"
-    assert get_in(tools_by_name, ["mint_child_worker_key", "inputSchema", "required"]) == ["work_package_id", "template"]
+    assert get_in(tools_by_name, ["mint_child_worker_key", "inputSchema", "required"]) == ["work_package_id"]
     assert get_in(tools_by_name, ["mint_child_worker_key", "inputSchema", "properties", "template", "type"]) == "object"
     assert get_in(tools_by_name, ["revoke_child_worker_key", "inputSchema", "required"]) == ["grant_id", "reason"]
     assert get_in(tools_by_name, ["revoke_child_worker_key", "inputSchema", "properties", "grant_id", "type"]) == "string"
@@ -1253,7 +1116,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     response = Server.handle(%{"jsonrpc" => "2.0", "id" => "revoked-architect-tools", "method" => "tools/list", "params" => %{}}, server)
     tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
 
-    assert Map.keys(tools_by_name) |> Enum.sort() == ["claim_private_handoff", "claim_work_key", "sympp.health"]
+    assert Map.keys(tools_by_name) |> Enum.sort() == ["claim_local_architect_assignment", "claim_local_assignment", "sympp.health"]
   end
 
   test "tools list preserves ledger failures while revalidating bound sessions" do

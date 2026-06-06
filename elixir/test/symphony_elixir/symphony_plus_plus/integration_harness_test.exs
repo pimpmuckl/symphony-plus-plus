@@ -16,7 +16,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
-  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
@@ -44,16 +43,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
   end
 
   setup %{repo: repo} do
-    File.rm_rf(test_handoff_store_dir())
     repo.delete_all(Artifact)
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkPackage)
     repo.delete_all(Phase)
-
-    on_exit(fn ->
-      cleanup_test_child_worker_handoffs(repo)
-      File.rm_rf(test_handoff_store_dir())
-    end)
 
     :ok
   end
@@ -71,7 +64,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
                review_suite_template: "hotfix"
              })
 
-    session = claim_worker(repo, creation.worker_grant.secret, "hotfix-worker")
+    session = claim_worker_grant(repo, creation.worker_grant.id, "hotfix-worker")
     assert read_resource(repo, session, "sympp://work-packages/#{creation.work_package.id}/context.md") =~ "Fix standalone incident"
 
     update_plan(repo, session)
@@ -179,21 +172,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-P8-001-SECURITY"))
     assert {:ok, sibling} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-P8-001-SIBLING"))
 
-    invalid_secret_response =
-      MCPHarness.request(
+    local_claim_config = Config.default(repo: repo, mode: :http, local_daemon_trusted: true)
+    local_claim_state_key = "integration-security-denials-local-claim"
+
+    assert %{"result" => %{"serverInfo" => %{"name" => "symphony-plus-plus"}}} =
+             Server.handle(
+               %{
+                 "jsonrpc" => "2.0",
+                 "id" => "init-local-claim-security-denial",
+                 "method" => "initialize",
+                 "params" => %{"protocolVersion" => "2025-03-26", "capabilities" => %{}, "clientInfo" => %{"name" => "test"}}
+               },
+               Server.new(local_claim_config, state_key: local_claim_state_key)
+             )
+
+    missing_package_claim_response =
+      Server.handle(
         %{
           "jsonrpc" => "2.0",
           "id" => "bad-claim",
           "method" => "tools/call",
-          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => "not-a-real-secret", "claimed_by" => "worker"}}
+          "params" => %{"name" => "claim_local_assignment", "arguments" => %{"work_package_id" => "SYMPP-P8-001-MISSING", "claimed_by" => "worker"}}
         },
-        repo: repo
+        Server.new(local_claim_config, state_key: local_claim_state_key)
       )
 
-    assert get_in(invalid_secret_response, ["error", "data", "reason"]) == "invalid_secret"
+    assert get_in(missing_package_claim_response, ["error", "data", "reason"]) == "not_found"
 
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
-    session = claim_worker(repo, minted.work_key.secret, "security-worker")
+    session = claim_worker_grant(repo, minted.grant.id, "security-worker")
 
     sibling_response =
       MCPHarness.request(
@@ -268,33 +275,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
     response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
         "work_package_id" => child_id,
-        "template" => child_worker_template(%{"claimed_by" => claimed_by})
+        "template" => %{"claimed_by" => claimed_by}
       })
 
     claim_child_worker_from_mint_response(repo, response, claimed_by)
-  end
-
-  defp child_worker_template(secret_handoff_overrides) do
-    %{
-      "secret_handoff" =>
-        Map.merge(
-          %{
-            "mode" => test_secret_handoff_mode(),
-            "store_dir" => test_handoff_store_dir()
-          },
-          secret_handoff_overrides
-        )
-    }
-  end
-
-  defp test_secret_handoff_mode do
-    "auto"
-  end
-
-  defp test_handoff_store_dir do
-    System.tmp_dir!()
-    |> Path.join("sympp-integration-test-worker-secrets")
-    |> Path.expand()
   end
 
   defp test_repo_root do
@@ -303,23 +287,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
 
   defp claim_child_worker_from_mint_response(repo, mint_response, claimed_by) do
     worker_grant = get_in(mint_response, ["result", "structuredContent", "worker_grant"])
-    handoff = Map.fetch!(worker_grant, "secret_handoff")
+    bootstrap_claim = get_in(worker_grant, ["worker_bootstrap", "claim"])
+    arguments = Map.fetch!(bootstrap_claim, "arguments")
 
-    session =
-      case Map.fetch!(handoff, "mode") do
-        "local-private-file" ->
-          secret = File.read!(Map.fetch!(handoff, "path"))
-          claim_worker(repo, secret, claimed_by)
+    assert bootstrap_claim["tool"] == "claim_local_assignment"
+    assert arguments["work_package_id"] == worker_grant["work_package_id"]
+    assert arguments["claimed_by"] == claimed_by
+    refute Map.has_key?(arguments, "caller_id")
 
-        "windows-credential-manager" ->
-          claim_child_worker_without_secret(repo, Map.fetch!(worker_grant, "id"), claimed_by)
-      end
+    {claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "integration-claim-child-worker-from-bootstrap",
+          "method" => "tools/call",
+          "params" => %{"name" => bootstrap_claim["tool"], "arguments" => arguments}
+        },
+        Server.new(
+          Config.default(repo: repo, mode: :http, repo_root: test_repo_root(), local_daemon_trusted: true),
+          initialized: true,
+          state_key: "integration-child-worker-bootstrap-#{worker_grant["id"]}-#{System.unique_integer([:positive])}"
+        )
+      )
 
-    :ok = SecretHandoff.delete_worker_secret(handoff, repo_root: test_repo_root())
-    session
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "grant_id"]) == worker_grant["id"]
+    claimed_server.session
   end
 
-  defp claim_child_worker_without_secret(repo, grant_id, claimed_by) do
+  defp claim_worker_grant(repo, grant_id, claimed_by) do
     now = DateTime.utc_now(:microsecond)
 
     assert {1, _rows} =
@@ -333,53 +328,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
     session
   end
 
-  defp cleanup_test_child_worker_handoffs(repo) do
-    grants =
-      repo.all(
-        from(grant in AccessGrant,
-          where: grant.provenance == "child_worker_delegation"
-        )
-      )
-
-    Enum.each(grants, fn grant ->
-      with {:ok, work_package} <- WorkPackageRepository.get(repo, grant.work_package_id) do
-        SecretHandoff.delete_worker_secret_by_grant(
-          work_package,
-          grant,
-          repo_root: test_repo_root(),
-          claimed_by: "integration-cleanup",
-          mode: test_secret_handoff_mode(),
-          store_dir: test_handoff_store_dir()
-        )
-      end
-    end)
-  end
-
   defp minted_worker_session(repo, work_package_id, claimed_by) do
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, work_package_id)
-    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: claimed_by)
-    MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
-  end
-
-  defp claim_worker(repo, secret, claimed_by) do
-    server = Server.new(Config.default(repo: repo), initialized: true)
-
-    {response, claimed_server} =
-      Server.handle_state(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => "claim-worker",
-          "method" => "tools/call",
-          "params" => %{
-            "name" => "claim_work_key",
-            "arguments" => %{"secret" => secret, "claimed_by" => claimed_by}
-          }
-        },
-        server
-      )
-
-    assert get_in(response, ["result", "structuredContent", "assignment", "claimed_by"]) == claimed_by
-    claimed_server.session
+    claim_worker_grant(repo, minted.grant.id, claimed_by)
   end
 
   defp update_plan(repo, session) do

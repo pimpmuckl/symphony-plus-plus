@@ -70,10 +70,6 @@ defmodule Mix.Tasks.CodeQuality.Guard do
       max_lines: 15_535
     },
     "lib/symphony_elixir/symphony_plus_plus/planning/repository.ex" => %{max_lines: 981},
-    "lib/symphony_elixir/symphony_plus_plus/secret_handoff.ex" => %{
-      functions: %{"error_message/1" => %{max_complexity: 29}},
-      max_lines: 1893
-    },
     "lib/symphony_elixir/symphony_plus_plus/solo_sessions/repository.ex" => %{max_lines: 770},
     "lib/symphony_elixir/symphony_plus_plus/tracker_adapter.ex" => %{max_lines: 1334},
     "lib/symphony_elixir/symphony_plus_plus/work_packages/worktree_lifecycle.ex" => %{max_lines: 738},
@@ -122,7 +118,6 @@ defmodule Mix.Tasks.CodeQuality.Guard do
     "test/symphony_elixir/symphony_plus_plus/mcp_http_endpoint_test.exs" => %{max_lines: 1267},
     "test/symphony_elixir/symphony_plus_plus/mcp_test.exs" => %{max_lines: 19_703},
     "test/symphony_elixir/symphony_plus_plus/mcp_delivery_tools_test.exs" => %{max_lines: 933},
-    "test/symphony_elixir/symphony_plus_plus/secret_handoff_test.exs" => %{max_lines: 1986},
     "test/symphony_elixir/symphony_plus_plus/tracker_adapter_test.exs" => %{max_lines: 2161},
     "test/symphony_elixir/symphony_plus_plus/work_packages_test.exs" => %{max_lines: 944},
     "test/symphony_elixir/symphony_plus_plus/work_request_architect_handoff_test.exs" => %{max_lines: 1812},
