@@ -103,6 +103,69 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     end
   end
 
+  test "direct stdio launcher fetches locked deps before running MCP from marketplace source clone" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-elixir-deps")
+
+    if powershell do
+      fake_mix = fake_mix_executable(temp_codex_home)
+      marketplace_root = write_minimal_marketplace_source(temp_codex_home)
+      mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
+      fake_mix_log = Path.join(temp_codex_home, "fake-mix.log")
+      setup_stderr_log = Path.join(temp_codex_home, "setup.stderr.log")
+      log_dir = Path.join(temp_codex_home, "logs")
+
+      try do
+        File.mkdir_p!(mcp_cache_root)
+        script_path = write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-Command",
+              "& { param($ScriptPath, $ErrorLog) $writer = [System.IO.StreamWriter]::new($ErrorLog); [Console]::SetError($writer); try { & $ScriptPath } finally { $writer.Flush(); $writer.Dispose() } }",
+              script_path,
+              setup_stderr_log
+            ],
+            cd: Path.dirname(Path.dirname(script_path)),
+            stderr_to_stdout: false,
+            env: [
+              {"SYMPP_ELIXIR_SETUP_TIMEOUT_SEC", "5"},
+              {"SYMPP_FAKE_MIX_LOG", fake_mix_log},
+              {"SYMPP_LAUNCHER", "direct"},
+              {"SYMPP_LOG_DIR", log_dir},
+              {"SYMPP_MCP_BRIDGE_MODE", "direct_stdio"},
+              {"SYMPP_MIX", fake_mix},
+              {"SYMPP_REPO_ROOT", ""}
+            ]
+          )
+
+        assert status == 0, output
+        assert output == ""
+
+        assert normalize_path_fragment(File.read!(setup_stderr_log)) =~
+                 "ensuring symphony++ elixir dependencies are available in #{normalize_path_fragment(Path.join(marketplace_root, "elixir"))}."
+
+        fake_mix_calls =
+          fake_mix_log
+          |> File.read!()
+          |> String.split("\n", trim: true)
+          |> Enum.map(&String.trim/1)
+          |> Enum.filter(
+            &(String.contains?(&1, "deps.get") or &1 == "compile" or
+                String.starts_with?(&1, "sympp.mcp "))
+          )
+
+        assert ["deps.get --check-locked", "compile", mcp_call] = fake_mix_calls
+        assert String.starts_with?(mcp_call, "sympp.mcp ")
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
   defp write_cached_script(cache_root, source_script_path) do
     target = Path.join([cache_root, "scripts", Path.basename(source_script_path)])
     File.mkdir_p!(Path.dirname(target))
@@ -181,8 +244,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     if windows?() do
       """
       @echo off
+      if not "%SYMPP_FAKE_MIX_LOG%"=="" echo %*>>"%SYMPP_FAKE_MIX_LOG%"
       if "%~1"=="--version" (
         echo Mix 1.99.0 test
+        exit /b 0
+      )
+      if "%~1"=="deps.get" (
+        if "%~2"=="--check-locked" exit /b 0
+        exit /b 3
+      )
+      if "%~1"=="compile" (
+        exit /b 0
+      )
+      if "%~1"=="sympp.mcp" (
         exit /b 0
       )
       echo unexpected mix args: %*
@@ -191,8 +265,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     else
       """
       #!/usr/bin/env sh
+      if [ -n "$SYMPP_FAKE_MIX_LOG" ]; then
+        printf '%s\\n' "$*" >> "$SYMPP_FAKE_MIX_LOG"
+      fi
       if [ "$1" = "--version" ]; then
         echo "Mix 1.99.0 test"
+        exit 0
+      fi
+      if [ "$1" = "deps.get" ]; then
+        if [ "$2" = "--check-locked" ]; then
+          exit 0
+        fi
+        exit 3
+      fi
+      if [ "$1" = "compile" ]; then
+        exit 0
+      fi
+      if [ "$1" = "sympp.mcp" ]; then
         exit 0
       fi
       echo "unexpected mix args: $*" >&2
