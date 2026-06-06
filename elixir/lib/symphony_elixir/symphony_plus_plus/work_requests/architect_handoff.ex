@@ -11,9 +11,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.{ArchitectHandoffClaimLease, ScopeConstraints, WorkRequest}
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
-  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints
-  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
   @eligible_statuses [
     "ready_for_clarification",
@@ -45,7 +44,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   @local_lock_owner_timeout_ms 1_000
   @local_lock_retry_delay_ms 10
   @local_lock_table :symphony_plus_plus_architect_handoff_locks
-  @type handoff_status :: :created | :replayed | :renewed
   @type error ::
           :database_busy
           | :forbidden
@@ -56,7 +54,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
           | :not_found
           | {:migration_failed, term()}
           | {:storage_failed, String.t()}
-          | Ecto.Changeset.t()
           | term()
 
   @spec capabilities() :: [String.t()]
@@ -787,12 +784,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       {:ok, handoff} ->
         {:ok, handoff}
 
-      {:error, reason} ->
-        {:error, reason}
+      {:error, _reason} = error ->
+        error
 
       :not_found ->
-        status = if architect_handoff_grants?(grants, phase, anchor), do: :renewed, else: :created
-        create_new_handoff(repo, work_request, phase, anchor, handoff_opts, status)
+        with :ok <- ArchitectHandoffClaimLease.require_no_fresh(repo, anchor.id, now) do
+          create_new_handoff(repo, work_request, phase, anchor, handoff_opts, grants)
+        end
     end
   end
 
@@ -941,7 +939,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   defp normalize_secret_cleanup_result({:error, reason}), do: {:error, reason}
   defp normalize_secret_cleanup_result(other), do: {:error, {:invalid_secret_handoff_cleanup_result, other}}
 
-  defp create_new_handoff(repo, %WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, handoff_opts, status) do
+  defp create_new_handoff(repo, %WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, handoff_opts, grants) do
+    status = if architect_handoff_grants?(grants, phase, anchor), do: :renewed, else: :created
+
     with {:ok, minted} <-
            AccessGrantService.mint_architect_grant(repo, phase.id,
              work_package_id: anchor.id,
