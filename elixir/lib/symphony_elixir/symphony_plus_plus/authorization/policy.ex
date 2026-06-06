@@ -196,7 +196,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Authorization.Policy do
   defp matching_scope(%Actor{scopes: scopes}, %Target{} = target, allowed_scope_types) do
     Enum.find(scopes, fn
       %Scope{type: type} = scope -> type in allowed_scope_types and scope_matches_target?(scope, target)
-      %Scope{} -> false
     end)
   end
 

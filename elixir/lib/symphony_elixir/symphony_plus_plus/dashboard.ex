@@ -2379,8 +2379,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
-  defp delivery_operational_state_payload(nil, _opts), do: nil
-
   defp delivery_operational_state_payload(%{} = operational_state, opts) do
     %{
       key: map_value(operational_state, "key"),
@@ -2400,8 +2398,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     |> maybe_put_delivery_work_package_status(operational_state, opts)
     |> maybe_redact_delivery_reasons(opts)
   end
-
-  defp delivery_operational_state_payload(_operational_state, _opts), do: nil
 
   defp delivery_activity_fields(%{} = operational_state) do
     @delivery_package_activity_fields

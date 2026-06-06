@@ -1943,7 +1943,6 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp can_create_work_request?(true, _grant), do: true
   defp can_create_work_request?(_operator_mode?, grant), do: can_create_work_request?(grant)
 
-  defp can_manage_work_request?(true, _grant), do: true
   defp can_manage_work_request?(_operator_mode?, %AccessGrant{}), do: true
   defp can_manage_work_request?(_operator_mode?, _grant), do: false
 

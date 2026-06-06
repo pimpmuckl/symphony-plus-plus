@@ -2558,10 +2558,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(%{"phase_id" => string_schema(), "update" => object_schema()}, ["phase_id", "update"])
   end
 
-  defp tool_specs_for_session(%Config{} = config, nil) do
-    {:ok, unbound_tool_specs(config)}
-  end
-
   defp tool_specs_for_session(%Config{repo: repo} = config, session) do
     with :ok <- prepare_mcp_repository(repo) do
       session
@@ -2591,8 +2587,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       local_architect_assignment_claim_tool_specs(config) ++
       [bootstrap_tool_spec("claim_private_handoff")]
   end
-
-  defp unbound_tool_specs(%Config{} = config), do: unbound_tool_specs_for_config(config)
 
   defp unbound_tool_specs(%__MODULE__{config: config}), do: unbound_tool_specs_for_config(config)
 
@@ -13150,8 +13144,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp merge_required?(%WorkPackage{} = work_package) do
     work_package.kind in ["hotfix", "adapter", "mcp", "skill", "hooks", "phase_child"]
   end
-
-  defp review_lanes_present?(_state, []), do: true
 
   defp review_lanes_present?(state, required_lanes) do
     if merge_required?(state.work_package) do

@@ -94,7 +94,7 @@ defmodule SymphonyElixir.MixProject do
       {:solid, "~> 1.2"},
       {:ecto, "~> 3.13"},
       {:ecto_sql, "~> 3.13"},
-      {:ecto_sqlite3, "~> 0.22.0"},
+      {:ecto_sqlite3, "~> 0.23.0"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
     ]

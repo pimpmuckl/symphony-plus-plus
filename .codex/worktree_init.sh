@@ -11,6 +11,7 @@ if ! command -v mise >/dev/null 2>&1; then
 fi
 
 cd "$project_root"
-mise trust
+mise trust -y
+mise install
 
-make setup
+mise exec -- make setup

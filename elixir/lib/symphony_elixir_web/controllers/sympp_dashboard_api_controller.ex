@@ -2183,8 +2183,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     retry_existing_phase_column_read(work_package_auth_fun)
   end
 
-  defp require_work_package_with_existing_repo(_auth_context, _work_package_id), do: {:error, :not_found}
-
   defp require_existing_work_package(repo, work_package_id) do
     case WorkPackageRepository.get(repo, work_package_id) do
       {:ok, _work_package} -> :ok

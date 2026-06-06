@@ -1367,8 +1367,6 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     Enum.filter(work_requests, &matches_work_request_filters?(&1, filters, visible_streams))
   end
 
-  defp filter_work_requests(_work_requests, _filters, _visible_streams), do: []
-
   defp filter_solo_sessions(solo_sessions, filters) when is_list(solo_sessions) do
     Enum.filter(solo_sessions, &(matches_filter?(Map.get(&1, :repo), filters.repo) and matches_filter?(Map.get(&1, :base_branch), filters.base_branch)))
   end
