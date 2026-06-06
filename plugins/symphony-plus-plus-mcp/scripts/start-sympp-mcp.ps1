@@ -36,6 +36,7 @@ function Write-Usage {
   Write-Host "  SYMPP_LOG_DIR                Optional background server log directory. Defaults under %USERPROFILE%\.agents\splusplus\logs."
   Write-Host "  SYMPP_BACKEND_STARTUP_TIMEOUT_SEC    Backend startup wait. Defaults to 60."
   Write-Host "  SYMPP_BACKEND_PORT_RELEASE_TIMEOUT_SEC  Preferred backend port stale-listener wait. Defaults to 15."
+  Write-Host "  SYMPP_ELIXIR_SETUP_TIMEOUT_SEC   Per-command Elixir setup wait. Defaults to 300."
   Write-Host "  SYMPP_FRONTEND_INSTALL_TIMEOUT_SEC   Dashboard npm install wait when dependencies are missing. Defaults to 180."
   Write-Host "  SYMPP_FRONTEND_STARTUP_TIMEOUT_SEC   Frontend startup wait. Defaults to 20."
   Write-Host "  SYMPP_MCP_HTTP_TIMEOUT_SEC           Per-request bridge timeout. Defaults to 300."
@@ -1469,6 +1470,40 @@ function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [
   }
 }
 
+function Invoke-ElixirSetupCommand([string]$ElixirDir, [string]$Launcher, [string]$MixCommand, [string]$MiseCommand, [string[]]$MixArgs, [string]$LogPrefix, [string]$LogDir, [int]$TimeoutSec) {
+  Assert-LauncherAvailable $Launcher $MixCommand $MiseCommand
+  $command = Get-LauncherCommand $Launcher $MixCommand $MiseCommand $MixArgs
+
+  $launch = Start-LoggedProcess $command.file $command.args $ElixirDir @{} $LogPrefix $LogDir
+  $completed = $false
+  try {
+    $completed = $launch.process.WaitForExit($TimeoutSec * 1000)
+    if (-not $completed) {
+      throw "Timed out after $TimeoutSec seconds."
+    }
+
+    if ($launch.process.ExitCode -ne 0) {
+      throw "Exited with code $($launch.process.ExitCode)."
+    }
+
+    return $launch
+  } catch {
+    if (-not $completed) {
+      Stop-LoggedProcess $launch
+    }
+
+    throw "$LogPrefix failed. detail=$($_.Exception.Message) stdout_log=$($launch.stdout) stderr_log=$($launch.stderr)"
+  }
+}
+
+function Initialize-ElixirRuntime([string]$ElixirDir, [string]$Launcher, [string]$MixCommand, [string]$MiseCommand, [string]$LogDir, [int]$TimeoutSec) {
+  Write-Diagnostic "Ensuring Symphony++ Elixir dependencies are available in $ElixirDir."
+  Invoke-ElixirSetupCommand $ElixirDir $Launcher $MixCommand $MiseCommand @("deps.get", "--check-locked") "elixir-deps" $LogDir $TimeoutSec
+
+  Write-Diagnostic "Compiling Symphony++ Elixir runtime in $ElixirDir."
+  Invoke-ElixirSetupCommand $ElixirDir $Launcher $MixCommand $MiseCommand @("compile") "elixir-compile" $LogDir $TimeoutSec
+}
+
 function Start-Backend($Plan, [string]$DashboardOrigin, [string]$ElixirDir, [string]$Launcher, [string]$MixCommand, [string]$MiseCommand, [string]$LogDir, [int]$TimeoutSec) {
   $args = @("sympp.cockpit", "--host", "127.0.0.1", "--port", [string]$Plan.port)
   if (-not [string]::IsNullOrWhiteSpace($DashboardOrigin)) {
@@ -1925,8 +1960,10 @@ if ($ValidateOnly) {
   exit 0
 }
 
+$elixirSetupTimeout = Get-EnvInteger "SYMPP_ELIXIR_SETUP_TIMEOUT_SEC" 300 1 1800
 $bridgeMode = Get-EnvMode "SYMPP_MCP_BRIDGE_MODE" "http" @("http", "direct_stdio")
 if ($bridgeMode -eq "direct_stdio") {
+  [void](Initialize-ElixirRuntime $elixirDir $launcher $mix $mise $logDir $elixirSetupTimeout)
   Invoke-DirectStdioMcp $repoRoot $elixirDir $launcher $mix $mise
   exit 0
 }
@@ -1943,6 +1980,7 @@ $frontendTimeout = Get-EnvInteger "SYMPP_FRONTEND_STARTUP_TIMEOUT_SEC" 20 1 600
 $bridgeTimeout = Get-EnvInteger "SYMPP_MCP_HTTP_TIMEOUT_SEC" 300 1 3600
 $startupLockMinimum = 30
 if ($autostartBackend) {
+  $startupLockMinimum += ($elixirSetupTimeout * 2)
   $startupLockMinimum += $backendTimeout
   $startupLockMinimum += $backendPortReleaseTimeout
 }
@@ -1999,6 +2037,7 @@ try {
   $supersededState = Stop-SupersededManagedServersIfUnused $runtimeFile $supersededState
 
   if ($backendPlan.should_start) {
+    [void](Initialize-ElixirRuntime $elixirDir $launcher $mix $mise $logDir $elixirSetupTimeout)
     $backendLaunch = Start-Backend $backendPlan $dashboardPlan.origin $elixirDir $launcher $mix $mise $logDir $backendTimeout
     $backendPlan.status = "started"
     $backendPlan.pid = $backendLaunch.pid
