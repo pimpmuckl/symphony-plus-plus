@@ -83,6 +83,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Stdio do
   end
 
   defp emit_response(nil), do: :ok
+  defp emit_response([]), do: :ok
 
   defp emit_response(response) do
     IO.write(Jason.encode!(response))
