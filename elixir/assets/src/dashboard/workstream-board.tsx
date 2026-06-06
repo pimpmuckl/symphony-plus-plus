@@ -13,7 +13,7 @@ import { finishedRequestChildrenStorageKey, sortPackages, sortPlannedSlices, sor
 import { activeBlockerEntityCounts, productTreeCounts, requestProgress, rootProductSliceIds } from "./workstream-progress";
 import { productNodeState, rowProgressAttentionState, rowProgressIconState, sliceBlockerCount, sliceGuidanceCount } from "./workstream-row-state";
 import { EntityCountChips, EntityKindSlot, ProductNodeHeader, ProgressPill, ProgressStateIcon, RequestHeaderActions, RowBadgeSlot, SliceKindSlot } from "./workstream-row-ui";
-import { openBlockersForSlices, openGuidanceForSlice, openGuidanceForSlices, productNodeSubtreeSlices, requestGuidanceItem } from "./workstream-board-actions";
+import { openBlockersForRequest, openBlockersForSlices, openGuidanceForSlice, openGuidanceForSlices, productNodeSubtreeSlices, requestGuidanceItem } from "./workstream-board-actions";
 import { requestUpdateKey, sliceUpdateKey } from "./update-animations";
 import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
 import { UnlinkedExecutionSection } from "./workstream-unlinked-section";
@@ -81,6 +81,7 @@ export function WorkstreamBoard({
               detail={detail}
               packageById={packageById}
               activeBlockerCount={blockerCounts.requests.get(detail.work_request.id) ?? 0}
+              activeBlockingEdges={activeBlockingEdges}
               activeBlockerCountBySliceId={blockerCounts.slices}
               activeBlockerKeysBySliceId={blockerCounts.sliceBlockerKeys}
               guidanceItems={guidanceItems}
@@ -106,6 +107,7 @@ function ProductRequestRow({
   detail,
   packageById,
   activeBlockerCount,
+  activeBlockingEdges,
   activeBlockerCountBySliceId,
   activeBlockerKeysBySliceId,
   guidanceItems,
@@ -120,6 +122,7 @@ function ProductRequestRow({
   detail: WorkRequestDetail;
   packageById: Map<string, WorkPackageCard>;
   activeBlockerCount: number;
+  activeBlockingEdges: ActiveBlockingEdge[];
   activeBlockerCountBySliceId: Map<string, number>;
   activeBlockerKeysBySliceId: Map<string, Set<string>>;
   guidanceItems: GuidanceItem[];
@@ -145,7 +148,7 @@ function ProductRequestRow({
 
     onSelectCard({ kind: "request", detail });
   };
-  const openBlockers = () => openBlockersForSlices(detail, slices, packageById, activeBlockerCountBySliceId, onSelectCard);
+  const openBlockers = () => openBlockersForRequest(detail, slices, packageById, activeBlockerCountBySliceId, activeBlockingEdges, onSelectCard);
   const tone = requestStateCardTone(detail);
   const requestLabel = operationalLabel(request.operational_state, request.status);
   const rowStyle = {
