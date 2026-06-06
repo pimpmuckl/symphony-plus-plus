@@ -33,6 +33,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
     assert payload["launch_prompt"] =~ "claim_local_architect_assignment"
     assert payload["launch_prompt"] =~ "Reference identifiers (TOON)"
     assert payload["launch_prompt"] =~ "agent_context: architect_handoff_reference"
+    assert payload["launch_prompt"] =~ "Do not create a plan node solely to wrap one slice."
     assert get_in(payload, ["architect_handoff", "agent_context"]) =~ "agent_context: architect_handoff_reference"
 
     content_text = get_in(response, ["result", "content", Access.at(0), "text"])

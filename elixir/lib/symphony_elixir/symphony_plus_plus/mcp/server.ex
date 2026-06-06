@@ -1722,7 +1722,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_description("upsert_work_request_product_plan_node") do
-    "Create, update, or reparent a V3 product plan node inside a scoped WorkRequest."
+    "Create, update, or reparent a V3 product plan node inside a scoped WorkRequest. Do not create a plan node solely to wrap one slice. Leave simple slices direct unless the node groups multiple units or records a real product boundary."
   end
 
   defp architect_tool_description("move_work_request_planned_slice_to_product_node") do
