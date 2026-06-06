@@ -149,34 +149,38 @@ defmodule SymphonyElixir.ExtensionsTest do
     write_workflow_file!(manual_path, prompt: "Manual workflow prompt")
     Workflow.set_workflow_file_path(manual_path)
 
-    assert {:ok, manual_pid} = WorkflowStore.start_link()
+    assert {:ok, manual_pid} = WorkflowStore.start_link(poll_interval_ms: 1)
     assert Process.alive?(manual_pid)
 
     state = :sys.get_state(manual_pid)
+    assert :ok = GenServer.stop(manual_pid, :normal)
+
     File.write!(manual_path, "---\ntracker: [\n---\nBroken prompt\n")
     assert {:noreply, returned_state} = WorkflowStore.handle_info(:poll, state)
+    assert_receive :poll, 50
     assert returned_state.workflow.prompt == "Manual workflow prompt"
     refute returned_state.stamp == nil
-    assert_receive :poll, 1_100
 
     Workflow.set_workflow_file_path(missing_path)
     assert {:noreply, path_error_state} = WorkflowStore.handle_info(:poll, returned_state)
+    assert_receive :poll, 50
     assert path_error_state.workflow.prompt == "Manual workflow prompt"
-    assert_receive :poll, 1_100
 
     Workflow.set_workflow_file_path(manual_path)
     File.rm!(manual_path)
     assert {:noreply, removed_state} = WorkflowStore.handle_info(:poll, path_error_state)
+    assert_receive :poll, 50
     assert removed_state.workflow.prompt == "Manual workflow prompt"
-    assert_receive :poll, 1_100
 
-    Process.exit(manual_pid, :normal)
+    Workflow.set_workflow_file_path(existing_path)
+
     restart_result = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
 
     assert match?({:ok, _pid}, restart_result) or
-             match?({:error, {:already_started, _pid}}, restart_result)
+             match?({:ok, _pid, _info}, restart_result) or
+             match?({:error, {:already_started, _pid}}, restart_result),
+           "unexpected restart result: #{inspect(restart_result)}"
 
-    Workflow.set_workflow_file_path(existing_path)
     WorkflowStore.force_reload()
   end
 
