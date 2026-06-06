@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloTools do
   @moduledoc false
 
+  alias SymphonyElixir.SymphonyPlusPlus.AgentFormat.WorkerContext
   alias SymphonyElixir.SymphonyPlusPlus.MCP.Config
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository, as: SoloSessionRepository
@@ -260,7 +261,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloTools do
 
   defp tool_result(payload) do
     %{
-      "content" => [%{"type" => "text", "text" => Jason.encode!(payload)}],
+      "content" => [%{"type" => "text", "text" => WorkerContext.encode_tool_payload(payload)}],
       "structuredContent" => payload,
       "isError" => false
     }
