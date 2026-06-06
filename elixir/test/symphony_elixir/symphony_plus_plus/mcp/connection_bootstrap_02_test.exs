@@ -206,6 +206,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     assert get_in(unclaimed_progress_response, ["error", "data", "reason"]) == "claim_required"
     assert get_in(unclaimed_progress_response, ["error", "data", "action"]) == "claim_local_assignment"
 
+    health_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "health-toon", "method" => "tools/call", "params" => %{"name" => "sympp.health", "arguments" => %{}}},
+        unbound_server
+      )
+
+    health_text = assert_toon_tool_text!(health_response)
+    assert health_text =~ "status:"
+    assert health_text =~ "ledger:"
+    assert get_in(health_response, ["result", "structuredContent", "ledger", "reachable"]) in [true, false]
+
     claim_package = create_local_claim_package!(repo, "SYMPP-UNBOUND-CLAIM-CALL")
     assert {:ok, _claim_minted} = AccessGrantService.mint_worker_grant(repo, claim_package.id)
 
@@ -221,6 +232,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
       )
 
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-UNBOUND-CLAIM-CALL"
+    claim_text = assert_toon_tool_text!(claim_response)
+    assert claim_text =~ "assignment:"
+    assert claim_text =~ "work_package_id: SYMPP-UNBOUND-CLAIM-CALL"
+    refute claim_text =~ ~s("assignment")
 
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-TOOLS-LIST", kind: "mcp"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)

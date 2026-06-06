@@ -122,6 +122,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools03Test do
 
     assert get_in(response, ["result", "structuredContent", "planned_slice", "status"]) == "approved"
     assert get_in(response, ["result", "structuredContent", "work_request", "id"]) == work_request.id
+    text = assert_toon_tool_text!(response)
+    assert text =~ "planned_slice:"
+    assert text =~ "planned_slice_status: approved"
 
     assert {:ok, persisted_slice} = WorkRequestRepository.get_planned_slice(repo, work_request.id, planned_slice.id)
     assert persisted_slice.status == "approved"

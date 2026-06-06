@@ -136,6 +136,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase.CommonHelpers do
     response
   end
 
+  def tool_result_text(response) do
+    get_in(response, ["result", "content", Access.at(0), "text"])
+  end
+
+  def assert_toon_tool_text!(response) do
+    text = tool_result_text(response)
+    assert is_binary(text)
+    assert text != ""
+    refute String.starts_with?(String.trim_leading(text), "{")
+    assert {:error, _reason} = Jason.decode(text)
+    text
+  end
+
   def append_child_merge_progress_event(repo, %Session{} = session, child_id, merge_artifact) do
     payload = child_merge_payload(child_id, merge_artifact)
 

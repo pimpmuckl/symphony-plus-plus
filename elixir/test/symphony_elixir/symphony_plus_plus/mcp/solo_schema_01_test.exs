@@ -142,6 +142,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
       })
 
     assert get_in(attach_response, ["result", "structuredContent", "action"]) == "solo_attach"
+    attach_text = assert_toon_tool_text!(attach_response)
+    assert attach_text =~ "action: solo_attach"
+    assert attach_text =~ "solo_session:"
+    refute attach_text =~ ~s("solo_session")
+
     session = get_in(attach_response, ["result", "structuredContent", "solo_session"])
     assert session["id"] =~ "solo_"
     assert session["session_key"] =~ "solo_key_"
@@ -159,6 +164,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
 
     append_response = mcp_tool(repo, nil, "solo_append", append_args)
     entry = get_in(append_response, ["result", "structuredContent", "entry"])
+    append_text = assert_toon_tool_text!(append_response)
+    assert append_text =~ "action: solo_append"
+    assert append_text =~ "[REDACTED]"
+    refute append_text =~ "ghp_abcdefgh"
+
     assert entry["entry_kind"] == "progress"
     assert entry["title"] == "Use [REDACTED]"
     assert entry["body"] == "Body [REDACTED]"
@@ -171,6 +181,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     assert replay_entry["title"] == entry["title"]
 
     show_response = mcp_tool(repo, nil, "solo_show", %{"session_id" => session["id"]})
+    show_text = assert_toon_tool_text!(show_response)
+    assert show_text =~ "action: solo_show"
+    assert show_text =~ "entries_returned: 1"
     assert get_in(show_response, ["result", "structuredContent", "solo_session", "id"]) == session["id"]
     assert [shown_entry] = get_in(show_response, ["result", "structuredContent", "entries"])
     assert shown_entry["id"] == entry["id"]
@@ -185,6 +198,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
       })
 
     assert get_in(list_response, ["result", "structuredContent", "solo_sessions"]) |> Enum.map(& &1["id"]) == [session["id"]]
+    list_text = assert_toon_tool_text!(list_response)
+    assert list_text =~ "action: solo_list"
+    assert list_text =~ "solo_sessions[1]"
   end
 
   test "Solo MCP lifecycle updates follow the Solo Session service contract", %{repo: repo} do

@@ -892,12 +892,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       arguments when arguments == %{} ->
         result = health(server)
 
-        {:ok,
-         %{
-           "content" => [%{"type" => "text", "text" => Jason.encode!(result)}],
-           "structuredContent" => result,
-           "isError" => false
-         }}
+        {:ok, tool_result(result)}
 
       _arguments ->
         {:error, -32_602, "Invalid params", %{"tool" => @health_tool, "reason" => "invalid_tool_arguments"}}
@@ -14104,7 +14099,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp tool_result(payload) do
     %{
-      "content" => [%{"type" => "text", "text" => Jason.encode!(payload)}],
+      "content" => [%{"type" => "text", "text" => WorkerContext.encode_tool_payload(payload)}],
       "structuredContent" => payload,
       "isError" => false
     }
