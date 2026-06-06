@@ -478,6 +478,7 @@ function useDashboardController() {
           hiddenRepoCount={hiddenWorkstreamCount}
           requestDetailsByRepo={requestDetailsByRepo}
           activeBlockingEdges={dashboard?.active_blocking_edges ?? []}
+          guidanceItems={guidanceItems}
           onSelectGuidance={setSelectedGuidance}
           onSelectCard={setSelectedCardDetail}
           onCopyArchitectHandoff={copyArchitectHandoff}
@@ -489,6 +490,7 @@ function useDashboardController() {
     [
       copyArchitectHandoff,
       dashboard?.active_blocking_edges,
+      guidanceItems,
       hiddenWorkstreamCount,
       requestDetailsByRepo,
       setSelectedCardDetail,

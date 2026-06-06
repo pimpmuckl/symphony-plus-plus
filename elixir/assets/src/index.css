@@ -1631,6 +1631,7 @@
 
   .v3-signal-chip {
     display: inline-flex;
+    appearance: none;
     width: var(--v3-row-count-chip-width);
     min-width: var(--v3-row-count-chip-width);
     min-height: 1.75rem;
@@ -1645,6 +1646,26 @@
     font-size: 0.75rem;
     font-weight: 700;
     line-height: 1;
+  }
+
+  .v3-signal-chip-button {
+    cursor: pointer;
+    transition:
+      border-color 160ms ease,
+      background-color 160ms ease,
+      color 160ms ease,
+      transform 160ms ease;
+  }
+
+  .v3-signal-chip-button:hover {
+    border-color: hsl(var(--primary) / 0.55);
+    background: hsl(var(--primary) / 0.08);
+    color: hsl(var(--primary));
+  }
+
+  .v3-signal-chip-button:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
   }
 
   .v3-request-summary .v3-signal-chip {

@@ -23,6 +23,7 @@ export function WorkstreamsPane({
   hiddenRepoCount,
   requestDetailsByRepo,
   activeBlockingEdges,
+  guidanceItems,
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
@@ -32,6 +33,7 @@ export function WorkstreamsPane({
   hiddenRepoCount: number;
   requestDetailsByRepo: Map<string, WorkRequestDetail[]>;
   activeBlockingEdges: ActiveBlockingEdge[];
+  guidanceItems: GuidanceItem[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
@@ -75,6 +77,7 @@ export function WorkstreamsPane({
           repo={repo}
           requestDetailsByRepo={requestDetailsByRepo}
           activeBlockingEdges={activeBlockingEdges}
+          guidanceItems={guidanceItems}
           onSelectGuidance={onSelectGuidance}
           onSelectCard={onSelectCard}
           onCopyArchitectHandoff={onCopyArchitectHandoff}

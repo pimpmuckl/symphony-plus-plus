@@ -1,6 +1,7 @@
 import { Archive, CheckCircle2, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DetailCopyButton } from "@/components/dashboard/detail-copy-button";
 import { DetailDisclosure, DetailFacts, DetailHeader, DetailList, DetailSection, DetailStatGrid } from "@/components/dashboard/detail-layout";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MarkdownBlock } from "@/components/dashboard/markdown-block";
@@ -14,6 +15,7 @@ import { useCallback, useReducer } from "react";
 import { COMMENT_BODY_MAX_LENGTH, CardDetailSelection, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageStateAction, WorkPackageStateMutation } from "./runtime";
 import { CommentsPanel, useSyncedComments } from "./comments-panel";
 import { DangerousStateConfirmationDialog } from "./request-detail";
+import { packageBlockerCopyText } from "./detail-copy";
 import { DetailActivityList, DetailAttentionList, LineageDisclosure, RecentDecisionsDisclosure } from "./detail-extras";
 import { activeAlertLabels, commentStatLabel, detailDate, latestPackageProgress, lineageHasSignal, packageOperationalFallbackText, packageRuntimeText, planSummaryText, sliceDeliveryFacts, sliceDeliverySummary, sliceProgressText, targetCommentStats } from "./detail-utils";
 import { initialPackageDetailUiState, packageDetailUiReducer } from "./dashboard-state";
@@ -177,6 +179,16 @@ export function PackageDetailContent({
   const purposeMarkdown = packagePurposeMarkdown(pkg);
   const attentionItems = operational?.attention_items || [];
   const blockerCount = packageBlockerCount(blockers.length, summary, pkg, operational);
+  const blockerCopyText = blockerCount > 0
+    ? packageBlockerCopyText({
+        blockerCount,
+        blockers,
+        operationalTruth: operational?.reason || packageOperationalFallbackText(pkg),
+        pkg,
+        repo: repoDisplayName(pkg),
+        state: operationalLabel(operational, pkg.status),
+      })
+    : "";
   const currentCommentStats = targetCommentStats(summary || pkg, detailPayload?.comments || [], packageComments);
   const canMarkMerged = !isFinishedBoardStatus(operational?.key || pkg.status);
   const isLinkedPackage = linkedWorkPackageIds.has(pkg.id);
@@ -241,6 +253,7 @@ export function PackageDetailContent({
         title={pkg.title || pkg.id}
         eyebrow={`${repoDisplayName(pkg)} / ${pkg.base_branch || "main"} / ${pkg.kind || "work package"}`}
         badge={<Badge variant={operationalBadgeVariant(operational, pkg.status)}>{operationalLabel(operational, pkg.status)}</Badge>}
+        action={blockerCopyText ? <DetailCopyButton label="Copy blocker details" text={blockerCopyText} /> : null}
       />
       <div className="detail-modal-reveal-body grid gap-4">
         <DetailStatGrid

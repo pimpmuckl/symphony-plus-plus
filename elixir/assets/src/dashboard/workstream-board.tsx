@@ -1,8 +1,7 @@
 import type { ActiveBlockingEdge, CopyArchitectHandoff, GuidanceItem, PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
 import type { ProductTreeNode } from "@/types/product-tree";
-import { AlertTriangle, ChevronRight, CircleDashed, GitBranch, Layers3, MessageSquareText, Package, Split } from "lucide-react";
+import { AlertTriangle, ChevronRight, CircleDashed, GitBranch, Layers3, MessageSquareText, Split } from "lucide-react";
 import type { CSSProperties } from "react";
-import { AnimatedBadge } from "@/components/dashboard/motion";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { operationalBadgeVariant, operationalLabel, requestStateCardTone, sliceCardTone, sliceLane, sliceOperationalState } from "@/lib/operational-state";
@@ -14,8 +13,10 @@ import { finishedRequestChildrenStorageKey, sortPackages, sortPlannedSlices, sor
 import { activeBlockerEntityCounts, productTreeCounts, requestProgress, rootProductSliceIds } from "./workstream-progress";
 import { productNodeState, rowProgressAttentionState, rowProgressIconState, sliceBlockerCount, sliceGuidanceCount } from "./workstream-row-state";
 import { EntityCountChips, EntityKindSlot, ProductNodeHeader, ProgressPill, ProgressStateIcon, RequestHeaderActions, RowBadgeSlot, SliceKindSlot } from "./workstream-row-ui";
-import { packageUpdateKey, requestUpdateKey, sliceUpdateKey } from "./update-animations";
+import { openBlockersForRequest, openBlockersForSlices, openGuidanceForSlice, openGuidanceForSlices, productNodeSubtreeSlices, requestGuidanceItem } from "./workstream-board-actions";
+import { requestUpdateKey, sliceUpdateKey } from "./update-animations";
 import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
+import { UnlinkedExecutionSection } from "./workstream-unlinked-section";
 
 type TreeIndex = {
   childrenByParent: Map<string, ProductTreeNode[]>;
@@ -29,7 +30,9 @@ type ProductTreeRenderContext = {
   packageById: Map<string, WorkPackageCard>;
   activeBlockerCountBySliceId: Map<string, number>;
   activeBlockerKeysBySliceId: Map<string, Set<string>>;
+  guidanceItems: GuidanceItem[];
   onSelectCard: CardDetailSelect;
+  onSelectGuidance: (item: GuidanceItem) => void;
   updateAnimations: DashboardUpdateAnimations;
 };
 
@@ -38,6 +41,7 @@ export function WorkstreamBoard({
   packages,
   unlinkedPackages,
   activeBlockingEdges,
+  guidanceItems,
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
@@ -50,6 +54,7 @@ export function WorkstreamBoard({
   packages: WorkPackageCard[];
   unlinkedPackages: WorkPackageCard[];
   activeBlockingEdges: ActiveBlockingEdge[];
+  guidanceItems: GuidanceItem[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
@@ -76,8 +81,10 @@ export function WorkstreamBoard({
               detail={detail}
               packageById={packageById}
               activeBlockerCount={blockerCounts.requests.get(detail.work_request.id) ?? 0}
+              activeBlockingEdges={activeBlockingEdges}
               activeBlockerCountBySliceId={blockerCounts.slices}
               activeBlockerKeysBySliceId={blockerCounts.sliceBlockerKeys}
+              guidanceItems={guidanceItems}
               expanded={expanded}
               index={index}
               onToggle={() => onSetFinishedRequestChildrenOpen(detail.work_request.id, !expanded)}
@@ -100,8 +107,10 @@ function ProductRequestRow({
   detail,
   packageById,
   activeBlockerCount,
+  activeBlockingEdges,
   activeBlockerCountBySliceId,
   activeBlockerKeysBySliceId,
+  guidanceItems,
   expanded,
   index,
   onToggle,
@@ -113,8 +122,10 @@ function ProductRequestRow({
   detail: WorkRequestDetail;
   packageById: Map<string, WorkPackageCard>;
   activeBlockerCount: number;
+  activeBlockingEdges: ActiveBlockingEdge[];
   activeBlockerCountBySliceId: Map<string, number>;
   activeBlockerKeysBySliceId: Map<string, Set<string>>;
+  guidanceItems: GuidanceItem[];
   expanded: boolean;
   index: number;
   onToggle: () => void;
@@ -128,6 +139,16 @@ function ProductRequestRow({
   const progress = requestProgress(detail, packageById);
   const counts = productTreeCounts(detail, activeBlockerCount);
   const openQuestion = detail.clarification_questions?.find((question) => question.status === "open");
+  const openGuidance = () => {
+    const item = requestGuidanceItem(detail, guidanceItems) ?? (openQuestion ? clarificationGuidanceItem(detail, openQuestion) : null);
+    if (item) {
+      onSelectGuidance(item);
+      return;
+    }
+
+    onSelectCard({ kind: "request", detail });
+  };
+  const openBlockers = () => openBlockersForRequest(detail, slices, packageById, activeBlockerCountBySliceId, activeBlockingEdges, onSelectCard);
   const tone = requestStateCardTone(detail);
   const requestLabel = operationalLabel(request.operational_state, request.status);
   const rowStyle = {
@@ -165,7 +186,7 @@ function ProductRequestRow({
             </span>
           </span>
         </button>
-        <RequestProgressSummary counts={counts} />
+        <RequestProgressSummary counts={counts} onOpenGuidance={openGuidance} onOpenBlockers={openBlockers} />
         <span className="v3-row-status">
           <ProgressPill progress={progress} />
           <RowBadgeSlot label={requestLabel} variant={operationalBadgeVariant(request.operational_state, request.status)} />
@@ -185,6 +206,8 @@ function ProductRequestRow({
             slices={slices}
             activeBlockerCountBySliceId={activeBlockerCountBySliceId}
             activeBlockerKeysBySliceId={activeBlockerKeysBySliceId}
+            guidanceItems={guidanceItems}
+            onSelectGuidance={onSelectGuidance}
             onSelectCard={onSelectCard}
             updateAnimations={updateAnimations}
           />
@@ -194,15 +217,23 @@ function ProductRequestRow({
   );
 }
 
-function RequestProgressSummary({ counts }: { counts: ReturnType<typeof productTreeCounts> }) {
+function RequestProgressSummary({
+  counts,
+  onOpenGuidance,
+  onOpenBlockers,
+}: {
+  counts: ReturnType<typeof productTreeCounts>;
+  onOpenGuidance: () => void;
+  onOpenBlockers: () => void;
+}) {
   return (
     <EntityCountChips
       className="v3-request-summary"
       items={[
         { key: "nodes", icon: <Layers3 className="size-3.5" />, count: counts.nodeCount, label: "plan nodes", showZero: true },
         { key: "slices", icon: <Split className="size-3.5" />, count: counts.sliceCount, label: "slices", showZero: true },
-        { key: "guidance", icon: <MessageSquareText className="size-3.5" />, count: counts.guidanceCount, label: "guidance needed", tone: "guidance", showZero: true },
-        { key: "blockers", icon: <AlertTriangle className="size-3.5" />, count: counts.blockerCount, label: "active blockers", tone: "blocker", showZero: true },
+        { key: "guidance", icon: <MessageSquareText className="size-3.5" />, count: counts.guidanceCount, label: "guidance needed", onClick: counts.guidanceCount > 0 ? onOpenGuidance : undefined, tone: "guidance", showZero: true },
+        { key: "blockers", icon: <AlertTriangle className="size-3.5" />, count: counts.blockerCount, label: "active blockers", onClick: counts.blockerCount > 0 ? onOpenBlockers : undefined, tone: "blocker", showZero: true },
       ]}
     />
   );
@@ -245,6 +276,8 @@ function ProductPlanBody({
   detail,
   packageById,
   slices,
+  guidanceItems,
+  onSelectGuidance,
   onSelectCard,
   updateAnimations,
   activeBlockerCountBySliceId,
@@ -253,6 +286,8 @@ function ProductPlanBody({
   detail: WorkRequestDetail;
   packageById: Map<string, WorkPackageCard>;
   slices: PlannedSlice[];
+  guidanceItems: GuidanceItem[];
+  onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
   activeBlockerCountBySliceId: Map<string, number>;
@@ -269,7 +304,9 @@ function ProductPlanBody({
     packageById,
     activeBlockerCountBySliceId,
     activeBlockerKeysBySliceId,
+    guidanceItems,
     onSelectCard,
+    onSelectGuidance,
     updateAnimations,
   };
 
@@ -293,6 +330,8 @@ function ProductPlanBody({
         slicesById={slicesById}
         packageById={packageById}
         activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+        guidanceItems={guidanceItems}
+        onSelectGuidance={onSelectGuidance}
         onSelectCard={onSelectCard}
         updateAnimations={updateAnimations}
       />
@@ -319,13 +358,16 @@ function ProductTreeNodeRow({
   depth: number;
   context: ProductTreeRenderContext;
 }) {
-  const { activeBlockerCountBySliceId, activeBlockerKeysBySliceId, treeIndex, slicesById } = context;
+  const { activeBlockerCountBySliceId, activeBlockerKeysBySliceId, detail, guidanceItems, onSelectCard, onSelectGuidance, packageById, treeIndex, slicesById } = context;
   const childNodes = treeIndex.childrenByParent.get(node.id) ?? [];
   const nodeSlices = (node.slice_ids ?? []).map((sliceId) => slicesById.get(sliceId)).filter((slice): slice is PlannedSlice => Boolean(slice));
+  const nodeSubtreeSlices = productNodeSubtreeSlices(node, treeIndex, slicesById);
   const nodeState = productNodeState(node, nodeSlices.length, treeIndex, activeBlockerCountBySliceId, activeBlockerKeysBySliceId);
   const contentId = useId();
   const hasDisclosureContent = productNodeHasDisclosureContent(node, nodeSlices, childNodes);
   const [expanded, setExpanded] = useState(true);
+  const openGuidance = () => openGuidanceForSlices(detail, nodeSubtreeSlices, packageById, guidanceItems, onSelectGuidance, onSelectCard);
+  const openBlockers = () => openBlockersForSlices(detail, nodeSubtreeSlices, packageById, activeBlockerCountBySliceId, onSelectCard);
 
   return (
     <div className="v3-product-node" style={{ "--tree-depth": depth } as CSSProperties} data-mark={nodeState.mark} data-tone={nodeState.tone}>
@@ -341,6 +383,8 @@ function ProductTreeNodeRow({
         collapsible={hasDisclosureContent}
         expanded={expanded}
         contentId={hasDisclosureContent ? contentId : undefined}
+        onOpenGuidance={openGuidance}
+        onOpenBlockers={openBlockers}
         onToggle={() => setExpanded((open) => !open)}
       />
       {hasDisclosureContent ? (
@@ -379,7 +423,7 @@ function ProductTreeNodeContent({
   depth: number;
   context: ProductTreeRenderContext;
 }) {
-  const { activeBlockerCountBySliceId, detail, packageById, onSelectCard, updateAnimations } = context;
+  const { activeBlockerCountBySliceId, detail, guidanceItems, packageById, onSelectCard, onSelectGuidance, updateAnimations } = context;
 
   return (
     <div id={contentId} className="v3-product-node-content" hidden={hidden}>
@@ -393,6 +437,8 @@ function ProductTreeNodeContent({
               slice={slice}
               pkg={packageById.get(slice.work_package_id || "")}
               activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+              guidanceItems={guidanceItems}
+              onSelectGuidance={onSelectGuidance}
               onSelectCard={onSelectCard}
               updateAnimations={updateAnimations}
             />
@@ -421,6 +467,8 @@ function DirectSliceGroup({
   slicesById,
   packageById,
   activeBlockerCountBySliceId,
+  guidanceItems,
+  onSelectGuidance,
   onSelectCard,
   updateAnimations,
 }: {
@@ -429,6 +477,8 @@ function DirectSliceGroup({
   slicesById: Map<string, PlannedSlice>;
   packageById: Map<string, WorkPackageCard>;
   activeBlockerCountBySliceId: Map<string, number>;
+  guidanceItems: GuidanceItem[];
+  onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
 }) {
@@ -444,6 +494,8 @@ function DirectSliceGroup({
           slice={slice}
           pkg={packageById.get(slice.work_package_id || "")}
           activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+          guidanceItems={guidanceItems}
+          onSelectGuidance={onSelectGuidance}
           onSelectCard={onSelectCard}
           updateAnimations={updateAnimations}
         />
@@ -457,6 +509,8 @@ function ProductSliceRow({
   slice,
   pkg,
   activeBlockerCountBySliceId,
+  guidanceItems,
+  onSelectGuidance,
   onSelectCard,
   updateAnimations,
 }: {
@@ -464,6 +518,8 @@ function ProductSliceRow({
   slice: PlannedSlice;
   pkg?: WorkPackageCard;
   activeBlockerCountBySliceId: Map<string, number>;
+  guidanceItems: GuidanceItem[];
+  onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
 }) {
@@ -478,6 +534,8 @@ function ProductSliceRow({
   const progressIconState = rowProgressIconState({ blockerCount, guidanceCount, progress, tone });
   const progressAttentionState = rowProgressAttentionState({ blockerCount, guidanceCount, tone });
   const openSliceDetail = () => onSelectCard({ kind: "slice", detail, slice, pkg });
+  const openGuidance = () => openGuidanceForSlice(detail, slice, pkg, guidanceItems, onSelectGuidance, onSelectCard);
+  const openBlockers = () => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice, pkg });
 
   return (
     <div
@@ -492,8 +550,8 @@ function ProductSliceRow({
       <EntityCountChips
         reserveEmpty
         items={[
-          { key: "guidance", icon: <MessageSquareText className="size-3.5" />, count: guidanceCount, label: "guidance needed", tone: "guidance" },
-          { key: "blockers", icon: <AlertTriangle className="size-3.5" />, count: blockerCount, label: "active blockers", tone: "blocker" },
+          { key: "guidance", icon: <MessageSquareText className="size-3.5" />, count: guidanceCount, label: "guidance needed", onClick: guidanceCount > 0 ? openGuidance : undefined, tone: "guidance" },
+          { key: "blockers", icon: <AlertTriangle className="size-3.5" />, count: blockerCount, label: "active blockers", onClick: blockerCount > 0 ? openBlockers : undefined, tone: "blocker" },
         ]}
       />
       <span className="v3-row-status v3-slice-status">
@@ -511,64 +569,6 @@ function sliceProgressPercent(pkg: WorkPackageCard | undefined, lane: ReturnType
   if (lane === "finished" || tone === "finished") return 100;
   if (lane === "implementing" || ["implementing", "review", "merge"].includes(tone)) return 50;
   return 0;
-}
-
-function UnlinkedExecutionSection({
-  packages,
-  onSelectCard,
-  updateAnimations,
-}: {
-  packages: WorkPackageCard[];
-  onSelectCard: CardDetailSelect;
-  updateAnimations: DashboardUpdateAnimations;
-}) {
-  return (
-    <section className="v3-unlinked-execution-section">
-      <div className="v3-unlinked-execution-header">
-        <span><Package className="size-4" />Execution records</span>
-        <span>{packages.length}</span>
-      </div>
-      <div className="v3-unlinked-execution-list">
-        {packages.map((pkg) => (
-          <UnlinkedPackageRow key={pkg.id} pkg={pkg} onSelectCard={onSelectCard} updateAnimations={updateAnimations} />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function UnlinkedPackageRow({
-  pkg,
-  onSelectCard,
-  updateAnimations,
-}: {
-  pkg: WorkPackageCard;
-  onSelectCard: CardDetailSelect;
-  updateAnimations: DashboardUpdateAnimations;
-}) {
-  const operational = pkg.operational_state || null;
-
-  return (
-    <button
-      type="button"
-      className="v3-unlinked-package-row stagger-item"
-      onClick={() => onSelectCard({ kind: "package", pkg })}
-      {...updateMotionAttributes(updateAnimations.motionFor(packageUpdateKey(pkg)))}
-    >
-      <span className="v3-unlinked-package-title-group">
-        <span className="v3-unlinked-package-title">
-          <Package className="size-4" />
-          <span>{pkg.title || pkg.id}</span>
-        </span>
-        <span className="v3-request-meta">
-          <GitBranch className="size-3.5" />
-          <span>{pkg.repo_display || pkg.repo || "repo"}</span>
-          <span>{pkg.base_branch || "main"}</span>
-        </span>
-      </span>
-      <AnimatedBadge label={operationalLabel(operational, pkg.status)} variant={operationalBadgeVariant(operational, pkg.status)} />
-    </button>
-  );
 }
 
 function buildTreeIndex(nodes: ProductTreeNode[], rootNodeIds: string[]): TreeIndex {
