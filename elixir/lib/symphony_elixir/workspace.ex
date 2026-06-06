@@ -138,8 +138,9 @@ defmodule SymphonyElixir.Workspace do
   def remove_issue_workspaces(identifier, worker_host) when is_binary(identifier) and is_binary(worker_host) do
     safe_id = safe_identifier(identifier)
 
-    {:ok, workspace} = workspace_path_for_issue(safe_id, worker_host)
-    remove(workspace, worker_host)
+    with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host) do
+      remove(workspace, worker_host)
+    end
 
     :ok
   end

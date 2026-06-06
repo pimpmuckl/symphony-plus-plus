@@ -281,7 +281,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.Toon do
   defp primitive?(_value), do: false
 
   defp reject_ambiguous_printable_integer_list!(list) do
-    if List.ascii_printable?(list) do
+    if list != [] and List.ascii_printable?(list) do
       raise ArgumentError, "TOON cannot distinguish printable integer arrays from charlists; use compact JSON for this shape or convert text to binary strings"
     end
   end

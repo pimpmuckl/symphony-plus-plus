@@ -62,6 +62,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.ToonTest do
            """
   end
 
+  test "encodes empty primitive lists without charlist ambiguity" do
+    assert Toon.encode(%{"codes" => []}) == """
+           codes[0]:\
+           """
+  end
+
   test "quotes hyphenated keys in fields and row headers" do
     assert Toon.encode(%{"work-package-id" => "wp_1", "rows" => [%{"head-sha" => "abc123"}]}) == """
            rows[1]{"head-sha"}:

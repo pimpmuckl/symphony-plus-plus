@@ -1,6 +1,5 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
   use SymphonyElixir.TestSupport, async: false
-
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
@@ -46,6 +45,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
   end
 
   setup %{repo: repo} do
+    repo.delete_all(SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun)
     repo.delete_all(ProgressEvent)
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkPackage)

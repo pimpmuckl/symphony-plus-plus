@@ -109,6 +109,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestScopeConstraintsTest do
 
     assert :ok =
              ScopeConstraints.validate_owned_file_globs(
+               %{"allowed_paths" => ["elixir/**/foo"]},
+               ["elixir/foo/*.ex"]
+             )
+
+    assert :ok =
+             ScopeConstraints.validate_owned_file_globs(
                %{"allowed_paths" => ["elixir/lib/a*"]},
                ["elixir/lib/ab*"]
              )

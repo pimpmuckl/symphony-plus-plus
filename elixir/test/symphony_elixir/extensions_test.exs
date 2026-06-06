@@ -557,6 +557,27 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:error, _reason} = HttpServer.start_link(host: "bad host", port: 0)
   end
 
+  test "http server accepts tuple hosts for endpoint URL config" do
+    snapshot = static_snapshot()
+    orchestrator_name = Module.concat(__MODULE__, :TupleHostOrchestrator)
+
+    server_opts = [
+      host: {127, 0, 0, 1},
+      port: 0,
+      orchestrator: orchestrator_name,
+      snapshot_timeout_ms: 50
+    ]
+
+    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: snapshot})
+    start_supervised!({HttpServer, server_opts})
+
+    port = wait_for_bound_port()
+    response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
+
+    assert response.status == 200
+    assert response.body["counts"] == %{"running" => 1, "retrying" => 1}
+  end
+
   defp start_test_endpoint(overrides) do
     endpoint_config =
       :symphony_elixir

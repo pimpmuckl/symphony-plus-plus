@@ -2558,6 +2558,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(%{"phase_id" => string_schema(), "update" => object_schema()}, ["phase_id", "update"])
   end
 
+  defp tool_specs_for_session(%Config{} = config, nil) do
+    {:ok, unbound_tool_specs(config)}
+  end
+
   defp tool_specs_for_session(%Config{repo: repo} = config, session) do
     with :ok <- prepare_mcp_repository(repo) do
       session
@@ -2588,7 +2592,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       [bootstrap_tool_spec("claim_private_handoff")]
   end
 
-  defp unbound_tool_specs(%__MODULE__{config: config}), do: unbound_tool_specs_for_config(config)
+  defp unbound_tool_specs(%Config{} = config), do: unbound_tool_specs_for_config(config)
 
   defp unbound_tool_specs_for_config(%Config{} = config) do
     [health_tool_spec(), assignment_release_tool_spec()] ++
@@ -2630,10 +2634,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp tool_specs_for_server(%__MODULE__{session_refresh_required: true, config: config} = server) do
     {:ok, claimable_tool_specs(config) ++ local_operator_tool_specs(server)}
-  end
-
-  defp tool_specs_for_server(%__MODULE__{session: nil} = server) do
-    {:ok, unbound_tool_specs(server) ++ local_operator_tool_specs(server)}
   end
 
   defp tool_specs_for_server(%__MODULE__{config: config, session: session} = server) do
@@ -13118,9 +13118,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       not review_artifacts_present?(state.progress_events, state.artifacts, state.work_package.id)
   end
 
-  defp review_lanes_missing?(state, required_review_lanes) do
-    required_review_lanes != [] and not review_lanes_present?(state, required_review_lanes)
-  end
+  defp review_lanes_missing?(state, required_review_lanes), do: not review_lanes_present?(state, required_review_lanes)
 
   defp investigation_findings_missing?(state), do: state.work_package.kind == "investigation" and state.findings == []
 
@@ -13144,6 +13142,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp merge_required?(%WorkPackage{} = work_package) do
     work_package.kind in ["hotfix", "adapter", "mcp", "skill", "hooks", "phase_child"]
   end
+
+  defp review_lanes_present?(_state, []), do: true
 
   defp review_lanes_present?(state, required_lanes) do
     if merge_required?(state.work_package) do
