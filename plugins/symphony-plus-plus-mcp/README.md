@@ -20,13 +20,13 @@ plugin session.
 This plugin intentionally bundles:
 
 - `mcpServers: "./.mcp.json"` for a command-backed `symphony_plus_plus`
-  launcher. On first Codex bridge startup it starts fresh managed local backend
-  and dashboard processes, using `127.0.0.1:19998` and `127.0.0.1:19999` when
-  available and safe fallback ports when another process owns the defaults.
-  While another Codex bridge lease is active, later bridge processes reuse the
-  recorded managed runtime. The launcher installs dashboard npm dependencies
-  into the selected source tree when Vite is missing, then bridges Codex stdio
-  MCP traffic into the backend HTTP `/mcp` endpoint.
+  launcher. Each plugin MCP process is a lightweight stdio bridge into a local
+  HTTP runtime. The launcher reuses a healthy backend/dashboard when MCP health
+  reports the same exact `source_revision` as the launcher-resolved commit,
+  starts a new managed runtime for a new commit, and lets older managed
+  runtimes drain until their bridge leases exit. The launcher installs
+  dashboard npm dependencies into the selected source tree when Vite is missing,
+  then bridges Codex stdio MCP traffic into the backend HTTP `/mcp` endpoint.
 - The same `assets/splusplus-logo.png` icon used by the default Symphony++ plugin.
 - The MCP-mode Solo Session, worker, coordinator, architect, and WorkPackage skills.
 - The local MCP launcher plus the Solo wrapper script needed after marketplace/cache packaging.
@@ -86,13 +86,15 @@ port, dashboard URL, process ids, and log paths to
 `%USERPROFILE%\.agents\splusplus\runtime\codex-plugin.json` by default.
 Override with `SYMPP_RUNTIME_FILE`, `SYMPP_BACKEND_PORT`,
 `SYMPP_DASHBOARD_PORT`, `SYMPP_BACKEND_URL`, or `SYMPP_DASHBOARD_ORIGIN` when a
-specific local setup needs to divert. The normal lifecycle is deliberately
-simple: fresh managed servers on Codex startup, reuse only while at least one
-Codex bridge lease is alive, and shutdown after the last bridge exits. When the
-last bridge lease exits, the launcher stops only managed backend/frontend PIDs
-that it recorded, including managed PIDs superseded by a newer backend/dashboard
-plan, and can still verify as Symphony++ processes. Explicit `SYMPP_BACKEND_URL`
-and `SYMPP_DASHBOARD_ORIGIN` targets are external and remain operator-owned.
+specific local setup needs to divert. Runtime identity is the exact S++ source
+revision plus the backend and dashboard endpoints. New Codex sessions attach to
+a healthy matching runtime; if the running runtime is for an older commit, the
+launcher starts a new managed runtime and records new leases against that
+runtime key. When the last bridge lease for a runtime key exits, the launcher
+stops only managed backend/frontend PIDs for that key that it can still verify
+as Symphony++ processes. Explicit `SYMPP_BACKEND_URL` and
+`SYMPP_DASHBOARD_ORIGIN` targets are external, remain operator-owned, and are
+not promoted into later implicit reuse.
 
 To prove the daemon independently of Codex plugin loading, run this from the
 source repository checkout root after the launcher or `mix sympp.cockpit` is
@@ -109,7 +111,9 @@ latest skill Markdown; refresh the local plugin cache, then reload or start
 that dedicated MCP-enabled session after changing plugin config, cache state,
 or skill files. If the smoke reports `stale_or_unverified_daemon` or
 `stale_daemon_source_revision_mismatch`, an old manual cockpit may still own
-the port. Dedicated plugin launchers avoid untracked local listeners for
-automatic reuse and pick a fallback port when the default is occupied. Set
+the port. Dedicated plugin launchers reuse untracked local backends only when
+their MCP health reports the same source revision; dashboards are reused from
+recorded managed state or explicit `SYMPP_DASHBOARD_ORIGIN`, otherwise a new
+managed dashboard is started on an available port. Set
 `SYMPP_BACKEND_URL` or `SYMPP_DASHBOARD_ORIGIN` only when you intentionally want
 to reuse an operator-owned external process.
