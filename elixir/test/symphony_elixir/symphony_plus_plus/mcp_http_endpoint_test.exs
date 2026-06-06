@@ -129,7 +129,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     assert length(names) == length(Enum.uniq(names))
 
     for tool <- [
-          "claim_work_key",
           "claim_local_assignment",
           "claim_local_architect_assignment",
           "get_current_assignment",
@@ -221,7 +220,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
                Repo,
-               WorkPackageFactory.attrs(id: "SYMPP-HTTP-ENDPOINT-WORKER", kind: "mcp", status: "ready_for_worker")
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-HTTP-ENDPOINT-WORKER",
+                 kind: "mcp",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main",
+                 branch_pattern: "agent/SYMPP-HTTP-ENDPOINT-WORKER/worker",
+                 worktree_path: local_claim_worktree_path("SYMPP-HTTP-ENDPOINT-WORKER"),
+                 status: "ready_for_worker"
+               )
              )
 
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(Repo, work_package.id)
@@ -231,19 +238,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
 
     claim =
       post_json(
-        tool_call_request("claim", "claim_work_key", %{"secret" => minted.work_key.secret, "claimed_by" => "worker-http"}),
+        tool_call_request("claim", "claim_local_assignment", local_assignment_claim_args(work_package, %{"claimed_by" => "worker-http"})),
         [{"mcp-session-id", session_id}]
       )
 
     assert [^session_id] = get_resp_header(claim, "mcp-session-id")
     assert get_in(json_response(claim, 200), ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
+    refute inspect(json_response(claim, 200)) =~ minted.work_key.secret
 
     tools = post_json(tools_list_request("worker-tools"), [{"mcp-session-id", session_id}])
     tool_names = tool_names(json_response(tools, 200))
 
     assert "get_current_assignment" in tool_names
     assert "append_progress" in tool_names
-    refute "claim_work_key" in tool_names
+    refute "claim_local_assignment" in tool_names
+    refute "claim_private_handoff" in tool_names
     refute "solo_attach" in tool_names
 
     assignment_tool =
@@ -268,38 +277,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
   end
 
   test "POST /mcp persists claimed architect continuity for scoped WorkRequest reads" do
-    phase_id = "phase-http-endpoint-architect"
-
-    assert {:ok, _phase} = PhaseRepository.create(Repo, %{id: phase_id, title: "HTTP endpoint architect phase"})
-
-    assert {:ok, anchor} =
-             WorkPackageRepository.create(
-               Repo,
-               WorkPackageFactory.attrs(
-                 id: "SYMPP-HTTP-ENDPOINT-ARCHITECT",
-                 kind: "mcp",
-                 repo: "nextide/symphony-plus-plus",
-                 base_branch: "main",
-                 phase_id: phase_id,
-                 status: "planning"
-               )
-             )
-
     assert {:ok, work_request} =
              WorkRequestRepository.create(
                Repo,
                work_request_attrs(%{
                  id: "WR-HTTP-ENDPOINT-ARCHITECT",
-                 repo: anchor.repo,
-                 base_branch: anchor.base_branch,
                  status: "ready_for_slicing"
                })
              )
 
-    assert {:ok, minted} =
-             AccessGrantService.mint_architect_grant(Repo, phase_id,
-               work_package_id: anchor.id,
-               capabilities: ["read:work_request", "dispatch:work_request"]
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(Repo, work_request.id,
+               local_operator?: true,
+               handoff_opts: local_architect_handoff_opts()
              )
 
     init = post_json(initialize_request("init"))
@@ -307,11 +297,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
 
     claim =
       post_json(
-        tool_call_request("claim", "claim_work_key", %{"secret" => minted.work_key.secret, "claimed_by" => "architect-http"}),
+        tool_call_request("claim", "claim_local_architect_assignment", %{"work_request_id" => work_request.id, "claimed_by" => "architect-http"}),
         [{"mcp-session-id", session_id}]
       )
 
     assert get_in(json_response(claim, 200), ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert get_in(json_response(claim, 200), ["result", "structuredContent", "assignment", "work_package_id"]) == handoff.anchor_package.id
 
     tools = post_json(tools_list_request("architect-tools"), [{"mcp-session-id", session_id}])
     tool_names = tool_names(json_response(tools, 200))
@@ -547,15 +538,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
   end
 
   test "POST /mcp rehydrates claimed local architect session after backend state reset" do
-    store_dir = Path.join(System.tmp_dir!(), "sympp-http-local-architect-rehydrate-#{System.unique_integer([:positive])}")
-    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
-    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
-
-    on_exit(fn ->
-      restore_app_env(:sympp_worker_secret_store_dir, previous_store_dir)
-      File.rm_rf(store_dir)
-    end)
-
     assert {:ok, work_request} =
              WorkRequestRepository.create(
                Repo,
@@ -568,12 +550,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     assert {:ok, handoff} =
              ArchitectHandoff.create_or_replay(Repo, work_request.id,
                local_operator?: true,
-               secret_handoff_opts: [
-                 mode: "local-private-file",
-                 repo_root: Path.expand("..", File.cwd!()),
-                 store_dir: store_dir,
-                 claimed_by: ArchitectHandoff.claimed_by()
-               ]
+               handoff_opts: local_architect_handoff_opts()
              )
 
     init = post_json(initialize_request("local-architect-init"))
@@ -624,7 +601,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     assert [%ClaimLease{id: ^claim_lease_id, actor_display_name: "local-architect-http-rehydrate"}] = active_claim_leases(handoff.anchor_package.id)
   end
 
-  test "POST /mcp known unrecoverable sessions fall back to clear claim_required errors after state reset" do
+  test "POST /mcp unclaimed sessions fall back to clear claim_required errors after state reset" do
     unclaimed_init = post_json(initialize_request("unclaimed-init"))
     [unclaimed_session_id] = get_resp_header(unclaimed_init, "mcp-session-id")
 
@@ -643,42 +620,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
 
     preclaim_tools = post_json(tools_list_request("unclaimed-tools"), [{"mcp-session-id", unclaimed_session_id}])
     assert "claim_local_assignment" in tool_names(json_response(preclaim_tools, 200))
-
-    assert {:ok, work_package} =
-             WorkPackageRepository.create(
-               Repo,
-               WorkPackageFactory.attrs(id: "SYMPP-HTTP-REHYDRATE-LEGACY", kind: "mcp", status: "ready_for_worker")
-             )
-
-    assert {:ok, minted} = AccessGrantService.mint_worker_grant(Repo, work_package.id)
-
-    init = post_json(initialize_request("legacy-init"))
-    [session_id] = get_resp_header(init, "mcp-session-id")
-
-    claim =
-      post_json(
-        tool_call_request("legacy-claim", "claim_work_key", %{"secret" => minted.work_key.secret, "claimed_by" => "legacy-worker"}),
-        [{"mcp-session-id", session_id}]
-      )
-
-    assert get_in(json_response(claim, 200), ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
-    refute Repo.get!(SessionBinding, SessionBinding.binding_id(@client_key, session_id)).recoverable
-
-    reset_mcp_runtime_state()
-
-    assignment =
-      post_json(tool_call_request("legacy-assignment", "get_current_assignment", %{}), [{"mcp-session-id", session_id}])
-
-    assert get_in(json_response(assignment, 200), ["error", "data", "reason"]) == "claim_required"
-    refute inspect(json_response(assignment, 200)) =~ minted.work_key.secret
-    refute inspect(json_response(assignment, 200)) =~ minted.grant.secret_hash
   end
 
   test "POST /mcp claimed worker follow-ups fail closed after grant revocation" do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
                Repo,
-               WorkPackageFactory.attrs(id: "SYMPP-HTTP-ENDPOINT-REVOKED", kind: "mcp", status: "ready_for_worker")
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-HTTP-ENDPOINT-REVOKED",
+                 kind: "mcp",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main",
+                 branch_pattern: "agent/SYMPP-HTTP-ENDPOINT-REVOKED/worker",
+                 worktree_path: local_claim_worktree_path("SYMPP-HTTP-ENDPOINT-REVOKED"),
+                 status: "ready_for_worker"
+               )
              )
 
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(Repo, work_package.id)
@@ -688,7 +644,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
 
     claim =
       post_json(
-        tool_call_request("claim", "claim_work_key", %{"secret" => minted.work_key.secret, "claimed_by" => "worker-revoked"}),
+        tool_call_request("claim", "claim_local_assignment", local_assignment_claim_args(work_package, %{"claimed_by" => "worker-revoked"})),
         [{"mcp-session-id", session_id}]
       )
 
@@ -698,7 +654,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     tools = post_json(tools_list_request("revoked-tools"), [{"mcp-session-id", session_id}])
     tool_names = tool_names(json_response(tools, 200))
 
-    assert "claim_work_key" in tool_names
+    assert "claim_local_assignment" in tool_names
+    assert "claim_local_architect_assignment" in tool_names
     refute "get_current_assignment" in tool_names
 
     assignment_tool =
@@ -1118,6 +1075,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
 
   defp local_claim_worktree_path(work_package_id) do
     Path.expand(Path.join(System.tmp_dir!(), "sympp-http-local-claim-#{work_package_id}"))
+  end
+
+  defp local_architect_handoff_opts do
+    [
+      claimed_by: ArchitectHandoff.claimed_by(),
+      database: Repo.database_path(),
+      local_architect_claim?: true
+    ]
   end
 
   defp active_claim_leases(work_package_id) do

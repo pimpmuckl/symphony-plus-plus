@@ -4,7 +4,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport06Test do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
   test "batch claim guard ignores earlier non-claim items on bound sessions", %{repo: repo} do
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BATCH-BOUND-CLAIM", kind: "mcp", status: "ready_for_worker"))
+    package = create_local_claim_package!(repo, "SYMPP-BATCH-BOUND-CLAIM")
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
@@ -17,10 +17,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport06Test do
             "jsonrpc" => "2.0",
             "id" => "claim",
             "method" => "tools/call",
-            "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+            "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package, %{"claimed_by" => "worker-1"})}
           }
         ],
-        Server.new(Config.default(repo: repo), initialized: true, session: session)
+        %{local_mcp_server(local_mcp_config(repo), "local-bound-batch-claim-state") | session: session}
       )
 
     assert Enum.map(responses, & &1["id"]) == ["context", "claim"]
@@ -28,8 +28,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport06Test do
     assert server.session.assignment.work_package_id == package.id
   end
 
-  test "batch final state keeps refreshed claim session after later non-claim items", %{repo: repo} do
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BATCH-REFRESHED-CLAIM", kind: "mcp", status: "ready_for_worker"))
+  test "batch final state keeps refreshed local claim session after later non-claim items", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-BATCH-REFRESHED-CLAIM")
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     stale_assignment = %{assignment | capabilities: []}
@@ -42,11 +42,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport06Test do
             "jsonrpc" => "2.0",
             "id" => "claim",
             "method" => "tools/call",
-            "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+            "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package, %{"claimed_by" => "worker-1"})}
           },
           %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}}
         ],
-        Server.new(Config.default(repo: repo), initialized: true, session: stale_session)
+        %{local_mcp_server(local_mcp_config(repo), "local-refreshed-batch-claim-state") | session: stale_session}
       )
 
     assert Enum.map(responses, & &1["id"]) == ["claim", "assignment"]

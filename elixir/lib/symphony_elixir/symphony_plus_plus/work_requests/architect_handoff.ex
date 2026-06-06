@@ -8,7 +8,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo, as: SymppRepo
-  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.{ArchitectHandoffClaimLease, ScopeConstraints, WorkRequest}
@@ -48,9 +47,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
           :database_busy
           | :forbidden
           | :handoff_anchor_scope_conflict
-          | :handoff_secret_unavailable
           | :invalid_scope
           | :invalid_status
+          | :local_architect_claim_unavailable
           | :not_found
           | {:migration_failed, term()}
           | {:storage_failed, String.t()}
@@ -157,9 +156,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   @spec error_message(term()) :: String.t()
   def error_message(:forbidden), do: "architect handoff is only available in local operator mode"
   def error_message(:handoff_anchor_scope_conflict), do: "existing architect handoff anchor does not match the WorkRequest scope"
-  def error_message(:handoff_secret_unavailable), do: "existing architect handoff secret could not be safely replayed"
   def error_message(:invalid_scope), do: "WorkRequest must have a repo and base branch before architect handoff"
   def error_message(:invalid_status), do: "WorkRequest is not ready for architect handoff"
+  def error_message(:local_architect_claim_unavailable), do: "architect handoff requires a local file-backed ledger claim path"
   def error_message(:not_found), do: "WorkRequest was not found"
   def error_message(:database_busy), do: "the Symphony++ ledger is busy"
   def error_message({:storage_failed, _reason}), do: "the Symphony++ ledger could not store the architect handoff"
@@ -753,29 +752,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     end
   end
 
-  defp existing_display_for_replayable_handoffs([], %WorkRequest{}, %Phase{}, %WorkPackage{}, _handoff_opts),
-    do: {:ok, nil}
+  defp existing_display_for_replayable_handoffs([], %WorkRequest{}, %Phase{}, %WorkPackage{}, _handoff_opts), do: {:ok, nil}
 
-  defp existing_display_for_replayable_handoffs(
-         [%AccessGrant{} = grant | older_grants],
-         %WorkRequest{} = work_request,
-         %Phase{} = phase,
-         %WorkPackage{} = anchor,
-         handoff_opts
-       ) do
-    case SecretHandoff.read_worker_secret_metadata(anchor, grant, handoff_opts) do
-      {:ok, handoff} ->
-        case handoff_replay_disposition(handoff, grant, handoff_opts) do
-          :replay -> {:ok, result(:replayed, work_request, phase, anchor, grant, handoff, handoff_opts)}
-          :retire -> existing_display_for_replayable_handoffs(older_grants, work_request, phase, anchor, handoff_opts)
-          :preserve -> {:ok, nil}
-        end
-
-      {:error, reason} ->
-        case handoff_metadata_error_disposition(reason) do
-          :retire -> existing_display_for_replayable_handoffs(older_grants, work_request, phase, anchor, handoff_opts)
-          :preserve -> {:ok, nil}
-        end
+  defp existing_display_for_replayable_handoffs([%AccessGrant{} = grant | _older_grants], %WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, handoff_opts) do
+    with :ok <- require_local_architect_claim_available(handoff_opts) do
+      {:ok, result(:replayed, work_request, phase, anchor, grant, handoff_opts)}
     end
   end
 
@@ -794,53 +775,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     end
   end
 
-  defp replay_latest_active_handoff(
-         repo,
-         %WorkRequest{} = work_request,
-         %Phase{} = phase,
-         %WorkPackage{} = anchor,
-         [%AccessGrant{} = grant | older_grants],
-         handoff_opts,
-         stale_grants
-       ) do
-    case SecretHandoff.read_worker_secret_metadata(anchor, grant, handoff_opts) do
-      {:ok, handoff} ->
-        case handoff_replay_disposition(handoff, grant, handoff_opts) do
-          :replay ->
-            grants_to_retire = stale_grants ++ older_grants
-            replay_handoff(repo, work_request, phase, anchor, grant, handoff_opts, grants_to_retire, handoff)
+  defp replay_latest_active_handoff(repo, %WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, [%AccessGrant{} = grant | older_grants], handoff_opts, stale_grants) do
+    grants_to_retire = stale_grants ++ older_grants
 
-          :retire ->
-            replay_latest_active_handoff(
-              repo,
-              work_request,
-              phase,
-              anchor,
-              older_grants,
-              handoff_opts,
-              [grant | stale_grants]
-            )
-
-          :preserve ->
-            {:error, :handoff_secret_unavailable}
-        end
-
-      {:error, reason} ->
-        case handoff_metadata_error_disposition(reason) do
-          :retire ->
-            replay_latest_active_handoff(
-              repo,
-              work_request,
-              phase,
-              anchor,
-              older_grants,
-              handoff_opts,
-              [grant | stale_grants]
-            )
-
-          :preserve ->
-            {:error, :handoff_secret_unavailable}
-        end
+    with :ok <- require_local_architect_claim_available(handoff_opts),
+         :ok <- retire_active_handoffs(repo, anchor, grants_to_retire, handoff_opts) do
+      {:ok, result(:replayed, work_request, phase, anchor, grant, handoff_opts)}
     end
   end
 
@@ -848,50 +788,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     with :ok <- retire_active_handoffs(repo, anchor, stale_grants, handoff_opts) do
       :not_found
     end
-  end
-
-  defp replay_handoff(
-         repo,
-         %WorkRequest{} = work_request,
-         %Phase{} = phase,
-         %WorkPackage{} = anchor,
-         %AccessGrant{} = grant,
-         handoff_opts,
-         stale_grants,
-         handoff
-       ) do
-    with :ok <- retire_active_handoffs(repo, anchor, stale_grants, handoff_opts) do
-      {:ok, result(:replayed, work_request, phase, anchor, grant, handoff, handoff_opts)}
-    end
-  end
-
-  defp handoff_replay_disposition(handoff, %AccessGrant{} = grant, handoff_opts) when is_map(handoff) do
-    case handoff_value(handoff, :mode) do
-      mode when mode in ["local-private-file", "windows-credential-manager"] ->
-        handoff
-        |> SecretHandoff.worker_secret_integrity(grant.secret_hash, handoff_opts)
-        |> handoff_secret_integrity_disposition()
-
-      _mode ->
-        :replay
-    end
-  end
-
-  defp handoff_secret_integrity_disposition(:match), do: :replay
-  defp handoff_secret_integrity_disposition(:mismatch), do: :retire
-  defp handoff_secret_integrity_disposition(:unknown), do: :preserve
-
-  defp handoff_metadata_error_disposition({:handoff_metadata_read_failed, :enoent}), do: :preserve
-
-  defp handoff_metadata_error_disposition({:handoff_metadata_read_failed, reason})
-       when reason in [:invalid_json, :not_a_map],
-       do: :retire
-
-  defp handoff_metadata_error_disposition({:handoff_metadata_invalid, _reason}), do: :retire
-  defp handoff_metadata_error_disposition(_reason), do: :preserve
-
-  defp handoff_value(handoff, key) when is_atom(key) do
-    Map.get(handoff, key) || Map.get(handoff, Atom.to_string(key))
   end
 
   defp retire_active_handoffs(repo, %WorkPackage{} = anchor, grants, handoff_opts) do
@@ -903,141 +799,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     end)
   end
 
-  defp retire_active_handoff(repo, %WorkPackage{} = anchor, %AccessGrant{} = grant, handoff_opts) do
-    case delete_worker_secret_by_grant(anchor, grant, handoff_opts) do
-      :ok ->
-        revoke_architect_grant(repo, grant, handoff_opts)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+  defp retire_active_handoff(repo, %WorkPackage{}, %AccessGrant{} = grant, handoff_opts) do
+    revoke_architect_grant(repo, grant, handoff_opts)
   end
-
-  defp delete_worker_secret_by_grant(anchor, grant, handoff_opts) do
-    anchor
-    |> delete_worker_secret_by_grant_result(grant, handoff_opts)
-    |> normalize_secret_cleanup_result()
-  end
-
-  defp delete_worker_secret_by_grant_result(anchor, grant, handoff_opts) do
-    case Keyword.get(handoff_opts, :delete_worker_secret_by_grant) do
-      nil ->
-        handoff_opts =
-          Keyword.put(handoff_opts, :cleanup_unreadable_metadata?, true)
-
-        SecretHandoff.delete_worker_secret_by_grant(anchor, grant, handoff_opts)
-
-      delete_fun when is_function(delete_fun, 3) ->
-        delete_fun.(anchor, grant, handoff_opts)
-
-      _invalid ->
-        {:error, :invalid_secret_handoff_delete_fun}
-    end
-  end
-
-  defp normalize_secret_cleanup_result(:ok), do: :ok
-  defp normalize_secret_cleanup_result({:error, reason}), do: {:error, reason}
-  defp normalize_secret_cleanup_result(other), do: {:error, {:invalid_secret_handoff_cleanup_result, other}}
 
   defp create_new_handoff(repo, %WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, handoff_opts, grants) do
     status = if architect_handoff_grants?(grants, phase, anchor), do: :renewed, else: :created
 
-    with {:ok, minted} <-
+    with :ok <- require_local_architect_claim_available(handoff_opts),
+         {:ok, minted} <-
            AccessGrantService.mint_architect_grant(repo, phase.id,
              work_package_id: anchor.id,
              work_request_id: work_request.id,
              capabilities: @architect_capabilities
-           ),
-         {:ok, handoff} <- store_architect_secret_handoff(repo, anchor, minted.grant, minted.work_key.secret, handoff_opts) do
-      {:ok, result(status, work_request, phase, anchor, minted.grant, handoff, handoff_opts)}
+           ) do
+      {:ok, result(status, work_request, phase, anchor, minted.grant, handoff_opts)}
     end
   end
-
-  defp store_architect_secret_handoff(repo, %WorkPackage{} = anchor, %AccessGrant{} = grant, secret, handoff_opts) do
-    secret_grant = %{id: grant.id, display_key: grant.display_key, secret: secret}
-    metadata_grant = Map.delete(secret_grant, :secret)
-    creation = %{work_package: anchor, worker_grant: secret_grant}
-
-    case store_worker_secret(creation, handoff_opts) do
-      {:ok, raw_handoff} ->
-        store_architect_secret_metadata(repo, anchor, grant, metadata_grant, raw_handoff, handoff_opts)
-
-      {:error, reason} ->
-        abort_new_handoff(repo, grant, reason, [{:revoke_grant, handoff_opts}])
-    end
-  end
-
-  defp store_architect_secret_metadata(repo, %WorkPackage{} = anchor, %AccessGrant{} = grant, metadata_grant, raw_handoff, handoff_opts) do
-    case SecretHandoff.store_worker_secret_metadata(anchor, metadata_grant, raw_handoff, handoff_opts) do
-      :ok ->
-        read_stored_architect_handoff(repo, anchor, grant, raw_handoff, handoff_opts)
-
-      {:error, reason} ->
-        abort_new_handoff(repo, grant, reason, [
-          {:delete_worker_secret, raw_handoff, handoff_opts},
-          {:revoke_grant, handoff_opts}
-        ])
-    end
-  end
-
-  defp read_stored_architect_handoff(repo, %WorkPackage{} = anchor, %AccessGrant{} = grant, raw_handoff, handoff_opts) do
-    case SecretHandoff.read_worker_secret_metadata(anchor, grant, handoff_opts) do
-      {:ok, handoff} ->
-        {:ok, handoff}
-
-      {:error, reason} ->
-        abort_new_handoff(repo, grant, reason, [
-          {:delete_worker_secret_by_grant, anchor, handoff_opts},
-          {:delete_worker_secret, raw_handoff, handoff_opts},
-          {:revoke_grant, handoff_opts}
-        ])
-    end
-  end
-
-  defp store_worker_secret(creation, handoff_opts) do
-    case Keyword.get(handoff_opts, :store_worker_secret) do
-      nil ->
-        SecretHandoff.store_worker_secret(creation, handoff_opts)
-
-      store_fun when is_function(store_fun, 2) ->
-        store_fun.(creation, handoff_opts)
-
-      _invalid ->
-        {:error, :invalid_secret_handoff_store_fun}
-    end
-  end
-
-  defp delete_worker_secret(handoff, handoff_opts) do
-    case Keyword.get(handoff_opts, :delete_worker_secret) do
-      nil -> SecretHandoff.delete_worker_secret(handoff, handoff_opts)
-      delete_fun when is_function(delete_fun, 2) -> delete_fun.(handoff, handoff_opts)
-      _invalid -> {:error, :invalid_secret_handoff_delete_fun}
-    end
-    |> normalize_secret_cleanup_result()
-  end
-
-  defp abort_new_handoff(repo, %AccessGrant{} = grant, reason, cleanup_steps) do
-    case cleanup_handoff_setup_abort(repo, grant, cleanup_steps) do
-      [] -> {:error, reason}
-      failures -> {:error, {:handoff_setup_rollback_failed, reason, failures}}
-    end
-  end
-
-  defp cleanup_handoff_setup_abort(repo, %AccessGrant{} = grant, cleanup_steps) do
-    Enum.flat_map(cleanup_steps, fn
-      {:delete_worker_secret, handoff, handoff_opts} ->
-        cleanup_failure(:worker_secret, delete_worker_secret(handoff, handoff_opts))
-
-      {:delete_worker_secret_by_grant, anchor, handoff_opts} ->
-        cleanup_failure(:worker_secret_by_grant, delete_worker_secret_by_grant(anchor, grant, handoff_opts))
-
-      {:revoke_grant, handoff_opts} ->
-        cleanup_failure(:architect_grant, revoke_architect_grant(repo, grant, handoff_opts))
-    end)
-  end
-
-  defp cleanup_failure(_label, :ok), do: []
-  defp cleanup_failure(label, {:error, reason}), do: [{label, reason}]
 
   defp revoke_architect_grant(repo, %AccessGrant{} = grant, handoff_opts) do
     case Keyword.get(handoff_opts, :revoke_grant) do
@@ -1149,12 +927,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
 
   defp required_capabilities?(_capabilities), do: false
 
-  defp result(status, %WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, %AccessGrant{} = grant, handoff, handoff_opts) do
-    redacted_handoff = handoff |> redact_handoff() |> put_handoff_database(handoff_opts)
-    local_architect_claim = local_architect_claim(work_request, phase, anchor, handoff_opts)
+  defp result(status, %WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, %AccessGrant{} = grant, handoff_opts) do
+    local_architect_claim = local_architect_claim(work_request, phase, anchor, grant, handoff_opts)
 
     reference_identifiers =
-      prompt_reference_identifiers(work_request, phase, anchor, redacted_handoff, handoff_opts, local_architect_claim)
+      prompt_reference_identifiers(work_request, phase, anchor, handoff_opts, local_architect_claim)
 
     agent_context = ArchitectContext.encode_handoff_reference(reference_identifiers)
 
@@ -1175,7 +952,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       },
       grant: grant_metadata(grant),
       local_architect_claim: local_architect_claim,
-      secret_handoff: redacted_handoff,
       agent_context: agent_context,
       prompt: prompt(local_architect_claim, agent_context, reference_identifiers)
     }
@@ -1184,7 +960,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   defp grant_metadata(%AccessGrant{} = grant) do
     %{
       id: grant.id,
-      display_key: grant.display_key,
       grant_role: grant.grant_role,
       capabilities: grant.capabilities || [],
       phase_id: grant.phase_id,
@@ -1199,7 +974,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     }
   end
 
-  defp local_architect_claim(%WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, handoff_opts) do
+  defp local_architect_claim(%WorkRequest{} = work_request, %Phase{}, %WorkPackage{}, %AccessGrant{}, handoff_opts) do
     if local_architect_claim_available?(handoff_opts) do
       claimed_by = Keyword.get(handoff_opts, :claimed_by, @claimed_by)
 
@@ -1207,46 +982,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
         "tool" => "claim_local_architect_assignment",
         "arguments" => %{
           "work_request_id" => work_request.id,
-          "architect_anchor_work_package_id" => anchor.id,
-          "repo" => work_request.repo,
-          "base_branch" => work_request.base_branch,
-          "phase_id" => phase.id,
           "claimed_by" => claimed_by
         },
-        "required_runtime_arguments" => ["caller_id"],
+        "required_runtime_arguments" => [],
         "secret_in_response" => false
       }
     end
   end
 
   defp local_architect_claim_available?(handoff_opts) do
-    case handoff_database(handoff_opts) do
-      database when is_binary(database) ->
-        Keyword.get(handoff_opts, :local_architect_claim?, false) and not unsafe_prompt_literal_text?(database) and
-          not SymppRepo.memory_database?(database) and
-          not remote_database_identity?(database)
+    Keyword.get(handoff_opts, :local_architect_claim?, false) == true and file_backed_handoff_database?(handoff_database(handoff_opts))
+  end
 
-      _database ->
+  defp require_local_architect_claim_available(handoff_opts) do
+    if local_architect_claim_available?(handoff_opts), do: :ok, else: {:error, :local_architect_claim_unavailable}
+  end
+
+  defp file_backed_handoff_database?(database) when is_binary(database) do
+    database = String.trim(database)
+
+    database != "" and
+      not SymppRepo.memory_database?(database) and
+      not remote_handoff_database?(database)
+  end
+
+  defp file_backed_handoff_database?(_database), do: false
+
+  defp remote_handoff_database?(database) do
+    remote_handoff_database_uri?(database) or remote_handoff_database_descriptor?(database)
+  end
+
+  defp remote_handoff_database_uri?(database) do
+    case URI.parse(database) do
+      %URI{scheme: scheme} when is_binary(scheme) and scheme != "" ->
+        String.downcase(scheme) != "file" and not windows_drive_path?(database)
+
+      _uri ->
         false
     end
   end
 
-  defp remote_database_identity?(database) when is_binary(database) do
-    remote_database_uri?(database) or server_database_dsn?(database) or credential_bearing_database_string?(database)
+  defp remote_handoff_database_descriptor?(database) do
+    Regex.match?(~r/(^|[\s;])(dbname|host|hostname|password|port|user)=/i, database)
   end
 
-  defp remote_database_uri?(database) do
-    case URI.parse(database) do
-      %URI{scheme: scheme, host: host} when is_binary(scheme) and scheme != "file" and is_binary(host) -> true
-      %URI{scheme: scheme} when scheme in ["http", "https", "postgres", "postgresql", "mysql", "mssql"] -> true
-      _uri -> false
-    end
-  rescue
-    _error -> false
-  end
-
-  defp server_database_dsn?(database), do: Regex.match?(~r/(^|[;\s])host\s*=/i, database)
-  defp credential_bearing_database_string?(database), do: Regex.match?(~r/(^|[;?\s])(password|passwd|pwd|secret|token|api[_-]?key)=/i, database)
+  defp windows_drive_path?(<<letter, ?:, _rest::binary>>) when letter in ?a..?z or letter in ?A..?Z, do: true
+  defp windows_drive_path?(_database), do: false
 
   defp prompt(local_architect_claim, agent_context, reference_identifiers) when is_binary(agent_context) do
     [
@@ -1274,7 +1055,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       "",
       "Stop conditions:",
       stop_condition_prompt_line(local_architect_claim),
-      "2. Do not ask the human for raw work-key secrets, secret hashes, bearer/API/MCP tokens, private-store payloads, or full secret-bearing commands.",
+      "2. Do not ask the human for raw secrets, secret hashes, bearer/API/MCP tokens, private-store payloads, or full secret-bearing commands.",
       "3. Do not invent state, broaden scope, create Linear state, spawn agents, or change runtime behavior outside this WorkRequest-led flow."
     ]
     |> List.flatten()
@@ -1283,31 +1064,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
 
   defp bootstrap_prompt_lines(%{}),
     do: [
-      "First MCP step: bind this local session with `claim_local_architect_assignment` using `local_architect_claim.arguments`. Pass `local_architect_claim.arguments.claimed_by` unchanged; generate only a stable runtime `caller_id`.",
-      "Tool discovery may already show WorkRequest/architect schemas before claim; schema visibility is not authorization. If a WorkRequest tool returns `claim_required`, use `claim_local_architect_assignment` first, then retry after binding.",
-      "Recovery-only bootstrap: use `claim_private_handoff` with the redacted `private_handoff` metadata only when the local architect claim path is unavailable."
+      "First MCP step: bind this local session with `claim_local_architect_assignment` using `local_architect_claim.arguments`.",
+      "Tool discovery may already show WorkRequest/architect schemas before claim; schema visibility is not authorization. If a WorkRequest tool returns `claim_required`, use `claim_local_architect_assignment` first, then retry after binding."
     ]
 
-  defp bootstrap_prompt_lines(_local_architect_claim),
+  defp bootstrap_prompt_lines(nil),
     do: [
-      "First MCP step: bind this session with `claim_private_handoff` using the redacted `private_handoff` metadata. The ledger-backed local architect claim path is only advertised for trusted local HTTP sessions with a file-backed local ledger."
+      "First MCP step: use the current MCP/session assignment or operator repair path; no local architect claim is available for this handoff.",
+      "Tool discovery may show WorkRequest/architect schemas before claim; schema visibility is not authorization. If a WorkRequest tool returns `claim_required`, stop and ask the operator for a local file-backed MCP handoff."
     ]
 
   defp startup_prompt_lines(%{}),
     do: [
       "Startup:",
-      "1. Connect through the Symphony++ MCP/session using `local_architect_claim` from the reference identifiers. Pass `local_architect_claim.arguments.claimed_by` unchanged; generate only `caller_id` for this runtime.",
+      "1. Connect through the Symphony++ MCP/session using `local_architect_claim` from the reference identifiers.",
       "2. Do not infer claim state from WorkRequest tool visibility. If the session is unbound or a WorkRequest tool returns `claim_required`, do not fall back to Solo planning; use `claim_local_architect_assignment` to bind the architect grant, then retry the scoped reads.",
       "3. Before planning, call `read_work_request` using `work_request_id` from the reference identifiers.",
       "4. Call `list_guidance_requests` and account for any open guidance before slicing.",
       "5. If `ledger_database` is null, use the current MCP/session assignment or operator repair path; do not guess a ledger."
     ]
 
-  defp startup_prompt_lines(_local_architect_claim),
+  defp startup_prompt_lines(nil),
     do: [
       "Startup:",
-      "1. Connect through the Symphony++ MCP/session using `private_handoff` from the reference identifiers.",
-      "2. Do not infer claim state from WorkRequest tool visibility. If the session is unbound or a WorkRequest tool returns `claim_required`, do not fall back to Solo planning; bind the architect grant, then retry the scoped reads.",
+      "1. Connect through the configured Symphony++ MCP/session.",
+      "2. Do not infer claim state from WorkRequest tool visibility. If the session is unbound or a WorkRequest tool returns `claim_required`, stop and ask the operator for a local file-backed MCP handoff.",
       "3. Before planning, call `read_work_request` using `work_request_id` from the reference identifiers.",
       "4. Call `list_guidance_requests` and account for any open guidance before slicing.",
       "5. If `ledger_database` is null, use the current MCP/session assignment or operator repair path; do not guess a ledger."
@@ -1317,15 +1098,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     do:
       "1. If the MCP session, local architect claim metadata, scoped WorkRequest, guidance list, or a required identifier (`work_request_id`, `repo`, `base_branch`, `phase_id`, `architect_anchor_work_package_id`) is unavailable or null, record/report a blocker and stop."
 
-  defp stop_condition_prompt_line(_local_architect_claim),
+  defp stop_condition_prompt_line(nil),
     do:
-      "1. If the MCP session, private handoff metadata, scoped WorkRequest, guidance list, or a required identifier (`work_request_id`, `repo`, `base_branch`, `phase_id`, `architect_anchor_work_package_id`) is unavailable or null, record/report a blocker and stop."
+      "1. If the MCP session, scoped WorkRequest, guidance list, or a required identifier (`work_request_id`, `repo`, `base_branch`, `phase_id`, `architect_anchor_work_package_id`) is unavailable or null, record/report a blocker and stop."
 
   defp prompt_reference_identifiers(
          %WorkRequest{} = work_request,
          %Phase{} = phase,
          %WorkPackage{} = anchor,
-         redacted_handoff,
          handoff_opts,
          local_architect_claim
        ) do
@@ -1336,8 +1116,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       "phase_id" => prompt_literal_value(phase.id),
       "architect_anchor_work_package_id" => prompt_literal_value(anchor.id),
       "ledger_database" => prompt_literal_value(handoff_database(handoff_opts)),
-      "local_architect_claim" => prompt_literal_data(local_architect_claim),
-      "private_handoff" => prompt_literal_data(redacted_handoff)
+      "local_architect_claim" => prompt_literal_data(local_architect_claim)
     }
   end
 
@@ -1374,40 +1153,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       String.contains?(value, ["`", "~~~"])
   end
 
-  defp redact_handoff(handoff) when is_map(handoff) do
-    handoff
-    |> Map.drop([
-      :secret,
-      "secret",
-      :secret_hash,
-      "secret_hash",
-      :secret_returned_once,
-      "secret_returned_once",
-      :run_mcp_command,
-      "run_mcp_command"
-    ])
-    |> Map.new(fn {key, value} -> {key, redact_value(value)} end)
-  end
-
-  defp redact_value(value) when is_binary(value) do
-    Regex.replace(~r/wk_[A-Za-z0-9_-]{20,}/, value, "[REDACTED]")
-  end
-
-  defp redact_value(values) when is_list(values), do: Enum.map(values, &redact_value/1)
-
-  defp redact_value(value) when is_map(value) do
-    Map.new(value, fn {key, nested_value} -> {key, redact_value(nested_value)} end)
-  end
-
-  defp redact_value(value), do: value
-
-  defp put_handoff_database(handoff, handoff_opts) when is_map(handoff) do
-    case handoff_database(handoff_opts) do
-      nil -> handoff
-      database -> Map.put(handoff, :database, database)
-    end
-  end
-
   defp handoff_database(handoff_opts) do
     case Keyword.get(handoff_opts, :database) do
       database when is_binary(database) ->
@@ -1430,29 +1175,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   end
 
   defp handoff_opts(opts) do
-    case Keyword.get(opts, :secret_handoff_opts) do
+    case Keyword.get(opts, :handoff_opts) do
       handoff_opts when is_list(handoff_opts) ->
         Keyword.put_new(handoff_opts, :claimed_by, @claimed_by)
-        |> Keyword.put(:local_architect_claim?, Keyword.get(opts, :local_architect_claim?, false))
+        |> Keyword.put(:local_architect_claim?, Keyword.get(opts, :local_architect_claim?, Keyword.get(handoff_opts, :local_architect_claim?, false)))
 
       _handoff_opts ->
         [
-          mode: local_operator_secret_handoff_mode(),
-          repo_root: SecretHandoff.local_operator_repo_root(),
           claimed_by: @claimed_by,
           local_architect_claim?: Keyword.get(opts, :local_architect_claim?, false)
         ]
         |> put_optional_handoff_opt(:database, Keyword.get(opts, :database))
-        |> put_optional_handoff_opt(:store_dir, Keyword.get(opts, :store_dir))
     end
   end
 
   defp put_optional_handoff_opt(opts, _key, nil), do: opts
   defp put_optional_handoff_opt(opts, key, value), do: Keyword.put(opts, key, value)
-
-  defp local_operator_secret_handoff_mode do
-    "auto"
-  end
 
   defp timestamp(%DateTime{} = value), do: DateTime.to_iso8601(value)
   defp timestamp(nil), do: nil

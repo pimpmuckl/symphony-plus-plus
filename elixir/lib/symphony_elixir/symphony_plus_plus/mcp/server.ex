@@ -7,10 +7,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.PathSafety
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
-  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.GrantScope
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
-  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.AgentFormat.ArchitectContext
   alias SymphonyElixir.SymphonyPlusPlus.AgentFormat.WorkerContext
   alias SymphonyElixir.SymphonyPlusPlus.Authorization.ActorResolver
@@ -48,7 +46,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.RepoIdentity
   alias SymphonyElixir.SymphonyPlusPlus.ReviewProfiles
   alias SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds
-  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Service, as: WorkPackageService
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -70,7 +67,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @agent_text_mime_type "text/vnd.toon"
   @solo_tools ["solo_attach", "solo_append", "solo_show", "solo_list", "solo_update_status"]
   @assignment_release_tool "release_current_assignment"
-  @bootstrap_tools ["claim_private_handoff", "create_work_request"]
+  @bootstrap_tools ["create_work_request"]
   @local_operator_tools ["add_work_request_comment", "record_work_request_operator_decision"]
   @local_trusted_work_request_read_tools [
     "list_work_requests",
@@ -82,19 +79,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @local_operator_provenance_max_length 512
   @local_assignment_claim_tool "claim_local_assignment"
   @local_architect_assignment_claim_tool "claim_local_architect_assignment"
-  @session_claim_tools ["claim_work_key", "claim_private_handoff", @local_assignment_claim_tool, @local_architect_assignment_claim_tool]
-  @private_handoff_claim_keys [
-    "mode",
-    "path",
-    "target",
-    "grant_id",
-    "display_key",
-    "work_package_id",
-    "database",
-    "namespace_repo_root"
-  ]
+  @session_claim_tools [@local_assignment_claim_tool, @local_architect_assignment_claim_tool]
   @worker_tools [
-    "claim_work_key",
     "get_current_assignment",
     "read_context",
     "read_task_plan",
@@ -117,7 +103,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "attach_review_suite_result",
     "mark_ready"
   ]
-  @bound_worker_tools @worker_tools -- ["claim_work_key"]
   @shared_worker_architect_tools ["add_comment", "list_comments", "resolve_comment", "resolve_blocker", "read_guidance_request"]
   @architect_tools [
     "create_child_work_package",
@@ -210,23 +195,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "status",
     "title"
   ]
-  @child_worker_template_keys ["capabilities", "expires_at", "secret_handoff"]
-  @child_worker_secret_handoff_keys ["claimed_by", "mode", "store_dir"]
-  @child_worker_secret_handoff_payload_keys [
-    :claimed_by,
-    :claimed_by_required,
-    :display_key,
-    :env_var,
-    :mode,
-    :namespace_repo_root,
-    :path,
-    :run_mcp_command,
-    :secret_in_stdout,
-    :status,
-    :store,
-    :target,
-    :work_package_id
-  ]
+  @child_worker_template_keys ["capabilities", "expires_at", "claimed_by"]
   @child_worker_capabilities ["worker:claim", "worker:lifecycle.transition"]
   @child_worker_ready_status "ready_for_worker"
   @child_worker_resettable_statuses ["claimed", "planning", "implementing", "reviewing", "ci_waiting", "blocked"]
@@ -279,7 +248,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       session: Keyword.get(opts, :session),
       state_key: state_key,
       state_key_version: nil,
-      local_daemon_trusted: Keyword.get(opts, :local_daemon_trusted, false),
+      local_daemon_trusted: Keyword.get(opts, :local_daemon_trusted, config.local_daemon_trusted),
       state_key_explicit: state_key_explicit?,
       session_refresh_required: false,
       initialized: Keyword.get(opts, :initialized, false)
@@ -773,13 +742,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp handle_batch(payloads, %__MODULE__{} = server) do
     {items, _claimed?} =
       Enum.map_reduce(payloads, false, fn payload, claimed? ->
-        if claimed? and batch_claim_work_key_request?(payload, server) do
-          {{payload, batch_claim_work_key_rebind_item(payload, server)}, true}
+        if claimed? and batch_session_claim_request?(payload, server) do
+          {{payload, batch_session_claim_rebind_item(payload, server)}, true}
         else
           item = handle_batch_item(payload, server)
 
           claim_succeeded? =
-            batch_claim_work_key_request?(payload, server) and batch_claim_work_key_success?(item, server)
+            batch_session_claim_request?(payload, server) and batch_session_claim_success?(item, server)
 
           {{payload, item}, claimed? or claim_succeeded?}
         end
@@ -804,50 +773,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         if batch_assignment_release_success?(payload, response, server), do: updated_server, else: server
 
       {payload, {_response, %__MODULE__{session: %Session{}} = updated_server}}, server ->
-        if batch_claim_work_key_request?(payload, server), do: updated_server, else: server
+        if batch_session_claim_request?(payload, server), do: updated_server, else: server
 
       _item, server ->
         server
     end)
   end
 
-  defp batch_claim_work_key_success?(
+  defp batch_session_claim_success?(
          {%{"result" => %{"structuredContent" => %{"assignment" => _assignment}}}, %__MODULE__{}},
          %__MODULE__{}
        ),
        do: true
 
-  defp batch_claim_work_key_success?({nil, %__MODULE__{session: %Session{} = updated_session}}, %__MODULE__{session: original_session}) do
+  defp batch_session_claim_success?({nil, %__MODULE__{session: %Session{} = updated_session}}, %__MODULE__{session: original_session}) do
     original_session == nil or updated_session != original_session
   end
 
-  defp batch_claim_work_key_success?(_item, %__MODULE__{}), do: false
+  defp batch_session_claim_success?(_item, %__MODULE__{}), do: false
 
-  defp batch_claim_work_key_request?(
+  defp batch_session_claim_request?(
          %{"jsonrpc" => "2.0", "id" => id, "method" => "tools/call", "params" => %{"name" => name}},
          %__MODULE__{initialized: true}
        )
        when name in @session_claim_tools and valid_request_id(id),
        do: true
 
-  defp batch_claim_work_key_request?(%{"jsonrpc" => "2.0", "id" => _id, "method" => "tools/call"}, %__MODULE__{initialized: true}),
+  defp batch_session_claim_request?(%{"jsonrpc" => "2.0", "id" => _id, "method" => "tools/call"}, %__MODULE__{initialized: true}),
     do: false
 
-  defp batch_claim_work_key_request?(
+  defp batch_session_claim_request?(
          %{"jsonrpc" => "2.0", "method" => "tools/call", "params" => %{"name" => name}},
          %__MODULE__{initialized: true}
        )
        when name in @session_claim_tools,
        do: true
 
-  defp batch_claim_work_key_request?(_payload, %__MODULE__{}), do: false
+  defp batch_session_claim_request?(_payload, %__MODULE__{}), do: false
 
-  defp batch_claim_work_key_rebind_item(%{"id" => id, "params" => %{"name" => name}}, %__MODULE__{} = server)
+  defp batch_session_claim_rebind_item(%{"id" => id, "params" => %{"name" => name}}, %__MODULE__{} = server)
        when valid_request_id(id) and name in @session_claim_tools do
     {error_response(id, -32_001, "Unauthorized", %{"tool" => name, "reason" => "session_already_bound"}), server}
   end
 
-  defp batch_claim_work_key_rebind_item(_payload, %__MODULE__{} = server), do: {nil, server}
+  defp batch_session_claim_rebind_item(_payload, %__MODULE__{} = server), do: {nil, server}
 
   defp batch_assignment_release_success?(
          %{"jsonrpc" => "2.0", "id" => id, "method" => "tools/call", "params" => %{"name" => @assignment_release_tool}},
@@ -939,24 +908,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with :ok <- authorize_solo_tool_call(server, name),
          {:ok, arguments} <- solo_tool_arguments(params, name) do
       solo_tool(name, arguments, server)
-    else
-      {:error, code, message, data} -> {:error, code, message, data}
-    end
-  end
-
-  defp dispatch("tools/call", %{"name" => "claim_work_key"} = params, %__MODULE__{} = server) do
-    with {:ok, _arguments} <- worker_tool_arguments(params, "claim_work_key"),
-         {:ok, result, session} <- claim_work_key(params, server) do
-      {:ok, tool_result(result), %{server | session: session, session_refresh_required: false}}
-    else
-      {:error, code, message, data} -> {:error, code, message, data}
-    end
-  end
-
-  defp dispatch("tools/call", %{"name" => "claim_private_handoff"} = params, %__MODULE__{} = server) do
-    with {:ok, _arguments} <- bootstrap_tool_arguments(params, "claim_private_handoff"),
-         {:ok, result, session} <- claim_private_handoff(params, server) do
-      {:ok, tool_result(result), %{server | session: session, session_refresh_required: false}}
     else
       {:error, code, message, data} -> {:error, code, message, data}
     end
@@ -1337,6 +1288,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp normalized_database(_database), do: nil
 
+  defp normalize_optional_value(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_optional_value(nil), do: nil
+  defp normalize_optional_value(value), do: value
+
   defp sqlite_file_uri?("file:" <> _uri), do: true
   defp sqlite_file_uri?(_database), do: false
 
@@ -1631,10 +1592,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
-  defp bootstrap_tool_description("claim_private_handoff") do
-    "Safely bind the MCP session from redacted local-private-file handoff metadata without passing a raw work key."
-  end
-
   defp bootstrap_tool_description("create_work_request") do
     "Create a local Symphony++ WorkRequest with creator provenance and return a redacted architect handoff."
   end
@@ -1818,45 +1775,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp solo_tool_input_schema(name), do: SoloTools.input_schema(name)
 
-  defp bootstrap_tool_input_schema("claim_private_handoff") do
-    handoff_schema =
-      schema(
-        %{
-          "mode" => string_enum_schema(["local-private-file"]),
-          "path" => string_schema(),
-          "target" => string_schema(),
-          "grant_id" => string_schema(),
-          "display_key" => string_schema(),
-          "work_package_id" => string_schema(),
-          "database" => nullable_string_schema(),
-          "namespace_repo_root" => string_schema()
-        },
-        ["mode", "path", "target", "grant_id", "display_key", "work_package_id"]
-      )
-
-    schema(
-      %{
-        "claimed_by" => string_schema(),
-        "private_handoff" => handoff_schema,
-        "mode" => string_enum_schema(["local-private-file"]),
-        "path" => string_schema(),
-        "target" => string_schema(),
-        "grant_id" => string_schema(),
-        "display_key" => string_schema(),
-        "work_package_id" => string_schema(),
-        "database" => nullable_string_schema(),
-        "namespace_repo_root" => string_schema()
-      },
-      ["claimed_by"]
-    )
-    |> always_validate(%{
-      "anyOf" => [
-        %{"required" => ["private_handoff"]},
-        %{"required" => ["mode", "path", "target", "grant_id", "display_key", "work_package_id"]}
-      ]
-    })
-  end
-
   defp bootstrap_tool_input_schema("create_work_request") do
     schema(
       %{
@@ -1931,16 +1849,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "caller_id" => string_schema(),
         "claimed_by" => string_schema()
       },
-      ["work_request_id", "architect_anchor_work_package_id", "repo", "base_branch", "caller_id", "claimed_by"]
+      ["work_request_id"]
     )
   end
 
   defp assignment_release_tool_input_schema do
     schema(%{"reason" => described_string_schema("Optional non-secret release reason; secrets are redacted before storage.")}, [])
-  end
-
-  defp worker_tool_input_schema("claim_work_key") do
-    schema(%{"secret" => string_schema(), "claimed_by" => string_schema()}, ["secret", "claimed_by"])
   end
 
   defp worker_tool_input_schema(@local_assignment_claim_tool) do
@@ -1955,7 +1869,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "caller_id" => string_schema(),
         "claimed_by" => string_schema()
       },
-      ["repo", "base_branch", "work_package_id", "branch", "worktree_path", "caller_id", "claimed_by"]
+      ["work_package_id"]
     )
   end
 
@@ -2143,7 +2057,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_input_schema("create_child_work_package"), do: schema(%{"package" => object_schema()}, ["package"])
 
   defp architect_tool_input_schema("mint_child_worker_key") do
-    schema(%{"work_package_id" => string_schema(), "template" => object_schema()}, ["work_package_id", "template"])
+    schema(%{"work_package_id" => string_schema(), "template" => object_schema()}, ["work_package_id"])
   end
 
   defp architect_tool_input_schema("revoke_child_worker_key") do
@@ -2481,19 +2395,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       %{
         "work_request_id" => string_schema(),
         "planned_slice_id" => string_schema(),
-        "claimed_by" => string_schema(),
-        "legacy_private_handoff" => Map.put(boolean_schema(), "description", "recovery-only path for private-store handoff replay; normal dispatch returns ledger-backed worker bootstrap."),
-        "secret_handoff" => described_string_schema("Legacy recovery-only handoff mode. Rejected unless legacy_private_handoff is true."),
-        "secret_store_dir" => described_string_schema("Legacy recovery-only private handoff store directory. Rejected unless legacy_private_handoff is true."),
-        "symphony_repo_root" =>
-          described_string_schema(
-            "Optional Symphony++ helper/namespace repo root containing scripts/sympp-worker-secret.* for legacy private handoff. Default ledger-claim dispatch accepts but ignores it."
-          ),
-        "repo_root" =>
-          described_string_schema("Legacy compatibility alias for stale clients; use symphony_repo_root for new calls.")
-          |> Map.put("deprecated", true)
+        "claimed_by" => described_string_schema("Optional claim display name to prefill worker bootstrap metadata.")
       },
-      ["work_request_id", "planned_slice_id", "claimed_by"]
+      ["work_request_id", "planned_slice_id"]
     )
   end
 
@@ -2575,7 +2479,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "worker"}}}, %Config{}),
-    do: {:ok, [health_tool_spec(), assignment_release_tool_spec() | Enum.map(@bound_worker_tools, &worker_tool_spec/1)]}
+    do: {:ok, [health_tool_spec(), assignment_release_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
 
   defp tool_specs_for_session_result({:ok, %Session{}}, %Config{}), do: {:error, {:unauthorized, :unsupported_grant_role}}
 
@@ -2586,10 +2490,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp claimable_tool_specs(%Config{} = config) do
-    [health_tool_spec(), worker_tool_spec("claim_work_key")] ++
+    [health_tool_spec()] ++
       local_assignment_claim_tool_specs(config) ++
-      local_architect_assignment_claim_tool_specs(config) ++
-      [bootstrap_tool_spec("claim_private_handoff")]
+      local_architect_assignment_claim_tool_specs(config)
   end
 
   defp unbound_tool_specs(%Config{} = config), do: unbound_tool_specs_for_config(config)
@@ -2598,35 +2501,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     [health_tool_spec(), assignment_release_tool_spec()] ++
       Enum.map(@solo_tools, &solo_tool_spec/1) ++
       unbound_scoped_tool_specs() ++
-      [worker_tool_spec("claim_work_key")] ++
       local_assignment_claim_tool_specs(config) ++
       local_architect_assignment_claim_tool_specs(config) ++
       Enum.map(@bootstrap_tools, &bootstrap_tool_spec/1)
   end
 
-  defp trusted_local_unbound_http_session?(%__MODULE__{
-         initialized: true,
-         session_refresh_required: false,
-         config: %Config{mode: :http, local_daemon_trusted: true},
-         local_daemon_trusted: true,
-         state_key_explicit: true,
-         session: nil
-       }),
-       do: true
+  defp local_assignment_claim_tool_specs(%Config{}), do: [worker_tool_spec(@local_assignment_claim_tool)]
 
-  defp trusted_local_unbound_http_session?(%__MODULE__{}), do: false
-
-  defp local_assignment_claim_tool_specs(%Config{mode: :http}), do: [worker_tool_spec(@local_assignment_claim_tool)]
-  defp local_assignment_claim_tool_specs(%Config{}), do: []
-
-  defp local_architect_assignment_claim_tool_specs(%Config{mode: :http}), do: [local_architect_assignment_claim_tool_spec()]
-  defp local_architect_assignment_claim_tool_specs(%Config{}), do: []
+  defp local_architect_assignment_claim_tool_specs(%Config{}), do: [local_architect_assignment_claim_tool_spec()]
 
   defp architect_tool_specs, do: Enum.map(@architect_tools, &architect_tool_spec/1)
 
   defp unbound_scoped_tool_specs do
     Enum.map(@architect_tools -- @shared_worker_architect_tools, &architect_tool_spec/1) ++
-      Enum.map(@bound_worker_tools -- @shared_worker_architect_tools, &worker_tool_spec/1) ++
+      Enum.map(@worker_tools -- @shared_worker_architect_tools, &worker_tool_spec/1) ++
       Enum.map(@shared_worker_architect_tools, &shared_worker_architect_tool_spec/1)
   end
 
@@ -2967,20 +2855,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp handle_session_claim_tool("claim_work_key", params, id, %__MODULE__{} = server) do
-    handle_claim_work_key(params, id, server)
-  end
-
-  defp handle_session_claim_tool("claim_private_handoff", params, id, %__MODULE__{} = server) do
-    case claim_private_handoff(params, server) do
-      {:ok, result, session} ->
-        {response(id, tool_result(result)), %{server | session: session, session_refresh_required: false}}
-
-      {:error, code, message, data} ->
-        {error_response(id, code, message, data), server}
-    end
-  end
-
   defp handle_session_claim_tool(@local_assignment_claim_tool, params, id, %__MODULE__{} = server) do
     case claim_local_assignment(params, server) do
       {:ok, result, session} ->
@@ -3014,17 +2888,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp handle_session_claim_tool_notification("claim_work_key", params, %__MODULE__{} = server) do
-    handle_claim_work_key_notification(params, server)
-  end
-
-  defp handle_session_claim_tool_notification("claim_private_handoff", params, %__MODULE__{} = server) do
-    case claim_private_handoff(params, server) do
-      {:ok, _result, session} -> {nil, %{server | session: session, session_refresh_required: false}}
-      {:error, _code, _message, _data} -> {nil, server}
-    end
-  end
-
   defp handle_session_claim_tool_notification(@local_assignment_claim_tool, params, %__MODULE__{} = server) do
     case claim_local_assignment(params, server) do
       {:ok, _result, session} -> {nil, %{server | session: session, session_refresh_required: false}}
@@ -3039,72 +2902,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp handle_claim_work_key(params, id, %__MODULE__{} = server) do
-    case claim_work_key(params, server) do
-      {:ok, result, session} ->
-        {response(id, tool_result(result)), %{server | session: session, session_refresh_required: false}}
-
-      {:error, code, message, data} ->
-        {error_response(id, code, message, data), server}
-    end
-  end
-
-  defp handle_claim_work_key_notification(params, %__MODULE__{} = server) do
-    case claim_work_key(params, server) do
-      {:ok, _result, session} -> {nil, %{server | session: session, session_refresh_required: false}}
-      {:error, _code, _message, _data} -> {nil, server}
-    end
-  end
-
-  defp claim_work_key(params, %__MODULE__{config: config, session: %Session{} = session}) do
-    with {:ok, arguments} <- worker_tool_arguments(params, "claim_work_key"),
-         {:ok, secret} <- required_argument(arguments, "secret"),
-         {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
-         :ok <- require_full_secret(secret),
-         :ok <- prepare_mcp_repository(config.repo) do
-      proof_hash = WorkKey.secret_hash(secret)
-
-      case claim_work_key_with_bound_session(config.repo, session, secret, proof_hash, claimed_by) do
-        {:ok, _result, _session} = success -> success
-        {:error, reason} -> claim_error(reason)
-      end
-    else
-      {:error, code, message, data} -> {:error, code, message, data}
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_work_key", "reason" => reason}}
-      {:error, reason} -> claim_error(reason)
-    end
-  rescue
-    _error -> {:error, -32_000, "Server error", %{"tool" => "claim_work_key", "reason" => "ledger_unavailable"}}
-  end
-
-  defp claim_work_key(params, %__MODULE__{config: config}) do
-    with {:ok, arguments} <- worker_tool_arguments(params, "claim_work_key"),
-         {:ok, secret} <- required_argument(arguments, "secret"),
-         {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
-         :ok <- require_full_secret(secret),
-         :ok <- prepare_mcp_repository(config.repo) do
-      proof_hash = WorkKey.secret_hash(secret)
-
-      case claim_unbound_work_key(config.repo, secret, proof_hash, claimed_by) do
-        {:ok, _result, _session} = success -> success
-        {:error, reason} -> claim_error(reason)
-      end
-    else
-      {:error, code, message, data} -> {:error, code, message, data}
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_work_key", "reason" => reason}}
-      {:error, reason} -> claim_error(reason)
-    end
-  rescue
-    _error -> {:error, -32_000, "Server error", %{"tool" => "claim_work_key", "reason" => "ledger_unavailable"}}
-  end
-
   defp claim_local_assignment(params, %__MODULE__{config: config, session: session} = server) do
     with {:ok, arguments} <- worker_tool_arguments(params, @local_assignment_claim_tool),
-         {:ok, claim} <- local_assignment_claim_arguments(arguments),
+         {:ok, claim} <- local_assignment_claim_arguments(arguments, server),
          :ok <- require_local_assignment_claim_mode(server),
          :ok <- require_local_assignment_rebind_allowed(config.repo, session, claim),
          :ok <- prepare_mcp_repository(config.repo),
          {:ok, work_package} <- WorkPackageRepository.get(config.repo, claim.work_package_id),
+         claim <- hydrate_local_assignment_claim(config.repo, work_package, claim),
          :ok <- validate_local_assignment_scope(config.repo, work_package, claim),
          {:ok, lease, lease_action} <- ensure_local_assignment_claim_lease(config.repo, work_package, claim) do
       case claim_local_assignment_session(config.repo, work_package, claim) do
@@ -3124,15 +2929,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     _error -> {:error, -32_000, "Server error", %{"tool" => @local_assignment_claim_tool, "reason" => "ledger_unavailable"}}
   end
 
-  defp local_assignment_claim_arguments(arguments) do
-    with {:ok, repo} <- required_argument(arguments, "repo"),
-         {:ok, base_branch} <- required_argument(arguments, "base_branch"),
-         {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
+  defp local_assignment_claim_arguments(arguments, %__MODULE__{} = server) do
+    with {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
+         {:ok, repo} <- optional_string_argument(arguments, "repo"),
+         {:ok, base_branch} <- optional_string_argument(arguments, "base_branch"),
          {:ok, work_request_id} <- optional_string_argument(arguments, "work_request_id"),
-         {:ok, branch} <- required_argument(arguments, "branch"),
-         {:ok, worktree_path} <- required_argument(arguments, "worktree_path"),
-         {:ok, caller_id} <- required_argument(arguments, "caller_id"),
-         {:ok, claimed_by} <- required_argument(arguments, "claimed_by") do
+         {:ok, branch} <- optional_string_argument(arguments, "branch"),
+         {:ok, worktree_path} <- optional_string_argument(arguments, "worktree_path"),
+         {:ok, caller_id} <- optional_string_argument(arguments, "caller_id", default_caller_id(server)),
+         {:ok, claimed_by} <- optional_string_argument(arguments, "claimed_by", default_claimed_by(server)) do
       {:ok,
        %{
          repo: repo,
@@ -3140,26 +2945,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          work_package_id: work_package_id,
          work_request_id: work_request_id,
          branch: branch,
-         worktree_path: normalize_local_assignment_path(worktree_path),
+         worktree_path: normalize_optional_local_assignment_path(worktree_path),
+         mode: local_claim_transport_mode(server),
          caller_id: caller_id,
          claimed_by: claimed_by
        }}
     end
   end
 
+  defp hydrate_local_assignment_claim(repo, %WorkPackage{} = work_package, claim) do
+    worktree_path = claim.worktree_path || normalize_optional_local_assignment_path(work_package.worktree_path)
+    branch = claim.branch || local_assignment_worktree_branch_or_nil(worktree_path)
+
+    %{
+      claim
+      | repo: claim.repo || work_package.repo,
+        base_branch: claim.base_branch || work_package.base_branch,
+        work_request_id: claim.work_request_id || local_assignment_work_request_id(repo, work_package.id),
+        branch: branch,
+        worktree_path: worktree_path
+    }
+  end
+
+  defp require_local_assignment_claim_mode(%__MODULE__{initialized: false}), do: {:error, :local_mcp_session_required}
+
   defp require_local_assignment_claim_mode(%__MODULE__{
-         config: %Config{mode: :http},
-         initialized: true,
+         config: %Config{mode: :http, local_daemon_trusted: true} = config,
          local_daemon_trusted: true,
          state_key_explicit: true
-       }),
-       do: :ok
+       }) do
+    require_local_operator_database(config)
+  end
 
-  defp require_local_assignment_claim_mode(%__MODULE__{config: %Config{mode: :http}, state_key_explicit: true}),
-    do: {:error, :local_daemon_trust_required}
+  defp require_local_assignment_claim_mode(%__MODULE__{config: %Config{mode: :http}, state_key_explicit: false}),
+    do: {:error, :local_mcp_session_required}
 
-  defp require_local_assignment_claim_mode(%__MODULE__{config: %Config{mode: :http}}), do: {:error, :local_mcp_session_required}
-  defp require_local_assignment_claim_mode(%__MODULE__{}), do: {:error, :local_mcp_required}
+  defp require_local_assignment_claim_mode(%__MODULE__{config: %Config{mode: :http}}), do: {:error, :local_daemon_trust_required}
+
+  # STDIO MCP servers are local agent processes; HTTP local claims require the
+  # explicit trusted-state checks above because that transport has ambient reach.
+  defp require_local_assignment_claim_mode(%__MODULE__{}), do: :ok
 
   defp require_local_assignment_rebind_allowed(_repo, nil, _claim), do: :ok
 
@@ -3179,8 +3004,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp validate_local_assignment_scope(repo, %WorkPackage{} = work_package, claim) do
     with :ok <- require_local_value_match(work_package.repo, claim.repo, :repo_scope_mismatch),
          :ok <- require_local_value_match(work_package.base_branch, claim.base_branch, :base_branch_scope_mismatch),
-         :ok <- require_local_worktree_scope(work_package, claim.worktree_path),
-         :ok <- require_local_branch_scope(work_package, claim.branch, claim.worktree_path),
+         :ok <- require_optional_local_worktree_scope(work_package, claim.worktree_path),
+         :ok <- require_optional_local_branch_scope(work_package, claim.branch, claim.worktree_path),
          :ok <- require_live_local_work_package(work_package) do
       validate_local_work_request_scope(repo, work_package, claim.work_request_id)
     end
@@ -3188,6 +3013,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_local_value_match(value, value, _reason) when is_binary(value), do: :ok
   defp require_local_value_match(_expected, _actual, reason), do: {:error, reason}
+
+  defp require_optional_local_branch_scope(%WorkPackage{}, nil, _worktree_path), do: :ok
+  defp require_optional_local_branch_scope(%WorkPackage{} = work_package, branch, worktree_path), do: require_local_branch_scope(work_package, branch, worktree_path)
 
   defp require_local_branch_scope(%WorkPackage{} = work_package, branch, worktree_path) do
     case local_assignment_worktree_branch(worktree_path) do
@@ -3356,6 +3184,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp require_optional_local_worktree_scope(%WorkPackage{}, nil), do: :ok
+  defp require_optional_local_worktree_scope(%WorkPackage{} = work_package, claim_worktree_path), do: require_local_worktree_scope(work_package, claim_worktree_path)
+
   defp require_live_local_work_package(%WorkPackage{status: status})
        when status in ["merged", "merged_into_phase", "closed", "abandoned"] do
     {:error, :work_package_terminal}
@@ -3427,7 +3258,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         {:error, :claim_lease_not_active}
 
       true ->
-        replace_authority_lost_local_assignment_claim_lease(repo, work_package_id, lease, actor, now)
+        {:error, :claim_lease_active_for_other_actor}
     end
   end
 
@@ -3441,55 +3272,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
       {:error, reason} ->
         {:error, reason}
-    end
-  end
-
-  defp replace_authority_lost_local_assignment_claim_lease(repo, work_package_id, %ClaimLease{} = lease, actor, %DateTime{} = now) do
-    cond do
-      local_assignment_same_claim_owner?(lease, actor) ->
-        {:error, :claim_lease_active_for_other_actor}
-
-      local_assignment_lease_has_live_grant?(repo, work_package_id, lease, now) ->
-        {:error, :claim_lease_active_for_other_actor}
-
-      true ->
-        release_authority_lost_local_assignment_claim_lease(repo, work_package_id, lease, actor)
-    end
-  end
-
-  defp local_assignment_same_claim_owner?(%ClaimLease{} = lease, actor) when is_map(actor) do
-    case {local_assignment_claim_owner_id(lease.actor_id), local_assignment_claim_owner_id(actor["actor_id"])} do
-      {owner_id, owner_id} when is_binary(owner_id) -> true
-      _ -> false
-    end
-  end
-
-  defp local_assignment_claim_owner_id("local:" <> material) do
-    case String.split(material, ":", parts: 2) do
-      [owner_id, _actor_id] when owner_id != "" -> owner_id
-      _ -> nil
-    end
-  end
-
-  defp local_assignment_claim_owner_id(_actor_id), do: nil
-
-  defp release_authority_lost_local_assignment_claim_lease(repo, work_package_id, %ClaimLease{} = lease, actor) do
-    case ClaimLeaseService.release(repo, lease.id, reason: "local_assignment_claim_authority_lost") do
-      {:ok, %ClaimLease{}} ->
-        claim_replacement_local_assignment_lease(repo, work_package_id, actor)
-
-      {:error, :claim_stale} ->
-        reclaim_local_assignment_claim_lease(repo, work_package_id, actor, "local_assignment_claim_stale")
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp claim_replacement_local_assignment_lease(repo, work_package_id, actor) do
-    case claim_new_local_assignment_lease(repo, work_package_id, actor) do
-      {:ok, %ClaimLease{} = replacement, :created} -> {:ok, replacement, :reclaimed}
-      result -> result
     end
   end
 
@@ -3515,25 +3297,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         {:error, reason}
     end
   end
-
-  defp local_assignment_lease_has_live_grant?(repo, work_package_id, %ClaimLease{actor_display_name: claimed_by}, %DateTime{} = now)
-       when is_binary(claimed_by) do
-    query =
-      from(grant in AccessGrant,
-        where: grant.work_package_id == ^work_package_id,
-        where: grant.grant_role == "worker",
-        where: grant.claimed_by == ^claimed_by,
-        where: not is_nil(grant.claimed_at),
-        where: is_nil(grant.revoked_at),
-        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
-        select: 1,
-        limit: 1
-      )
-
-    repo.one(query) == 1
-  end
-
-  defp local_assignment_lease_has_live_grant?(_repo, _work_package_id, %ClaimLease{}, %DateTime{}), do: true
 
   defp reclaim_local_assignment_claim_lease(repo, work_package_id, actor, reason) do
     case ClaimLeaseService.reclaim_stale(repo, work_package_id, actor,
@@ -3588,29 +3351,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp local_assignment_actor(claim) do
     owner_material =
       [
-        claim.repo,
-        claim.base_branch,
+        "worker",
         claim.work_package_id,
-        claim.branch,
-        claim.worktree_path,
-        claim.claimed_by
-      ]
-      |> Enum.join("\0")
-
-    material =
-      [
-        claim.repo,
-        claim.base_branch,
-        claim.work_package_id,
-        claim.branch,
-        claim.worktree_path,
-        claim.caller_id,
         claim.claimed_by
       ]
       |> Enum.join("\0")
 
     owner_id = local_assignment_actor_hash(owner_material)
-    actor_id = local_assignment_actor_hash(material)
+
+    actor_material =
+      [
+        "worker",
+        claim.work_package_id,
+        claim.claimed_by,
+        claim.caller_id
+      ]
+      |> Enum.join("\0")
+
+    actor_id = local_assignment_actor_hash(actor_material)
 
     %{
       "actor_kind" => "agent",
@@ -3652,7 +3410,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp local_assignment_claim_payload(claim, %ClaimLease{} = lease, lease_action, claim_event) do
     %{
       "tool" => @local_assignment_claim_tool,
-      "mode" => "local-http",
+      "mode" => claim.mode,
       "repo" => claim.repo,
       "base_branch" => claim.base_branch,
       "work_package_id" => claim.work_package_id,
@@ -3667,6 +3425,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "lifecycle_state" => "active",
       "reason_codes" => local_assignment_claim_reason_codes(lease_action, lease)
     }
+    |> drop_nil_values()
     |> maybe_put_claim_event(claim_event)
   end
 
@@ -3700,6 +3459,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "lifecycle_state" => "active",
       "reason_codes" => local_assignment_claim_reason_codes(:reclaimed, lease)
     }
+    |> drop_nil_values()
   end
 
   defp maybe_put_claim_event(payload, nil), do: payload
@@ -3733,11 +3493,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp claim_local_architect_assignment(params, %__MODULE__{config: config, session: session} = server) do
     with {:ok, arguments} <- local_architect_assignment_claim_tool_arguments(params),
-         {:ok, claim} <- local_architect_assignment_claim_arguments(arguments),
+         {:ok, claim} <- local_architect_assignment_claim_arguments(arguments, server),
          :ok <- require_local_architect_assignment_claim_mode(server),
-         :ok <- require_local_architect_assignment_rebind_allowed(config.repo, session, claim),
          :ok <- prepare_mcp_repository(config.repo),
          {:ok, work_request} <- WorkRequestRepository.get(config.repo, claim.work_request_id),
+         claim <- hydrate_local_architect_assignment_claim(work_request, claim),
+         :ok <- require_local_architect_assignment_rebind_allowed(config.repo, session, claim),
          {:ok, anchor} <- WorkPackageRepository.get(config.repo, claim.architect_anchor_work_package_id),
          :ok <- validate_local_architect_assignment_scope(work_request, anchor, claim),
          {:ok, lease, lease_action} <- ensure_local_architect_assignment_claim_lease(config.repo, anchor, claim) do
@@ -3758,14 +3519,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     _error -> {:error, -32_000, "Server error", %{"tool" => @local_architect_assignment_claim_tool, "reason" => "ledger_unavailable"}}
   end
 
-  defp local_architect_assignment_claim_arguments(arguments) do
+  defp local_architect_assignment_claim_arguments(arguments, %__MODULE__{} = server) do
     with {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
-         {:ok, anchor_id} <- required_argument(arguments, "architect_anchor_work_package_id"),
-         {:ok, repo} <- required_argument(arguments, "repo"),
-         {:ok, base_branch} <- required_argument(arguments, "base_branch"),
+         {:ok, anchor_id} <- optional_string_argument(arguments, "architect_anchor_work_package_id"),
+         {:ok, repo} <- optional_string_argument(arguments, "repo"),
+         {:ok, base_branch} <- optional_string_argument(arguments, "base_branch"),
          {:ok, phase_id} <- optional_string_argument(arguments, "phase_id"),
-         {:ok, caller_id} <- required_argument(arguments, "caller_id"),
-         {:ok, claimed_by} <- required_argument(arguments, "claimed_by") do
+         {:ok, caller_id} <- optional_string_argument(arguments, "caller_id", default_caller_id(server)),
+         {:ok, claimed_by} <- optional_string_argument(arguments, "claimed_by", default_claimed_by(server)) do
       {:ok,
        %{
          work_request_id: work_request_id,
@@ -3773,10 +3534,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          repo: repo,
          base_branch: base_branch,
          phase_id: phase_id,
+         mode: local_claim_transport_mode(server),
          caller_id: caller_id,
          claimed_by: claimed_by
        }}
     end
+  end
+
+  defp hydrate_local_architect_assignment_claim(%WorkRequest{} = work_request, claim) do
+    anchor_id = claim.architect_anchor_work_package_id || ArchitectHandoff.anchor_id_for_work_request(work_request)
+
+    %{
+      claim
+      | architect_anchor_work_package_id: anchor_id,
+        repo: claim.repo || work_request.repo,
+        base_branch: claim.base_branch || work_request.base_branch,
+        phase_id: claim.phase_id || ArchitectHandoff.phase_id_for_work_request(work_request)
+    }
   end
 
   defp require_local_architect_assignment_claim_mode(%__MODULE__{config: config} = server) do
@@ -3838,7 +3612,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     case ClaimLeaseService.current_for_work_package(repo, anchor.id) do
       {:ok, %ClaimLease{} = lease} ->
-        renew_local_architect_assignment_claim_lease(repo, anchor, claim, lease, actor)
+        renew_local_architect_assignment_claim_lease(repo, anchor, lease, actor)
 
       {:error, :not_found} ->
         claim_new_local_architect_assignment_lease(repo, anchor.id, actor)
@@ -3848,7 +3622,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp renew_local_architect_assignment_claim_lease(repo, %WorkPackage{} = anchor, claim, %ClaimLease{} = lease, actor) do
+  defp renew_local_architect_assignment_claim_lease(repo, %WorkPackage{} = anchor, %ClaimLease{} = lease, actor) do
     now = DateTime.utc_now(:microsecond)
 
     cond do
@@ -3865,7 +3639,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         {:error, :claim_lease_not_active}
 
       true ->
-        replace_authority_lost_local_architect_assignment_claim_lease(repo, anchor, claim, lease, actor, now)
+        {:error, :claim_lease_active_for_other_actor}
     end
   end
 
@@ -3882,61 +3656,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp replace_authority_lost_local_architect_assignment_claim_lease(repo, %WorkPackage{} = anchor, claim, %ClaimLease{} = lease, actor, %DateTime{} = now) do
-    cond do
-      local_assignment_same_claim_owner?(lease, actor) ->
-        {:error, :claim_lease_active_for_other_actor}
-
-      local_architect_assignment_lease_has_live_grant?(repo, anchor, claim, lease, now) ->
-        {:error, :claim_lease_active_for_other_actor}
-
-      true ->
-        release_authority_lost_local_architect_assignment_claim_lease(repo, anchor.id, lease, actor)
-    end
-  end
-
-  defp local_architect_assignment_lease_has_live_grant?(repo, %WorkPackage{} = anchor, claim, %ClaimLease{actor_display_name: claimed_by}, %DateTime{} = now)
-       when is_binary(claimed_by) do
-    query =
-      from(grant in AccessGrant,
-        where: grant.work_package_id == ^anchor.id,
-        where: grant.phase_id == ^anchor.phase_id,
-        where: grant.grant_role == "architect",
-        where: grant.scope_repo == ^claim.repo,
-        where: grant.scope_base_branch == ^claim.base_branch,
-        where: grant.claimed_by == ^claimed_by,
-        where: not is_nil(grant.claimed_at),
-        where: is_nil(grant.revoked_at),
-        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
-        select: 1,
-        limit: 1
-      )
-
-    repo.one(query) == 1
-  end
-
-  defp local_architect_assignment_lease_has_live_grant?(_repo, %WorkPackage{}, _claim, %ClaimLease{}, %DateTime{}), do: true
-
-  defp release_authority_lost_local_architect_assignment_claim_lease(repo, anchor_id, %ClaimLease{} = lease, actor) do
-    case ClaimLeaseService.release(repo, lease.id, reason: "local_architect_assignment_claim_authority_lost") do
-      {:ok, %ClaimLease{}} ->
-        claim_replacement_local_architect_assignment_lease(repo, anchor_id, actor)
-
-      {:error, :claim_stale} ->
-        reclaim_local_architect_assignment_claim_lease(repo, anchor_id, actor, "local_architect_assignment_claim_stale")
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp claim_replacement_local_architect_assignment_lease(repo, anchor_id, actor) do
-    case claim_new_local_architect_assignment_lease(repo, anchor_id, actor) do
-      {:ok, %ClaimLease{} = replacement, :created} -> {:ok, replacement, :reclaimed}
-      result -> result
-    end
-  end
-
   defp claim_new_local_architect_assignment_lease(repo, anchor_id, actor) do
     case ClaimLeaseService.claim(repo, anchor_id, actor, stale_after_ms: @local_assignment_claim_stale_after_ms) do
       {:ok, %ClaimLease{} = lease} -> {:ok, lease, :created}
@@ -3950,7 +3669,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     case ClaimLeaseService.current_for_work_package(repo, anchor_id) do
       {:ok, %ClaimLease{actor_id: ^requested_actor_id} = lease} ->
-        renew_local_architect_assignment_claim_lease(repo, %WorkPackage{id: anchor_id}, %{}, lease, actor)
+        renew_local_architect_assignment_claim_lease(repo, %WorkPackage{id: anchor_id}, lease, actor)
 
       {:ok, %ClaimLease{}} ->
         {:error, :active_claim_exists}
@@ -4029,27 +3748,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp local_architect_assignment_actor(claim) do
     owner_material =
       [
-        claim.repo,
-        claim.base_branch,
+        "architect",
         claim.work_request_id,
         claim.architect_anchor_work_package_id,
-        claim.claimed_by
-      ]
-      |> Enum.join("\0")
-
-    material =
-      [
-        claim.repo,
-        claim.base_branch,
-        claim.work_request_id,
-        claim.architect_anchor_work_package_id,
-        claim.caller_id,
         claim.claimed_by
       ]
       |> Enum.join("\0")
 
     owner_id = local_assignment_actor_hash(owner_material)
-    actor_id = local_assignment_actor_hash(material)
+
+    actor_material =
+      [
+        "architect",
+        claim.work_request_id,
+        claim.architect_anchor_work_package_id,
+        claim.claimed_by,
+        claim.caller_id
+      ]
+      |> Enum.join("\0")
+
+    actor_id = local_assignment_actor_hash(actor_material)
 
     %{
       "actor_kind" => "agent",
@@ -4087,7 +3805,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp local_architect_assignment_claim_payload(claim, %ClaimLease{} = lease, lease_action, claim_event) do
     %{
       "tool" => @local_architect_assignment_claim_tool,
-      "mode" => "local-http",
+      "mode" => claim.mode,
       "repo" => claim.repo,
       "base_branch" => claim.base_branch,
       "work_request_id" => claim.work_request_id,
@@ -4101,6 +3819,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "lifecycle_state" => "active",
       "reason_codes" => local_architect_assignment_claim_reason_codes(lease_action, lease)
     }
+    |> drop_nil_values()
     |> maybe_put_claim_event(claim_event)
   end
 
@@ -4141,6 +3860,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "lifecycle_state" => "active",
       "reason_codes" => local_architect_assignment_claim_reason_codes(:reclaimed, lease)
     }
+    |> drop_nil_values()
   end
 
   defp local_architect_assignment_claim_reason_codes(lease_action, %ClaimLease{} = lease) do
@@ -4166,6 +3886,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp release_failed_local_architect_assignment_lease(_repo, %ClaimLease{}, _lease_action, _reason), do: :ok
 
+  defp default_claimed_by(%__MODULE__{config: %Config{claimed_by: claimed_by}}) do
+    case normalize_optional_value(claimed_by) do
+      claimed_by when is_binary(claimed_by) -> claimed_by
+      nil -> "local-agent"
+    end
+  end
+
+  defp default_caller_id(%__MODULE__{state_key_explicit: true} = server) do
+    material =
+      :erlang.term_to_binary({server.config.mode, server.state_key})
+
+    "mcp-state:" <> local_assignment_actor_hash(material)
+  end
+
+  defp default_caller_id(%__MODULE__{config: %Config{mode: mode}}), do: "mcp-#{mode}:default"
+
+  defp local_claim_transport_mode(%__MODULE__{config: %Config{mode: :http}}), do: "local-http"
+  defp local_claim_transport_mode(%__MODULE__{config: %Config{mode: :stdio}}), do: "stdio"
+
+  defp local_assignment_work_request_id(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
+    repo.one(
+      from(planned_slice in PlannedSlice,
+        where: planned_slice.work_package_id == ^work_package_id,
+        order_by: [desc: planned_slice.dispatched_at, desc: planned_slice.updated_at, asc: planned_slice.id],
+        select: planned_slice.work_request_id,
+        limit: 1
+      )
+    )
+  end
+
+  defp local_assignment_worktree_branch_or_nil(nil), do: nil
+
+  defp local_assignment_worktree_branch_or_nil(worktree_path) do
+    case local_assignment_worktree_branch(worktree_path) do
+      {:ok, branch} -> branch
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp normalize_optional_local_assignment_path(nil), do: nil
+
+  defp normalize_optional_local_assignment_path(path) when is_binary(path) do
+    path
+    |> normalize_optional_value()
+    |> case do
+      nil -> nil
+      normalized -> normalize_local_assignment_path(normalized)
+    end
+  end
+
   defp normalize_local_assignment_path(path) when is_binary(path) do
     path
     |> String.trim()
@@ -4180,616 +3950,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp claim_private_handoff(params, %__MODULE__{config: config, session: %Session{} = session}) do
-    with {:ok, arguments} <- bootstrap_tool_arguments(params, "claim_private_handoff"),
-         {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
-         {:ok, handoff} <- private_handoff_argument(arguments),
-         :ok <- prepare_mcp_repository(config.repo),
-         {:ok, secret} <- private_handoff_secret(config, handoff, claimed_by) do
-      proof_hash = WorkKey.secret_hash(secret)
-
-      case claim_work_key_with_bound_session(config.repo, session, secret, proof_hash, claimed_by) do
-        {:ok, _result, _session} = success -> success
-        {:error, reason} -> private_handoff_claim_error(reason)
-      end
-    else
-      {:error, code, message, data} -> {:error, code, message, data}
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_private_handoff", "reason" => reason}}
-      {:error, reason} -> private_handoff_claim_error(reason)
-    end
-  rescue
-    _error -> {:error, -32_000, "Server error", %{"tool" => "claim_private_handoff", "reason" => "ledger_unavailable"}}
-  end
-
-  defp claim_private_handoff(params, %__MODULE__{config: config}) do
-    with {:ok, arguments} <- bootstrap_tool_arguments(params, "claim_private_handoff"),
-         {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
-         {:ok, handoff} <- private_handoff_argument(arguments),
-         :ok <- prepare_mcp_repository(config.repo),
-         {:ok, secret} <- private_handoff_secret(config, handoff, claimed_by) do
-      proof_hash = WorkKey.secret_hash(secret)
-
-      case claim_unbound_work_key(config.repo, secret, proof_hash, claimed_by) do
-        {:ok, _result, _session} = success -> success
-        {:error, reason} -> private_handoff_claim_error(reason)
-      end
-    else
-      {:error, code, message, data} -> {:error, code, message, data}
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_private_handoff", "reason" => reason}}
-      {:error, reason} -> private_handoff_claim_error(reason)
-    end
-  rescue
-    _error -> {:error, -32_000, "Server error", %{"tool" => "claim_private_handoff", "reason" => "ledger_unavailable"}}
-  end
-
-  defp private_handoff_argument(arguments) do
-    with :ok <- reject_private_handoff_secret_material(arguments),
-         {:ok, handoff} <- private_handoff_argument_payload(arguments),
-         :ok <- reject_private_handoff_secret_material(handoff),
-         :ok <- require_private_handoff_fields(handoff),
-         :ok <- require_private_handoff_mode(handoff) do
-      {:ok, handoff}
-    end
-  end
-
-  defp private_handoff_argument_payload(%{"private_handoff" => handoff} = arguments) when is_map(handoff) do
-    if Enum.any?(@private_handoff_claim_keys, &Map.has_key?(arguments, &1)) do
-      {:tool_error, "private_handoff_argument_conflict"}
-    else
-      {:ok, handoff}
-    end
-  end
-
-  defp private_handoff_argument_payload(%{"private_handoff" => _handoff}), do: {:tool_error, "invalid_private_handoff"}
-
-  defp private_handoff_argument_payload(arguments) do
-    handoff = Map.take(arguments, @private_handoff_claim_keys)
-    if map_size(handoff) == 0, do: {:tool_error, "missing_private_handoff"}, else: {:ok, handoff}
-  end
-
-  defp reject_private_handoff_secret_material(map) when is_map(map) do
-    forbidden = ["secret", "secret_hash", "run_mcp_command"]
-
-    if Enum.any?(forbidden, &private_handoff_key_present?(map, &1)) do
-      {:tool_error, "secret_material_not_allowed"}
-    else
-      :ok
-    end
-  end
-
-  defp private_handoff_key_present?(map, key) when is_map(map) do
-    Map.has_key?(map, key) or Map.has_key?(map, String.to_atom(key))
-  end
-
-  defp require_private_handoff_fields(handoff) do
-    Enum.find_value(["mode", "path", "target", "grant_id", "display_key", "work_package_id"], :ok, fn key ->
-      case private_handoff_string(handoff, key) do
-        {:ok, _value} -> nil
-        {:error, reason} -> {:tool_error, reason}
-      end
-    end)
-  end
-
-  defp require_private_handoff_mode(handoff) do
-    case private_handoff_string(handoff, "mode") do
-      {:ok, "local-private-file"} -> :ok
-      {:ok, _mode} -> {:tool_error, "unsupported_private_handoff_mode"}
-      {:error, reason} -> {:tool_error, reason}
-    end
-  end
-
-  defp private_handoff_secret(%Config{} = config, handoff, claimed_by) do
-    with {:ok, work_package_id} <- private_handoff_string(handoff, "work_package_id"),
-         {:ok, grant_id} <- private_handoff_string(handoff, "grant_id"),
-         {:ok, display_key} <- private_handoff_string(handoff, "display_key"),
-         {:ok, target} <- private_handoff_string(handoff, "target"),
-         {:ok, grant} <- AccessGrantRepository.get(config.repo, grant_id),
-         {:ok, work_package} <- WorkPackageRepository.get(config.repo, work_package_id),
-         :ok <- validate_private_handoff_grant(grant, work_package, display_key, target),
-         :ok <- AccessGrantService.require_live_package_authority(config.repo, grant) do
-      read_private_handoff_secret_from_known_store(work_package, grant, handoff, config, claimed_by)
-    end
-  end
-
-  defp validate_private_handoff_grant(%AccessGrant{} = grant, %WorkPackage{} = work_package, display_key, target) do
-    expected_target = "SymphonyPlusPlus:worker:#{work_package.id}:#{grant.display_key}:#{grant.id}"
-
-    cond do
-      grant.work_package_id != work_package.id -> {:error, :private_handoff_metadata_mismatch}
-      grant.display_key != display_key -> {:error, :private_handoff_metadata_mismatch}
-      target != expected_target -> {:error, :private_handoff_metadata_mismatch}
-      true -> :ok
-    end
-  end
-
-  defp read_private_handoff_secret_from_known_store(%WorkPackage{} = work_package, %AccessGrant{} = grant, handoff, %Config{} = config, claimed_by) do
-    config
-    |> private_handoff_read_opts(handoff, claimed_by)
-    |> Enum.reduce_while({:error, :private_handoff_missing_file}, fn opts, last_error ->
-      case SecretHandoff.read_local_private_file_secret(work_package, grant, handoff, opts) do
-        {:ok, secret} -> {:halt, {:ok, secret}}
-        {:error, reason} -> {:cont, last_private_handoff_error(last_error, reason)}
-      end
-    end)
-  end
-
-  defp last_private_handoff_error({:error, :private_handoff_missing_file}, reason), do: {:error, reason}
-
-  defp last_private_handoff_error({:error, reason} = last_error, _reason)
-       when reason in [
-              :private_handoff_metadata_mismatch,
-              :private_handoff_not_regular_file,
-              :private_handoff_path_mismatch,
-              :private_handoff_path_traversal,
-              :private_handoff_secret_mismatch,
-              :private_handoff_secret_too_large
-            ],
-       do: last_error
-
-  defp last_private_handoff_error({:error, _reason} = last_error, :missing_repo_root), do: last_error
-  defp last_private_handoff_error({:error, _reason} = last_error, {:handoff_metadata_invalid, _metadata_reason}), do: last_error
-  defp last_private_handoff_error(_last_error, reason), do: {:error, reason}
-
-  defp private_handoff_read_opts(%Config{} = config, handoff, claimed_by) do
-    repo_roots = private_handoff_repo_roots(config, handoff)
-    databases = private_handoff_database_entries(config, handoff)
-    store_dirs = private_handoff_store_dirs()
-
-    for repo_root <- repo_roots,
-        {database, allow_database_scan?} <- databases,
-        store_dir <- store_dirs do
-      [
-        mode: "local-private-file",
-        namespace_repo_root: repo_root,
-        repo_root: repo_root,
-        claimed_by: claimed_by
-      ]
-      |> put_optional_handoff_opt(:database, database)
-      |> put_optional_handoff_opt(:allow_database_metadata_scan?, allow_database_scan?)
-      |> put_optional_handoff_opt(:store_dir, store_dir)
-    end
-  end
-
-  defp private_handoff_repo_roots(%Config{repo_root: repo_root}, handoff) do
-    case private_handoff_namespace_repo_root(handoff) do
-      namespace_repo_root when is_binary(namespace_repo_root) ->
-        nonblank_unique_paths([namespace_repo_root])
-
-      nil ->
-        [repo_root, SecretHandoff.local_operator_repo_root() | SecretHandoff.local_operator_namespace_repo_roots()]
-        |> nonblank_unique_paths()
-    end
-  end
-
-  defp private_handoff_namespace_repo_root(handoff) do
-    case private_handoff_optional_string(handoff, "namespace_repo_root") do
-      {:ok, repo_root} -> repo_root
-      {:error, _reason} -> nil
-    end
-  end
-
-  defp private_handoff_database_entries(%Config{} = config, handoff) do
-    case private_handoff_optional_string(handoff, "database") do
-      {:ok, database} when is_binary(database) ->
-        [{database, private_handoff_database_matches_config?(config, database)}]
-
-      {:ok, nil} ->
-        [config.database, live_dispatch_database_or_nil(config.repo), nil]
-        |> unique_optional_values()
-        |> private_handoff_database_entries_without_explicit_database()
-
-      {:error, _reason} ->
-        [config.database, live_dispatch_database_or_nil(config.repo), nil]
-        |> unique_optional_values()
-        |> private_handoff_database_entries_without_explicit_database()
-    end
-  end
-
-  defp private_handoff_database_entries_without_explicit_database(databases) do
-    Enum.map(databases, &{&1, false})
-  end
-
-  defp private_handoff_database_matches_config?(%Config{} = config, database) do
-    Enum.any?([config.database, live_dispatch_database_or_nil(config.repo)], &same_handoff_database?(database, &1))
-  end
-
-  defp same_handoff_database?(database, candidate) do
-    case {normalize_optional_value(database), normalize_optional_value(candidate)} do
-      {database, candidate} when is_binary(database) and is_binary(candidate) ->
-        Repo.same_database_path?(database, candidate)
-
-      _database ->
-        false
-    end
-  end
-
-  defp live_dispatch_database_or_nil(repo) do
-    case live_file_backed_dispatch_database(repo) do
-      {:ok, database} -> database
-      _result -> nil
-    end
-  end
-
-  defp private_handoff_store_dirs do
-    [Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir), nil]
-    |> unique_optional_values()
-  end
-
-  defp nonblank_unique_paths(values) do
-    values
-    |> Enum.filter(&filled_string?/1)
-    |> Enum.map(&Path.expand(String.trim(&1)))
-    |> Enum.uniq()
-  end
-
-  defp unique_optional_values(values) do
-    values
-    |> Enum.map(&normalize_optional_value/1)
-    |> Enum.uniq()
-  end
-
-  defp normalize_optional_value(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp normalize_optional_value(nil), do: nil
-  defp normalize_optional_value(value), do: value
-
-  defp private_handoff_string(handoff, key) do
-    case private_handoff_fetch(handoff, key) do
-      value when is_binary(value) ->
-        case String.trim(value) do
-          "" -> {:error, "missing_#{key}"}
-          trimmed -> {:ok, trimmed}
-        end
-
-      _value ->
-        {:error, "missing_#{key}"}
-    end
-  end
-
-  defp private_handoff_optional_string(handoff, key) do
-    case private_handoff_fetch(handoff, key) do
-      value when is_binary(value) ->
-        case String.trim(value) do
-          "" -> {:ok, nil}
-          trimmed -> {:ok, trimmed}
-        end
-
-      nil ->
-        {:ok, nil}
-
-      _value ->
-        {:error, "invalid_#{key}"}
-    end
-  end
-
-  defp private_handoff_fetch(handoff, key) when is_map(handoff) do
-    Map.get(handoff, key) || Map.get(handoff, String.to_atom(key))
-  end
-
-  defp claim_work_key_with_bound_session(repo, %Session{} = session, secret, proof_hash, claimed_by) do
-    if session.proof_hash == proof_hash do
-      with :ok <- require_same_claim_owner(session.assignment, claimed_by),
-           {:ok, session} <- revalidate_bound_session(repo, session, proof_hash, claimed_by) do
-        {:ok, %{"assignment" => Session.public_assignment(session)}, session}
-      end
-    else
-      case Auth.require_session(session, repo) do
-        {:ok, %Session{}} -> {:error, :session_already_bound}
-        {:error, {:service_unavailable, _reason} = reason} -> {:error, reason}
-        {:error, _reason} -> claim_unbound_work_key(repo, secret, proof_hash, claimed_by)
-      end
-    end
-  end
-
-  defp claim_unbound_work_key(repo, secret, proof_hash, claimed_by) do
-    with :ok <- require_mcp_claimable_secret(repo, proof_hash),
-         {:ok, session} <- claim_or_reconnect_session(repo, secret, proof_hash, claimed_by) do
-      {:ok, %{"assignment" => Session.public_assignment(session)}, session}
-    end
-  end
-
-  defp revalidate_bound_session(repo, %Session{} = session, proof_hash, claimed_by) do
-    with {:ok, grant} <- AccessGrantRepository.get(repo, session.assignment.grant_id),
-         :ok <- AccessGrantService.require_live_package_authority(repo, grant),
-         {:ok, session} <- Auth.session_from_grant(repo, grant, proof_hash: proof_hash),
-         :ok <- require_mcp_claimable_assignment(session.assignment) do
-      attach_secret_claim_lease(repo, session, claimed_by)
-    end
-  end
-
-  defp claim_or_reconnect_session(repo, secret, proof_hash, claimed_by) do
-    case unclaimed_access_grant_for_secret(repo, secret, proof_hash, claimed_by) do
-      {:ok, %AccessGrant{} = grant} ->
-        claim_unclaimed_session_with_claim_lease(repo, secret, proof_hash, grant, claimed_by)
-
-      {:error, :already_claimed} ->
-        reconnect_claimed_session(repo, proof_hash, claimed_by)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp unclaimed_access_grant_for_secret(repo, secret, proof_hash, claimed_by) do
-    with :ok <- reject_display_key_only_secret(secret),
-         {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash),
-         true <- grant.secret_hash == proof_hash,
-         :ok <- AccessGrantService.require_live_package_authority(repo, grant),
-         :ok <- require_mcp_claimable_assignment(grant),
-         :ok <- require_unclaimed_live_grant(grant),
-         {:ok, _claimed_by} <- validated_claim_owner(claimed_by) do
-      {:ok, grant}
-    else
-      false -> {:error, :invalid_secret}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp reject_display_key_only_secret(secret) when is_binary(secret) do
-    if String.length(secret) == 4 do
-      {:error, :display_key_only}
-    else
-      :ok
-    end
-  end
-
-  defp require_unclaimed_live_grant(%AccessGrant{revoked_at: %DateTime{}}), do: {:error, :revoked}
-  defp require_unclaimed_live_grant(%AccessGrant{claimed_at: %DateTime{}}), do: {:error, :already_claimed}
-  defp require_unclaimed_live_grant(%AccessGrant{expires_at: nil}), do: :ok
-
-  defp require_unclaimed_live_grant(%AccessGrant{expires_at: %DateTime{} = expires_at}) do
-    if DateTime.compare(expires_at, DateTime.utc_now(:microsecond)) == :gt do
-      :ok
-    else
-      {:error, :expired}
-    end
-  end
-
-  defp validated_claim_owner(claimed_by) when is_binary(claimed_by) do
-    if String.trim(claimed_by) == "" do
-      {:error, :claimed_by_required}
-    else
-      {:ok, claimed_by}
-    end
-  end
-
-  defp claim_unclaimed_session_with_claim_lease(repo, secret, proof_hash, %AccessGrant{} = grant, claimed_by) do
-    with {:ok, session} <- provisional_secret_claim_session(repo, grant, proof_hash, claimed_by),
-         {:ok, leased_session, lease_action} <- attach_secret_claim_lease_with_action(repo, session, claimed_by) do
-      AccessGrantService.claim(repo, secret, claimed_by: claimed_by)
-      |> finalize_unclaimed_session_claim(repo, proof_hash, claimed_by, leased_session, lease_action)
-    end
-  end
-
-  defp finalize_unclaimed_session_claim(
-         {:ok, %Assignment{} = assignment},
-         _repo,
-         proof_hash,
-         _claimed_by,
-         %Session{} = leased_session,
-         _lease_action
-       ) do
-    case require_mcp_claimable_assignment(assignment) do
-      :ok -> {:ok, claimed_session_with_lease(assignment, proof_hash, leased_session)}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp finalize_unclaimed_session_claim(
-         {:error, :already_claimed},
-         repo,
-         proof_hash,
-         claimed_by,
-         %Session{} = leased_session,
-         lease_action
-       ) do
-    repo
-    |> reconnect_claimed_session(proof_hash, claimed_by)
-    |> release_lease_on_claim_failure(repo, leased_session, lease_action)
-  end
-
-  defp finalize_unclaimed_session_claim(
-         {:error, reason},
-         repo,
-         _proof_hash,
-         _claimed_by,
-         %Session{} = leased_session,
-         lease_action
-       ) do
-    release_provisional_claim_lease(repo, leased_session, lease_action)
-    {:error, reason}
-  end
-
-  defp release_lease_on_claim_failure({:ok, %Session{} = session}, _repo, _leased_session, _lease_action),
-    do: {:ok, session}
-
-  defp release_lease_on_claim_failure({:error, reason}, repo, %Session{} = leased_session, lease_action) do
-    release_provisional_claim_lease(repo, leased_session, lease_action)
-    {:error, reason}
-  end
-
-  defp provisional_secret_claim_session(repo, %AccessGrant{} = grant, proof_hash, claimed_by) do
-    with {:ok, scope_rows} <- AccessGrantRepository.list_scopes(repo, grant.id) do
-      assignment = %Assignment{
-        grant_id: grant.id,
-        work_package_id: grant.work_package_id,
-        phase_id: grant.phase_id,
-        display_key: grant.display_key,
-        grant_role: grant.grant_role,
-        capabilities: grant.capabilities,
-        claimed_at: nil,
-        claimed_by: claimed_by,
-        scopes: Enum.map(scope_rows, &GrantScope.to_authorization_scope/1)
-      }
-
-      {:ok, Session.new(assignment, proof_hash: proof_hash)}
-    end
-  end
-
-  defp claimed_session_with_lease(%Assignment{} = assignment, proof_hash, %Session{} = leased_session) do
-    %{
-      Session.new(assignment, proof_hash: proof_hash)
-      | claim_lease_id: leased_session.claim_lease_id,
-        claim_actor_kind: leased_session.claim_actor_kind,
-        claim_actor_id: leased_session.claim_actor_id,
-        claim_actor_display_name: leased_session.claim_actor_display_name
-    }
-  end
-
-  defp release_provisional_claim_lease(repo, %Session{claim_lease_id: claim_lease_id}, lease_action)
-       when is_binary(claim_lease_id) and lease_action in [:created, :reclaimed] do
-    _result = ClaimLeaseService.release(repo, claim_lease_id, reason: "claim_work_key_grant_claim_failed")
-    :ok
-  end
-
-  defp release_provisional_claim_lease(_repo, %Session{}, _lease_action), do: :ok
-
-  defp reconnect_claimed_session(repo, proof_hash, claimed_by) do
-    with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash),
-         :ok <- require_same_claim_owner(grant, claimed_by),
-         :ok <- AccessGrantService.require_live_package_authority(repo, grant),
-         {:ok, session} <- Auth.session_from_grant(repo, grant, proof_hash: proof_hash),
-         :ok <- require_mcp_claimable_assignment(session.assignment) do
-      attach_secret_claim_lease(repo, session, claimed_by)
-    end
-  end
-
-  defp attach_secret_claim_lease(repo, %Session{} = session, claimed_by) do
-    case attach_secret_claim_lease_with_action(repo, session, claimed_by) do
-      {:ok, %Session{} = session, _action} -> {:ok, session}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp attach_secret_claim_lease_with_action(repo, %Session{} = session, claimed_by) do
-    case ensure_secret_claim_lease(repo, session.assignment, claimed_by) do
-      {:ok, %ClaimLease{} = lease, action} -> {:ok, Session.with_claim_lease(session, lease), action}
-      {:ok, nil, :not_applicable} -> {:ok, session, :not_applicable}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp ensure_secret_claim_lease(_repo, %{work_package_id: work_package_id}, _claimed_by) when not is_binary(work_package_id),
-    do: {:ok, nil, :not_applicable}
-
-  defp ensure_secret_claim_lease(repo, assignment, claimed_by) do
-    actor = secret_claim_actor(assignment, claimed_by)
-
-    case ClaimLeaseService.current_for_work_package(repo, assignment.work_package_id) do
-      {:ok, %ClaimLease{} = lease} -> renew_secret_claim_lease(repo, assignment, lease, actor)
-      {:error, :not_found} -> claim_new_secret_claim_lease(repo, assignment, actor)
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp renew_secret_claim_lease(repo, assignment, %ClaimLease{} = lease, actor) do
-    now = DateTime.utc_now(:microsecond)
-
-    cond do
-      lease.status == "paused" ->
-        {:error, :claim_lease_paused}
-
-      ClaimLease.stale?(lease, now) ->
-        reclaim_secret_claim_lease(repo, assignment, actor, "claim_work_key_stale")
-
-      lease.actor_id == actor["actor_id"] ->
-        heartbeat_secret_claim_lease(repo, assignment, lease, actor)
-
-      true ->
-        {:error, :claim_lease_active_for_other_actor}
-    end
-  end
-
-  defp heartbeat_secret_claim_lease(repo, assignment, %ClaimLease{} = lease, actor) do
-    case ClaimLeaseService.heartbeat(repo, lease.id, stale_after_ms: @local_assignment_claim_stale_after_ms) do
-      {:ok, %ClaimLease{} = renewed} -> {:ok, renewed, :heartbeat}
-      {:error, :claim_stale} -> reclaim_secret_claim_lease(repo, assignment, actor, "claim_work_key_stale")
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp claim_new_secret_claim_lease(repo, assignment, actor) do
-    case ClaimLeaseService.claim(repo, assignment.work_package_id, actor,
-           access_grant_id: assignment.grant_id,
-           stale_after_ms: @local_assignment_claim_stale_after_ms
-         ) do
-      {:ok, %ClaimLease{} = lease} -> {:ok, lease, :created}
-      {:error, :active_claim_exists} -> renew_current_secret_claim_lease(repo, assignment, actor)
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp renew_current_secret_claim_lease(repo, assignment, actor) do
-    requested_actor_id = actor["actor_id"]
-
-    case ClaimLeaseService.current_for_work_package(repo, assignment.work_package_id) do
-      {:ok, %ClaimLease{actor_id: ^requested_actor_id} = lease} ->
-        renew_secret_claim_lease(repo, assignment, lease, actor)
-
-      {:ok, %ClaimLease{}} ->
-        {:error, :claim_lease_active_for_other_actor}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp reclaim_secret_claim_lease(repo, assignment, actor, reason) do
-    case ClaimLeaseService.reclaim_stale(repo, assignment.work_package_id, actor,
-           access_grant_id: assignment.grant_id,
-           reason: reason,
-           stale_after_ms: @local_assignment_claim_stale_after_ms
-         ) do
-      {:ok, %ClaimLease{} = lease} -> {:ok, lease, :reclaimed}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp secret_claim_actor(%{grant_id: grant_id}, claimed_by) when is_binary(grant_id) and is_binary(claimed_by) do
-    actor_id =
-      [grant_id, claimed_by]
-      |> Enum.join("\0")
-      |> local_assignment_actor_hash()
-
-    %{
-      "actor_kind" => "agent",
-      "actor_id" => "work_key:" <> actor_id,
-      "actor_display_name" => claimed_by
-    }
-  end
-
-  defp require_same_claim_owner(%{claimed_by: claimed_by}, claimed_by), do: :ok
-  defp require_same_claim_owner(_grant, _claimed_by), do: {:error, :already_claimed}
-
-  defp require_full_secret(secret) do
-    if String.length(secret) == 4 do
-      {:error, :display_key_only}
-    else
-      :ok
-    end
-  end
-
-  defp require_mcp_claimable_secret(repo, proof_hash) do
-    with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash) do
-      with :ok <- AccessGrantService.require_live_package_authority(repo, grant) do
-        require_mcp_claimable_assignment(grant)
-      end
-    end
-  end
-
   defp require_worker_assignment(%{grant_role: "worker"}), do: :ok
   defp require_worker_assignment(_assignment), do: {:error, :worker_grant_required}
 
   defp require_architect_assignment(%{grant_role: "architect"}), do: :ok
   defp require_architect_assignment(_assignment), do: {:error, :architect_grant_required}
-
-  defp require_mcp_claimable_assignment(%{grant_role: role}) when role in ["worker", "architect"], do: :ok
-  defp require_mcp_claimable_assignment(_assignment), do: {:error, :unsupported_grant_role}
 
   defp require_assignment_introspection(%{grant_role: role}) when role in ["worker", "architect"], do: :ok
   defp require_assignment_introspection(_assignment), do: {:error, :unsupported_grant_role}
@@ -4805,7 +3970,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_architect_capability(_assignment, _capability), do: {:error, :insufficient_capability}
 
   defp authorize_architect_tool_call(%__MODULE__{session: nil}, name) do
-    {:error, -32_001, "Unauthorized", %{"resource" => name, "reason" => "claim_required", "action" => "claim_work_key"}}
+    {:error, -32_001, "Unauthorized", %{"resource" => name, "reason" => "claim_required", "action" => @local_architect_assignment_claim_tool}}
   end
 
   defp authorize_architect_tool_call(%__MODULE__{config: config, session: session}, name) do
@@ -4817,11 +3982,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_required_capabilities("read_child_status"), do: ["read:child_progress", "read:child_findings"]
   defp architect_tool_required_capabilities(name), do: [architect_tool_capability(name)]
 
-  defp claim_error(:database_busy), do: service_error(:database_busy, "claim_work_key")
-  defp claim_error({:storage_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
-  defp claim_error({:migration_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
-  defp claim_error(reason), do: {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => reason_text(reason)}}
-
   defp local_assignment_claim_error(:database_busy), do: service_error(:database_busy, @local_assignment_claim_tool)
   defp local_assignment_claim_error({:storage_failed, _reason} = reason), do: service_error(reason, @local_assignment_claim_tool)
   defp local_assignment_claim_error({:migration_failed, _reason} = reason), do: service_error(reason, @local_assignment_claim_tool)
@@ -4830,7 +3990,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_001, "Unauthorized",
      claim_lease_active_for_other_actor_data(
        @local_assignment_claim_tool,
-       "Reuse the ledger claim values, including claimed_by, caller_id, branch, and worktree_path. If the live claim is stale, ask the architect or operator to recycle it."
+       "Reuse the same work_package_id, claimed_by, and caller_id. If the live claim is stale, ask the architect or operator to recycle it."
      )}
   end
 
@@ -4850,7 +4010,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_001, "Unauthorized",
      claim_lease_active_for_other_actor_data(
        @local_architect_assignment_claim_tool,
-       "Pass local_architect_claim.arguments.claimed_by unchanged and use caller_id only for the current runtime. If the live claim is stale, ask the operator to recycle it."
+       "Reuse the same work_request_id, claimed_by, and caller_id. If the live claim is stale, ask the operator to recycle it."
      )}
   end
 
@@ -4865,14 +4025,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "action" => "reuse_claim_identity_or_recycle_stale_claim",
       "hint" => hint
     }
-  end
-
-  defp private_handoff_claim_error(:database_busy), do: service_error(:database_busy, "claim_private_handoff")
-  defp private_handoff_claim_error({:storage_failed, _reason} = reason), do: service_error(reason, "claim_private_handoff")
-  defp private_handoff_claim_error({:migration_failed, _reason} = reason), do: service_error(reason, "claim_private_handoff")
-
-  defp private_handoff_claim_error(reason) do
-    {:error, -32_001, "Unauthorized", %{"tool" => "claim_private_handoff", "reason" => reason_text(reason)}}
   end
 
   defp prepare_worker_tool_call(%__MODULE__{} = server, params, name) do
@@ -4962,8 +4114,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp worker_claim_action(%__MODULE__{} = server) do
-    if trusted_local_unbound_http_session?(server), do: @local_assignment_claim_tool, else: "claim_work_key"
+  defp worker_claim_action(%__MODULE__{}) do
+    @local_assignment_claim_tool
   end
 
   defp preauthorize_architect_tool_call(%__MODULE__{session: nil} = server, name) when name in @local_trusted_work_request_read_tools do
@@ -4993,7 +4145,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp authorize_bootstrap_tool_call(%__MODULE__{session_refresh_required: true}, tool) do
-    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "claim_required", "action" => "claim_private_handoff"}}
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "claim_required", "action" => @local_assignment_claim_tool}}
   end
 
   defp authorize_bootstrap_tool_call(%__MODULE__{session: nil}, _tool), do: :ok
@@ -5009,7 +4161,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
      %{
        "tool" => @assignment_release_tool,
        "reason" => "claim_required",
-       "action" => "claim_work_key",
+       "action" => @local_assignment_claim_tool,
        "hint" => "This MCP state no longer has a live current assignment. Reclaim the assignment or start a fresh MCP session before using Solo tools."
      }}
   end
@@ -5019,7 +4171,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
      %{
        "tool" => @assignment_release_tool,
        "reason" => "assignment_release_requires_bound_session",
-       "action" => "claim_work_key"
+       "action" => @local_assignment_claim_tool
      }}
   end
 
@@ -5049,7 +4201,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp authorize_local_operator_tool_call(%__MODULE__{session_refresh_required: true}, tool) do
-    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "claim_required", "action" => "claim_private_handoff"}}
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "claim_required", "action" => @local_architect_assignment_claim_tool}}
   end
 
   defp authorize_local_operator_tool_call(%__MODULE__{config: %Config{mode: :http}, session: %Session{}}, tool) do
@@ -5189,29 +4341,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
           "status" => "created",
           "work_request" => work_request_payload(work_request),
           "architect_handoff" => json_safe_payload(handoff),
-          "claim" => create_work_request_claim_payload(handoff, claimed_by),
           "launch_prompt" => Map.get(handoff, :prompt)
         }
-
-      {:tool_error, reason} ->
-        create_work_request_partial_handoff_payload(work_request, reason)
+        |> drop_nil_values()
 
       {:error, reason} ->
         create_work_request_partial_handoff_payload(work_request, reason)
     end
-  end
-
-  defp create_work_request_claim_payload(%{local_architect_claim: %{} = claim}, claimed_by) do
-    %{
-      "tool" => "claim_local_architect_assignment",
-      "claimed_by" => claimed_by,
-      "arguments" => Map.get(claim, "arguments", %{}),
-      "required_runtime_arguments" => Map.get(claim, "required_runtime_arguments", [])
-    }
-  end
-
-  defp create_work_request_claim_payload(_handoff, claimed_by) do
-    %{"tool" => "claim_private_handoff", "claimed_by" => claimed_by}
   end
 
   defp create_work_request_partial_handoff_payload(%WorkRequest{} = work_request, reason) do
@@ -5236,7 +4372,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       ArchitectHandoff.create_or_replay(config.repo, work_request.id,
         local_operator?: true,
         local_architect_claim?: local_architect_claim_handoff_enabled?(server),
-        secret_handoff_opts: handoff_opts
+        handoff_opts: handoff_opts
       )
     end
   end
@@ -5246,18 +4382,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp create_work_request_handoff_opts(%Config{} = config, claimed_by) do
-    with {:ok, repo_root} <- config_repo_root(config),
-         :ok <- validate_child_secret_handoff_repo_root(repo_root, "local-private-file") do
-      opts =
-        [
-          mode: "local-private-file",
-          repo_root: repo_root,
-          claimed_by: claimed_by
-        ]
-        |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))
-
-      {:ok, put_optional_handoff_opt(opts, :database, create_work_request_handoff_database(config))}
-    end
+    {:ok,
+     [claimed_by: claimed_by]
+     |> put_optional_handoff_opt(:database, create_work_request_handoff_database(config))}
   end
 
   defp create_work_request_handoff_database(%Config{} = config) do
@@ -6218,7 +5345,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
-         {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
+         {:ok, claimed_by} <- optional_string_argument(arguments, "claimed_by", default_claimed_by(%__MODULE__{config: config})),
          {:ok, _work_request, planned_slice, _filters, scope} <-
            authorized_planned_slice_scope(
              config.repo,
@@ -6229,7 +5356,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              "dispatch_work_request_planned_slice"
            ),
          :ok <- require_approved_dispatch_planned_slice(planned_slice),
-         {:ok, handoff_opts, dispatch_opts} <- dispatch_planned_slice_bootstrap_opts(config, arguments, claimed_by),
+         {:ok, handoff_opts, dispatch_opts} <- dispatch_planned_slice_bootstrap_opts(config, claimed_by),
          {:ok, dispatch} <- PlannedSliceDispatch.dispatch(config.repo, work_request_id, planned_slice_id, handoff_opts, dispatch_opts) do
       {:ok, tool_result(dispatch_work_request_planned_slice_payload(dispatch, scope))}
     else
@@ -6323,7 +5450,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool("mint_child_worker_key", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- architect_session(config.repo, session, "mint:child_worker_key"),
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
-         {:ok, template} <- required_object(arguments, "template"),
+         {:ok, template} <- optional_object_argument(arguments, "template"),
          {:ok, payload} <- mint_child_worker_key(config, session, work_package_id, template) do
       {:ok, tool_result(payload)}
     else
@@ -6550,106 +5677,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp validate_docs_planned_slice_scope("docs", owned_file_globs), do: ScopeConstraints.validate_docs_owned_file_globs(owned_file_globs)
   defp validate_docs_planned_slice_scope(_work_package_kind, _owned_file_globs), do: :ok
 
-  defp dispatch_planned_slice_handoff_opts(%Config{} = config, arguments, claimed_by) do
-    with {:ok, repo_root} <- dispatch_planned_slice_repo_root(config, arguments),
-         {:ok, secret_handoff} <- optional_string_argument(arguments, "secret_handoff", "auto"),
-         {:ok, secret_store_dir} <- optional_string_argument(arguments, "secret_store_dir"),
-         :ok <- validate_child_secret_handoff_mode(secret_handoff),
-         :ok <- validate_child_secret_handoff_repo_root(repo_root, secret_handoff),
-         {:ok, database} <- dispatch_handoff_database(config.database, config.repo) do
-      {:ok,
-       [
-         repo_root: repo_root,
-         claimed_by: claimed_by
-       ]
-       |> put_optional_handoff_opt(:database, database)
-       |> put_optional_handoff_opt(:mode, normalize_child_secret_handoff_mode(secret_handoff))
-       |> put_optional_handoff_opt(:store_dir, secret_store_dir)}
-    end
-  end
-
-  defp dispatch_planned_slice_bootstrap_opts(%Config{} = config, arguments, claimed_by) do
-    with {:ok, legacy_private_handoff?} <- optional_boolean(arguments, "legacy_private_handoff", false) do
-      dispatch_planned_slice_bootstrap_opts(config, arguments, claimed_by, legacy_private_handoff?)
-    end
-  end
-
-  defp dispatch_planned_slice_bootstrap_opts(%Config{} = config, arguments, claimed_by, false) do
-    with :ok <- reject_legacy_private_handoff_arguments(arguments),
-         {:ok, database} <- dispatch_handoff_database(config.database, config.repo) do
+  defp dispatch_planned_slice_bootstrap_opts(%Config{} = config, claimed_by) do
+    with {:ok, database} <- dispatch_handoff_database(config.database, config.repo) do
       {:ok, [claimed_by: claimed_by, database: database], []}
     end
   end
 
-  defp dispatch_planned_slice_bootstrap_opts(%Config{} = config, arguments, claimed_by, true) do
-    with {:ok, handoff_opts} <- dispatch_planned_slice_handoff_opts(config, arguments, claimed_by) do
-      {:ok, handoff_opts, [legacy_private_handoff?: true]}
-    end
-  end
-
-  defp reject_legacy_private_handoff_arguments(arguments) do
-    case Enum.find(["secret_handoff", "secret_store_dir", "repo_root"], &Map.has_key?(arguments, &1)) do
-      nil -> :ok
-      _argument -> {:tool_error, "legacy_private_handoff_required"}
-    end
-  end
-
-  defp dispatch_planned_slice_repo_root(%Config{} = config, arguments) do
-    case optional_string_argument(arguments, "symphony_repo_root") do
-      {:ok, nil} -> legacy_or_default_dispatch_planned_slice_repo_root(config, arguments)
-      {:ok, repo_root} -> explicit_dispatch_planned_slice_repo_root(repo_root)
-      {:tool_error, reason} -> {:tool_error, reason}
-    end
-  end
-
   defp target_repo_root_argument(arguments), do: required_argument(arguments, "target_repo_root")
-
-  defp legacy_or_default_dispatch_planned_slice_repo_root(%Config{} = config, arguments) do
-    case optional_string_argument(arguments, "repo_root") do
-      {:ok, nil} -> default_dispatch_planned_slice_repo_root(config)
-      {:ok, repo_root} -> explicit_dispatch_planned_slice_repo_root(repo_root)
-      {:tool_error, reason} -> {:tool_error, reason}
-    end
-  end
-
-  defp explicit_dispatch_planned_slice_repo_root(repo_root) do
-    repo_root = Path.expand(repo_root)
-
-    if dispatch_helper_repo_root?(repo_root), do: {:ok, repo_root}, else: {:tool_error, "invalid_repo_root"}
-  end
-
-  defp default_dispatch_planned_slice_repo_root(%Config{} = config) do
-    case config_repo_root(config) do
-      {:ok, repo_root} ->
-        if dispatch_helper_repo_root?(repo_root) do
-          {:ok, repo_root}
-        else
-          local_dispatch_planned_slice_repo_root("invalid_repo_root")
-        end
-
-      {:tool_error, "missing_repo_root"} ->
-        local_dispatch_planned_slice_repo_root("missing_repo_root")
-
-      {:tool_error, reason} ->
-        {:tool_error, reason}
-    end
-  end
-
-  defp local_dispatch_planned_slice_repo_root(fallback_reason) do
-    case SecretHandoff.local_operator_repo_root() do
-      repo_root when is_binary(repo_root) ->
-        if dispatch_helper_repo_root?(repo_root), do: {:ok, repo_root}, else: {:tool_error, fallback_reason}
-
-      _repo_root ->
-        {:tool_error, fallback_reason}
-    end
-  end
-
-  defp dispatch_helper_repo_root?(repo_root) do
-    Enum.any?(["sympp-worker-secret.sh", "sympp-worker-secret.ps1"], fn script ->
-      File.regular?(Path.join([repo_root, "scripts", script]))
-    end)
-  end
 
   defp dispatch_handoff_database(nil, repo) do
     with {:ok, live_database} <- live_file_backed_dispatch_database(repo),
@@ -8289,27 +7323,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp mint_child_worker_key(%Config{} = config, %Session{} = session, work_package_id, template) do
-    with {:ok, handoff_template} <- child_worker_secret_handoff_template(template),
-         {:ok, handoff_opts} <- child_worker_secret_handoff_opts(config, work_package_id, handoff_template),
-         {:ok, {child, minted, handoff}} <-
-           mint_child_worker_key_transaction(config.repo, session, work_package_id, template, handoff_opts) do
+    template = template || %{}
+
+    with {:ok, claimed_by} <- child_worker_claimed_by(work_package_id, template),
+         {:ok, {child, minted, ledger_database}} <-
+           mint_child_worker_key_transaction(config, session, work_package_id, template) do
       {:ok,
        %{
          "work_package" => child_work_package_payload(child),
-         "worker_grant" => child_worker_grant_payload(minted, handoff)
+         "worker_grant" => child_worker_grant_payload(minted, child, claimed_by, ledger_database)
        }}
     end
   end
 
-  defp mint_child_worker_key_transaction(repo, %Session{} = session, work_package_id, template, handoff_opts) do
+  defp mint_child_worker_key_transaction(%Config{repo: repo} = config, %Session{} = session, work_package_id, template) do
     case repo.transaction(fn ->
-           mint_child_worker_key_or_rollback(repo, session, work_package_id, template, handoff_opts)
+           mint_child_worker_key_or_rollback(config, session, work_package_id, template)
          end) do
       {:ok, result} ->
         {:ok, result}
-
-      {:error, {:tool_error, reason, cleanup_context}} ->
-        {:tool_error, cleanup_child_worker_failed_mint(reason, cleanup_context, handoff_opts)}
 
       {:error, {:tool_error, reason}} ->
         {:tool_error, reason}
@@ -8322,16 +7354,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp mint_child_worker_key_or_rollback(repo, %Session{} = session, work_package_id, template, handoff_opts) do
-    case mint_child_worker_key_in_transaction(repo, session, work_package_id, template, handoff_opts) do
+  defp mint_child_worker_key_or_rollback(%Config{repo: repo} = config, %Session{} = session, work_package_id, template) do
+    case mint_child_worker_key_in_transaction(config, session, work_package_id, template) do
       {:ok, result} -> result
-      {:tool_error, reason, cleanup_context} -> repo.rollback({:tool_error, reason, cleanup_context})
       {:tool_error, reason} -> repo.rollback({:tool_error, reason})
       {:error, reason} -> repo.rollback({:error, reason})
     end
   end
 
-  defp mint_child_worker_key_in_transaction(repo, %Session{} = session, work_package_id, template, handoff_opts) do
+  defp mint_child_worker_key_in_transaction(%Config{repo: repo} = config, %Session{} = session, work_package_id, template) do
     with :ok <- lock_access_grant(repo, session.assignment.grant_id),
          {:ok, architect_grant} <- require_live_architect_grant(repo, session),
          :ok <- lock_work_package(repo, Session.work_package_id(session)),
@@ -8341,78 +7372,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- lock_work_package(repo, work_package_id),
          :ok <- reject_active_child_worker_grant(repo, work_package_id),
          {:ok, child} <- require_child_ready_for_mint(repo, work_package_id, anchor, phase_id),
+         {:ok, ledger_database} <- dispatch_handoff_database(config.database, repo),
          {:ok, minted} <- AccessGrantService.mint_worker_grant(repo, child.id, grant_opts) do
-      store_child_worker_key_handoff(child, minted, handoff_opts)
+      {:ok, {child, minted, ledger_database}}
     end
-  end
-
-  defp store_child_worker_key_handoff(%WorkPackage{} = child, minted, handoff_opts) do
-    with {:ok, handoff, _worker_grant} <- store_child_worker_secret_handoff(child, minted, handoff_opts) do
-      {:ok, {child, minted, handoff}}
-    end
-  end
-
-  defp store_child_worker_secret_handoff(%WorkPackage{} = child, minted, handoff_opts) do
-    worker_grant = child_worker_grant_secret_payload(minted)
-    metadata_worker_grant = redacted_child_worker_grant(worker_grant)
-
-    case SecretHandoff.store_worker_secret(%{work_package: child, worker_grant: worker_grant}, handoff_opts) do
-      {:ok, handoff} ->
-        store_child_worker_secret_handoff_metadata(child, metadata_worker_grant, handoff, handoff_opts)
-
-      {:error, reason} ->
-        {:tool_error, secret_handoff_reason(reason)}
-    end
-  end
-
-  defp store_child_worker_secret_handoff_metadata(%WorkPackage{} = child, worker_grant, handoff, handoff_opts) do
-    case SecretHandoff.store_worker_secret_metadata(child, worker_grant, handoff, handoff_opts) do
-      :ok ->
-        {:ok, child_worker_secret_handoff_payload(handoff), redacted_child_worker_grant(worker_grant)}
-
-      {:error, reason} ->
-        cleanup = new_child_worker_handoff_cleanup(child, worker_grant, handoff, metadata_stored: false)
-        {:tool_error, secret_handoff_reason(reason), cleanup}
-    end
-  end
-
-  defp new_child_worker_handoff_cleanup(%WorkPackage{} = child, worker_grant, handoff, opts) do
-    %{
-      child: child,
-      worker_grant: redacted_child_worker_grant(worker_grant),
-      handoff: handoff,
-      metadata_stored: Keyword.fetch!(opts, :metadata_stored)
-    }
-  end
-
-  defp cleanup_child_worker_failed_mint(reason, cleanup_context, handoff_opts) do
-    cleanup_result =
-      cleanup_context
-      |> cleanup_new_child_worker_handoff(handoff_opts)
-      |> Enum.map(fn {key, value} -> {key, cleanup_status(value)} end)
-
-    child_worker_handoff_tool_error(reason, cleanup_result)
-  end
-
-  defp cleanup_new_child_worker_handoff(%{metadata_stored: false, handoff: handoff}, handoff_opts) do
-    %{new_handoff_cleanup: SecretHandoff.delete_worker_secret(handoff, handoff_opts)}
-  end
-
-  defp cleanup_status(:ok), do: "ok"
-  defp cleanup_status({:error, reason}), do: "failed: #{reason_text(reason)}"
-
-  defp child_worker_handoff_tool_error(reason, metadata) do
-    reason
-    |> reason_text()
-    |> maybe_append_secret_handoff_metadata(metadata)
-  end
-
-  defp secret_handoff_reason(reason), do: SecretHandoff.error_message(reason)
-
-  defp maybe_append_secret_handoff_metadata(reason, metadata) do
-    details = Enum.map_join(metadata, ", ", fn {key, value} -> "#{key}=#{value}" end)
-
-    "#{reason}; #{details}"
   end
 
   defp revoke_child_worker_key_transaction(repo, %Session{} = session, grant_id, reason) do
@@ -8687,8 +7650,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "new_status" => new_status,
       "status_reset" => previous_status != new_status,
       "lifecycle_state" => "recycled",
-      "reason_codes" => reason_codes,
-      "private_handoff_cleanup" => "not_attempted"
+      "reason_codes" => reason_codes
     }
   end
 
@@ -8705,8 +7667,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "remint_available" => true,
         "remint_precondition" => "child_status_ready_for_worker",
         "lifecycle_state" => "recycled",
-        "reason_codes" => child_worker_recycle_reason_codes(previous_status, child.status),
-        "private_handoff_cleanup" => "not_attempted"
+        "reason_codes" => child_worker_recycle_reason_codes(previous_status, child.status)
       },
       "revocation_event" => progress_event_payload(event)
     }
@@ -8764,8 +7725,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "lifecycle_state" => "recycled",
         "previous_work_package_status" => previous_work_package_status,
         "work_package_status" => work_package.status,
-        "reason_codes" => reason_codes,
-        "private_handoff_cleanup" => "not_attempted"
+        "reason_codes" => reason_codes
       },
       "revocation_event" => progress_event_payload(event)
     }
@@ -9819,114 +8779,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if unexpected == [], do: :ok, else: {:tool_error, "unexpected_template_field"}
   end
 
-  defp child_worker_secret_handoff_template(template) do
+  defp child_worker_claimed_by(work_package_id, template) do
     with :ok <- validate_child_worker_template_keys(template) do
-      case Map.fetch(template, "secret_handoff") do
-        :error -> {:ok, %{}}
-        {:ok, nil} -> {:ok, %{}}
-        {:ok, handoff} when is_map(handoff) -> normalize_child_worker_secret_handoff_template(handoff)
-        {:ok, _handoff} -> {:tool_error, "invalid_secret_handoff"}
+      case Map.fetch(template, "claimed_by") do
+        :error -> {:ok, default_child_worker_claimed_by(work_package_id)}
+        {:ok, nil} -> {:ok, default_child_worker_claimed_by(work_package_id)}
+        {:ok, claimed_by} when is_binary(claimed_by) -> normalize_child_worker_claimed_by(claimed_by)
+        {:ok, _claimed_by} -> {:tool_error, "invalid_claimed_by"}
       end
     end
   end
 
-  defp normalize_child_worker_secret_handoff_template(handoff) do
-    unexpected = handoff |> Map.keys() |> Enum.reject(&(&1 in @child_worker_secret_handoff_keys))
-
-    with true <- unexpected == [] || {:tool_error, "unexpected_secret_handoff_field"},
-         {:ok, mode} <- optional_child_secret_handoff_string(handoff, "mode"),
-         :ok <- validate_child_secret_handoff_mode(mode),
-         {:ok, store_dir} <- optional_child_secret_handoff_string(handoff, "store_dir"),
-         {:ok, claimed_by} <- optional_child_secret_handoff_string(handoff, "claimed_by") do
-      {:ok,
-       %{}
-       |> put_optional_handoff_template_value(:mode, normalize_child_secret_handoff_mode(mode))
-       |> put_optional_handoff_template_value(:store_dir, store_dir)
-       |> put_optional_handoff_template_value(:claimed_by, claimed_by)}
+  defp normalize_child_worker_claimed_by(claimed_by) do
+    case String.trim(claimed_by) do
+      "" -> {:tool_error, "invalid_claimed_by"}
+      claimed_by -> {:ok, claimed_by}
     end
-  end
-
-  defp optional_child_secret_handoff_string(handoff, key) do
-    case Map.fetch(handoff, key) do
-      :error ->
-        {:ok, nil}
-
-      {:ok, nil} ->
-        {:ok, nil}
-
-      {:ok, value} when is_binary(value) ->
-        case String.trim(value) do
-          "" -> {:tool_error, "invalid_secret_handoff"}
-          trimmed -> {:ok, trimmed}
-        end
-
-      {:ok, _value} ->
-        {:tool_error, "invalid_secret_handoff"}
-    end
-  end
-
-  defp validate_child_secret_handoff_mode(nil), do: :ok
-
-  defp validate_child_secret_handoff_mode(mode) when is_binary(mode) do
-    if normalize_child_secret_handoff_mode(mode) in SecretHandoff.valid_modes(),
-      do: :ok,
-      else: {:tool_error, "invalid_secret_handoff"}
-  end
-
-  defp normalize_child_secret_handoff_mode(nil), do: nil
-  defp normalize_child_secret_handoff_mode(mode) when is_binary(mode), do: String.downcase(mode)
-
-  defp put_optional_handoff_template_value(template, _key, nil), do: template
-  defp put_optional_handoff_template_value(template, key, value), do: Map.put(template, key, value)
-
-  defp child_worker_secret_handoff_opts(%Config{} = config, work_package_id, handoff_template) do
-    with {:ok, repo_root} <- config_repo_root(config),
-         :ok <- validate_child_secret_handoff_repo_root(repo_root, Map.get(handoff_template, :mode)) do
-      opts = [
-        repo_root: repo_root,
-        claimed_by: Map.get(handoff_template, :claimed_by) || default_child_worker_claimed_by(work_package_id)
-      ]
-
-      {:ok,
-       opts
-       |> put_optional_handoff_opt(:database, child_worker_handoff_database(config))
-       |> put_optional_handoff_opt(:mode, Map.get(handoff_template, :mode))
-       |> put_optional_handoff_opt(:store_dir, Map.get(handoff_template, :store_dir))}
-    end
-  end
-
-  defp child_worker_handoff_database(%Config{database: database}) when is_binary(database) do
-    case normalized_database(database) do
-      nil -> nil
-      database -> database
-    end
-  end
-
-  defp child_worker_handoff_database(%Config{repo: repo}), do: live_dispatch_database_or_nil(repo)
-
-  defp config_repo_root(%Config{repo_root: repo_root}) when is_binary(repo_root) do
-    case String.trim(repo_root) do
-      "" -> {:tool_error, "missing_repo_root"}
-      trimmed -> {:ok, Path.expand(trimmed)}
-    end
-  end
-
-  defp config_repo_root(%Config{}), do: {:tool_error, "missing_repo_root"}
-
-  defp validate_child_secret_handoff_repo_root(repo_root, mode) do
-    script_path = Path.join([repo_root, "scripts", child_secret_handoff_script_name(mode)])
-
-    if File.regular?(script_path), do: :ok, else: {:tool_error, "invalid_repo_root"}
-  end
-
-  defp child_secret_handoff_script_name("windows-credential-manager"), do: "sympp-worker-secret.ps1"
-  defp child_secret_handoff_script_name("local-private-file"), do: local_private_file_handoff_script_name()
-  defp child_secret_handoff_script_name(_auto_or_nil), do: child_secret_handoff_script_name(default_child_secret_handoff_mode())
-
-  defp default_child_secret_handoff_mode, do: "local-private-file"
-
-  defp local_private_file_handoff_script_name do
-    if match?({:win32, _name}, :os.type()), do: "sympp-worker-secret.ps1", else: "sympp-worker-secret.sh"
   end
 
   defp default_child_worker_claimed_by(work_package_id), do: "sympp-child-worker:#{work_package_id}"
@@ -14081,7 +12949,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
      %{
        "tool" => tool,
        "reason" => "claim_required",
-       "action" => "claim_work_key",
+       "action" => @local_assignment_claim_tool,
        "hint" => "This MCP state no longer has a live current assignment. Reclaim the assignment or start a fresh MCP session before using Solo tools."
      }}
   end
@@ -15124,9 +13992,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          } = dispatch,
          scope
        ) do
-    worker_secret_handoff = dispatch_or_creation_value(dispatch, creation, :worker_secret_handoff)
     worker_bootstrap = dispatch_or_creation_value(dispatch, creation, :worker_bootstrap)
-    legacy_private_handoff? = Map.get(dispatch, :legacy_private_handoff?, false)
 
     %{
       "work_request" => %{"id" => work_request.id},
@@ -15138,10 +14004,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       },
       "work_package" => dispatch_work_package_payload(Map.fetch!(creation, :work_package)),
       "worker_bootstrap" => dispatch_worker_bootstrap_payload(worker_bootstrap),
-      "worker_handoff" => %{
-        "worker_grant" => dispatch_worker_grant_payload(Map.fetch!(creation, :worker_grant)),
-        "secret_handoff" => dispatch_secret_handoff_payload(worker_secret_handoff, legacy_private_handoff?: legacy_private_handoff?)
-      },
+      "worker_grant" => dispatch_worker_grant_payload(Map.fetch!(creation, :worker_grant)),
       "scope" => scope,
       "status" => %{"planned_slice_status" => planned_slice.status}
     }
@@ -15171,7 +14034,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp dispatch_worker_grant_payload(worker_grant) when is_map(worker_grant) do
     worker_grant
     |> json_safe_payload()
-    |> Map.drop(["display_key", "secret", "secret_hash", "secret_handoff", "secret_returned_once"])
+    |> Map.drop(["display_key", "secret", "secret_hash", "secret_handoff", "secret_returned_once", "worker_secret_handoff"])
     |> Map.put("secret_in_response", false)
   end
 
@@ -15183,31 +14046,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> Redactor.redact_output()
   end
 
-  defp dispatch_secret_handoff_payload(nil, _opts), do: nil
-
-  defp dispatch_secret_handoff_payload(handoff, opts) when is_map(handoff) do
-    drop_fields =
-      if Keyword.get(opts, :legacy_private_handoff?, false) do
-        ["display_key", "payload", "secret"]
-      else
-        ["display_key", "path", "payload", "run_mcp_command", "secret"]
-      end
-
-    handoff
-    |> json_safe_payload()
-    |> Map.drop(drop_fields)
-  end
-
   defp dispatch_link_recovery_payload(recovery) when is_map(recovery) do
-    worker_secret_handoff = recovery_value(recovery, :worker_secret_handoff)
-
     %{}
     |> put_optional_recovery_value("work_package_id", recovery_value(recovery, :work_package_id))
     |> put_optional_recovery_value("worker_grant_id", recovery_value(recovery, :worker_grant_id))
-    |> put_optional_recovery_value(
-      "worker_secret_handoff",
-      dispatch_secret_handoff_payload(worker_secret_handoff, legacy_private_handoff?: not is_nil(worker_secret_handoff))
-    )
     |> put_optional_recovery_value("cleanup", safe_recovery_value(recovery_value(recovery, :cleanup)))
   end
 
@@ -15370,47 +14212,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     })
   end
 
-  defp child_worker_grant_payload(%{grant: grant}, secret_handoff) do
+  defp child_worker_grant_payload(%{grant: grant}, %WorkPackage{} = child, claimed_by, ledger_database) do
     %{
       "id" => grant.id,
       "work_package_id" => grant.work_package_id,
-      "display_key" => grant.display_key,
       "grant_role" => grant.grant_role,
       "capabilities" => grant.capabilities || [],
       "expires_at" => timestamp(grant.expires_at),
       "secret_in_response" => false,
-      "secret_handoff" => secret_handoff
+      "worker_bootstrap" => child_worker_bootstrap_payload(child, claimed_by, ledger_database)
     }
   end
 
-  defp child_worker_grant_secret_payload(%{grant: grant, work_key: work_key}) do
+  defp child_worker_bootstrap_payload(%WorkPackage{} = child, claimed_by, ledger_database) do
     %{
-      "id" => grant.id,
-      "work_package_id" => grant.work_package_id,
-      "display_key" => grant.display_key,
-      "grant_role" => grant.grant_role,
-      "capabilities" => grant.capabilities || [],
-      "expires_at" => timestamp(grant.expires_at),
-      "secret" => work_key.secret
+      "type" => "ledger_claim",
+      "mode" => "local_assignment",
+      "ledger" => %{"database" => ledger_database},
+      "claim" => %{
+        "tool" => @local_assignment_claim_tool,
+        "arguments" => %{"work_package_id" => child.id, "claimed_by" => claimed_by},
+        "required_runtime_arguments" => []
+      }
     }
   end
 
   defp live_expires_at?(nil, %DateTime{}), do: true
   defp live_expires_at?(%DateTime{} = expires_at, %DateTime{} = now), do: DateTime.compare(expires_at, now) == :gt
-
-  defp redacted_child_worker_grant(worker_grant) when is_map(worker_grant) do
-    worker_grant
-    |> Map.delete(:secret)
-    |> Map.delete("secret")
-    |> Map.delete(:secret_hash)
-    |> Map.delete("secret_hash")
-  end
-
-  defp child_worker_secret_handoff_payload(handoff) when is_map(handoff) do
-    handoff
-    |> Map.take(@child_worker_secret_handoff_payload_keys)
-    |> json_safe_payload()
-  end
 
   defp json_resource(uri, payload) do
     %{

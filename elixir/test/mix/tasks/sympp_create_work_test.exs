@@ -6,7 +6,6 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
   alias Mix.Tasks.Sympp.CreateWork, as: CreateWorkTask
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.Repo
-  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.Workflow
   alias SymphonyElixir.WorkPackageFactory
 
@@ -28,10 +27,9 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
     assert message =~ "mix sympp.create_work --file"
   end
 
-  test "creates standalone work from a YAML file and stores the one-time secret outside stdout" do
+  test "creates standalone work from a YAML file and prints a ledger claim bootstrap" do
     database_path = WorkPackageFactory.database_path()
     request_path = Path.join(System.tmp_dir!(), "sympp-create-work-#{System.unique_integer([:positive])}.yaml")
-    secret_store_dir = Path.join(System.tmp_dir!(), "sympp-create-work-secrets-#{System.unique_integer([:positive])}")
 
     File.write!(request_path, """
     kind: quick_fix
@@ -51,10 +49,6 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
         database_path,
         "--file",
         request_path,
-        "--secret-handoff",
-        "local-private-file",
-        "--secret-store-dir",
-        secret_store_dir,
         "--claimed-by",
         "worker-create-work-1"
       ])
@@ -66,23 +60,26 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
       assert payload["work_package"]["parent_id"] == nil
       assert payload["work_package"]["status"] == "ready_for_worker"
       refute payload["worker_grant"]["secret"]
-      assert payload["secret_returned_once"] == false
-      assert payload["secret_not_persisted"] == false
-      assert payload["secret_in_stdout"] == false
-      assert payload["ledger_secret_not_persisted"] == true
+      refute payload["worker_grant"]["display_key"]
+      assert payload["worker_grant"]["secret_in_response"] == false
       assert payload["virtual_files"]["task_plan.md"] =~ "Implement requested scope"
 
-      handoff = payload["worker_secret_handoff"]
-      assert handoff["mode"] == "local-private-file"
-      assert handoff["status"] == "stored"
-      assert handoff["secret_in_stdout"] == false
-      assert handoff["claimed_by"] == "worker-create-work-1"
-      assert payload["worker_grant"]["secret_handoff"]["target"] == handoff["target"]
+      bootstrap = payload["worker_bootstrap"]
+      assert bootstrap["type"] == "ledger_claim"
+      assert bootstrap["mode"] == "local_assignment"
+      assert_same_database_path(bootstrap["ledger"]["database"], database_path)
+      assert bootstrap["claim"]["tool"] == "claim_local_assignment"
 
-      secret_path = handoff["path"]
-      assert File.exists?(secret_path)
-      secret = File.read!(secret_path)
-      refute json =~ secret
+      assert bootstrap["claim"]["arguments"] == %{
+               "work_package_id" => payload["work_package"]["id"],
+               "claimed_by" => "worker-create-work-1"
+             }
+
+      assert bootstrap["claim"]["required_runtime_arguments"] == []
+
+      refute json =~ "local-private-file"
+      refute json =~ "worker_secret_handoff"
+      refute json =~ "secret_handoff"
 
       {:ok, pid} =
         Repo.start_link(database: database_path, name: Repo.process_name(database_path), pool_size: 1, log: false)
@@ -90,25 +87,22 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
       Repo.put_dynamic_repo(pid)
 
       try do
-        display_key = payload["worker_grant"]["display_key"]
-        grant = Repo.one(from(grant in AccessGrant, where: grant.display_key == ^display_key))
+        grant_id = payload["worker_grant"]["id"]
+        grant = Repo.one(from(grant in AccessGrant, where: grant.id == ^grant_id))
         assert grant
-        refute inspect(grant) =~ secret
       after
         GenServer.stop(pid)
       end
     after
       File.rm(request_path)
       File.rm(database_path)
-      File.rm_rf(secret_store_dir)
     end
   end
 
-  test "emits the resolved database path in worker handoff commands" do
+  test "emits the resolved database path in the worker bootstrap" do
     database_path = Path.join("tmp", "sympp-create-work-#{System.unique_integer([:positive])}.sqlite3")
     resolved_database_path = Path.expand(database_path)
     request_path = Path.join(System.tmp_dir!(), "sympp-create-work-#{System.unique_integer([:positive])}.yaml")
-    secret_store_dir = Path.join(System.tmp_dir!(), "sympp-create-work-secrets-#{System.unique_integer([:positive])}")
 
     File.write!(request_path, valid_request_yaml())
 
@@ -118,10 +112,6 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
         database_path,
         "--file",
         request_path,
-        "--secret-handoff",
-        "local-private-file",
-        "--secret-store-dir",
-        secret_store_dir,
         "--claimed-by",
         "worker-create-work-relative-db"
       ])
@@ -129,11 +119,10 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
       assert_received {:mix_shell, :info, [json]}
       payload = Jason.decode!(json)
 
-      assert payload["worker_secret_handoff"]["run_mcp_command"] =~ resolved_database_path
+      assert_same_database_path(payload["worker_bootstrap"]["ledger"]["database"], resolved_database_path)
     after
       File.rm(request_path)
       File.rm(resolved_database_path)
-      File.rm_rf(secret_store_dir)
     end
   end
 
@@ -149,24 +138,42 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
     end
   end
 
-  test "fails when explicit secret handoff option is blank" do
+  test "rejects removed secret handoff flags before opening the ledger" do
+    database_path = WorkPackageFactory.database_path()
+
     assert_raise Mix.Error, ~r/Usage: mix sympp.create_work/, fn ->
-      CreateWorkTask.run(["--file", "request.yaml", "--secret-handoff", "   ", "--claimed-by", "worker-blank-handoff"])
+      CreateWorkTask.run([
+        "--database",
+        database_path,
+        "--file",
+        "request.yaml",
+        "--secret-handoff",
+        "local-private-file",
+        "--claimed-by",
+        "worker-removed-handoff"
+      ])
     end
+
+    refute File.exists?(database_path)
   end
 
-  test "requires claimed-by before opening the ledger" do
+  test "claimed-by is optional and no runtime arguments are required" do
     database_path = WorkPackageFactory.database_path()
     request_path = Path.join(System.tmp_dir!(), "sympp-create-work-#{System.unique_integer([:positive])}.yaml")
 
     File.write!(request_path, valid_request_yaml())
 
     try do
-      assert_raise Mix.Error, ~r/Usage: mix sympp.create_work/, fn ->
-        CreateWorkTask.run(["--database", database_path, "--file", request_path])
-      end
+      CreateWorkTask.run(["--database", database_path, "--file", request_path])
 
-      refute File.exists?(database_path)
+      assert_received {:mix_shell, :info, [json]}
+      payload = Jason.decode!(json)
+
+      assert payload["worker_bootstrap"]["claim"]["arguments"] == %{
+               "work_package_id" => payload["work_package"]["id"]
+             }
+
+      assert payload["worker_bootstrap"]["claim"]["required_runtime_arguments"] == []
     after
       File.rm(request_path)
       File.rm(database_path)
@@ -182,48 +189,6 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
     end
 
     refute File.exists?(database_path)
-  end
-
-  test "rolls back the work package when local secret handoff fails" do
-    database_path = WorkPackageFactory.database_path()
-    request_path = Path.join(System.tmp_dir!(), "sympp-create-work-#{System.unique_integer([:positive])}.yaml")
-    blocking_store_path = Path.join(System.tmp_dir!(), "sympp-secret-store-blocker-#{System.unique_integer([:positive])}")
-
-    File.write!(request_path, valid_request_yaml())
-    File.write!(blocking_store_path, "not a directory")
-
-    try do
-      assert_raise Mix.Error, ~r/Failed to store worker secret handoff/, fn ->
-        CreateWorkTask.run([
-          "--database",
-          database_path,
-          "--file",
-          request_path,
-          "--secret-handoff",
-          "local-private-file",
-          "--secret-store-dir",
-          blocking_store_path,
-          "--claimed-by",
-          "worker-create-work-rollback"
-        ])
-      end
-
-      {:ok, pid} =
-        Repo.start_link(database: database_path, name: Repo.process_name(database_path), pool_size: 1, log: false)
-
-      Repo.put_dynamic_repo(pid)
-
-      try do
-        assert Repo.aggregate(WorkPackage, :count, :id) == 0
-        assert Repo.aggregate(AccessGrant, :count, :id) == 0
-      after
-        GenServer.stop(pid)
-      end
-    after
-      File.rm(request_path)
-      File.rm(database_path)
-      File.rm(blocking_store_path)
-    end
   end
 
   test "preserves SQLite special database names" do
@@ -286,6 +251,11 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
   end
 
   defp sqlite_file_uri_path_char?(char), do: URI.char_unreserved?(char) or char in [?/, ?:]
+
+  defp assert_same_database_path(actual_path, expected_path) do
+    assert is_binary(actual_path)
+    assert Repo.same_database_path?(actual_path, expected_path)
+  end
 
   defp valid_request_yaml do
     """

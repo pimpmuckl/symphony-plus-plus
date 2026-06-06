@@ -12,16 +12,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
-  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
-
-  @repo_root Path.expand("../../../../", __DIR__)
-
-  defmodule FailingReadyRenderer do
-    def render_all(_repo, _work_package_id), do: {:error, :render_failed}
-  end
 
   setup_all do
     database_path = WorkPackageFactory.database_path()
@@ -420,9 +413,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     refute creation.virtual_files["context.md"] =~ "- Status: `created`"
     refute creation.virtual_files["handoff.md"] =~ "- Status: `created`"
 
-    assert %{secret: secret, display_key: display_key} = creation.worker_grant
-    assert is_binary(secret)
-    assert String.length(display_key) == 4
+    assert %{id: grant_id, role: "worker"} = creation.worker_grant
+    refute Map.has_key?(creation.worker_grant, :secret)
+    refute Map.has_key?(creation.worker_grant, :display_key)
     assert repo.aggregate(AccessGrant, :count) == 1
 
     assert creation.virtual_files["context.md"] =~ "Fix flaky uploader"
@@ -432,63 +425,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert creation.virtual_files["review_suite.md"] =~ "Policy template: `quick_fix`"
 
     assert {:ok, rendered} = PlanningRepository.get_render_state(repo, creation.work_package.id)
-    refute inspect(rendered) =~ secret
+    refute inspect(rendered) =~ grant_id
 
-    refute Enum.any?(creation.virtual_files, fn {_name, markdown} -> String.contains?(markdown, secret) end)
+    refute Enum.any?(creation.virtual_files, fn {_name, markdown} -> String.contains?(markdown, grant_id) end)
   end
 
-  test "create-work private handoff storage names use the persisted grant id and redact the raw secret", %{repo: repo} do
-    store_dir = Path.join(System.tmp_dir!(), "sympp-create-work-grant-handoff-#{System.unique_integer([:positive])}")
-
-    handoff_opts = [
-      mode: "local-private-file",
-      store_dir: store_dir,
-      claimed_by: "worker-create-work-grant-id",
-      repo_root: @repo_root
-    ]
-
-    try do
-      assert {:ok, {creation, handoff}} =
-               CreateWork.create_with_worker_secret_handoff(
-                 repo,
-                 %{
-                   repo: "kraken",
-                   base_branch: "main",
-                   title: "Create private grant handoff",
-                   acceptance_criteria: ["Worker secret handoff is private."]
-                 },
-                 handoff_opts
-               )
-
-      grant_id = creation.worker_grant.id
-      secret = creation.worker_grant.secret
-      response_creation = %{creation | worker_grant: Map.put(creation.worker_grant, :secret_hash, "hash-should-not-leak")}
-      payload = CreateWork.response_payload(response_creation, worker_secret_handoff: handoff)
-      json = Jason.encode!(payload)
-
-      assert {:ok, metadata_handoff} =
-               SecretHandoff.read_worker_secret_metadata(creation.work_package, creation.worker_grant, handoff_opts)
-
-      assert creation.work_package.status == "ready_for_worker"
-      assert handoff.path =~ grant_id
-      assert handoff.target =~ grant_id
-      assert metadata_handoff.path == handoff.path
-      assert metadata_handoff.target == handoff.target
-      assert metadata_handoff.suggested_claimed_by == "worker-create-work-grant-id"
-      assert metadata_handoff.secret_in_stdout == false
-      assert File.read!(handoff.path) == secret
-      refute Map.has_key?(payload.worker_grant, :secret)
-      refute Map.has_key?(payload.worker_grant, :secret_hash)
-      assert payload.worker_grant.secret_handoff.target == handoff.target
-      refute json =~ secret
-      refute json =~ "hash-should-not-leak"
-      refute inspect(metadata_handoff) =~ secret
-    after
-      File.rm_rf!(store_dir)
-    end
-  end
-
-  test "create-work bootstrap response redacts prompt and grant display key", %{repo: repo} do
+  test "create-work bootstrap response redacts prompt and grant verifier material", %{repo: repo} do
     assert {:ok, creation} =
              CreateWork.create(repo, %{
                repo: "kraken",
@@ -513,8 +455,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     refute Map.has_key?(payload.worker_grant, :secret)
     refute Map.has_key?(payload.worker_grant, :secret_hash)
     refute json =~ "raw_secret_bootstrap_response"
-    refute json =~ creation.worker_grant.display_key
-    refute json =~ creation.worker_grant.secret
     refute json =~ "hash-should-not-leak"
   end
 
@@ -531,160 +471,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
 
     assert payload.worker_grant == nil
     assert Jason.encode!(payload) =~ ~s("worker_grant":null)
-  end
-
-  test "removes stored worker secret when managed metadata persistence fails", %{repo: repo} do
-    store_dir = Path.join(System.tmp_dir!(), "sympp-metadata-failure-handoff-#{System.unique_integer([:positive])}")
-
-    try do
-      assert {:error, {:handoff_metadata_write_failed, {:rename, :eacces}}} =
-               CreateWork.create_with_worker_secret_handoff(
-                 repo,
-                 %{
-                   repo: "kraken",
-                   base_branch: "main",
-                   title: "Force metadata write failure",
-                   acceptance_criteria: ["Rollback removes stored handoff metadata."]
-                 },
-                 mode: "local-private-file",
-                 store_dir: store_dir,
-                 claimed_by: "worker-metadata-failure",
-                 repo_root: @repo_root,
-                 metadata_rename_fun: fn _temp_path, _path -> {:error, :eacces} end
-               )
-
-      assert repo.aggregate(WorkPackage, :count, :id) == 0
-      assert repo.aggregate(AccessGrant, :count, :id) == 0
-      assert Path.wildcard(Path.join(store_dir, "*.secret")) == []
-      assert Path.wildcard(Path.join([store_dir, "metadata", "*.json"])) == []
-    after
-      File.rm_rf!(store_dir)
-    end
-  end
-
-  test "removes stored worker secret when ready promotion fails after handoff", %{repo: repo} do
-    store_dir = Path.join(System.tmp_dir!(), "sympp-ready-failure-handoff-#{System.unique_integer([:positive])}")
-
-    repo.query!("DROP TRIGGER IF EXISTS sympp_force_ready_stale")
-
-    repo.query!("""
-    CREATE TRIGGER sympp_force_ready_stale
-    AFTER INSERT ON sympp_work_packages
-    WHEN NEW.title = 'Force ready promotion failure'
-    BEGIN
-      UPDATE sympp_work_packages SET status = 'planning' WHERE id = NEW.id;
-    END;
-    """)
-
-    try do
-      assert {:error, :stale_status} =
-               CreateWork.create_with_worker_secret_handoff(
-                 repo,
-                 %{
-                   repo: "kraken",
-                   base_branch: "main",
-                   title: "Force ready promotion failure",
-                   acceptance_criteria: ["Rollback removes stored handoff secret."]
-                 },
-                 mode: "local-private-file",
-                 store_dir: store_dir,
-                 claimed_by: "worker-ready-failure",
-                 repo_root: @repo_root
-               )
-
-      assert repo.aggregate(WorkPackage, :count, :id) == 0
-      assert repo.aggregate(AccessGrant, :count, :id) == 0
-      assert Path.wildcard(Path.join(store_dir, "*.secret")) == []
-      assert Path.wildcard(Path.join([store_dir, "metadata", "*.json"])) == []
-    after
-      repo.query!("DROP TRIGGER IF EXISTS sympp_force_ready_stale")
-      File.rm_rf!(store_dir)
-    end
-  end
-
-  test "removes stored worker secret when ready rerender fails after handoff", %{repo: repo} do
-    store_dir = Path.join(System.tmp_dir!(), "sympp-ready-render-failure-handoff-#{System.unique_integer([:positive])}")
-
-    try do
-      assert {:error, :render_failed} =
-               CreateWork.create_with_worker_secret_handoff(
-                 repo,
-                 %{
-                   repo: "kraken",
-                   base_branch: "main",
-                   title: "Force ready render failure",
-                   acceptance_criteria: ["Rollback removes stored handoff secret."]
-                 },
-                 mode: "local-private-file",
-                 store_dir: store_dir,
-                 claimed_by: "worker-ready-render-failure",
-                 repo_root: @repo_root,
-                 renderer: FailingReadyRenderer
-               )
-
-      assert repo.aggregate(WorkPackage, :count, :id) == 0
-      assert repo.aggregate(AccessGrant, :count, :id) == 0
-      assert Path.wildcard(Path.join(store_dir, "*.secret")) == []
-      assert Path.wildcard(Path.join([store_dir, "metadata", "*.json"])) == []
-    after
-      File.rm_rf!(store_dir)
-    end
-  end
-
-  test "reports recovery identifiers when handoff failure cleanup also fails", %{repo: repo} do
-    store_path = Path.join(System.tmp_dir!(), "sympp-secret-store-blocker-#{System.unique_integer([:positive])}")
-
-    File.write!(store_path, "not a directory")
-    repo.query!("DROP TRIGGER IF EXISTS sympp_block_work_package_cleanup")
-
-    repo.query!("""
-    CREATE TRIGGER sympp_block_work_package_cleanup
-    BEFORE DELETE ON sympp_work_packages
-    BEGIN
-      SELECT RAISE(ABORT, 'cleanup blocked');
-    END;
-    """)
-
-    try do
-      assert {:error, {:handoff_cleanup_failed, {:local_private_file_failed, _reason}, _cleanup_reason, recovery}} =
-               CreateWork.create_with_worker_secret_handoff(
-                 repo,
-                 %{
-                   repo: "kraken",
-                   base_branch: "main",
-                   title: "Force handoff cleanup failure",
-                   acceptance_criteria: ["Recovery identifiers are reported."]
-                 },
-                 mode: "local-private-file",
-                 store_dir: store_path,
-                 claimed_by: "worker-handoff-cleanup-failure",
-                 repo_root: @repo_root
-               )
-
-      assert recovery.work_package_id
-      assert recovery.worker_grant_id
-      assert recovery.worker_grant_display_key
-
-      error = {:handoff_cleanup_failed, {:local_private_file_failed, :eacces}, :cleanup_failed, recovery}
-      message = CreateWork.error_message(error)
-
-      assert message =~ recovery.work_package_id
-      assert message =~ recovery.worker_grant_id
-    after
-      repo.query!("DROP TRIGGER IF EXISTS sympp_block_work_package_cleanup")
-      File.rm(store_path)
-    end
-  end
-
-  test "reports ready-promotion cleanup failures as handoff cleanup failures" do
-    cleanup_reason = {:secret_handoff_cleanup_failed, {:local_private_file_delete_failed, :eacces}}
-
-    message =
-      CreateWork.error_message({:handoff_ready_cleanup_failed, :stale_status, cleanup_reason})
-
-    assert message =~ "Failed to mark worker secret handoff ready after storing the secret"
-    assert message =~ "cleanup failed"
-    assert message =~ "local_private_file_delete_failed"
   end
 
   test "creates acceptance-less quick fix work when the policy does not require criteria", %{repo: repo} do
@@ -751,7 +537,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                review_suite_template: "hotfix"
              })
 
-    server = Server.new(Config.default(repo: repo), initialized: true)
+    config = local_mcp_config(repo)
+    server = local_mcp_server(config, "standalone-hotfix-worker-state")
 
     {claim_response, claimed_server} =
       Server.handle_state(
@@ -760,8 +547,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
           "id" => "claim",
           "method" => "tools/call",
           "params" => %{
-            "name" => "claim_work_key",
-            "arguments" => %{"secret" => creation.worker_grant.secret, "claimed_by" => "worker-1"}
+            "name" => "claim_local_assignment",
+            "arguments" => %{"work_package_id" => creation.work_package.id, "claimed_by" => "worker-1"}
           }
         },
         server
@@ -794,7 +581,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
 
     text = get_in(resource_response, ["result", "contents", Access.at(0), "text"])
     assert text =~ "Pending withdrawals are excluded."
-    refute text =~ creation.worker_grant.secret
+    refute text =~ creation.worker_grant.id
   end
 
   test "drives standalone hotfix from create-work through worker MCP readiness", %{repo: repo} do
@@ -825,7 +612,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert creation.policy.template == "hotfix"
     assert creation.policy.review_suite.required == ["emergency"]
 
-    server = Server.new(Config.default(repo: repo), initialized: true)
+    config = local_mcp_config(repo)
+    server = local_mcp_server(config, "standalone-hotfix-worker-state")
 
     {claim_response, claimed_server} =
       Server.handle_state(
@@ -834,8 +622,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
           "id" => "claim",
           "method" => "tools/call",
           "params" => %{
-            "name" => "claim_work_key",
-            "arguments" => %{"secret" => creation.worker_grant.secret, "claimed_by" => "worker-hotfix-1"}
+            "name" => "claim_local_assignment",
+            "arguments" => %{"work_package_id" => creation.work_package.id, "claimed_by" => "worker-hotfix-1"}
           }
         },
         server
@@ -844,18 +632,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == creation.work_package.id
     session = claimed_server.session
 
-    reconnect_response =
-      MCPHarness.request(
+    {reconnect_response, _reconnected_server} =
+      Server.handle_state(
         %{
           "jsonrpc" => "2.0",
           "id" => "claim-reconnect",
           "method" => "tools/call",
           "params" => %{
-            "name" => "claim_work_key",
-            "arguments" => %{"secret" => creation.worker_grant.secret, "claimed_by" => "worker-hotfix-1"}
+            "name" => "claim_local_assignment",
+            "arguments" => %{"work_package_id" => creation.work_package.id, "claimed_by" => "worker-hotfix-1"}
           }
         },
-        repo: repo
+        local_mcp_server(config, "standalone-hotfix-worker-state")
       )
 
     assert get_in(reconnect_response, ["result", "structuredContent", "assignment", "work_package_id"]) == creation.work_package.id
@@ -867,14 +655,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
           "id" => "claim-wrong-owner",
           "method" => "tools/call",
           "params" => %{
-            "name" => "claim_work_key",
-            "arguments" => %{"secret" => creation.worker_grant.secret, "claimed_by" => "worker-hotfix-2"}
+            "name" => "claim_local_assignment",
+            "arguments" => %{"work_package_id" => creation.work_package.id, "claimed_by" => "worker-hotfix-2"}
           }
         },
         repo: repo
       )
 
-    assert get_in(wrong_owner_response, ["error", "data", "reason"]) == "already_claimed"
+    assert get_in(wrong_owner_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
 
     context_response =
       MCPHarness.request(
@@ -1061,15 +849,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                acceptance_criteria: ["Typo fixed."]
              })
 
-    secret = creation.worker_grant.secret
+    refute Map.has_key?(creation.worker_grant, :secret)
+    refute Map.has_key?(creation.worker_grant, :display_key)
 
     assert {:ok, work_package} = WorkPackageRepository.get(repo, creation.work_package.id)
-    assert inspect(work_package) != secret
+    refute inspect(work_package) =~ creation.worker_grant.id
 
     grant = repo.one(from(grant in AccessGrant, where: grant.work_package_id == ^creation.work_package.id))
     assert grant.secret_hash
-    refute inspect(grant) =~ secret
-    refute grant.secret_hash == secret
+    refute grant.secret_hash == creation.worker_grant.id
+  end
+
+  defp local_mcp_config(repo), do: Config.default(repo: repo, mode: :http, local_daemon_trusted: true)
+
+  defp local_mcp_server(%Config{} = config, state_key) do
+    Server.new(config, initialized: true, local_daemon_trusted: true, state_key: state_key)
   end
 
   defp attach_tool(repo, session, name, arguments) do

@@ -474,8 +474,8 @@ WorkPackage path. Downstream repos that copy only the repo-local
 `symphony-work-package` skill should pair it with
 `symphony-plus-plus:symphony-worker` and an explicit S++ MCP session. Use
 `symphony-plus-plus-mcp:symphony-architect` for WorkRequest-led orchestration.
-Solo Session entries must not include raw secrets, tokens, worker handoff
-payloads, WorkKeys, or private grant material.
+Solo Session entries must not include raw secrets, tokens, access-grant
+verifiers, claim lease internals, or private grant material.
 Solo entry bodies are human-facing Markdown; titles, statuses, repo names, and
 other compact labels remain plain text.
 
@@ -489,10 +489,9 @@ The default plugin owns the MCP-free worker and coordinator playbooks:
   that scout, slice, dispatch, supervise, and integrate one or more workers.
 
 WorkPackage workers also use the opt-in MCP plugin together with the
-Symphony++ local HTTP daemon. The operator creates a WorkPackage, the
-create-work command stores the one-time secret in a private local handoff store,
-and the worker receives only non-secret handoff metadata plus a stable
-`claimed_by` identity.
+Symphony++ local HTTP daemon. The operator creates or dispatches a WorkPackage,
+and the worker receives the WorkPackage id plus optional stable `claimed_by`
+identity.
 Human-facing WorkRequest descriptions, comments, findings, progress bodies,
 blocker notes, guidance context, and decision rationale/scope-impact text are
 Markdown. Identifiers, titles, statuses, branch names, PR metadata, and badges
@@ -506,19 +505,8 @@ bodies, review text, or durable logs.
 
 Plugin install is not a substitute for a per-worker claim. Planned-slice worker
 package dispatch should use the emitted ledger-backed
-`claim_local_assignment` bootstrap plus the prepared branch, worktree path,
-caller id, and stable `claimed_by` identity for exactly one WorkPackage.
-`mix sympp.create_work` and `run-mcp` private-store bootstrap remain
-legacy/recovery paths only.
-
-Worker-secret bootstrap metadata is emitted by `mix sympp.create_work` after it
-stores the one-time secret in a private local store. In `auto` mode, local
-private-file handoff is the default local operator path on every host, including
-Windows. Windows generated commands use `scripts/sympp-worker-secret.ps1`; other
-hosts use `scripts/sympp-worker-secret.sh` to read the private file and start
-the MCP child process without printing the secret. Explicit
-`windows-credential-manager` mode remains available when the host Credential
-Manager can write credentials.
+`claim_local_assignment` bootstrap with `work_package_id` and optional
+`claimed_by` for exactly one WorkPackage.
 
 ## Architect Use
 

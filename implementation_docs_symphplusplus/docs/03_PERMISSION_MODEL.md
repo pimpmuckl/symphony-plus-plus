@@ -1,193 +1,34 @@
 # Permission Model
 
-## Goal
+The MCP server is the permission boundary. Prompts, skills, docs, and dashboard
+UI are workflow aids only.
 
-Make it easy to send a normal worker agent to solve a small issue while still preventing the agent from gaining global project authority.
+## Claim Coordinates
 
-## Core policy
+- Workers claim one WorkPackage with `claim_local_assignment`.
+- Architects claim one WorkRequest with `claim_local_architect_assignment`.
+- `claimed_by` is optional audit ownership, not a secret carrier.
+- Repo, base branch, phase, anchor package, worktree, branch, and caller fields
+  are derived from the ledger when omitted and are validation context when
+  supplied.
 
-```text
-No grant, no action.
-Worker grant = one work package.
-Architect grant = one container plus ability to mint narrower child grants.
-Human/admin grant = repo/project/global authority depending on configuration.
-```
+## Role Boundaries
 
-## Display key versus secret
+Workers can update task plan, findings, progress, blockers, comments, branch/PR
+metadata, review evidence, and readiness for their assigned WorkPackage.
+Workers cannot mint grants, dispatch planned slices, approve scope, merge PRs,
+or close WorkRequest delivery.
 
-A four-character display key is acceptable for humans, but not as the security boundary.
+Architects can slice WorkRequests, manage product-plan nodes, dispatch planned
+slices, coordinate phase children, answer guidance, reconcile delivery, and
+record closeout.
+Architects may resolve blockers only for policy-scoped descendant WorkPackages
+visible from their claimed WorkRequest or phase scope. They cannot report new
+worker blockers, mutate sibling or unlinked packages, or use blocker resolution
+as scope expansion.
 
-Use:
+## Safety
 
-```text
-display_key: 91C2
-secret: 32+ random bytes encoded as base64url or equivalent
-secret_hash: hash(secret)
-```
-
-Store only `secret_hash`.
-
-Never log:
-
-- raw secret
-- full claim URL containing secret
-- bearer token
-- grant verifier
-
-## Claim flow
-
-```text
-1. Create or dispatch a WorkPackage and mint the worker AccessGrant.
-2. Return non-secret ledger claim metadata for `claim_local_assignment`.
-3. Prepare the scoped worker worktree before launch; this records
-   `worktree_path` and returns branch/worktree launch guidance.
-4. Worker MCP starts in a dedicated local HTTP session on the same ledger.
-5. Worker calls `claim_local_assignment` with repo, base branch, WorkPackage id,
-   optional WorkRequest id, branch, worktree path, caller id, and `claimed_by`.
-6. Server validates ledger scope, terminal status, explicit local daemon
-   session, and claim lease state.
-7. Server creates or heartbeats the claim lease; stale leases may be reclaimed
-   with audit evidence, while paused leases, same local owner claims that change
-   caller id, or active other owners fail closed.
-8. Server binds the worker grant to the session with the claimed owner identity.
-9. Subsequent calls use bound session/grant identity.
-```
-
-This is the current worker MCP claim contract: workers claim a ledger-backed
-local assignment with explicit owner identity rather than relying on ambiguous
-anonymous ownership or prompting for raw secrets.
-
-`claim_work_key(secret, claimed_by)` and `claim_private_handoff` remain
-server-side legacy/recovery primitives after the ledger-claim cutover.
-First-use Codex workers should not paste raw secrets into prompts or normal
-tool calls.
-
-Private handoff metadata has its own legacy/recovery naming contract. Local
-private-file paths and Windows Credential Manager targets use the stable,
-non-secret
-`worker_grant.id` as the uniqueness boundary. The four-character `display_key`
-may appear as a readable operator label, but it is not the unique storage
-identity. Legacy recovery output must keep showing only non-secret handoff
-metadata and bootstrap shape; raw worker secrets stay in the private store and
-must remain redacted from stdout, prompts, PR text, review text, and logs.
-
-Managed handoff metadata records are non-secret deletion-coordinate metadata.
-They identify the work package, worker grant, mode, and managed private-store
-path or credential target needed for later cleanup; they are not worker secrets
-and must not contain work keys, bearer material, run commands, or claimed owner
-identity. In the current child minting contract,
-`mint_child_worker_key` allows only one active child-worker grant/handoff per
-child package and rejects remint attempts while one exists.
-`revoke_child_worker_key` lets an architect with `revoke:child_worker_key`
-revoke one live child-worker grant for a same-phase child inside the architect
-grant's frozen scope, reset an active/interrupted child from `claimed`,
-`planning`, `implementing`, `reviewing`, `ci_waiting`, or `blocked` back to
-`ready_for_worker`, and then `mint_child_worker_key` can mint again. Revoke
-rejects unrelated, normal worker, sibling/out-of-scope, already revoked,
-expired, and architect-controlled/terminal child grants. It records a redacted
-audit/progress event with previous and new child statuses, but does not delete
-persisted child handoffs in this package.
-
-Architect child worker minting follows the same private-handoff rule. The
-`mint_child_worker_key` MCP response returns `worker_grant.secret_handoff` and
-`worker_grant.secret_in_response: false`, never the child worker secret or a
-`secret_returned_once` marker. Returned handoff metadata is redacted to
-non-secret bootstrap fields, including the resolved `claimed_by` identity and
-`run_mcp_command` when generated by SecretHandoff; these fields must not embed
-the raw worker secret. Optional handoff settings are limited to
-`template.secret_handoff.mode`, `store_dir`, and `claimed_by`; they do not
-change the child grant capability or expiry boundaries.
-
-Default local Symphony++ worker and architect grants do not expire. Grant
-authority is lifecycle-driven: explicit revoke, package completion/merge/archive,
-and child-worker recycle retire authority. `expires_at: null` is the no-expiry
-state. Callers may still pass an explicit future `expires_at` when they want a
-dated grant; once that timestamp is in the past, the grant is not live.
-
-## Worker capabilities
-
-```text
-read:own_work_package
-read:own_context
-read:own_virtual_planning_files
-write:own_task_plan
-append:own_findings
-append:own_progress
-set:own_status
-report:own_blocker
-request:scope_expansion
-request:context
-attach:own_branch
-attach:own_pr
-attach:own_artifact
-submit:own_review_package
-mark:ready
-```
-
-## Worker denials
-
-```text
-read:sibling_work_packages
-write:phase_status
-merge:pr
-advance:phase
-mint:worker_keys
-reassign:work_package
-read:grant_secrets
-```
-
-## Architect capabilities
-
-```text
-read:phase
-write:phase_plan
-create:child_work_package
-update:child_work_package
-mint:child_worker_key
-revoke:child_worker_key
-read:child_progress
-read:child_findings
-approve:child_ready_state
-merge:child_into_phase
-request:child_replan
-split:child_work_package
-publish:phase_update
-```
-
-## Scope expansion
-
-Workers can request expansion, but cannot self-approve it.
-
-Request shape:
-
-```json
-{
-  "work_package_id": "SYMPP-P6-003",
-  "reason": "Scope guard must inspect changed files from PR metadata, requiring GitHub client access.",
-  "requested_capabilities": ["read:own_pr_changed_files"],
-  "requested_file_globs": ["lib/Symphony_pp/github/**"],
-  "risk": "medium",
-  "proposed_verification": ["permission denial tests", "scope guard integration test"]
-}
-```
-
-Approval updates the grant constraints. Denial records an event and the worker must stay in scope.
-
-## Expiry defaults
-
-| Grant kind | Default expiry |
-|---|---:|
-| quick fix worker | none |
-| hotfix worker | none |
-| investigation worker | none |
-| phase child worker | none, unless parent architect grant has explicit expiry |
-| architect phase grant | none |
-
-If an architect grant has an explicit expiry, child worker grants default to
-that same timestamp and may not exceed it. If the architect grant is
-non-expiring, child worker grants default to non-expiring and may optionally use
-a future explicit expiry.
-
-## Enforcement location
-
-The Symphony++ server enforces permissions. Prompts, skills, hooks, and dashboards are reliability aids, not authority.
+Agent-facing tools do not require private files, secret stores, or raw grant
+secrets. Responses and durable notes redact bearer/API/GitHub/Linear/MCP tokens,
+grant verifiers, secret hashes, and secret-like prose.

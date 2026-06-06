@@ -15,6 +15,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Redactor do
                     "client_secret",
                     "password",
                     "private_key",
+                    "private_payload",
                     "raw_secret",
                     "refresh_token",
                     "secret",

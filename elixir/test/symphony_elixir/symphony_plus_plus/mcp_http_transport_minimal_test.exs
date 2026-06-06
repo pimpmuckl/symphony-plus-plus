@@ -82,7 +82,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
     assert length(names) == length(Enum.uniq(names))
 
     for tool <- [
-          "claim_work_key",
+          "claim_local_assignment",
+          "claim_local_architect_assignment",
           "get_current_assignment",
           "append_progress",
           "mark_ready",
@@ -133,8 +134,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
     for tool <- [
           "claim_local_assignment",
           "claim_local_architect_assignment",
-          "claim_work_key",
-          "claim_private_handoff",
           "create_work_request",
           "get_current_assignment",
           "append_progress",
@@ -195,7 +194,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
     claimed_names = tool_names(claimed_tools.response)
     assert "get_current_assignment" in claimed_names
     assert "append_progress" in claimed_names
-    refute "claim_work_key" in claimed_names
+    refute "claim_local_assignment" in claimed_names
+    refute "claim_private_handoff" in claimed_names
 
     assert {:ok, assignment} =
              HTTPTransport.handle(trusted_config, get_current_assignment_request(), client_key: "trusted-client", state_key: init.state_key)
@@ -269,7 +269,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
     assert get_in(assignment.response, ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
   end
 
-  test "batched failed legacy notification does not shadow local claim recovery", %{config: config} do
+  test "batched failed local-claim notification does not shadow later local claim recovery", %{config: config} do
     trusted_config = %{config | local_daemon_trusted: true}
     package_id = "SYMPP-HTTP-BATCH-SHADOW"
     client_key = "batch-shadow-client"
@@ -291,16 +291,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
     assert {:ok, _minted} = AccessGrantService.mint_worker_grant(trusted_config.repo, work_package.id)
     {:ok, init} = HTTPTransport.handle(trusted_config, initialize_request("batch-shadow-init"), client_key: client_key)
 
-    failed_legacy_notification =
-      "not-a-full-work-key"
-      |> claim_request("legacy-shadow")
+    failed_local_notification =
+      tool_call_request("failed-local-shadow", "claim_local_assignment", %{"work_package_id" => "missing-package"})
       |> Map.delete("id")
 
     assert {:ok, batch} =
              HTTPTransport.handle(
                trusted_config,
                [
-                 failed_legacy_notification,
+                 failed_local_notification,
                  tool_call_request("batch-shadow-local-claim", "claim_local_assignment", local_assignment_claim_args(work_package))
                ],
                client_key: client_key,
@@ -477,35 +476,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
     assert HTTPStateStore.get(config, "client-a", init.state_key) == nil
   end
 
-  test "claim_work_key persists bound HTTP continuity for later requests", %{config: config} do
+  test "claim_local_assignment persists bound HTTP continuity for later requests", %{config: config} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
                config.repo,
-               WorkPackageFactory.attrs(id: "SYMPP-HTTP-MINIMAL-CLAIM", kind: "mcp", status: "ready_for_worker")
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-HTTP-MINIMAL-CLAIM",
+                 kind: "mcp",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main",
+                 branch_pattern: "agent/SYMPP-HTTP-MINIMAL-CLAIM/worker",
+                 worktree_path: local_claim_worktree_path("SYMPP-HTTP-MINIMAL-CLAIM"),
+                 status: "ready_for_worker"
+               )
              )
 
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(config.repo, work_package.id)
-    {:ok, init} = HTTPTransport.handle(config, initialize_request("init"), client_key: "client-a")
+    local_config = %{config | mode: :http, local_daemon_trusted: true}
+    {:ok, init} = HTTPTransport.handle(local_config, initialize_request("init"), client_key: "client-a")
 
     assert {:ok, claim} =
-             HTTPTransport.handle(config, claim_request(minted.work_key.secret, "worker-a"), client_key: "client-a", state_key: init.state_key)
+             HTTPTransport.handle(
+               local_config,
+               tool_call_request("claim", "claim_local_assignment", local_assignment_claim_args(work_package, %{"claimed_by" => "worker-a"})),
+               client_key: "client-a",
+               state_key: init.state_key
+             )
 
     assert get_in(claim.response, ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
 
-    assert %Server{initialized: true, session: %Session{} = session} = stored_server = HTTPStateStore.get(config, "client-a", init.state_key)
+    assert %Server{initialized: true, session: %Session{} = session} = stored_server = HTTPStateStore.get(local_config, "client-a", init.state_key)
     assert session.assignment.work_package_id == work_package.id
     assert session.assignment.grant_id == minted.grant.id
     assert session.proof_hash == minted.grant.secret_hash
     refute inspect(stored_server) =~ minted.work_key.secret
 
     assert {:ok, tools} =
-             HTTPTransport.handle(config, tools_list_request("tools-after-claim"), client_key: "client-a", state_key: init.state_key)
+             HTTPTransport.handle(local_config, tools_list_request("tools-after-claim"), client_key: "client-a", state_key: init.state_key)
 
-    refute "claim_work_key" in tool_names(tools.response)
+    refute "claim_local_assignment" in tool_names(tools.response)
     assert "get_current_assignment" in tool_names(tools.response)
 
     assert {:ok, assignment} =
-             HTTPTransport.handle(config, get_current_assignment_request(), client_key: "client-a", state_key: init.state_key)
+             HTTPTransport.handle(local_config, get_current_assignment_request(), client_key: "client-a", state_key: init.state_key)
 
     assert get_in(assignment.response, ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
   end
@@ -549,7 +562,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
     %{"jsonrpc" => "2.0", "id" => id, "method" => "tools/call", "params" => %{"name" => name, "arguments" => arguments}}
   end
 
-  defp local_assignment_claim_args(%WorkPackage{} = package) do
+  defp local_assignment_claim_args(%WorkPackage{} = package, overrides \\ %{}) do
     %{
       "repo" => package.repo,
       "base_branch" => package.base_branch,
@@ -559,19 +572,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
       "caller_id" => "codex-local-test",
       "claimed_by" => "local-worker-1"
     }
+    |> Map.merge(overrides)
   end
 
   defp local_claim_worktree_path(work_package_id) do
     Path.expand(Path.join(System.tmp_dir!(), "sympp-http-local-claim-#{work_package_id}"))
-  end
-
-  defp claim_request(secret, claimed_by) do
-    %{
-      "jsonrpc" => "2.0",
-      "id" => "claim",
-      "method" => "tools/call",
-      "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => secret, "claimed_by" => claimed_by}}
-    }
   end
 
   defp tool_names(payload) do

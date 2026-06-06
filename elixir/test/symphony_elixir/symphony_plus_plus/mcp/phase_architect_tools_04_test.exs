@@ -444,7 +444,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools04Test do
           "jsonrpc" => "2.0",
           "id" => "mint-child-stale-anchor",
           "method" => "tools/call",
-          "params" => %{"name" => "mint_child_worker_key", "arguments" => %{"work_package_id" => package.id, "template" => child_worker_template()}}
+          "params" => %{"name" => "mint_child_worker_key", "arguments" => %{"work_package_id" => package.id}}
         },
         config: test_mcp_config(repo),
         session: session

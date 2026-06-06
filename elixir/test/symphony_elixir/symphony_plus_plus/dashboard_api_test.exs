@@ -33,7 +33,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
-  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service, as: SoloSessionsService
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
@@ -4187,33 +4186,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   end
 
   test "worker-scoped API cannot fetch global board and cannot fetch sibling packages", %{repo: repo} do
-    %{work_package: work_package, work_key_secret: secret, grant: grant} = create_dashboard_fixture(repo)
+    %{work_package: work_package, work_key_secret: secret} = create_dashboard_fixture(repo)
     assert {:ok, sibling} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SIBLING"))
-    store_dir = Path.join(System.tmp_dir!(), "sympp-api-worker-handoff-#{System.unique_integer([:positive])}")
-    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
-
-    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
-
-    on_exit(fn ->
-      restore_store_dir_env(previous_store_dir)
-      File.rm_rf(store_dir)
-    end)
-
-    handoff_opts = [
-      mode: "windows-credential-manager",
-      store_dir: store_dir,
-      database: Application.fetch_env!(:symphony_elixir, :sympp_repo_database),
-      repo_root: @repo_root,
-      claimed_by: "local-operator-worker"
-    ]
-
-    handoff = %{mode: "windows-credential-manager", target: credential_target(work_package, grant)}
-    assert :ok = SecretHandoff.store_worker_secret_metadata(work_package, grant, handoff, handoff_opts)
 
     assert %{"error" => %{"code" => "forbidden"}} =
              json_response(get(auth_conn(secret), "/api/v1/sympp/board"), 403)
 
-    assert %{"work_package" => %{"id" => fetched_id}, "worker_secret_handoffs" => []} =
+    assert %{"work_package" => %{"id" => fetched_id}} =
              json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
 
     assert fetched_id == work_package.id
@@ -5372,6 +5351,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
       assert {:ok, [stored]} = WorkRequestRepository.list(repo)
       assert stored.title == "Fresh dashboard request"
+    end)
+  end
+
+  test "local operator can create a local-claim architect handoff", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      request =
+        create_work_request!(repo,
+          id: "WR-LOCAL-ARCHITECT-HANDOFF",
+          status: "ready_for_slicing",
+          desired_dispatch_shape: "architect_led_feature_branch"
+        )
+
+      payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-requests/#{request.id}/architect-handoff", %{})
+        |> json_response(200)
+
+      assert get_in(payload, ["architect_handoff", "status"]) == "created"
+
+      assert get_in(payload, ["architect_handoff", "local_architect_claim"]) == %{
+               "tool" => "claim_local_architect_assignment",
+               "arguments" => %{"work_request_id" => request.id, "claimed_by" => "symphony-architect"},
+               "required_runtime_arguments" => [],
+               "secret_in_response" => false
+             }
     end)
   end
 
@@ -6876,13 +6880,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     {grant, work_key}
   end
 
-  defp credential_target(%WorkPackage{id: work_package_id}, %AccessGrant{} = worker_grant) do
-    "SymphonyPlusPlus:worker:#{work_package_id}:#{worker_grant.display_key}:#{String.trim(worker_grant.id)}"
-  end
-
-  defp restore_store_dir_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_worker_secret_store_dir)
-  defp restore_store_dir_env(store_dir), do: Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
-
   defp with_trusted_repo_remotes(remotes, fun) when is_list(remotes) and is_function(fun, 0) do
     original = Application.fetch_env(:symphony_elixir, :sympp_repo_identity_trusted_remotes)
     Application.put_env(:symphony_elixir, :sympp_repo_identity_trusted_remotes, remotes)
@@ -6940,10 +6937,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     original_repo_root = Application.fetch_env(:symphony_elixir, :sympp_repo_root)
     original_trusted_remotes = Application.fetch_env(:symphony_elixir, :sympp_repo_identity_trusted_remotes)
     repo_root = TestSupport.git_repo_with_origin_fixture!(origin, prefix: "sympp-dashboard-repo-root")
-    script_path = Path.join([repo_root, "scripts", "sympp-worker-secret.ps1"])
-
-    File.mkdir_p!(Path.dirname(script_path))
-    File.write!(script_path, "# test fixture\n")
 
     Application.put_env(:symphony_elixir, :sympp_repo_root, repo_root)
     Application.delete_env(:symphony_elixir, :sympp_repo_identity_trusted_remotes)

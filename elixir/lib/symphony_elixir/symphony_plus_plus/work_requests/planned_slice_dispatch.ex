@@ -3,25 +3,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
 
   alias SymphonyElixir.SymphonyPlusPlus.BranchPattern
   alias SymphonyElixir.SymphonyPlusPlus.CreateWork
-  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
-
-  @handoff_error_reasons [
-    :missing_secret,
-    :missing_claimed_by,
-    :missing_repo_root,
-    :invalid_repo_root,
-    :missing_worker_grant,
-    :missing_work_package,
-    :unsupported_handoff_metadata_location,
-    :unsupported_secret_handoff_mode,
-    :handoff_metadata_conflict,
-    :local_private_file_unavailable_on_windows,
-    :windows_credential_manager_unavailable
-  ]
 
   @mcp_worker_skill "symphony-plus-plus-mcp:symphony-worker"
   @default_worker_skill "symphony-plus-plus:symphony-worker"
@@ -33,9 +18,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
           work_request: WorkRequest.t(),
           planned_slice: PlannedSlice.t(),
           creation: CreateWork.creation(),
-          worker_bootstrap: map(),
-          worker_secret_handoff: map() | nil,
-          legacy_private_handoff?: boolean()
+          worker_bootstrap: map()
         }
 
   @type error ::
@@ -59,18 +42,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
          :ok <- validate_slice_scope(work_request, planned_slice),
          request = create_work_request(work_request, planned_slice),
          :ok <- validate_create_work_request(request, planned_slice),
-         {:ok, {creation, worker_secret_handoff}} <- create_work(repo, request, handoff_opts, opts) do
-      link_or_cleanup(repo, work_request, planned_slice, creation, worker_secret_handoff, handoff_opts, opts)
+         {:ok, creation} <- create_work(repo, request, opts) do
+      link_or_cleanup(repo, work_request, planned_slice, creation, handoff_opts, opts)
     end
   end
 
   @spec response_payload(dispatch_result()) :: map()
   def response_payload(%{planned_slice: %PlannedSlice{} = planned_slice, creation: creation} = dispatch) do
-    handoff = Map.get(dispatch, :worker_secret_handoff)
     bootstrap = Map.get(dispatch, :worker_bootstrap)
 
     %{
-      create_work: CreateWork.response_payload(creation, worker_secret_handoff: handoff, worker_bootstrap: bootstrap),
+      create_work: CreateWork.response_payload(creation, worker_bootstrap: bootstrap),
       planned_slice_linkage: planned_slice_linkage_payload(planned_slice)
     }
   end
@@ -106,13 +88,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     "Created WorkPackage but failed to link planned slice: #{format_reason(reason)}; recovery: #{inspect(recovery)}"
   end
 
-  def error_message(reason) do
-    if handoff_error?(reason) do
-      "Failed to store worker secret handoff: #{SecretHandoff.error_message(reason)}"
-    else
-      CreateWork.error_message(reason)
-    end
-  end
+  def error_message(reason), do: CreateWork.error_message(reason)
 
   defp load_dispatchable_slice(repo, work_request_id, planned_slice_id) do
     with {:ok, %WorkRequest{} = work_request} <- Repository.get(repo, work_request_id),
@@ -186,17 +162,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     end
   end
 
-  defp create_work(repo, request, handoff_opts, opts) do
-    if Keyword.get(opts, :legacy_private_handoff?, false) do
-      create_fun = Keyword.get(opts, :create_work, &CreateWork.create_with_worker_secret_handoff/3)
-      create_fun.(repo, request, handoff_opts)
-    else
-      create_fun = Keyword.get(opts, :create_work, &CreateWork.create/2)
-
-      with {:ok, creation} <- create_fun.(repo, request) do
-        {:ok, {creation, nil}}
-      end
-    end
+  defp create_work(repo, request, opts) do
+    create_fun = Keyword.get(opts, :create_work, &CreateWork.create/2)
+    create_fun.(repo, request)
   end
 
   defp worker_bootstrap(%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, creation, handoff_opts) do
@@ -205,20 +173,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
 
     claim_arguments =
       %{
-        "repo" => work_package.repo,
-        "base_branch" => work_package.base_branch,
         "work_package_id" => work_package.id,
-        "work_request_id" => work_request.id,
         "claimed_by" => claimed_by
       }
       |> drop_nil_values()
-
-    runtime_arguments =
-      if is_nil(claimed_by) do
-        ["claimed_by", "branch", "worktree_path", "caller_id"]
-      else
-        ["branch", "worktree_path", "caller_id"]
-      end
 
     ledger_database = Keyword.get(handoff_opts, :database)
 
@@ -229,7 +187,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
       claim: %{
         tool: "claim_local_assignment",
         arguments: claim_arguments,
-        required_runtime_arguments: runtime_arguments
+        required_runtime_arguments: []
       },
       required_skills: @preferred_worker_skill_set,
       preferred_skill_set: @preferred_worker_skill_set,
@@ -240,18 +198,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
           planned_slice,
           work_package,
           claim_arguments,
-          runtime_arguments,
           ledger_database
-        ),
-      legacy_private_handoff: %{
-        normal_path: false,
-        recovery_only: true
-      }
+        )
     }
     |> drop_nil_values()
   end
 
-  defp link_or_cleanup(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, creation, worker_secret_handoff, handoff_opts, opts) do
+  defp link_or_cleanup(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, creation, handoff_opts, opts) do
     work_package_id = creation.work_package.id
 
     case link_planned_slice(repo, work_request.id, planned_slice.id, work_package_id, opts) do
@@ -263,13 +216,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
            work_request: work_request,
            planned_slice: linked_slice,
            creation: creation,
-           worker_bootstrap: worker_bootstrap,
-           worker_secret_handoff: worker_secret_handoff,
-           legacy_private_handoff?: Keyword.get(opts, :legacy_private_handoff?, false)
+           worker_bootstrap: worker_bootstrap
          }}
 
       {:error, reason} ->
-        cleanup_after_link_failure(repo, creation, worker_secret_handoff, handoff_opts, reason, opts)
+        cleanup_after_link_failure(repo, creation, reason, opts)
     end
   end
 
@@ -280,102 +231,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     error -> {:error, {:link_failed, Exception.message(error)}}
   end
 
-  defp cleanup_after_link_failure(repo, creation, worker_secret_handoff, handoff_opts, reason, opts) do
-    recovery = recovery_payload(creation, worker_secret_handoff)
+  defp cleanup_after_link_failure(repo, creation, reason, opts) do
+    recovery = recovery_payload(creation)
     cleanup_fun = Keyword.get(opts, :cleanup_created_work_package, &CreateWork.cleanup_created_work_package/2)
 
     case cleanup_fun.(repo, creation.work_package.id) do
       :ok ->
-        delete_worker_secret_after_link_failure(creation, worker_secret_handoff, handoff_opts, reason, recovery, opts)
+        cleanup = %{ledger: :deleted}
+        {:error, {:dispatch_link_failed, reason, Map.put(recovery, :cleanup, cleanup)}}
 
       {:ok, _result} ->
-        delete_worker_secret_after_link_failure(creation, worker_secret_handoff, handoff_opts, reason, recovery, opts)
+        cleanup = %{ledger: :deleted}
+        {:error, {:dispatch_link_failed, reason, Map.put(recovery, :cleanup, cleanup)}}
 
       {:error, ledger_cleanup_reason} ->
-        cleanup = %{ledger: {:cleanup_failed, ledger_cleanup_reason}, secret_handoff: :skipped_to_preserve_recovery}
+        cleanup = %{ledger: {:cleanup_failed, ledger_cleanup_reason}}
         {:error, {:dispatch_link_failed, reason, Map.put(recovery, :cleanup, cleanup)}}
     end
   end
 
-  defp delete_worker_secret_after_link_failure(creation, worker_secret_handoff, handoff_opts, reason, recovery, opts) do
-    if is_nil(worker_secret_handoff) do
-      cleanup = %{ledger: :deleted, secret_handoff: :not_created}
-      {:error, {:dispatch_link_failed, reason, Map.put(recovery, :cleanup, cleanup)}}
-    else
-      delete_stored_worker_secret_after_link_failure(
-        creation,
-        worker_secret_handoff,
-        handoff_opts,
-        reason,
-        recovery,
-        opts
-      )
-    end
-  end
-
-  defp delete_stored_worker_secret_after_link_failure(creation, worker_secret_handoff, handoff_opts, reason, recovery, opts) do
-    delete_fun = Keyword.get(opts, :delete_worker_secret_by_grant, &SecretHandoff.delete_worker_secret_by_grant/3)
-
-    case delete_fun.(creation.work_package, worker_secret_metadata_grant(creation.worker_grant), handoff_opts) do
-      :ok ->
-        cleanup = %{ledger: :deleted, secret_handoff: :deleted}
-        {:error, {:dispatch_link_failed, reason, Map.put(recovery, :cleanup, cleanup)}}
-
-      {:error, handoff_cleanup_reason} ->
-        cleanup =
-          fallback_delete_worker_secret_after_link_failure(
-            worker_secret_handoff,
-            handoff_opts,
-            handoff_cleanup_reason,
-            opts
-          )
-
-        {:error, {:dispatch_link_failed, reason, Map.put(recovery, :cleanup, cleanup)}}
-    end
-  end
-
-  defp fallback_delete_worker_secret_after_link_failure(
-         worker_secret_handoff,
-         handoff_opts,
-         handoff_cleanup_reason,
-         opts
-       ) do
-    fallback_delete_fun = Keyword.get(opts, :delete_worker_secret, &SecretHandoff.delete_worker_secret/2)
-
-    case fallback_delete_fun.(worker_secret_handoff, handoff_opts) do
-      :ok ->
-        %{
-          ledger: :deleted,
-          secret_handoff: {:cleanup_failed, handoff_cleanup_reason},
-          fallback_secret_handoff: :deleted
-        }
-
-      {:error, fallback_reason} ->
-        %{
-          ledger: :deleted,
-          secret_handoff: {:cleanup_failed, handoff_cleanup_reason},
-          fallback_secret_handoff: {:cleanup_failed, fallback_reason}
-        }
-    end
-  end
-
-  defp worker_secret_metadata_grant(worker_grant) when is_map(worker_grant) do
-    worker_grant
-    |> Map.delete(:secret)
-    |> Map.delete("secret")
-  end
-
-  defp recovery_payload(%{work_package: work_package, worker_grant: worker_grant}, worker_secret_handoff) do
+  defp recovery_payload(%{work_package: work_package, worker_grant: worker_grant}) do
     %{
       work_package_id: work_package.id,
       worker_grant_id: Map.get(worker_grant, :id) || Map.get(worker_grant, "id"),
       worker_grant_display_key: Map.get(worker_grant, :display_key) || Map.get(worker_grant, "display_key")
     }
-    |> maybe_put_recovery_handoff(worker_secret_handoff)
   end
-
-  defp maybe_put_recovery_handoff(recovery, nil), do: recovery
-  defp maybe_put_recovery_handoff(recovery, worker_secret_handoff), do: Map.put(recovery, :worker_secret_handoff, worker_secret_handoff)
 
   defp ledger_bootstrap(nil), do: nil
   defp ledger_bootstrap(database), do: %{database: database}
@@ -392,7 +273,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
          %PlannedSlice{} = planned_slice,
          work_package,
          claim_arguments,
-         runtime_arguments,
          ledger_database
        ) do
     title = prompt_data(work_package.title)
@@ -414,9 +294,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     Preferred packaged setup: use `#{@mcp_worker_skill}` plus `#{@mcp_work_package_skill}` from the opt-in MCP plugin. Repo-local fallback: use `#{@default_worker_skill}` plus copied `#{@repo_work_package_skill}` and the configured Symphony++ MCP server.
     #{ledger_line}
 
-    Start from the ledger-backed local claim path. After the package worktree is prepared, call `claim_local_assignment` with #{claim_arguments}. Also provide #{Enum.join(runtime_arguments, ", ")} from the prepared local session. Then call `get_current_assignment()` and read the WorkPackage context before coding.
+    Start from the ledger-backed local claim path. Call `claim_local_assignment` with #{claim_arguments}. Then call `get_current_assignment()` and read the WorkPackage context before coding.
 
-    Implement only this WorkPackage and planned slice JSON id #{planned_slice_id}. Normal dispatch does not include a private worker handoff; do not ask for, print, paste, or commit raw secrets.
+    Implement only this WorkPackage and planned slice JSON id #{planned_slice_id}. Do not ask for, print, paste, or commit raw secrets.
     """
     |> String.trim()
   end
@@ -493,15 +373,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
   defp nonblank_or_nil(_value), do: nil
 
   defp drop_nil_values(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
-
-  defp handoff_error?(reason) when reason in @handoff_error_reasons, do: true
-  defp handoff_error?({:handoff_metadata_delete_failed, _reason}), do: true
-  defp handoff_error?({:handoff_metadata_invalid, _reason}), do: true
-  defp handoff_error?({:handoff_metadata_read_failed, _reason}), do: true
-  defp handoff_error?({:handoff_metadata_write_failed, _reason}), do: true
-  defp handoff_error?({:local_private_file_failed, _reason}), do: true
-  defp handoff_error?({:windows_credential_manager_failed, _status}), do: true
-  defp handoff_error?(_reason), do: false
 
   defp format_reason(reason) when is_binary(reason), do: reason
   defp format_reason(reason), do: inspect(reason)

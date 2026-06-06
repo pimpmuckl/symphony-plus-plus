@@ -310,7 +310,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
           "method" => "tools/call",
           "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
         },
-        Server.new(local_mcp_config(repo), initialized: true, state_key: "caller-supplied-state")
+        Server.new(local_mcp_config(repo), initialized: true, local_daemon_trusted: false, state_key: "caller-supplied-state")
       )
 
     assert get_in(response, ["error", "data", "reason"]) == "local_daemon_trust_required"
@@ -584,7 +584,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
     assert get_in(replacement_response, ["result", "structuredContent", "assignment", "grant_id"]) == replacement.grant.id
   end
 
-  test "claim_local_assignment releases authority-lost leases before replacement worker claim", %{repo: repo} do
+  test "claim_local_assignment rejects active authority-lost lease before replacement worker claim", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-AUTHORITY-LOST")
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     arguments = local_assignment_claim_args(package)
@@ -604,7 +604,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
              ClaimLeaseService.current_for_work_package(repo, package.id)
 
     assert {:ok, _revoked} = AccessGrantService.revoke(repo, minted.grant.id)
-    assert {:ok, replacement} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, _replacement} = AccessGrantService.mint_worker_grant(repo, package.id)
 
     {replacement_response, _replacement_server} =
       Server.handle_state(
@@ -624,10 +624,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
         local_mcp_server(local_mcp_config(repo), "local-authority-lost-replacement-state")
       )
 
-    assert get_in(replacement_response, ["result", "structuredContent", "assignment", "grant_id"]) == replacement.grant.id
-    assert get_in(replacement_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "reclaimed"
+    assert get_in(replacement_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
 
-    assert {:ok, %ClaimLease{actor_display_name: "replacement-worker", status: "active"}} =
+    assert {:ok, %ClaimLease{id: ^original_lease_id, actor_display_name: "local-worker-1", status: "active"}} =
              ClaimLeaseService.current_for_work_package(repo, package.id)
 
     statuses =
@@ -638,7 +637,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
         )
       )
 
-    assert {original_lease_id, "released", "local_assignment_claim_authority_lost"} in statuses
+    assert {original_lease_id, "active", nil} in statuses
+    refute Enum.any?(statuses, fn {id, status, _reason} -> id != original_lease_id and status == "active" end)
   end
 
   test "claim_local_assignment rejects cross-branch WorkRequest scope", %{repo: repo} do

@@ -10,9 +10,9 @@ lightweight parent coordination that needs durable local planning memory
 without WorkRequest or WorkPackage orchestration. This is the default MCP-free
 Symphony++ planning path for real agents.
 
-Do not use this as authority for assigned WorkPackages, ledger-backed claims,
-legacy WorkKeys, WorkRequests, architect orchestration, bound MCP planning
-resources, or merge gates. Use
+Do not use this as authority for assigned WorkPackages, WorkRequests,
+architect orchestration, bound MCP planning resources, ledger-backed claims, or
+merge gates. Use
 `symphony-plus-plus-mcp:symphony-work-package` for WorkPackages and
 `symphony-plus-plus-mcp:symphony-architect` for WorkRequest orchestration.
 
@@ -24,8 +24,8 @@ Do not create local `task_plan.md`, `findings.md`, or `progress.md` files for
 Solo Session state.
 
 Never store raw API keys, bearer/GitHub/Linear/MCP tokens, worker secrets, raw
-WorkKeys, access grants, secret hashes, private handoff payloads, or
-secret-bearing commands. Do not record claim lease internals.
+WorkKeys, access grants, private handoff payloads, access-grant verifiers,
+secret hashes, secret-bearing commands, or claim lease internals.
 
 ## Tools
 

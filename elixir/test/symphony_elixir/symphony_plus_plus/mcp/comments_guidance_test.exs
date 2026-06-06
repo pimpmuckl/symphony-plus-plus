@@ -296,12 +296,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.CommentsGuidanceTest do
     tools_by_name = tools_for_server(local_server) |> Map.new(&{&1["name"], &1})
 
     assert get_in(tools_by_name, ["claim_local_architect_assignment", "inputSchema", "required"]) == [
-             "work_request_id",
-             "architect_anchor_work_package_id",
-             "repo",
-             "base_branch",
-             "caller_id",
-             "claimed_by"
+             "work_request_id"
            ]
 
     assert get_in(tools_by_name, ["add_work_request_comment", "inputSchema", "required"]) == ["work_request_id", "body", "created_by"]
@@ -785,7 +780,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.CommentsGuidanceTest do
 
     assert get_in(refresh_required_response, ["error", "code"]) == -32_001
     assert get_in(refresh_required_response, ["error", "data", "reason"]) == "claim_required"
-    assert get_in(refresh_required_response, ["error", "data", "action"]) == "claim_private_handoff"
+    assert get_in(refresh_required_response, ["error", "data", "action"]) == "claim_local_architect_assignment"
   end
 
   test "local operator WorkRequest note tools reject invalid local payload fields", %{repo: repo} do

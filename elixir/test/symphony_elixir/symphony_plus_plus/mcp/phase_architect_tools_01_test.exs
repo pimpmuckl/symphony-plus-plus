@@ -50,8 +50,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools01Test do
 
     mint_response =
       mcp_tool(repo, session, "mint_child_worker_key", %{
-        "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "work_package_id" => child_id
       })
 
     assert get_in(mint_response, ["result", "structuredContent", "worker_grant", "work_package_id"]) == child_id
@@ -199,8 +198,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools01Test do
 
       mint_response =
         mcp_tool(repo, session, "mint_child_worker_key", %{
-          "work_package_id" => child_id,
-          "template" => child_worker_template()
+          "work_package_id" => child_id
         })
 
       assert get_in(mint_response, ["error", "code"]) == -32_003
@@ -243,8 +241,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools01Test do
 
     mint_response =
       mcp_tool(repo, session, "mint_child_worker_key", %{
-        "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "work_package_id" => child_id
       })
 
     assert get_in(mint_response, ["error", "code"]) == -32_003
@@ -321,8 +318,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools01Test do
 
     mint_response =
       mcp_tool(repo, session, "mint_child_worker_key", %{
-        "work_package_id" => child.id,
-        "template" => child_worker_template()
+        "work_package_id" => child.id
       })
 
     assert get_in(mint_response, ["error", "code"]) == -32_003
@@ -628,8 +624,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools01Test do
 
     mint_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-        "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "work_package_id" => child_id
       })
 
     assert get_in(mint_response, ["result", "structuredContent", "worker_grant", "work_package_id"]) == child_id
@@ -644,36 +639,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools01Test do
     refute Map.has_key?(worker_grant, "secret")
     refute Map.has_key?(worker_grant, "secret_returned_once")
     assert worker_grant["secret_in_response"] == false
-    assert worker_grant["secret_handoff"]["status"] == "stored"
-    assert worker_grant["secret_handoff"]["secret_in_stdout"] == false
-    assert worker_grant["secret_handoff"]["claimed_by"] == "sympp-child-worker:#{child_id}"
-    assert is_binary(worker_grant["secret_handoff"]["run_mcp_command"])
-    assert worker_grant["secret_handoff"]["run_mcp_command"] =~ "sympp-child-worker:#{child_id}"
+    refute Map.has_key?(worker_grant, "secret_handoff")
 
-    assert String.downcase(worker_grant["secret_handoff"]["run_mcp_command"]) =~
-             String.downcase(current_main_database_path(repo))
+    bootstrap = worker_grant["worker_bootstrap"]
+    assert bootstrap["type"] == "ledger_claim"
+    assert bootstrap["mode"] == "local_assignment"
+    assert_same_ledger_database(bootstrap["ledger"], current_main_database_path(repo))
+    assert bootstrap["claim"]["tool"] == "claim_local_assignment"
 
-    assert handoff_secret_absent?(worker_grant["secret_handoff"], worker_grant["secret_handoff"]["run_mcp_command"])
-    refute Map.has_key?(worker_grant["secret_handoff"], "tradeoff")
+    assert bootstrap["claim"]["arguments"] == %{
+             "work_package_id" => child_id,
+             "claimed_by" => "sympp-child-worker:#{child_id}"
+           }
+
+    assert bootstrap["claim"]["required_runtime_arguments"] == []
 
     content_text = get_in(mint_response, ["result", "content", Access.at(0), "text"])
     refute content_text =~ ~s("secret":)
     refute content_text =~ "secret_returned_once"
-    assert content_text =~ "run_mcp_command"
+    assert content_text =~ "worker_bootstrap"
+    assert content_text =~ "claim_local_assignment"
     assert content_text =~ "sympp-child-worker:#{child_id}"
-    assert handoff_secret_absent?(worker_grant["secret_handoff"], content_text)
 
-    assert [metadata_path] = Path.wildcard(Path.join([test_handoff_store_dir(), "metadata", "handoff-*.json"]))
-    metadata_content = File.read!(metadata_path)
-    assert {:ok, metadata} = Jason.decode(metadata_content)
-    assert metadata["work_package_id"] == child_id
-    assert metadata["worker_grant_id"] == worker_grant["id"]
-    assert handoff_secret_absent?(worker_grant["secret_handoff"], metadata_content)
-    refute Map.has_key?(metadata, "secret")
-    refute Map.has_key?(metadata, "claimed_by")
-    refute Map.has_key?(metadata, "run_mcp_command")
-
-    worker_session = claim_child_worker_from_mint_response(repo, mint_response, worker_grant["secret_handoff"]["claimed_by"])
+    worker_session = claim_child_worker_from_mint_response(repo, mint_response, "sympp-child-worker:#{child_id}")
 
     assignment_response = mcp_tool(repo, worker_session, "get_current_assignment", %{})
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == child_id
@@ -713,96 +701,5 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools01Test do
 
     assert get_in(child_status_response, ["result", "structuredContent", "work_package", "id"]) == child_id
     assert get_in(child_status_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_worker"
-  end
-
-  test "child worker key handoff bootstraps MCP through Windows Credential Manager", %{repo: repo} do
-    if windows_credential_manager_integration_enabled?() do
-      {_anchor, architect_session} =
-        create_architect_session(repo, "SYMPP-P7-002-MINT-WINCRED-ANCHOR", [
-          "create:child_work_package",
-          "mint:child_worker_key",
-          "read:phase"
-        ])
-
-      child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-WINCRED-CHILD")
-
-      mint_response =
-        mcp_tool(repo, architect_session, "mint_child_worker_key", %{
-          "work_package_id" => child_id,
-          "template" => child_worker_template(%{"mode" => "windows-credential-manager"})
-        })
-
-      worker_grant = get_in(mint_response, ["result", "structuredContent", "worker_grant"])
-      handoff = Map.fetch!(worker_grant, "secret_handoff")
-      claimed_by = Map.fetch!(handoff, "claimed_by")
-
-      assert worker_grant["secret_in_response"] == false
-      refute Map.has_key?(worker_grant, "secret")
-      refute Map.has_key?(worker_grant, "secret_returned_once")
-      assert handoff["mode"] == "windows-credential-manager"
-      assert is_binary(handoff["target"])
-      assert claimed_by == "sympp-child-worker:#{child_id}"
-      assert is_binary(handoff["run_mcp_command"])
-      assert handoff["run_mcp_command"] =~ handoff["target"]
-      assert handoff["run_mcp_command"] =~ claimed_by
-
-      try do
-        input =
-          [
-            Jason.encode!(%{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}),
-            Jason.encode!(%{
-              "jsonrpc" => "2.0",
-              "id" => "health",
-              "method" => "tools/call",
-              "params" => %{"name" => "sympp.health", "arguments" => %{}}
-            }),
-            Jason.encode!(%{
-              "jsonrpc" => "2.0",
-              "id" => "assignment",
-              "method" => "resources/read",
-              "params" => %{"uri" => "sympp://assignment/current"}
-            })
-          ]
-          |> Enum.join("\n")
-          |> Kernel.<>("\n")
-
-        {output, status} =
-          run_mcp_with_windows_credential_handoff(
-            handoff,
-            claimed_by,
-            current_main_database_path(repo),
-            input
-          )
-
-        assert status == 0, output
-        refute output =~ ~s("secret")
-        refute output =~ "SYMPP_WORK_KEY_SECRET"
-
-        responses = decode_json_objects_from_mixed_output(output)
-        response_summary = json_rpc_response_summary(responses)
-        health_response = Enum.find(responses, &(Map.get(&1, "id") == "health"))
-        assignment_response = Enum.find(responses, &(Map.get(&1, "id") == "assignment"))
-
-        assert health_response, inspect(response_summary)
-        assert assignment_response, inspect(response_summary)
-
-        assignment_text = get_in(assignment_response, ["result", "contents", Access.at(0), "text"])
-        assert is_binary(assignment_text), inspect(response_summary)
-        assignment = Jason.decode!(assignment_text)
-
-        assert get_in(health_response, ["result", "structuredContent", "status"]) == "ok"
-        assert get_in(health_response, ["result", "structuredContent", "ledger", "reachable"]) == true
-        assert assignment["work_package_id"] == child_id
-        assert assignment["claimed_by"] == claimed_by
-
-        assert {:ok, claimed_grant} = AccessGrantRepository.get(repo, worker_grant["id"])
-        assert claimed_grant.claimed_by == claimed_by
-        assert %DateTime{} = claimed_grant.claimed_at
-      after
-        cleanup_child_worker_handoff(handoff, claimed_by)
-      end
-    else
-      assert test_secret_handoff_mode() == "auto"
-    end
   end
 end

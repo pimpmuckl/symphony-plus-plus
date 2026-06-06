@@ -44,8 +44,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PlannedSliceWorkerRevoke do
       "previous_work_package_status" => previous_status,
       "work_package_status" => work_package.status,
       "lifecycle_state" => "recycled",
-      "reason_codes" => reason_codes(previous_status, work_package.status),
-      "private_handoff_cleanup" => "not_attempted"
+      "reason_codes" => reason_codes(previous_status, work_package.status)
     }
   end
 

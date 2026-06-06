@@ -153,7 +153,7 @@ Test strategy:
 - Server starts in test mode.
 - Missing/invalid grant denies access without listing packages.
 - Resource/tool tests for current assignment and virtual planning files.
-- Secret redaction tests for grant/work-key input paths.
+- Secret redaction tests for grant verifier and token-like input paths.
 
 ### Dashboard/API
 
@@ -218,7 +218,7 @@ Test strategy:
 ## Phase Assignment Guidance
 
 1. Build the WorkPackage ledger first as a new persistence boundary.
-2. Add AccessGrant/work-key services before worker-facing MCP tools.
+2. Add AccessGrant verifier services before worker-facing MCP tools.
 3. Add virtual planning file renderers on top of ledger state.
 4. Add `tracker.kind: Symphony_pp` only after ledger and lifecycle state exist.
 5. Add MCP server tools/resources after grant enforcement exists.

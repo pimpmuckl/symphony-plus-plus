@@ -2,7 +2,7 @@ param(
   [string]$Url = "http://127.0.0.1:19998/mcp",
   [switch]$Json,
   [switch]$Bound,
-  [string]$WorkKeySecretEnv,
+  [string]$WorkPackageId,
   [string]$ClaimedBy,
   [string]$RepoRoot,
   [string]$ExpectedSourceRevision,
@@ -19,8 +19,6 @@ $ExpectedGenericUnboundTools = @(
   "solo_show",
   "solo_list",
   "solo_update_status",
-  "claim_work_key",
-  "claim_private_handoff",
   "create_work_request"
 )
 
@@ -942,61 +940,40 @@ function Get-ResourceJsonPayload($Payload, [string]$Stage) {
   }
 }
 
-function Resolve-BoundSmokeConfig([bool]$UseBound, [string]$SecretEnvName, [string]$Owner) {
+function Resolve-BoundSmokeConfig([bool]$UseBound, [string]$PackageId, [string]$Owner) {
   if (-not $UseBound) {
-    if (-not [string]::IsNullOrWhiteSpace($SecretEnvName) -or -not [string]::IsNullOrWhiteSpace($Owner)) {
+    if (-not [string]::IsNullOrWhiteSpace($PackageId) -or -not [string]::IsNullOrWhiteSpace($Owner)) {
       return [pscustomobject]@{
         ok = $false
-        result = New-SmokeResult "invalid_arguments" "Bound smoke secret/owner arguments require -Bound. Run without -Bound for the unbound health smoke."
+        result = New-SmokeResult "invalid_arguments" "Bound smoke package/owner arguments require -Bound. Run without -Bound for the unbound health smoke."
       }
     }
 
     return [pscustomobject]@{ ok = $true; bound = $false }
   }
 
-  if ([string]::IsNullOrWhiteSpace($SecretEnvName)) {
+  if ([string]::IsNullOrWhiteSpace($PackageId)) {
     return [pscustomobject]@{
       ok = $false
-      result = New-SmokeResult "invalid_arguments" "Bound smoke requires -WorkKeySecretEnv <env-var-name>."
+      result = New-SmokeResult "invalid_arguments" "Bound smoke requires -WorkPackageId <work-package-id>."
     }
   }
 
-  $secretEnvName = $SecretEnvName.Trim()
-  if ($secretEnvName -notmatch "^[A-Za-z_][A-Za-z0-9_]*$") {
+  $packageId = $PackageId.Trim()
+  if ($packageId -eq "") {
     return [pscustomobject]@{
       ok = $false
-      result = New-SmokeResult "invalid_arguments" "Bound smoke requires a simple environment variable name for -WorkKeySecretEnv."
+      result = New-SmokeResult "invalid_arguments" "Bound smoke requires a non-empty -WorkPackageId value."
     }
   }
 
-  if ([string]::IsNullOrWhiteSpace($Owner)) {
-    return [pscustomobject]@{
-      ok = $false
-      result = New-SmokeResult "invalid_arguments" "Bound smoke requires -ClaimedBy <stable-worker-id>."
-    }
-  }
-
-  $owner = $Owner.Trim()
-  $secret = [Environment]::GetEnvironmentVariable($secretEnvName)
-  if ($null -ne $secret) {
-    $secret = $secret.Trim()
-  }
-
-  if ([string]::IsNullOrWhiteSpace($secret)) {
-    return [pscustomobject]@{
-      ok = $false
-      result = New-SmokeResult "missing_work_key_secret" "Bound smoke could not read a non-empty work key secret from environment variable '$secretEnvName'."
-    }
-  }
-
-  Add-SensitiveValue $secret
+  $owner = if ([string]::IsNullOrWhiteSpace($Owner)) { "sympp-http-smoke" } else { $Owner.Trim() }
 
   return [pscustomobject]@{
     ok = $true
     bound = $true
-    secretEnvName = $secretEnvName
+    workPackageId = $packageId
     claimedBy = $owner
-    secret = $secret
   }
 }
 
@@ -1295,36 +1272,36 @@ function Invoke-BoundMcpSmoke($Config) {
     $preClaimGatedTools = $preClaimGate.gatedTools
   }
 
-  $claimResponse = Invoke-McpPost $Url (New-ToolCallRequest "sympp-http-smoke-claim" "claim_work_key" @{
-      secret = $Config.secret
+  $claimResponse = Invoke-McpPost $Url (New-ToolCallRequest "sympp-http-smoke-claim" "claim_local_assignment" @{
+      work_package_id = $Config.workPackageId
       claimed_by = $Config.claimedBy
     }) $session.sessionId
 
   if (-not $claimResponse.ok) {
     $reason = if ($claimResponse.statusCode) { "HTTP $($claimResponse.statusCode)" } else { "request failed" }
     $detail = Get-ResponseErrorDetail $claimResponse $claimResponse.error
-    return New-SmokeResult "claim_failed" "MCP claim_work_key failed ($reason): $detail"
+    return New-SmokeResult "claim_failed" "MCP claim_local_assignment failed ($reason): $detail"
   }
 
   $claimedSessionId = Get-ResponseHeaderValue $claimResponse.headers "Mcp-Session-Id"
   Add-SensitiveValue $claimedSessionId
   if ([string]::IsNullOrWhiteSpace($claimedSessionId)) {
-    return New-SmokeResult "missing_claimed_session_id" "MCP claim_work_key succeeded but did not return Mcp-Session-Id."
+    return New-SmokeResult "missing_claimed_session_id" "MCP claim_local_assignment succeeded but did not return Mcp-Session-Id."
   }
 
   if ($claimedSessionId -ne $session.sessionId) {
-    return New-SmokeResult "session_id_mismatch" "MCP claim_work_key did not preserve the initialized Mcp-Session-Id."
+    return New-SmokeResult "session_id_mismatch" "MCP claim_local_assignment did not preserve the initialized Mcp-Session-Id."
   }
 
-  $claimPayload = ConvertFrom-JsonResponse $claimResponse.content "claim_work_key"
+  $claimPayload = ConvertFrom-JsonResponse $claimResponse.content "claim_local_assignment"
   $claimError = Get-JsonRpcErrorMessage $claimPayload
   if ($claimError) {
-    return New-SmokeResult "claim_failed" "MCP claim_work_key returned JSON-RPC error: $claimError"
+    return New-SmokeResult "claim_failed" "MCP claim_local_assignment returned JSON-RPC error: $claimError"
   }
 
   $workPackageId = Get-AssignmentWorkPackageId $claimPayload
   if ([string]::IsNullOrWhiteSpace($workPackageId)) {
-    return New-SmokeResult "claim_assignment_missing" "MCP claim_work_key response did not include assignment.work_package_id."
+    return New-SmokeResult "claim_assignment_missing" "MCP claim_local_assignment response did not include assignment.work_package_id."
   }
 
   $boundTools = Invoke-ToolsListSmoke $claimedSessionId $ExpectedBoundWorkerTools "bound worker" $ForbiddenBoundWorkerTools
@@ -1352,7 +1329,7 @@ function Invoke-BoundMcpSmoke($Config) {
 
   $assignmentToolWorkPackageId = Get-AssignmentWorkPackageId $assignmentToolPayload
   if ($assignmentToolWorkPackageId -ne $workPackageId) {
-    return New-SmokeResult "assignment_mismatch" "MCP get_current_assignment returned a different WorkPackage id than claim_work_key."
+    return New-SmokeResult "assignment_mismatch" "MCP get_current_assignment returned a different WorkPackage id than claim_local_assignment."
   }
 
   $assignmentResourceResponse = Invoke-McpPost $Url (New-ResourcesReadRequest "sympp://assignment/current") $claimedSessionId
@@ -1375,7 +1352,7 @@ function Invoke-BoundMcpSmoke($Config) {
 
   $assignmentResource = Get-ResourceJsonPayload $assignmentResourcePayload "resources/read sympp://assignment/current"
   if ([string]$assignmentResource.work_package_id -ne $workPackageId) {
-    return New-SmokeResult "assignment_resource_mismatch" "MCP assignment resource returned a different WorkPackage id than claim_work_key."
+    return New-SmokeResult "assignment_resource_mismatch" "MCP assignment resource returned a different WorkPackage id than claim_local_assignment."
   }
 
   $resourcesResponse = Invoke-McpPost $Url (New-ResourcesListRequest) $claimedSessionId
@@ -1413,7 +1390,7 @@ function Invoke-BoundMcpSmoke($Config) {
   $data = @{
     mode = "bound_worker"
     claimedBy = $Config.claimedBy
-    workKeySecretEnv = $Config.secretEnvName
+    requestedWorkPackageId = $Config.workPackageId
     sessionId = $RedactedValue
     sessionIdRedacted = $true
     daemonSourceRevision = $session.sourceRevision
@@ -1429,7 +1406,7 @@ function Invoke-BoundMcpSmoke($Config) {
     $data["preClaimGatedTools"] = $preClaimGatedTools
   }
 
-  return New-SmokeResult "ok" "Local Symphony++ HTTP MCP daemon claimed the work key and exposes the expected bound worker tools/resources." $data
+  return New-SmokeResult "ok" "Local Symphony++ HTTP MCP daemon claimed the WorkPackage and exposes the expected bound worker tools/resources." $data
 }
 
 function Invoke-SelfTest {
@@ -1481,7 +1458,7 @@ function Invoke-SelfTest {
     throw "Expected unbound discovery to include local HTTP claim tools."
   }
 
-  if ($ExpectedUnboundTools -notcontains "claim_private_handoff" -or $ExpectedUnboundTools -notcontains "create_work_request") {
+  if ($ExpectedUnboundTools -notcontains "create_work_request") {
     throw "Expected unbound discovery to include generic bootstrap tools."
   }
 
@@ -1505,8 +1482,8 @@ function Invoke-SelfTest {
     throw "Expected unbound discovery to treat schema visibility as authorization-neutral."
   }
 
-  if ($ForbiddenUnboundTools -contains "claim_work_key" -or $ForbiddenUnboundTools -contains "sympp.health") {
-    throw "Expected unbound forbidden tools to keep health and claim_work_key allowed."
+  if ($ForbiddenUnboundTools -contains "claim_local_assignment" -or $ForbiddenUnboundTools -contains "sympp.health") {
+    throw "Expected unbound forbidden tools to keep health and local claim tools allowed."
   }
 
   $preClaimReadNames = @($ExpectedTrustedLocalPreClaimReadCalls | ForEach-Object { [string]$_.name })
@@ -1527,7 +1504,7 @@ function Invoke-SelfTest {
     throw "Expected bound worker forbidden tools to include architect-only tools."
   }
 
-  if ($ForbiddenBoundWorkerTools -notcontains "claim_work_key" -or $ForbiddenBoundWorkerTools -notcontains "claim_local_assignment") {
+  if ($ForbiddenBoundWorkerTools -notcontains "claim_local_assignment") {
     throw "Expected bound worker forbidden tools to include unbound claim tools."
   }
 
@@ -1619,21 +1596,14 @@ function Invoke-SelfTest {
     throw "Expected JSON smoke output redaction marker to be present."
   }
 
-  $oldValue = [Environment]::GetEnvironmentVariable("SYMPP_SMOKE_SELFTEST_SECRET")
-  try {
-    [Environment]::SetEnvironmentVariable("SYMPP_SMOKE_SELFTEST_SECRET", "secret-from-env")
-    $resolved = Resolve-BoundSmokeConfig $true "SYMPP_SMOKE_SELFTEST_SECRET" "worker-self-test"
-    if (-not $resolved.ok -or $resolved.secretEnvName -ne "SYMPP_SMOKE_SELFTEST_SECRET" -or $resolved.claimedBy -ne "worker-self-test") {
-      throw "Expected bound smoke argument resolution to read a valid secret environment variable."
-    }
-  }
-  finally {
-    [Environment]::SetEnvironmentVariable("SYMPP_SMOKE_SELFTEST_SECRET", $oldValue)
+  $resolved = Resolve-BoundSmokeConfig $true "WP-SMOKE-SELFTEST" "worker-self-test"
+  if (-not $resolved.ok -or $resolved.workPackageId -ne "WP-SMOKE-SELFTEST" -or $resolved.claimedBy -ne "worker-self-test") {
+    throw "Expected bound smoke argument resolution to accept a WorkPackage id and owner."
   }
 
-  $invalidEnvName = Resolve-BoundSmokeConfig $true "BAD-NAME" "worker-self-test"
-  if ($invalidEnvName.ok -or $invalidEnvName.result.status -ne "invalid_arguments") {
-    throw "Expected invalid env-var names to fail bound smoke validation."
+  $defaultOwner = Resolve-BoundSmokeConfig $true "WP-SMOKE-SELFTEST" ""
+  if (-not $defaultOwner.ok -or $defaultOwner.claimedBy -ne "sympp-http-smoke") {
+    throw "Expected bound smoke argument resolution to default the claimed_by owner."
   }
 
   $script:SkipUnboundTools = $true
@@ -1647,12 +1617,12 @@ function Invoke-SelfTest {
     $script:SkipUnboundTools = $false
   }
 
-  $missingEnv = Resolve-BoundSmokeConfig $true "SYMPP_SMOKE_SELFTEST_MISSING" "worker-self-test"
-  if ($missingEnv.ok -or $missingEnv.result.status -ne "missing_work_key_secret") {
-    throw "Expected missing work key environment variable to fail bound smoke validation."
+  $missingPackage = Resolve-BoundSmokeConfig $true "" "worker-self-test"
+  if ($missingPackage.ok -or $missingPackage.result.status -ne "invalid_arguments") {
+    throw "Expected missing WorkPackage id to fail bound smoke validation."
   }
 
-  $unexpectedBoundArgument = Resolve-BoundSmokeConfig $false "SYMPP_SMOKE_SELFTEST_SECRET" ""
+  $unexpectedBoundArgument = Resolve-BoundSmokeConfig $false "WP-SMOKE-SELFTEST" ""
   if ($unexpectedBoundArgument.ok -or $unexpectedBoundArgument.result.status -ne "invalid_arguments") {
     throw "Expected bound arguments without -Bound to fail validation."
   }
@@ -1665,7 +1635,7 @@ try {
     Write-SmokeResult (Invoke-SelfTest) 0
   }
 
-  $config = Resolve-BoundSmokeConfig ([bool]$Bound) $WorkKeySecretEnv $ClaimedBy
+  $config = Resolve-BoundSmokeConfig ([bool]$Bound) $WorkPackageId $ClaimedBy
   if (-not $config.ok) {
     Write-SmokeResult $config.result 1
   }

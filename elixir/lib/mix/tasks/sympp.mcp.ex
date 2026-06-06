@@ -4,10 +4,7 @@ defmodule Mix.Tasks.Sympp.Mcp do
   use Mix.Task
 
   alias Ecto.Adapters.SQL
-  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
-  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
-  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Repository, Session, Stdio}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Repository, Stdio}
   alias SymphonyElixir.SymphonyPlusPlus.Repo
 
   @shortdoc "Starts the Symphony++ MCP server"
@@ -34,11 +31,12 @@ defmodule Mix.Tasks.Sympp.Mcp do
     try do
       case setup_repo(config) do
         {:ok, _repo_ownership} ->
-          with :ok <- Repository.ensure_migrated(Repo),
-               {:ok, session_options} <- session_options(config, &System.fetch_env/1) do
-            Stdio.run(config, session_options)
-          else
-            {:error, reason} -> Mix.raise("Failed to start Symphony++ MCP server: #{inspect(reason)}")
+          case Repository.ensure_migrated(Repo) do
+            :ok ->
+              Stdio.run(config, [])
+
+            {:error, reason} ->
+              Mix.raise("Failed to start Symphony++ MCP server: #{inspect(reason)}")
           end
 
         {:error, reason} ->
@@ -183,58 +181,4 @@ defmodule Mix.Tasks.Sympp.Mcp do
         :ok
     end
   end
-
-  defp session_options(%Config{work_key_secret_env: nil}, _fetch_env), do: {:ok, []}
-
-  defp session_options(%Config{work_key_secret_env: env_var} = config, fetch_env)
-       when is_binary(env_var) and is_function(fetch_env, 1) do
-    with {:ok, work_key_secret} when is_binary(work_key_secret) <- fetch_env.(env_var),
-         proof_hash = WorkKey.secret_hash(work_key_secret),
-         {:ok, session} <- session_from_work_key_secret(config, work_key_secret, proof_hash) do
-      {:ok, [session: session]}
-    else
-      :error -> {:error, {:missing_work_key_secret_env, env_var}}
-      {:error, reason} -> {:error, {:invalid_work_key_secret_env, env_var, reason}}
-    end
-  rescue
-    error -> {:error, {:invalid_work_key_secret_env, env_var, {:ledger_lookup_failed, error.__struct__}}}
-  end
-
-  defp session_from_work_key_secret(%Config{claimed_by: claimed_by}, work_key_secret, proof_hash)
-       when is_binary(claimed_by) do
-    claimed_by = String.trim(claimed_by)
-
-    if claimed_by == "" do
-      {:error, :missing_claim_identity}
-    else
-      claim_or_reconnect_from_secret(work_key_secret, proof_hash, claimed_by)
-    end
-  end
-
-  defp session_from_work_key_secret(%Config{}, _work_key_secret, _proof_hash) do
-    {:error, :missing_claim_identity}
-  end
-
-  defp claim_or_reconnect_from_secret(work_key_secret, proof_hash, claimed_by) do
-    case AccessGrantService.claim(Repo, work_key_secret, claimed_by: claimed_by) do
-      {:ok, assignment} ->
-        {:ok, Session.new(assignment, proof_hash: proof_hash)}
-
-      {:error, :already_claimed} ->
-        reconnect_from_claimed_secret(proof_hash, claimed_by)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp reconnect_from_claimed_secret(proof_hash, claimed_by) do
-    with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(Repo, proof_hash),
-         :ok <- require_same_claimed_by(grant.claimed_by, claimed_by) do
-      Auth.session_from_grant(Repo, grant, proof_hash: proof_hash)
-    end
-  end
-
-  defp require_same_claimed_by(claimed_by, claimed_by), do: :ok
-  defp require_same_claimed_by(_actual, _expected), do: {:error, :already_claimed}
 end

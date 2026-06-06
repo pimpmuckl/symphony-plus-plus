@@ -22,11 +22,11 @@ Rules:
    human legibility; do not force a fixed Layer -> Capability hierarchy.
 4. One planned slice per worker PR unless you explicitly split or combine with rationale.
 5. For trusted local WorkRequest architect lanes, claim or reconnect with
-   `claim_local_architect_assignment` when non-secret `local_architect_claim`
-   metadata is present; `claim_private_handoff` is recovery-only for that path
-   and the fallback otherwise.
-6. Dispatch workers with ledger claim metadata for `claim_local_assignment`, not
-   raw secrets or normal private handoff prompts.
+   `claim_local_architect_assignment` using the WorkRequest id. The private
+   handoff fallback has been removed.
+6. Dispatch workers with `claim_local_assignment` metadata containing the
+   WorkPackage id and optional `claimed_by`, not raw secrets or private
+   handoff prompts.
 7. Require every worker to provide test results.
 8. Record clarification answers, decisions, assumptions, and `human_info_needed`
    instead of inventing product behavior.

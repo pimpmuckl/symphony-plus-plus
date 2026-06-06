@@ -159,9 +159,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase do
 
     def transaction(fun), do: Repo.transaction(fun)
     def rollback(value), do: Repo.rollback(value)
+    def database_path, do: Repo.database_path()
     def get(schema, id), do: Repo.get(schema, id)
     def one(query), do: Repo.one(query)
     def all(query), do: Repo.all(query)
+    def query(sql, params, opts), do: Repo.query(sql, params, opts)
     def update(changeset), do: Repo.update(changeset)
     def update_all(query, updates), do: Repo.update_all(query, truncate_claim_timestamps(updates))
 
@@ -198,9 +200,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase do
 
     def transaction(fun), do: Repo.transaction(fun)
     def rollback(value), do: Repo.rollback(value)
+    def database_path, do: Repo.database_path()
     def get(schema, id), do: Repo.get(schema, id)
     def one(query), do: Repo.one(query)
     def all(query), do: Repo.all(query)
+    def query(sql, params, opts), do: Repo.query(sql, params, opts)
     def update(changeset), do: Repo.update(changeset)
     def update_all(query, updates), do: Repo.update_all(query, updates)
 
@@ -331,6 +335,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase do
     def insert(changeset), do: Repo.insert(changeset)
     def all(query), do: Repo.all(query)
     def one(query), do: Repo.one(query)
+    def query(sql, params, opts), do: Repo.query(sql, params, opts)
     def update_all(query, updates), do: Repo.update_all(query, updates)
     def rollback(value), do: Repo.rollback(value)
   end
@@ -345,6 +350,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase do
 
     def arm(grant_id, attrs), do: Process.put(@race_key, {grant_id, attrs})
     def disarm, do: Process.delete(@race_key)
+    def database_path, do: Repo.database_path()
 
     def transaction(fun) do
       Repo.transaction(fn ->
@@ -366,6 +372,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase do
     def insert(changeset), do: Repo.insert(changeset)
     def all(query), do: Repo.all(query)
     def one(query), do: Repo.one(query)
+    def query(sql, params, opts), do: Repo.query(sql, params, opts)
     def update_all(query, updates), do: Repo.update_all(query, updates)
     def rollback(value), do: Repo.rollback(value)
   end
@@ -411,7 +418,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase do
       alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
       alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
       alias SymphonyElixir.SymphonyPlusPlus.Repo
-      alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
       alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository, as: SoloSessionRepository
       alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
       alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
@@ -484,10 +490,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase do
         repo.delete_all(WorkPackage)
         repo.delete_all(Phase)
 
-        on_exit(fn ->
-          cleanup_test_child_worker_handoffs(repo, handoff_store_dir)
-          File.rm_rf(handoff_store_dir)
-        end)
+        on_exit(fn -> File.rm_rf(handoff_store_dir) end)
 
         :ok
       end

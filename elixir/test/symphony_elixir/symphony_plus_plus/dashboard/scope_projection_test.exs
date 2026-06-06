@@ -48,7 +48,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.ScopeProjectionTest do
 
   test "phase-capable worker grants keep the full payload" do
     grant = %AccessGrant{id: "grant-owned", grant_role: "worker", capabilities: ["read:phase"]}
-    payload = %{grants: [%{id: "grant-owned"}, %{id: "grant-other"}], worker_secret_handoffs: [%{target: "handoff"}]}
+    payload = %{grants: [%{id: "grant-owned"}, %{id: "grant-other"}]}
 
     assert ScopeProjection.scope_package_payload_for_grant(grant, payload) == payload
   end
