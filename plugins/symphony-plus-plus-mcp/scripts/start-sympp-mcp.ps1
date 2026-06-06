@@ -10,6 +10,8 @@ $DefaultBackendPort = 19998
 $DefaultDashboardPort = 19999
 $BoardPath = "/sympp/board"
 
+. (Join-Path $PSScriptRoot "sympp-launcher-runtime.ps1")
+
 function Write-Usage {
   Write-Host "Starts the Symphony++ Codex plugin MCP bridge and local operator servers."
   Write-Host ""
@@ -21,9 +23,10 @@ function Write-Usage {
   Write-Host "Environment:"
   Write-Host "  SYMPP_REPO_ROOT              Optional Symphony++ source checkout override. Marketplace installs are discovered automatically."
   Write-Host "  SYMPP_DATABASE               Optional SQLite ledger override passed to mix sympp.cockpit and mix sympp.mcp direct fallback."
-  Write-Host "  SYMPP_LAUNCHER               Optional launcher: 'direct' or 'mise'. Defaults to 'direct'."
+  Write-Host "  SYMPP_LAUNCHER               Optional launcher: 'direct' or 'mise'. Defaults to 'mise' when elixir/mise.toml is present and mise is available; otherwise 'direct'."
   Write-Host "  SYMPP_MIX                    Optional mix executable path or name for direct launcher. Defaults to 'mix'."
   Write-Host "  SYMPP_MISE                   Optional mise executable path or name for mise launcher. Defaults to 'mise'."
+  Write-Host "  MIX_BUILD_ROOT               Optional Mix build-root override. Defaults under %USERPROFILE%\.agents\splusplus\build\mcp for plugin launcher runs."
   Write-Host "  SYMPP_BACKEND_PORT           Backend/API port. Defaults to $DefaultBackendPort. Use 0 for any available port."
   Write-Host "  SYMPP_BACKEND_URL            Reuse an already-running backend URL instead of starting mix sympp.cockpit."
   Write-Host "  SYMPP_DASHBOARD_PORT         Preferred dashboard port. Defaults to $DefaultDashboardPort. Use 0 for any available port."
@@ -59,59 +62,6 @@ function Resolve-OptionalPath([string]$Path) {
 
 function Test-SymphonySourceRoot([string]$Path) {
   return (-not [string]::IsNullOrWhiteSpace($Path)) -and (Test-Path -LiteralPath (Join-Path $Path "elixir/mix.exs"))
-}
-
-function Normalize-SourceRevision([string]$Revision) {
-  if ([string]::IsNullOrWhiteSpace($Revision)) {
-    return $null
-  }
-
-  $normalized = $Revision.Trim().ToLowerInvariant()
-  if ($normalized -match "^[0-9a-f]{40}$") {
-    return $normalized
-  }
-
-  return $null
-}
-
-function Get-MarketplaceInstallRevision([string]$RepoRoot) {
-  $installPath = Join-Path $RepoRoot ".codex-marketplace-install.json"
-  if (-not (Test-Path -LiteralPath $installPath)) {
-    return $null
-  }
-
-  try {
-    $install = Get-Content -LiteralPath $installPath -Raw | ConvertFrom-Json
-    return Normalize-SourceRevision ([string]$install.revision)
-  } catch {
-    return $null
-  }
-}
-
-function Get-GitHeadRevision([string]$RepoRoot) {
-  $git = Get-Command git -ErrorAction SilentlyContinue | Select-Object -First 1
-  if (-not $git) {
-    return $null
-  }
-
-  try {
-    $output = @(& $git.Source @("-C", $RepoRoot, "rev-parse", "--verify", "HEAD") 2>$null)
-    if ($LASTEXITCODE -eq 0 -and $output.Count -gt 0) {
-      return Normalize-SourceRevision ([string]$output[0])
-    }
-  } catch {
-  }
-
-  return $null
-}
-
-function Resolve-ExpectedSourceRevision([string]$RepoRoot) {
-  $gitRevision = Get-GitHeadRevision $RepoRoot
-  if ($gitRevision) {
-    return $gitRevision
-  }
-
-  return Get-MarketplaceInstallRevision $RepoRoot
 }
 
 function Resolve-RepoRootFromMarketplaceCache([string]$PluginRoot) {
@@ -800,7 +750,7 @@ function Get-HealthSourceRevision($Payload) {
     return $null
   }
 
-  return Normalize-SourceRevision ([string]$source.revision)
+  return Normalize-SymppSourceRevision ([string]$source.revision)
 }
 
 function Invoke-McpPost([string]$Url, [string]$Body, [string]$SessionId, [string]$ProtocolVersion, [int]$TimeoutSec) {
@@ -1928,9 +1878,14 @@ if ($SelfTest) {
 $repoRoot = Resolve-RepoRoot
 $elixirDir = Join-Path $repoRoot "elixir"
 $assetsDir = Join-Path $elixirDir "assets"
-$launcher = Get-EnvMode "SYMPP_LAUNCHER" "direct" @("direct", "mise")
 $mix = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MIX)) { "mix" } else { $env:SYMPP_MIX }
 $mise = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MISE)) { "mise" } else { $env:SYMPP_MISE }
+$defaultLauncher = Resolve-SymppDefaultLauncher $elixirDir $mise
+$launcher = Get-EnvMode "SYMPP_LAUNCHER" $defaultLauncher @("direct", "mise")
+$defaultMixBuildRoot = Resolve-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp"
+if (-not $ValidateOnly) {
+  Set-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp"
+}
 $runtimeFile = Resolve-RuntimeFile
 $logDir = Resolve-LogDir
 
@@ -1947,6 +1902,7 @@ if ($ValidateOnly) {
   Write-Host "  elixirDir: $elixirDir"
   Write-Host "  assetsDir: $assetsDir"
   Write-Host "  launcher: $launcher"
+  Write-Host "  mixBuildRoot: $defaultMixBuildRoot"
   Write-Host "  runtimeFile: $runtimeFile"
   Write-Host "  logDir: $logDir"
   if (Test-NpmAvailable) {
@@ -2002,7 +1958,7 @@ $backendPlan = $null
 $dashboardPlan = $null
 $bridgeLeasePath = $null
 $supersededState = $null
-$expectedSourceRevision = Resolve-ExpectedSourceRevision $repoRoot
+$expectedSourceRevision = Resolve-SymppSourceRevision $repoRoot
 $startupLock = Enter-FileLock (Resolve-StartupLockFile $runtimeFile) $startupLockTimeout
 try {
   $runtimeState = Read-RuntimeState $runtimeFile

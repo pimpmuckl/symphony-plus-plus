@@ -415,11 +415,19 @@ Symphony++ source checkout containing `elixir/mix.exs`; it is not the
 caller/task repository root. Set `SYMPP_DATABASE` only when the MCP server
 should use a specific SQLite ledger instead of the runtime default.
 
-The wrapper defaults to running `mix` directly from `PATH`, so the explicit MCP
-path does not require `mise trust` when `mix` resolves to a real
-Elixir executable. If `mix` resolves to a mise shim, validation fails with
-guidance to set `SYMPP_MIX` to a non-mise Mix executable or opt into
+The wrapper defaults to `SYMPP_LAUNCHER=mise` when the resolved Symphony++
+checkout contains `elixir/mise.toml` and `mise` is available; otherwise it
+falls back to running `mix` directly from `PATH`. Explicit
+`SYMPP_LAUNCHER=direct` still works when `mix` resolves to a real Elixir
+executable. If direct mode resolves to a mise shim, validation fails with
+guidance to set `SYMPP_MIX` to a non-mise Mix executable or use
 `SYMPP_LAUNCHER=mise` after trusting the checkout's mise config.
+
+Unless `MIX_BUILD_ROOT` is set, plugin wrapper runs write generated Mix output
+under `%USERPROFILE%\.agents\splusplus\build`, keyed by wrapper purpose,
+launcher, and source revision. This keeps freshly refreshed marketplace source
+builds from trying to remove `exqlite` NIF DLLs that are still loaded by older
+running MCP companion processes on Windows.
 
 Static plugin files must not contain raw worker secrets, private-store handoff
 targets, bearer tokens, or one-off operator-local secret material.

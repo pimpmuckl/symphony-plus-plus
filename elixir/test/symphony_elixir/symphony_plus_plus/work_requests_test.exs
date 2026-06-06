@@ -500,14 +500,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
       completed_skipped_request!(repo, "WR-RETENTION-CAP-RELEASE", release_completed_at, base_branch: "release/1.0")
 
     assert {:ok, summary} = Service.retention_pass(repo, now: now)
-
     assert summary.archived_ids == ["WR-RETENTION-CAP-1", "WR-RETENTION-CAP-2"]
     assert summary.archived_count == 2
     assert {:ok, first_overflow} = Repository.get(repo, "WR-RETENTION-CAP-1")
     assert first_overflow.archive_reason == "limit"
 
     assert {:ok, visible_requests} = Repository.list(repo)
-    assert Enum.map(visible_requests, & &1.id) == Enum.map(Enum.drop(completed_requests, 2), & &1.id) ++ [release_request.id]
+    expected_requests = Enum.sort_by([release_request | Enum.drop(completed_requests, 2)], &{&1.inserted_at, &1.id})
+    assert Enum.map(visible_requests, & &1.id) == Enum.map(expected_requests, & &1.id)
 
     assert {:ok, second_summary} = Service.retention_pass(repo, now: now)
     assert second_summary.archived_ids == []

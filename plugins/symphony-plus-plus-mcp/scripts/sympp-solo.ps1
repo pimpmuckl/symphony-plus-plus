@@ -7,6 +7,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot "sympp-launcher-runtime.ps1")
+
 function Write-Usage {
   Write-Host "Runs the Symphony++ Solo Session CLI from any current repository."
   Write-Host ""
@@ -18,9 +20,10 @@ function Write-Usage {
   Write-Host "Environment:"
   Write-Host "  SYMPP_REPO_ROOT   Optional Symphony++ source checkout override; not the caller/task repo. Marketplace installs are discovered automatically."
   Write-Host "  SYMPP_DATABASE    Optional SQLite ledger override passed to mix sympp.solo when --database is not already present. Relative paths resolve against the caller workspace. When omitted, mix sympp.solo prefers %USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3 and falls back under temp/relative .agents\splusplus if home is unavailable."
-  Write-Host "  SYMPP_LAUNCHER    Optional launcher: 'direct' or 'mise'. Defaults to 'direct'."
+  Write-Host "  SYMPP_LAUNCHER    Optional launcher: 'direct' or 'mise'. Defaults to 'mise' when elixir/mise.toml is present and mise is available; otherwise 'direct'."
   Write-Host "  SYMPP_MIX         Optional mix executable path or name for direct launcher. Defaults to 'mix'."
   Write-Host "  SYMPP_MISE        Optional mise executable path or name for mise launcher. Defaults to 'mise'."
+  Write-Host "  MIX_BUILD_ROOT    Optional Mix build-root override. Defaults under %USERPROFILE%\.agents\splusplus\build\solo for plugin wrapper runs."
   Write-Host ""
   Write-Host "Solo repo identity comes from --repo and --workspace-path. SYMPP_REPO_ROOT only locates the Symphony++ wrapper source."
   Write-Host "Installed plugins first use marketplace source discovery; local refresh may also write a non-secret .sympp-source-root hint."
@@ -296,9 +299,13 @@ $callerWorkspace = if ($ValidateOnly) { $null } else { Resolve-CallerWorkspace }
 $resolvedSoloArgs = if ($ValidateOnly) { @() } else { Resolve-DatabaseArgs -InputArgs $SoloArgs -CallerWorkspace $callerWorkspace }
 $elixirDir = Join-Path $repoRoot "elixir"
 $soloTaskPath = Join-Path $elixirDir "lib/mix/tasks/sympp.solo.ex"
-$launcher = if ([string]::IsNullOrWhiteSpace($env:SYMPP_LAUNCHER)) { "direct" } else { $env:SYMPP_LAUNCHER.Trim().ToLowerInvariant() }
 $mix = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MIX)) { "mix" } else { $env:SYMPP_MIX }
 $mise = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MISE)) { "mise" } else { $env:SYMPP_MISE }
+$launcher = if ([string]::IsNullOrWhiteSpace($env:SYMPP_LAUNCHER)) { Resolve-SymppDefaultLauncher $elixirDir $mise } else { $env:SYMPP_LAUNCHER.Trim().ToLowerInvariant() }
+$defaultMixBuildRoot = Resolve-SymppDefaultMixBuildRoot $repoRoot $launcher "solo"
+if (-not $ValidateOnly) {
+  Set-SymppDefaultMixBuildRoot $repoRoot $launcher "solo"
+}
 
 $script:FinalExitCode = 0
 
@@ -320,6 +327,7 @@ try {
     Write-Host "  repoRoot: $repoRoot"
     Write-Host "  elixirDir: $elixirDir"
     Write-Host "  launcher: $launcher"
+    Write-Host "  mixBuildRoot: $defaultMixBuildRoot"
     $script:FinalExitCode = 0
   } else {
     $soloCommandArgs = @("sympp.solo") + $resolvedSoloArgs

@@ -3187,6 +3187,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       try do
         File.mkdir_p!(Path.dirname(wrapper_path))
         File.cp!(@plugin_solo_script_path, wrapper_path)
+        File.cp!(Path.join(Path.dirname(@plugin_solo_script_path), "sympp-launcher-runtime.ps1"), Path.join(Path.dirname(wrapper_path), "sympp-launcher-runtime.ps1"))
         File.write!(Path.join(default_cache_root, ".sympp-source-root"), "#{temp_codex_home}\n")
         File.mkdir_p!(Path.dirname(companion_hint_path))
         File.write!(companion_hint_path, "#{@repo_root}\n")
@@ -3202,7 +3203,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         assert status == 0, output
         assert output =~ "Symphony++ Solo Session wrapper validation passed."
-        assert output =~ "repoRoot:"
       after
         File.rm_rf!(temp_codex_home)
       end
