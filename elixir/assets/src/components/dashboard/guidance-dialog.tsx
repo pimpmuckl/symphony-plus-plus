@@ -3,6 +3,7 @@ import { useId, useMemo, useReducer } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
+import { DetailCopyButton } from "@/components/dashboard/detail-copy-button";
 import { MarkdownBlock } from "@/components/dashboard/markdown-block";
 import {
   Dialog,
@@ -15,6 +16,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { guidanceCopyText } from "@/dashboard/detail-copy";
 import type {
   DecisionOption,
   DecisionPrompt,
@@ -110,6 +112,7 @@ function GuidanceDialogBody({
   onSubmitAnswer: (item: GuidanceItem, submission: GuidanceAnswerSubmission) => Promise<void>;
 }) {
   const options = useMemo(() => guidanceOptions(item.prompt), [item.prompt]);
+  const copyText = useMemo(() => guidanceCopyText(item, options), [item, options]);
   const radioGroupId = useId();
   const [state, dispatch] = useReducer(guidanceDialogReducer, options[0]?.id || CUSTOM_CHOICE, initialGuidanceDialogStateWithChoice);
   const radioGroupName = `${radioGroupId}-guidance-choice`;
@@ -152,8 +155,15 @@ function GuidanceDialogBody({
   return (
     <>
       <DialogHeader data-guidance-section style={{ animationDelay: "35ms" }}>
-        <DialogTitle>{item.prompt?.tl_dr || item.title}</DialogTitle>
-        <DialogDescription>{item.repo}</DialogDescription>
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <div className="min-w-0">
+            <DialogTitle className="pr-6">{item.prompt?.tl_dr || item.title}</DialogTitle>
+            <DialogDescription className="mt-1 truncate">{item.repo}</DialogDescription>
+          </div>
+          <div className="shrink-0 pr-6">
+            <DetailCopyButton label="Copy guidance details" text={copyText} />
+          </div>
+        </div>
       </DialogHeader>
       <div className="grid gap-4">
         <section className="rounded-lg border bg-muted/40 p-4" data-guidance-section style={{ animationDelay: "70ms" }}>

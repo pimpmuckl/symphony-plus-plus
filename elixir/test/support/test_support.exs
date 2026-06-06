@@ -149,7 +149,7 @@ defmodule SymphonyElixir.TestSupport do
     repo_root = Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(repo_root)
-    git!(repo_root, ["init"])
+    git!(repo_root, ["init", "-q"])
     git!(repo_root, ["remote", "add", "origin", origin])
 
     ExUnit.Callbacks.on_exit(fn -> File.rm_rf(repo_root) end)

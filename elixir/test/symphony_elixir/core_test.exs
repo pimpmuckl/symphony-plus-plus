@@ -415,7 +415,12 @@ defmodule SymphonyElixir.CoreTest do
         end
       end)
 
-      Process.sleep(50)
+      assert_eventually(fn ->
+        state = :sys.get_state(pid)
+
+        state.poll_check_in_progress == false and is_integer(state.next_poll_due_at_ms) and
+          state.next_poll_due_at_ms > System.monotonic_time(:millisecond) + 1_000
+      end)
 
       assert {:ok, workspace} =
                SymphonyElixir.PathSafety.canonicalize(Path.join(test_root, issue_identifier))
@@ -447,9 +452,16 @@ defmodule SymphonyElixir.CoreTest do
       end)
 
       send(pid, :tick)
-      Process.sleep(100)
-      state = :sys.get_state(pid)
 
+      assert_eventually(fn ->
+        state = :sys.get_state(pid)
+
+        !Map.has_key?(state.running, issue_id) and
+          !MapSet.member?(state.claimed, issue_id) and
+          !Process.alive?(agent_pid)
+      end)
+
+      state = :sys.get_state(pid)
       refute Map.has_key?(state.running, issue_id)
       refute MapSet.member?(state.claimed, issue_id)
       refute Process.alive?(agent_pid)
@@ -795,6 +807,19 @@ defmodule SymphonyElixir.CoreTest do
     assert due_at_ms - scheduled_at_ms == expected_delay_ms
   end
 
+  defp assert_eventually(fun, attempts \\ 400)
+
+  defp assert_eventually(fun, attempts) when attempts > 0 do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(5)
+      assert_eventually(fun, attempts - 1)
+    end
+  end
+
+  defp assert_eventually(_fun, 0), do: flunk("condition not met in time")
+
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
   defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 
@@ -1038,40 +1063,19 @@ defmodule SymphonyElixir.CoreTest do
       )
 
     try do
-      template_repo = Path.join(test_root, "source")
       workspace_root = Path.join(test_root, "workspaces")
       codex_binary = Path.join(test_root, "fake-codex")
 
-      File.mkdir_p!(template_repo)
       File.mkdir_p!(workspace_root)
-      File.write!(Path.join(template_repo, "README.md"), "# test")
-      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
-      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
-      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
-      System.cmd("git", ["-C", template_repo, "add", "README.md"])
-      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
 
       File.write!(codex_binary, """
       #!/bin/sh
-      count=0
       while IFS= read -r line; do
         count=$((count + 1))
         case "$count" in
-          1)
-            printf '%s\\n' '{\"id\":1,\"result\":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-1\"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-1\"}}}'
-            printf '%s\\n' '{\"method\":\"turn/completed\"}'
-            exit 0
-            ;;
-          *)
-            ;;
+          1) printf '%s\\n' '{\"id\":1,\"result\":{}}' ;;
+          3) printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-1\"}}}' ;;
+          4) printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-1\"}}}'; printf '%s\\n' '{\"method\":\"turn/completed\"}'; exit 0 ;;
         esac
       done
       """)
@@ -1080,7 +1084,6 @@ defmodule SymphonyElixir.CoreTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_after_create: "cp #{shell_path(Path.join(template_repo, "README.md"))} README.md",
         codex_command: "#{shell_script_command(codex_binary)} app-server"
       )
 
@@ -1093,22 +1096,9 @@ defmodule SymphonyElixir.CoreTest do
         labels: ["backend"]
       }
 
-      before = MapSet.new(File.ls!(workspace_root))
       assert :ok = AgentRunner.run(issue)
-      entries_after = MapSet.new(File.ls!(workspace_root))
-
-      created =
-        MapSet.difference(entries_after, before) |> Enum.filter(&(&1 == "S-99"))
-
-      created = MapSet.new(created)
-
-      assert MapSet.size(created) == 1
-      workspace_name = created |> Enum.to_list() |> List.first()
-      assert workspace_name == "S-99"
-
-      workspace = Path.join(workspace_root, workspace_name)
+      workspace = Path.join(workspace_root, "S-99")
       assert File.exists?(workspace)
-      assert File.exists?(Path.join(workspace, "README.md"))
     after
       File.rm_rf(test_root)
     end

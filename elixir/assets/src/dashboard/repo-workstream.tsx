@@ -18,6 +18,7 @@ export function RepoWorkstream({
   repo,
   requestDetailsByRepo,
   activeBlockingEdges,
+  guidanceItems,
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
@@ -26,6 +27,7 @@ export function RepoWorkstream({
   repo: RepoSummary;
   requestDetailsByRepo: Map<string, WorkRequestDetail[]>;
   activeBlockingEdges: ActiveBlockingEdge[];
+  guidanceItems: GuidanceItem[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
@@ -128,6 +130,7 @@ export function RepoWorkstream({
               packages={repo.packages}
               unlinkedPackages={unlinkedPackages}
               activeBlockingEdges={activeBlockingEdges}
+              guidanceItems={guidanceItems}
               onSelectGuidance={onSelectGuidance}
               onSelectCard={onSelectCard}
               onCopyArchitectHandoff={onCopyArchitectHandoff}

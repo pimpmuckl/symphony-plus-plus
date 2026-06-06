@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
-export function DetailHeader({ title, eyebrow, badge }: { title: string; eyebrow: string; badge?: ReactNode }) {
+export function DetailHeader({ title, eyebrow, badge, action }: { title: string; eyebrow: string; badge?: ReactNode; action?: ReactNode }) {
   return (
     <DialogHeader data-guidance-section style={{ animationDelay: "35ms" }}>
       <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -12,7 +12,12 @@ export function DetailHeader({ title, eyebrow, badge }: { title: string; eyebrow
           <DialogTitle className="pr-6">{title}</DialogTitle>
           <DialogDescription className="mt-1 truncate">{eyebrow}</DialogDescription>
         </div>
-        {badge ? <div className="shrink-0 sm:pr-6">{badge}</div> : null}
+        {badge || action ? (
+          <div className="flex shrink-0 items-center gap-2 sm:pr-6">
+            {badge}
+            {action}
+          </div>
+        ) : null}
       </div>
     </DialogHeader>
   );

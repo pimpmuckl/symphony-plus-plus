@@ -13,7 +13,7 @@ defmodule SymphonyElixir.WorkflowStore do
   defmodule State do
     @moduledoc false
 
-    defstruct [:path, :stamp, :workflow]
+    defstruct [:path, :stamp, :workflow, :poll_interval_ms]
   end
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -47,11 +47,13 @@ defmodule SymphonyElixir.WorkflowStore do
   end
 
   @impl true
-  def init(_opts) do
+  def init(opts) do
+    poll_interval_ms = Keyword.get(opts, :poll_interval_ms, @poll_interval_ms)
+
     case load_state(Workflow.workflow_file_path()) do
       {:ok, state} ->
-        schedule_poll()
-        {:ok, state}
+        schedule_poll(poll_interval_ms)
+        {:ok, %{state | poll_interval_ms: poll_interval_ms}}
 
       {:error, reason} ->
         {:stop, reason}
@@ -81,7 +83,8 @@ defmodule SymphonyElixir.WorkflowStore do
 
   @impl true
   def handle_info(:poll, %State{} = state) do
-    schedule_poll()
+    poll_interval_ms = state.poll_interval_ms || @poll_interval_ms
+    schedule_poll(poll_interval_ms)
 
     case reload_state(state) do
       {:ok, new_state} -> {:noreply, new_state}
@@ -89,8 +92,8 @@ defmodule SymphonyElixir.WorkflowStore do
     end
   end
 
-  defp schedule_poll do
-    Process.send_after(self(), :poll, @poll_interval_ms)
+  defp schedule_poll(poll_interval_ms) do
+    Process.send_after(self(), :poll, poll_interval_ms)
   end
 
   defp reload_state(%State{} = state) do
@@ -106,7 +109,7 @@ defmodule SymphonyElixir.WorkflowStore do
   defp reload_path(path, state) do
     case load_state(path) do
       {:ok, new_state} ->
-        {:ok, new_state}
+        {:ok, %{new_state | poll_interval_ms: state.poll_interval_ms}}
 
       {:error, reason} ->
         log_reload_error(path, reason)

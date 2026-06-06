@@ -5,7 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
-  alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
+  alias SymphonyElixir.SymphonyPlusPlus.AgentRuns
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Policies.Templates
@@ -45,7 +45,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
   end
 
   setup %{repo: repo} do
-    repo.delete_all(SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun)
+    repo.delete_all(AgentRuns.AgentRun)
     repo.delete_all(ProgressEvent)
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkPackage)
@@ -1521,7 +1521,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert MapSet.member?(state.claimed, work_package.id)
     assert state.retry_attempts == %{}
 
-    assert {:ok, persisted} = AgentRunRepository.get(repo, run.id)
+    assert {:ok, persisted} = AgentRuns.Repository.get(repo, run.id)
     assert persisted.status == "running"
     assert persisted.worker_task_handle == worker_task_handle
   end
@@ -1564,7 +1564,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert %{pid: ^worker_pid, agent_run_id: run_id} = state.running[work_package.id]
     assert run_id == run.id
 
-    assert {:ok, persisted} = AgentRunRepository.get(repo, run.id)
+    assert {:ok, persisted} = AgentRuns.Repository.get(repo, run.id)
     assert persisted.status == "running"
     assert persisted.worker_task_handle == worker_task_handle
   end
@@ -1610,7 +1610,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     refute MapSet.member?(state.claimed, work_package.id)
     assert state.retry_attempts == %{}
 
-    assert {:ok, stopped} = AgentRunRepository.get(repo, run.id)
+    assert {:ok, stopped} = AgentRuns.Repository.get(repo, run.id)
     assert stopped.status == "stopped"
     assert stopped.reason == "issue not active during restart reconciliation"
   end
@@ -1643,7 +1643,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert agent_run_id == run.id
     assert error == "worker task handle not live after orchestrator restart"
 
-    assert {:ok, released} = AgentRunRepository.get(repo, run.id)
+    assert {:ok, released} = AgentRuns.Repository.get(repo, run.id)
     assert released.status == "retrying"
     assert released.finished_at == nil
   end
@@ -1692,7 +1692,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert agent_run_id == run.id
     assert error == "worker task handle not live after orchestrator restart"
 
-    assert {:ok, released} = AgentRunRepository.get(repo, run.id)
+    assert {:ok, released} = AgentRuns.Repository.get(repo, run.id)
     assert released.status == "retrying"
   end
 
@@ -1737,7 +1737,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert %{agent_run_id: agent_run_id} = state.retry_attempts[work_package.id]
     assert agent_run_id == run.id
 
-    assert {:ok, released} = AgentRunRepository.get(repo, run.id)
+    assert {:ok, released} = AgentRuns.Repository.get(repo, run.id)
     assert released.status == "retrying"
   end
 

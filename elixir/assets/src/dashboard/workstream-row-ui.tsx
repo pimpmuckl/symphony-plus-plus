@@ -16,6 +16,7 @@ type EntityCountChip = {
   icon: ReactNode;
   count: number;
   label: string;
+  onClick?: () => void;
   tone?: "guidance" | "blocker";
   showZero?: boolean;
 };
@@ -44,29 +45,70 @@ export function EntityCountChips({
 }) {
   return (
     <span className={cn("v3-row-signals", className)}>
-      {items.map((item) => {
-        const visible = item.count > 0 || item.showZero;
-        if (!visible && !reserveEmpty) return null;
-
-        return (
-          <span
-            key={item.key}
-            className={cn(
-              "v3-signal-chip",
-              item.tone === "guidance" && "v3-guidance-chip",
-              item.tone === "blocker" && "v3-blocker-chip",
-              !visible && "v3-signal-chip-empty",
-            )}
-            aria-hidden={visible ? undefined : "true"}
-            aria-label={visible ? `${item.count} ${item.label}` : undefined}
-            title={visible ? item.label : undefined}
-          >
-            {visible ? item.icon : null}
-            {visible ? item.count : null}
-          </span>
-        );
-      })}
+      {items.map((item) => (
+        <EntityCountChipView key={item.key} item={item} reserveEmpty={reserveEmpty} />
+      ))}
     </span>
+  );
+}
+
+function EntityCountChipView({ item, reserveEmpty }: { item: EntityCountChip; reserveEmpty: boolean }) {
+  const visible = item.count > 0 || item.showZero;
+  if (!visible && !reserveEmpty) return null;
+
+  const className = entityCountChipClassName(item, Boolean(visible));
+  const ariaLabel = visible ? `${item.count} ${item.label}${item.onClick ? "; open details" : ""}` : undefined;
+
+  if (item.onClick && visible) {
+    return <EntityCountChipButton item={item} className={className} ariaLabel={ariaLabel} />;
+  }
+
+  return (
+    <span
+      className={className}
+      aria-hidden={visible ? undefined : "true"}
+      aria-label={ariaLabel}
+      title={visible ? item.label : undefined}
+    >
+      {visible ? item.icon : null}
+      {visible ? item.count : null}
+    </span>
+  );
+}
+
+function EntityCountChipButton({
+  item,
+  className,
+  ariaLabel,
+}: {
+  item: EntityCountChip;
+  className: string;
+  ariaLabel?: string;
+}) {
+  return (
+    <button
+      type="button"
+      className={className}
+      aria-label={ariaLabel}
+      title={item.label}
+      onClick={(event) => {
+        event.stopPropagation();
+        item.onClick?.();
+      }}
+    >
+      {item.icon}
+      {item.count}
+    </button>
+  );
+}
+
+function entityCountChipClassName(item: EntityCountChip, visible: boolean) {
+  return cn(
+    "v3-signal-chip",
+    item.tone === "guidance" && "v3-guidance-chip",
+    item.tone === "blocker" && "v3-blocker-chip",
+    item.onClick && visible && "v3-signal-chip-button",
+    !visible && "v3-signal-chip-empty",
   );
 }
 
@@ -262,6 +304,8 @@ export function ProductNodeHeader({
   collapsible,
   expanded,
   contentId,
+  onOpenGuidance,
+  onOpenBlockers,
   onToggle,
 }: {
   node: ProductTreeNode;
@@ -275,6 +319,8 @@ export function ProductNodeHeader({
   collapsible: boolean;
   expanded: boolean;
   contentId?: string;
+  onOpenGuidance?: () => void;
+  onOpenBlockers?: () => void;
   onToggle: () => void;
 }) {
   const progress = completionMarkProgress(mark);
@@ -312,8 +358,8 @@ export function ProductNodeHeader({
       <EntityCountChips
         reserveEmpty
         items={[
-          { key: "guidance", icon: <MessageSquareText className="size-3.5" />, count: guidanceCount, label: "guidance needed", tone: "guidance" },
-          { key: "blockers", icon: <AlertTriangle className="size-3.5" />, count: blockerCount, label: "active blockers", tone: "blocker" },
+          { key: "guidance", icon: <MessageSquareText className="size-3.5" />, count: guidanceCount, label: "guidance needed", onClick: guidanceCount > 0 ? onOpenGuidance : undefined, tone: "guidance" },
+          { key: "blockers", icon: <AlertTriangle className="size-3.5" />, count: blockerCount, label: "active blockers", onClick: blockerCount > 0 ? onOpenBlockers : undefined, tone: "blocker" },
         ]}
       />
       <span className="v3-row-status">
