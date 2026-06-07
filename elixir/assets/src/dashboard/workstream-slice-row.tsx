@@ -1,0 +1,112 @@
+import type { GuidanceItem, PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
+import { AlertTriangle, MessageSquareText } from "lucide-react";
+
+import { operationalBadgeVariant, operationalLabel, sliceCardTone, sliceLane, sliceOperationalState } from "@/lib/operational-state";
+import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
+import type { CardDetailSelect, DashboardUpdateAnimations } from "./runtime";
+import { openGuidanceForSlice } from "./workstream-board-actions";
+import { sliceProgressPercent } from "./workstream-progress";
+import { rowProgressAttentionState, rowProgressIconState, sliceBlockerCount, sliceGuidanceCount } from "./workstream-row-state";
+import { EntityCountChips, ProgressStateIcon, RowBadgeSlot, SliceKindSlot } from "./workstream-row-ui";
+import { sliceUpdateKey } from "./update-animations";
+
+export function DirectSliceGroup({
+  detail,
+  sliceIds,
+  slicesById,
+  packageById,
+  activeBlockerCountBySliceId,
+  guidanceItems,
+  onSelectGuidance,
+  onSelectCard,
+  updateAnimations,
+}: {
+  detail: WorkRequestDetail;
+  sliceIds: string[];
+  slicesById: Map<string, PlannedSlice>;
+  packageById: Map<string, WorkPackageCard>;
+  activeBlockerCountBySliceId: Map<string, number>;
+  guidanceItems: GuidanceItem[];
+  onSelectGuidance: (item: GuidanceItem) => void;
+  onSelectCard: CardDetailSelect;
+  updateAnimations: DashboardUpdateAnimations;
+}) {
+  const directSlices = sliceIds.map((sliceId) => slicesById.get(sliceId)).filter((slice): slice is PlannedSlice => Boolean(slice));
+  if (directSlices.length === 0) return null;
+
+  return (
+    <div className="v3-direct-slices">
+      {directSlices.map((slice) => (
+        <ProductSliceRow
+          key={slice.id}
+          detail={detail}
+          slice={slice}
+          pkg={packageById.get(slice.work_package_id || "")}
+          activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+          guidanceItems={guidanceItems}
+          onSelectGuidance={onSelectGuidance}
+          onSelectCard={onSelectCard}
+          updateAnimations={updateAnimations}
+        />
+      ))}
+    </div>
+  );
+}
+
+export function ProductSliceRow({
+  detail,
+  slice,
+  pkg,
+  activeBlockerCountBySliceId,
+  guidanceItems,
+  onSelectGuidance,
+  onSelectCard,
+  updateAnimations,
+}: {
+  detail: WorkRequestDetail;
+  slice: PlannedSlice;
+  pkg?: WorkPackageCard;
+  activeBlockerCountBySliceId: Map<string, number>;
+  guidanceItems: GuidanceItem[];
+  onSelectGuidance: (item: GuidanceItem) => void;
+  onSelectCard: CardDetailSelect;
+  updateAnimations: DashboardUpdateAnimations;
+}) {
+  const operational = sliceOperationalState(slice, pkg);
+  const rawStatus = slice.work_package_status || slice.status;
+  const lane = sliceLane(slice, pkg);
+  const tone = sliceCardTone(slice, pkg, lane);
+  const blockerCount = sliceBlockerCount(slice, pkg, activeBlockerCountBySliceId);
+  const guidanceCount = sliceGuidanceCount(slice, pkg);
+  const sliceLabel = operationalLabel(operational, rawStatus);
+  const progress = sliceProgressPercent(slice, pkg);
+  const progressIconState = rowProgressIconState({ blockerCount, guidanceCount, progress, tone });
+  const progressAttentionState = rowProgressAttentionState({ blockerCount, guidanceCount, tone });
+  const openSliceDetail = () => onSelectCard({ kind: "slice", detail, slice, pkg });
+  const openGuidance = () => openGuidanceForSlice(detail, slice, pkg, guidanceItems, onSelectGuidance, onSelectCard);
+  const openBlockers = () => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice, pkg });
+
+  return (
+    <div
+      className="v3-slice-row v3-entity-row stagger-item"
+      data-tone={tone}
+      {...updateMotionAttributes(updateAnimations.motionFor(sliceUpdateKey(slice)))}
+    >
+      <ProgressStateIcon state={progressIconState} attentionState={progressAttentionState} progress={progress} label={sliceLabel} />
+      <button type="button" className="v3-slice-main-button" onClick={openSliceDetail}>
+        <span>{slice.title || slice.id}</span>
+      </button>
+      <EntityCountChips
+        reserveEmpty
+        items={[
+          { key: "guidance", icon: <MessageSquareText className="size-3.5" />, count: guidanceCount, label: "guidance needed", onClick: guidanceCount > 0 ? openGuidance : undefined, tone: "guidance" },
+          { key: "blockers", icon: <AlertTriangle className="size-3.5" />, count: blockerCount, label: "active blockers", onClick: blockerCount > 0 ? openBlockers : undefined, tone: "blocker" },
+        ]}
+      />
+      <span className="v3-row-status v3-slice-status">
+        <RowBadgeSlot label={sliceLabel} variant={operationalBadgeVariant(operational, rawStatus)} />
+      </span>
+      <SliceKindSlot detail={detail} slice={slice} pkg={pkg} onSelectCard={onSelectCard} />
+    </div>
+  );
+}

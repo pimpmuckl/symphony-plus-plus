@@ -126,6 +126,7 @@ export function RepoWorkstream({
         >
           <CardContent className="p-3 sm:p-4" data-board-open-motion={openMotion ? "open" : "idle"}>
             <WorkstreamBoard
+              repoLabel={repo.repo}
               repoDetails={repoDetails}
               packages={repo.packages}
               unlinkedPackages={unlinkedPackages}
