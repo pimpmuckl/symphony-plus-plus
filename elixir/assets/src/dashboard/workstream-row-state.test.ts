@@ -26,8 +26,11 @@ describe("workstream row state", () => {
     expect(rowProgressIconState({ progress: 100, blockerCount: 1, tone: "blocked" })).toBe("done");
     expect(rowProgressAttentionState({ blockerCount: 1, tone: "finished" })).toBe("blocked");
     expect(rowProgressAttentionState({ guidanceCount: 1, tone: "finished" })).toBe("guidance");
-    expect(rowProgressIconState({ progress: 45, blockerCount: 1, tone: "implementing" })).toBe("blocked");
-    expect(rowProgressIconState({ progress: 45, guidanceCount: 1, tone: "implementing" })).toBe("guidance");
+    expect(rowProgressIconState({ progress: 45, blockerCount: 1, tone: "implementing" })).toBe("active");
+    expect(rowProgressIconState({ progress: 45, guidanceCount: 1, tone: "implementing" })).toBe("active");
+    expect(rowProgressAttentionState({ blockerCount: 1, tone: "implementing" })).toBe("blocked");
+    expect(rowProgressAttentionState({ guidanceCount: 1, tone: "implementing" })).toBe("guidance");
+    expect(rowProgressIconState({ blockerCount: 1, tone: "blocked" })).toBe("blocked");
     expect(rowProgressIconState({ tone: "muted" })).toBe("muted");
     expect(rowProgressIconState({ progress: 100, tone: "muted" })).toBe("muted");
     expect(rowProgressIconState({ progress: 45, tone: "implementing" })).toBe("active");

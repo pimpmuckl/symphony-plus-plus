@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { architectHandoffEligibleRequest, operationalBadgeVariant } from "@/lib/operational-state";
 import { cn } from "@/lib/utils";
 import type { CardDetailSelect } from "./runtime";
+import { completionMarkProgress } from "./workstream-progress";
 import { rowProgressAttentionState, rowProgressIconState, type RowProgressAttentionState, type RowProgressIconState } from "./workstream-row-state";
 
 type EntityCountChip = {
@@ -392,12 +393,6 @@ export function ProgressPill({ progress }: { progress: number }) {
       <span>{progress}%</span>
     </span>
   );
-}
-
-function completionMarkProgress(mark: ProductTreeCompletionMark) {
-  if (mark === "done") return 100;
-  if (mark === "partial") return 50;
-  return 0;
 }
 
 function completionBadgeVariant(mark: ProductTreeCompletionMark): ReturnType<typeof operationalBadgeVariant> {

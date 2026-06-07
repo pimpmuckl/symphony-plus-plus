@@ -30,7 +30,7 @@ export function useDashboardUpdateAnimations({
   const timersRef = useRef<number[]>([]);
   const tokenRef = useRef(0);
   const [motions, dispatchMotions] = useReducer(updateMotionsReducer, {});
-  const [countPulses, setCountPulses] = useState<Record<TopPanelKey, number>>({ blockers: 0, finished: 0, guidance: 0 });
+  const [countPulses, setCountPulses] = useState<Record<TopPanelKey, number>>({ blockers: 0, guidance: 0 });
 
   const applyMotions = useCallback((nextMotions: Record<string, UpdateMotion>) => {
     const motionEntries = Object.entries(nextMotions).slice(0, MAX_UPDATE_MOTION_ENTRIES);
@@ -177,10 +177,6 @@ export function finishedHighlightUpdateKey(item: FinishedHighlight) {
   return `finished:${item.kind}:${item.id}`;
 }
 
-export function finishedHighlightsListKey(items: FinishedHighlight[]) {
-  return items.map(finishedHighlightUpdateKey).join("|");
-}
-
 function classifyUpdateMotion(previous: UpdateAnimationEntity | undefined, current: UpdateAnimationEntity): UpdateMotionKind | null {
   if (!previous) {
     if (current.finished) return "finished";
@@ -213,7 +209,6 @@ function simulatedMotionKeys(kind: UpdateMotionKind, snapshot: Map<string, Updat
 function topPanelForMotionKind(kind: UpdateMotionKind): TopPanelKey | null {
   if (kind === "guidance") return "guidance";
   if (kind === "blocker") return "blockers";
-  if (kind === "finished") return "finished";
   return null;
 }
 

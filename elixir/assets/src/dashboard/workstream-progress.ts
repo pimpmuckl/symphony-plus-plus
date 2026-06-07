@@ -18,6 +18,22 @@ export function requestProgress(detail: WorkRequestDetail, packageById: Map<stri
   return isFinishedBoardStatus(detail.work_request.operational_state?.key || detail.work_request.status) ? 100 : 0;
 }
 
+export function sliceProgressPercent(slice: PlannedSlice, pkg?: WorkPackageCard) {
+  const mark = sliceProgressMark(slice, pkg);
+  if (mark === "done") return 100;
+  if (mark === "not_done") return 0;
+
+  const completed = pkg?.plan?.completed_count ?? 0;
+  const total = pkg?.plan?.total_count ?? 0;
+  return total > 0 ? Math.round((completed / total) * 100) : 50;
+}
+
+export function completionMarkProgress(mark: ProductTreeCompletionMark) {
+  if (mark === "done") return 100;
+  if (mark === "partial") return 50;
+  return 0;
+}
+
 export function productTreeCounts(detail: WorkRequestDetail, activeBlockerCount: number) {
   const summary = detail.product_tree?.summary;
   const treeBlockerCount = numberValue(summary?.blocker_count);
@@ -212,7 +228,7 @@ function rootSliceProgressMarks(detail: WorkRequestDetail, slices: PlannedSlice[
   const sliceById = new Map(slices.map((slice) => [slice.id, slice]));
   for (const sliceId of rootProductSliceIds(detail, slices)) {
     const slice = sliceById.get(sliceId);
-    if (slice) marks.push(sliceProgressMark(slice, packageById));
+    if (slice) marks.push(sliceProgressMark(slice, packageById.get(slice.work_package_id || "")));
   }
   return marks;
 }
@@ -227,16 +243,34 @@ function implicitRootNodeIds(nodes: ProductTreeNode[]) {
 
 function sliceProgressMarkCounts(slices: PlannedSlice[], packageById: Map<string, WorkPackageCard>) {
   const marks: ProductTreeCompletionMark[] = [];
-  for (const slice of slices) marks.push(sliceProgressMark(slice, packageById));
+  for (const slice of slices) marks.push(sliceProgressMark(slice, packageById.get(slice.work_package_id || "")));
   return completionMarkCounts(marks);
 }
 
-function sliceProgressMark(slice: PlannedSlice, packageById: Map<string, WorkPackageCard>): ProductTreeCompletionMark {
-  const lane = sliceLane(slice, packageById.get(slice.work_package_id || ""));
+export function sliceProgressMark(slice: PlannedSlice, pkg?: WorkPackageCard): ProductTreeCompletionMark {
+  const lane = sliceLane(slice, pkg);
   if (lane === "finished") return "done";
-  if (lane === "implementing") return "partial";
+
+  const state = slice.operational_state?.key || slice.work_package_status || pkg?.operational_state?.key || pkg?.status || slice.status;
+  if (SLICE_PARTIAL_PROGRESS_STATES.has(state || "")) return "partial";
+
   return "not_done";
 }
+
+const SLICE_PARTIAL_PROGRESS_STATES = new Set([
+  "active",
+  "blocked",
+  "ci_waiting",
+  "implementing",
+  "in_progress",
+  "merge_ready",
+  "merging",
+  "merging_into_phase",
+  "needs_closeout",
+  "ready_for_architect_merge",
+  "ready_for_human_merge",
+  "reviewing",
+]);
 
 function completionMarkCounts(marks: ProductTreeCompletionMark[]) {
   let done = 0;

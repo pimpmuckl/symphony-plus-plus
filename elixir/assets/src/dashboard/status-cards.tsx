@@ -1,19 +1,17 @@
-import { AlertTriangle, CheckCircle2, Clock3, Route } from "lucide-react";
-import { AnimatedBadge, useFlipList } from "@/components/dashboard/motion";
+import { AlertTriangle, Route } from "lucide-react";
+import { AnimatedBadge } from "@/components/dashboard/motion";
 import { Badge } from "@/components/ui/badge";
 import type { GuidanceItem } from "@/types/dashboard";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { StateCard } from "@/components/dashboard/state-card";
 import type { StateCardTone } from "@/components/dashboard/state-card-style";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { UpdateMotion } from "@/components/dashboard/motion";
 import { cn } from "@/lib/utils";
 import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
-import { BlockerItem, FinishedHighlight, FinishedHighlightKind } from "./dashboard-state";
-import { CardDetailSelect, CardDetailSelection, DashboardConnectionIssue, DashboardUpdateAnimations, isLocalOperatorAuthRequiredMessage } from "./runtime";
+import { BlockerItem } from "./dashboard-state";
+import { CardDetailSelection, DashboardConnectionIssue, isLocalOperatorAuthRequiredMessage } from "./runtime";
 import { stripMarkdown } from "./dashboard-text";
-import { blockerUpdateKey, finishedHighlightUpdateKey, finishedHighlightsListKey, guidanceUpdateKey } from "./update-animations";
-import { formatDate } from "./dashboard-persistence";
+import { blockerUpdateKey, guidanceUpdateKey } from "./update-animations";
 import { interactiveCardProps } from "./card-helpers";
 
 export function LiveLedgerBadge({
@@ -139,99 +137,6 @@ export function BlockerPreviewCard({
       <div className="mt-4 flex items-center gap-2 text-xs text-amber-800 dark:text-amber-200">
         <AlertTriangle className="size-4" />
         {item.blockerCount} active blocker{item.blockerCount === 1 ? "" : "s"}
-      </div>
-    </StateCard>
-  );
-}
-
-const finishedHighlightLanes: { kind: FinishedHighlightKind; title: string; empty: string }[] = [
-  { kind: "Request", title: "Requests", empty: "No finished requests" },
-  { kind: "Slice", title: "Slices", empty: "No finished slices" },
-  { kind: "Work Package", title: "Execution", empty: "No finished execution records" },
-];
-
-export function FinishedHighlightsBoard({
-  items,
-  onSelectCard,
-  updateAnimations,
-}: {
-  items: FinishedHighlight[];
-  onSelectCard?: CardDetailSelect;
-  updateAnimations: DashboardUpdateAnimations;
-}) {
-  const flipRef = useFlipList(finishedHighlightsListKey(items));
-
-  return (
-    <ScrollArea className="finished-highlights-scroll pr-3" type="auto">
-      <div className="finished-highlights-grid" ref={flipRef}>
-        {finishedHighlightLanes.map((lane) => {
-          const laneItems = items.filter((item) => item.kind === lane.kind);
-
-          return (
-            <section key={lane.kind} className="finished-mini-lane">
-              <div className="finished-mini-lane-header">
-                <span>{lane.title}</span>
-                <span className="jira-lane-count">{laneItems.length}</span>
-              </div>
-              <div className="finished-mini-lane-body">
-                {laneItems.length === 0 ? (
-                  <div className="jira-lane-empty">{lane.empty}</div>
-                ) : (
-                  laneItems.map((item, index) => (
-                    <FinishedHighlightCard
-                      key={`${item.kind}-${item.id}`}
-                      item={item}
-                      index={index}
-                      onSelectCard={onSelectCard ? () => onSelectCard(item.selection) : undefined}
-                      motion={updateAnimations.motionFor(finishedHighlightUpdateKey(item))}
-                    />
-                  ))
-                )}
-              </div>
-            </section>
-          );
-        })}
-      </div>
-    </ScrollArea>
-  );
-}
-
-function FinishedHighlightCard({
-  item,
-  index,
-  onSelectCard,
-  motion,
-}: {
-  item: FinishedHighlight;
-  index: number;
-  onSelectCard?: () => void;
-  motion?: UpdateMotion;
-}) {
-  return (
-    <StateCard
-      tone="finished"
-      className={cn("stagger-item p-3", onSelectCard && "card-detail-trigger")}
-      style={{ animationDelay: `${index * 30}ms` }}
-      data-flip-id={finishedHighlightUpdateKey(item)}
-      data-card-detail-kind={cardDetailDataKind(item.selection)}
-      {...updateMotionAttributes(motion)}
-      {...interactiveCardProps(onSelectCard)}
-    >
-      <div className="flex min-w-0 items-start gap-2">
-        <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
-        <div className="min-w-0">
-          <p className="truncate text-sm font-semibold">{item.title}</p>
-          <p className="mt-1 truncate text-xs text-muted-foreground">{item.repo}</p>
-        </div>
-      </div>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <AnimatedBadge label={item.state || "Finished"} variant="success" />
-        {item.at ? (
-          <span className="flex items-center gap-1 text-xs text-muted-foreground">
-            <Clock3 className="size-3.5" />
-            {formatDate(item.at)}
-          </span>
-        ) : null}
       </div>
     </StateCard>
   );

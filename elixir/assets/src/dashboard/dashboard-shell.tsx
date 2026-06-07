@@ -10,7 +10,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { architectHandoffEligibleRequest } from "@/lib/operational-state";
 import { cn } from "@/lib/utils";
-import { AppDialogState, BlockerItem, FinishedHighlight } from "./dashboard-state";
+import { AppDialogState, BlockerItem } from "./dashboard-state";
 import { ArchivedRequestsDialog, DashboardSettingsDialog, ThemeToggle } from "./dashboard-settings";
 import { CardDetailDialog } from "./card-detail-dialog";
 import { CardDetailSelection, DASHBOARD_LOGO_URL, DashboardConnectionIssue, DashboardTheme, DashboardUpdateAnimations, LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageStateMutation, WorkRequestMutation, WorkRequestStateMutation, WorkspaceTab, isLocalOperatorAuthRequiredMessage } from "./runtime";
@@ -32,7 +32,6 @@ export function DashboardShell({
   dashboard,
   dialogState,
   error,
-  finishedHighlights,
   guidanceItems,
   hiddenWorkstreamCount,
   hideEmptyWorkstreams,
@@ -73,7 +72,6 @@ export function DashboardShell({
   dashboard: DashboardPayload | null;
   dialogState: AppDialogState;
   error: string | null;
-  finishedHighlights: FinishedHighlight[];
   guidanceItems: GuidanceItem[];
   hiddenWorkstreamCount: number;
   hideEmptyWorkstreams: boolean;
@@ -197,7 +195,6 @@ export function DashboardShell({
           <StatusRail
             guidanceItems={guidanceItems}
             blockerItems={blockerItems}
-            finishedHighlights={finishedHighlights}
             onSelectGuidance={onSelectGuidance}
             onSelectCard={onSelectCard}
             updateAnimations={updateAnimations}

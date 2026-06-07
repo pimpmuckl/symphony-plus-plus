@@ -621,64 +621,6 @@
     animation: none;
   }
 
-  .finished-highlights-scroll {
-    max-height: min(24rem, calc(100svh - 18rem));
-  }
-
-  .finished-highlights-scroll [data-radix-scroll-area-viewport] {
-    overscroll-behavior: contain;
-    scroll-behavior: smooth;
-    scrollbar-gutter: stable;
-  }
-
-  .finished-highlights-scroll [data-orientation="vertical"] {
-    width: 0.5rem;
-  }
-
-  .finished-highlights-grid {
-    display: grid;
-    min-width: 0;
-    gap: 0.75rem;
-  }
-
-  @media (min-width: 1024px) {
-    .finished-highlights-grid {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
-  }
-
-  .finished-mini-lane {
-    min-width: 0;
-    overflow: hidden;
-    border: 1px solid hsl(var(--border) / 0.82);
-    border-radius: calc(var(--radius) + 2px);
-    background: hsl(var(--muted) / 0.32);
-  }
-
-  .finished-mini-lane-header {
-    position: sticky;
-    top: 0;
-    z-index: 1;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    border-bottom: 1px solid hsl(var(--border) / 0.72);
-    background: hsl(var(--muted) / 0.86);
-    padding: 0.75rem;
-    font-size: 0.75rem;
-    font-weight: 800;
-    color: hsl(var(--muted-foreground));
-    text-transform: uppercase;
-  }
-
-  .finished-mini-lane-body {
-    display: grid;
-    min-width: 0;
-    gap: 0.5rem;
-    padding: 0.625rem;
-  }
-
   .dashboard-tabs-row {
     display: flex;
     flex-wrap: wrap;

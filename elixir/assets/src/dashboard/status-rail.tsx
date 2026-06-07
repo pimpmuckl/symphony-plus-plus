@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, ChevronDown, MessageSquareText, RefreshCw } from "lucide-react";
+import { AlertTriangle, ChevronDown, MessageSquareText, RefreshCw } from "lucide-react";
 import { AnimatedTopGrid, NumberWheel, TOP_PANEL_RESIZE_MS, TOP_PANEL_SLIDE_MS, useCountMotion } from "@/components/dashboard/motion";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { GuidanceItem } from "@/types/dashboard";
@@ -7,8 +7,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { clearMotionTimers, later, measureElementHeight, nextFrame } from "@/components/dashboard/motion-utils";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
-import { BlockerItem, FinishedHighlight } from "./dashboard-state";
-import { BlockerPreviewCard, FinishedHighlightsBoard, GuidancePreviewCard } from "./status-cards";
+import { BlockerItem } from "./dashboard-state";
+import { BlockerPreviewCard, GuidancePreviewCard } from "./status-cards";
 import { CardDetailSelect, CardDetailSelection, DashboardUpdateAnimations, STATUS_TILE_TONES, StatusTileTone, TopPanelDirection, TopPanelKey, TopPanelPhase } from "./runtime";
 import { EmptyPanel } from "./detail-extras";
 import { blockerUpdateKey, guidanceUpdateKey } from "./update-animations";
@@ -17,21 +17,18 @@ import { readStoredTopPanel, topPanelDirection, writeDashboardUiStateValue } fro
 const UPDATE_SIMULATION_CONTROLS = [
   { kind: "guidance", label: "G", icon: <MessageSquareText className="size-3.5" />, tooltip: "Simulate new human guidance" },
   { kind: "blocker", label: "B", icon: <AlertTriangle className="size-3.5" />, tooltip: "Simulate a fresh blocker" },
-  { kind: "finished", label: "F", icon: <CheckCircle2 className="size-3.5" />, tooltip: "Simulate finished work" },
   { kind: "changed", label: "U", icon: <RefreshCw className="size-3.5" />, tooltip: "Simulate a card update" },
 ] as const;
 
 export function StatusRail({
   guidanceItems,
   blockerItems,
-  finishedHighlights,
   onSelectGuidance,
   onSelectCard,
   updateAnimations,
 }: {
   guidanceItems: GuidanceItem[];
   blockerItems: BlockerItem[];
-  finishedHighlights: FinishedHighlight[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
@@ -55,18 +52,9 @@ export function StatusRail({
       tone: "amber",
       value: blockerItems.length,
     },
-    {
-      icon: <CheckCircle2 className="size-6" />,
-      panel: "finished",
-      pulseToken: updateAnimations.countPulseFor("finished"),
-      title: "Finished",
-      tone: "emerald",
-      value: finishedHighlights.length,
-    },
   ];
   const panelContentProps = {
     blockerItems,
-    finishedHighlights,
     guidanceItems,
     onSelectCard: selectCardFromPanel,
     onSelectGuidance,
@@ -88,7 +76,7 @@ export function StatusRail({
         ))}
       </div>
 
-      <div className="hidden gap-3 lg:grid lg:grid-cols-3">
+      <div className="hidden gap-3 lg:grid lg:grid-cols-2">
         {tileConfigs.map((tile) => (
           <StatusTile key={tile.panel} {...tile} openPanel={openPanel} onToggle={setOpenPanel} />
         ))}
@@ -137,7 +125,6 @@ export type TopPanelContentProps = {
   interactive?: boolean;
   guidanceItems: GuidanceItem[];
   blockerItems: BlockerItem[];
-  finishedHighlights: FinishedHighlight[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
@@ -148,7 +135,6 @@ function TopPanelContent({
   interactive = true,
   guidanceItems,
   blockerItems,
-  finishedHighlights,
   onSelectGuidance,
   onSelectCard,
   updateAnimations,
@@ -197,19 +183,7 @@ function TopPanelContent({
     );
   }
 
-  return (
-    <TopTray title="Recently finished requests, slices, and execution records">
-      {finishedHighlights.length === 0 ? (
-        <EmptyPanel title="Nothing finished yet" compact />
-      ) : (
-        <FinishedHighlightsBoard
-          items={finishedHighlights}
-          onSelectCard={interactive ? onSelectCard : undefined}
-          updateAnimations={updateAnimations}
-        />
-      )}
-    </TopTray>
-  );
+  return null;
 }
 
 export type TopPanelCarouselState = {
@@ -245,7 +219,6 @@ function TopPanelCarousel({
   activePanel,
   guidanceItems,
   blockerItems,
-  finishedHighlights,
   onSelectGuidance,
   onSelectCard,
   updateAnimations,
@@ -261,7 +234,6 @@ function TopPanelCarousel({
   const framesRef = useRef<number[]>([]);
   const contentProps = {
     blockerItems,
-    finishedHighlights,
     guidanceItems,
     onSelectCard,
     onSelectGuidance,
@@ -504,7 +476,7 @@ function StatusTile({
     <button
       type="button"
       className={cn(
-        "dashboard-glass-surface status-tile motion-card group flex min-h-[104px] items-center justify-between rounded-lg border bg-card p-5 text-left shadow-sm outline-none transition-all hover:shadow-dashboard focus-visible:ring-2 focus-visible:ring-ring",
+        "dashboard-glass-surface status-tile motion-card group flex min-h-[86px] items-center justify-between rounded-lg border bg-card p-4 text-left shadow-sm outline-none transition-all hover:shadow-dashboard focus-visible:ring-2 focus-visible:ring-ring sm:p-5",
         open && toneClasses.card,
       )}
       data-count-motion={countMotion.direction}
@@ -512,10 +484,10 @@ function StatusTile({
       aria-expanded={open}
     >
       <div className="flex items-center gap-4">
-        <div className={cn("flex size-12 items-center justify-center rounded-full border", toneClasses.icon)}>{icon}</div>
+        <div className={cn("flex size-10 items-center justify-center rounded-full border sm:size-11", toneClasses.icon)}>{icon}</div>
         <div>
-          <p className="text-base font-semibold">{title}</p>
-          <p className={cn("mt-2 text-3xl font-semibold", toneClasses.value)}>
+          <p className="text-sm font-semibold sm:text-base">{title}</p>
+          <p className={cn("mt-1 text-2xl font-semibold sm:text-3xl", toneClasses.value)}>
             <NumberWheel value={value} motion={countMotion} />
           </p>
         </div>

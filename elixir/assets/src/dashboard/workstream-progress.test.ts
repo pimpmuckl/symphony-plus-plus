@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { activeBlockerEntityCounts, productTreeCounts, requestProgress } from "./workstream-progress";
+import { activeBlockerEntityCounts, productTreeCounts, requestProgress, sliceProgressPercent } from "./workstream-progress";
 import type { ActiveBlockingEdge, PlannedSlice, WorkRequestDetail, WorkPackageCard } from "@/types/dashboard";
 
 describe("workstream progress", () => {
@@ -11,6 +11,13 @@ describe("workstream progress", () => {
     ]);
 
     expect(requestProgress(detail, new Map<string, WorkPackageCard>())).toBe(25);
+  });
+
+  it("keeps ready-for-worker slices at zero progress", () => {
+    const slice = plannedSlice("slice-ready", "ready_for_worker", "pkg-ready");
+    const pkg: WorkPackageCard = { id: "pkg-ready", status: "ready_for_worker", plan: { completed_count: 1, total_count: 2 } };
+
+    expect(sliceProgressPercent(slice, pkg)).toBe(0);
   });
 
   it("adds product-tree blockers and explicit blocker edges", () => {

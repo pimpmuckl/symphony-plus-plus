@@ -514,7 +514,6 @@ function useDashboardController() {
     dashboard,
     dialogState,
     error,
-    finishedHighlights,
     guidanceItems,
     hiddenWorkstreamCount,
     hideEmptyWorkstreams,

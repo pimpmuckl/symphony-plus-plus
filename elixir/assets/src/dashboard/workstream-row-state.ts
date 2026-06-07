@@ -22,6 +22,7 @@ export function rowProgressIconState({
 }): RowProgressIconState {
   if (tone === "muted") return "muted";
   if (progress >= 100 || tone === "finished") return "done";
+  if (progress > 0) return "active";
   if (blockerCount > 0 || tone === "blocked") return "blocked";
   if (guidanceCount > 0 || tone === "guidance") return "guidance";
   return "active";
