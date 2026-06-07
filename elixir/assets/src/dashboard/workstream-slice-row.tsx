@@ -9,6 +9,8 @@ import { sliceProgressPercent } from "./workstream-progress";
 import { rowProgressAttentionState, rowProgressIconState, sliceBlockerCount, sliceGuidanceCount } from "./workstream-row-state";
 import { EntityCountChips, ProgressStateIcon, RowBadgeSlot, SliceKindSlot } from "./workstream-row-ui";
 import { sliceUpdateKey } from "./update-animations";
+import { contextPathValue } from "./workstream-context-path";
+import type { ContextPathPart } from "./workstream-context-path";
 
 export function DirectSliceGroup({
   detail,
@@ -19,6 +21,7 @@ export function DirectSliceGroup({
   guidanceItems,
   onSelectGuidance,
   onSelectCard,
+  requestPath,
   updateAnimations,
 }: {
   detail: WorkRequestDetail;
@@ -29,13 +32,14 @@ export function DirectSliceGroup({
   guidanceItems: GuidanceItem[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
+  requestPath: ContextPathPart[];
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const directSlices = sliceIds.map((sliceId) => slicesById.get(sliceId)).filter((slice): slice is PlannedSlice => Boolean(slice));
   if (directSlices.length === 0) return null;
 
   return (
-    <div className="v3-direct-slices">
+    <div className="v3-direct-slices" data-v3-context-path={contextPathValue(requestPath)}>
       {directSlices.map((slice) => (
         <ProductSliceRow
           key={slice.id}

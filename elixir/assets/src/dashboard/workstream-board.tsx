@@ -355,6 +355,7 @@ function ProductPlanBody({
         guidanceItems={guidanceItems}
         onSelectGuidance={onSelectGuidance}
         onSelectCard={onSelectCard}
+        requestPath={requestPath}
         updateAnimations={updateAnimations}
       />
       {!hasVisiblePlan ? <UnplannedRequestNote /> : null}
