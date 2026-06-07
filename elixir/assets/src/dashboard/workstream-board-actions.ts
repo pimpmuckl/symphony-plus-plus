@@ -190,18 +190,17 @@ function edgeMatchesAnySlice(edge: ActiveBlockingEdge, slices: PlannedSlice[], p
     const pkg = packageById.get(slice.work_package_id || "");
     return (
       edge.planned_slice_id === slice.id ||
-      endpointId(edge.from, "slice") === slice.id ||
       endpointId(edge.to, "slice") === slice.id ||
-      Boolean(pkg && (edge.work_package_id === pkg.id || endpointId(edge.from, "work_package") === pkg.id || endpointId(edge.to, "work_package") === pkg.id))
+      Boolean(pkg && (edge.work_package_id === pkg.id || endpointId(edge.to, "work_package") === pkg.id))
     );
   });
 }
 
 function edgeSlice(edge: ActiveBlockingEdge, slices: PlannedSlice[]) {
-  const sliceId = edge.planned_slice_id || endpointId(edge.from, "slice") || endpointId(edge.to, "slice");
+  const sliceId = edge.planned_slice_id || endpointId(edge.to, "slice");
   if (sliceId) return slices.find((candidate) => candidate.id === sliceId);
 
-  const packageId = edge.work_package_id || endpointId(edge.from, "work_package") || endpointId(edge.to, "work_package");
+  const packageId = edge.work_package_id || endpointId(edge.to, "work_package");
   return slices.find((candidate) => candidate.work_package_id === packageId);
 }
 
@@ -219,7 +218,6 @@ function edgeMatchesRequest(
     edge.work_request_id === requestId ||
     Boolean(edge.planned_slice_id && sliceIds.has(edge.planned_slice_id)) ||
     Boolean(edge.work_package_id && packageIds.has(edge.work_package_id)) ||
-    endpointMatches(edge.from, sliceIds, packageIds) ||
     endpointMatches(edge.to, sliceIds, packageIds)
   );
 }

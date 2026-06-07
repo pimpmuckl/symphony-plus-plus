@@ -88,6 +88,33 @@ describe("workstream board action routing", () => {
     expect(selections[0]?.kind === "blocker" ? selections[0].blocker : null).not.toBe(requestWideEdgeForSliceOne);
   });
 
+  it("does not route blocker source slice clicks to the blocked target edge", () => {
+    const selections: CardDetailSelection[] = [];
+    const detail = requestDetail("wr-1");
+    const sourceSlice = plannedSlice("slice-source", "pkg-source");
+    const blockedSlice = plannedSlice("slice-blocked", "pkg-blocked");
+    const edge: ActiveBlockingEdge = {
+      id: "edge-blocked",
+      blocker_id: "blocker-blocked",
+      from: { kind: "slice", id: sourceSlice.id },
+      to: { kind: "slice", id: blockedSlice.id },
+      planned_slice_id: blockedSlice.id,
+      work_package_id: blockedSlice.work_package_id,
+      work_request_id: "wr-1",
+    };
+
+    openBlockersForSlices(
+      detail,
+      [sourceSlice],
+      new Map(),
+      new Map(),
+      [edge],
+      (selection) => selections.push(selection),
+    );
+
+    expect(selections).toEqual([{ kind: "request", detail }]);
+  });
+
   it("routes package-card blocker fallback clicks to the real blocker modal", () => {
     const selections: CardDetailSelection[] = [];
     const detail = requestDetail("wr-1");

@@ -103,7 +103,6 @@ export function activeBlockerItems(
 function activeBlockerPackageIds(edge: ActiveBlockingEdge) {
   return [...new Set([
     edge.work_package_id,
-    edge.from.kind === "work_package" ? edge.from.id : null,
     edge.to.kind === "work_package" ? edge.to.id : null,
   ].filter((id): id is string => Boolean(id)))];
 }

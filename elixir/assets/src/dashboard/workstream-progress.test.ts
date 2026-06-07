@@ -60,8 +60,8 @@ describe("workstream progress", () => {
 
     const counts = activeBlockerEntityCounts(
       [
-        blockingEdge("blocker-slice", { kind: "slice", id: "slice-endpoint" }, { kind: "work_package", id: "unknown-package" }),
-        blockingEdge("blocker-package", { kind: "work_package", id: "pkg-shared" }, { kind: "work_package", id: "unknown-package" }),
+        blockingEdge("blocker-slice", { kind: "work_package", id: "unknown-package" }, { kind: "slice", id: "slice-endpoint" }),
+        blockingEdge("blocker-package", { kind: "work_package", id: "unknown-package" }, { kind: "work_package", id: "pkg-shared" }),
         blockingEdge("blocker-fallback", { kind: "work_package", id: "unknown-package" }, { kind: "work_package", id: "unknown-package" }, "wr-progress"),
       ],
       [detail],
@@ -113,15 +113,15 @@ describe("workstream progress", () => {
       [
         blockingEdge(
           "edge-a",
-          { kind: "work_package", id: "pkg-shared" },
           { kind: "work_package", id: "unknown-package" },
+          { kind: "work_package", id: "pkg-shared" },
           undefined,
           { blocker_id: "blocker-shared" },
         ),
         blockingEdge(
           "edge-b",
-          { kind: "work_package", id: "pkg-shared" },
           { kind: "work_package", id: "unknown-package" },
+          { kind: "work_package", id: "pkg-shared" },
           undefined,
           { blocker_id: "blocker-shared" },
         ),
@@ -135,6 +135,29 @@ describe("workstream progress", () => {
     expect(counts.packages.get("pkg-shared")).toBe(1);
     expect([...new Set(counts.sliceBlockerKeys.get("slice-a"))]).toEqual(["blocker-shared"]);
     expect([...new Set(counts.sliceBlockerKeys.get("slice-b"))]).toEqual(["blocker-shared"]);
+  });
+
+  it("does not count blocker source endpoints as blocked entities", () => {
+    const detail = workRequestDetail([
+      plannedSlice("slice-source", "active", "pkg-source"),
+      plannedSlice("slice-blocked", "blocked", "pkg-blocked"),
+    ]);
+
+    const counts = activeBlockerEntityCounts(
+      [
+        blockingEdge(
+          "source-does-not-own-blocker",
+          { kind: "work_package", id: "pkg-source" },
+          { kind: "work_package", id: "pkg-blocked" },
+        ),
+      ],
+      [detail],
+    );
+
+    expect(counts.slices.get("slice-source")).toBeUndefined();
+    expect(counts.packages.get("pkg-source")).toBeUndefined();
+    expect(counts.slices.get("slice-blocked")).toBe(1);
+    expect(counts.packages.get("pkg-blocked")).toBe(1);
   });
 });
 

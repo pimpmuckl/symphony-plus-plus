@@ -7,13 +7,11 @@ import { DashboardShell } from "./dashboard-shell";
 import { SoloSessions } from "./solo-sessions";
 import { WorkstreamsPane } from "./workspace-tabs";
 import {
-  FINISHED_HIGHLIGHT_LIMIT,
   activeBlockerItems,
   allGuidanceItems,
   allPackages,
   dashboardContentFingerprint,
   guidanceAnswerUrl,
-  recentFinishedHighlights,
   repoSummaries,
 } from "./dashboard-data";
 import { appDialogReducer, appStateReducer, createInitialAppState, initialAppDialogState } from "./dashboard-state";
@@ -457,15 +455,6 @@ function useDashboardController() {
   const archiveAfterDays = dashboard?.settings?.work_request_archive_after_days ?? 14;
   const guidanceItems = useMemo(() => allGuidanceItems(dashboard), [dashboard]);
   const blockerItems = useMemo(() => activeBlockerItems(packages, packageSelections, dashboard?.active_blocking_edges ?? []), [dashboard?.active_blocking_edges, packages, packageSelections]);
-  const finishedPackageLimit = dashboard?.board?.package_limits?.finished_work_packages?.limit;
-  const finishedHighlightLimit = finishedPackageLimit === undefined ? FINISHED_HIGHLIGHT_LIMIT : finishedPackageLimit;
-  const finishedHighlights = useMemo(() => recentFinishedHighlights(packages, requests, requestDetails, packageSelections, finishedHighlightLimit), [
-    finishedHighlightLimit,
-    packages,
-    packageSelections,
-    requests,
-    requestDetails,
-  ]);
   const soloSessions = useMemo(() => dashboard?.solo_sessions?.solo_sessions ?? [], [dashboard]);
   const repos = useMemo(() => repoSummaries(packages, requests, guidanceItems, soloSessions, requestDetails), [
     packages,
@@ -481,7 +470,6 @@ function useDashboardController() {
   const hiddenWorkstreamCount = repos.length - workstreamRepos.length;
   const updateAnimations = useDashboardUpdateAnimations({
     blockerItems,
-    finishedHighlights,
     guidanceItems,
     packages,
     requestDetails,

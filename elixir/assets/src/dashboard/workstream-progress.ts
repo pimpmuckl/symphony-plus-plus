@@ -114,17 +114,28 @@ function blockerRequestIndex(requestDetails: WorkRequestDetail[]): BlockerReques
 
 function activeBlockerRequestIds(edge: ActiveBlockingEdge, requestIndex: BlockerRequestIndex) {
   const derivedRequestIds = new Set<string>();
-  addEndpointRequestIds(derivedRequestIds, requestIndex, edge.from);
+  if (edge.work_request_id) derivedRequestIds.add(edge.work_request_id);
+  if (edge.planned_slice_id) {
+    const requestId = requestIndex.requestIdBySliceId.get(edge.planned_slice_id);
+    if (requestId) derivedRequestIds.add(requestId);
+  }
+  if (edge.work_package_id) {
+    for (const requestId of requestIndex.requestIdsByPackageId.get(edge.work_package_id) ?? []) {
+      derivedRequestIds.add(requestId);
+    }
+  }
   addEndpointRequestIds(derivedRequestIds, requestIndex, edge.to);
-  if (derivedRequestIds.size > 0) return derivedRequestIds;
-
-  return edge.work_request_id ? new Set([edge.work_request_id]) : new Set<string>();
+  return derivedRequestIds;
 }
 
 function activeBlockerSliceIds(edge: ActiveBlockingEdge, requestIndex: BlockerRequestIndex) {
   const sliceIds = new Set<string>();
   if (edge.planned_slice_id) sliceIds.add(edge.planned_slice_id);
-  addEndpointSliceIds(sliceIds, requestIndex, edge.from);
+  if (edge.work_package_id) {
+    for (const sliceId of requestIndex.sliceIdsByPackageId.get(edge.work_package_id) ?? []) {
+      sliceIds.add(sliceId);
+    }
+  }
   addEndpointSliceIds(sliceIds, requestIndex, edge.to);
   return sliceIds;
 }
@@ -132,7 +143,6 @@ function activeBlockerSliceIds(edge: ActiveBlockingEdge, requestIndex: BlockerRe
 function activeBlockerPackageIds(edge: ActiveBlockingEdge) {
   const packageIds = new Set<string>();
   if (edge.work_package_id) packageIds.add(edge.work_package_id);
-  addEndpointPackageIds(packageIds, edge.from);
   addEndpointPackageIds(packageIds, edge.to);
   return packageIds;
 }
