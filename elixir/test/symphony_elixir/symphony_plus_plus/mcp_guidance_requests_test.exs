@@ -388,7 +388,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
     assert event.payload["recommended_language"] =~ "Human info needed"
 
     ready_response = mcp_tool(repo, worker_session, "mark_ready", %{})
-    assert "no_active_blockers" in get_in(ready_response, ["error", "data", "missing"])
+    assert get_in(ready_response, ["error", "data", "reason_code"]) == "blocker_closeout_required"
+    assert [%{"blocker_id" => blocker_id, "work_package_id" => package_id}] = get_in(ready_response, ["error", "data", "active_blockers"])
+    assert blocker_id == "guidance_request:#{request_id}"
+    assert package_id == package.id
+
+    still_blocked_response =
+      mcp_tool(repo, worker_session, "mark_ready", %{
+        "blocker_closeout" => %{
+          "decision" => "still_active",
+          "blocker_ids" => [blocker_id]
+        }
+      })
+
+    assert "no_active_blockers" in get_in(still_blocked_response, ["error", "data", "missing"])
 
     assert {:error, :unauthenticated} =
              GuidanceRequestService.answer_human_info_needed_for_local_operator(repo, nil, request_id, %{

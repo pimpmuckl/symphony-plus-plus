@@ -59,7 +59,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
              planned_slice_id,
              attrs
            ),
-         {:ok, delivery} <- complete_closeout(repo, work_request, planned_slice, delivery, delivery_closeout_opts(attrs)) do
+         closeout_opts = delivery_closeout_opts(attrs),
+         {:ok, delivery} <- complete_closeout(repo, work_request, planned_slice, delivery, closeout_opts) do
       delivery
     else
       {:error, reason} -> repo.rollback(reason)
