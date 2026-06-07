@@ -19,6 +19,7 @@ import { UnlinkedExecutionSection } from "./workstream-unlinked-section";
 import { useAutoCollapseWhenDone } from "./workstream-auto-collapse";
 import { WorkstreamContextBar } from "./workstream-context-bar";
 import { contextPathValue } from "./workstream-context-path";
+import type { ContextPathPart } from "./workstream-context-path";
 import { DirectSliceGroup, ProductSliceRow } from "./workstream-slice-row";
 
 type TreeIndex = {
@@ -146,7 +147,7 @@ function ProductRequestRow({
 }) {
   const request = detail.work_request;
   const requestTitle = request.title || request.id;
-  const requestPath = [requestTitle];
+  const requestPath = [{ id: request.id, label: requestTitle }];
   const slices = sortPlannedSlices(detail.planned_slices ?? []);
   const progress = requestProgress(detail, packageById);
   const counts = productTreeCounts(detail, activeBlockerCount);
@@ -169,7 +170,7 @@ function ProductRequestRow({
   } as CSSProperties;
   const requestFinished = progress >= 100;
   const collapseRequest = useCallback(() => onSetOpen(false), [onSetOpen]);
-  useAutoCollapseWhenDone(requestFinished, expanded, collapseRequest);
+  useAutoCollapseWhenDone(requestFinished, expanded, collapseRequest, requestFinished);
 
   return (
     <section
@@ -309,7 +310,7 @@ function ProductPlanBody({
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
-  requestPath: string[];
+  requestPath: ContextPathPart[];
   activeBlockerCountBySliceId: Map<string, number>;
   activeBlockerKeysBySliceId: Map<string, Set<string>>;
 }) {
@@ -378,13 +379,13 @@ function ProductTreeNodeRow({
 }: {
   node: ProductTreeNode;
   depth: number;
-  path: string[];
+  path: ContextPathPart[];
   context: ProductTreeRenderContext;
 }) {
   const { activeBlockerCountBySliceId, activeBlockerKeysBySliceId, detail, guidanceItems, onSelectCard, onSelectGuidance, packageById, treeIndex, slicesById } = context;
   const childNodes = treeIndex.childrenByParent.get(node.id) ?? [];
   const nodeTitle = node.title || node.id;
-  const nodePath = [...path, nodeTitle];
+  const nodePath = [...path, { id: node.id, label: nodeTitle }];
   const nodeSlices = (node.slice_ids ?? []).map((sliceId) => slicesById.get(sliceId)).filter((slice): slice is PlannedSlice => Boolean(slice));
   const nodeSubtreeSlices = productNodeSubtreeSlices(node, treeIndex, slicesById);
   const nodeState = productNodeState(node, nodeSlices.length, treeIndex, activeBlockerCountBySliceId, activeBlockerKeysBySliceId, nodeSubtreeSlices, packageById);
@@ -451,7 +452,7 @@ function ProductTreeNodeContent({
   nodeSlices: PlannedSlice[];
   childNodes: ProductTreeNode[];
   depth: number;
-  path: string[];
+  path: ContextPathPart[];
   context: ProductTreeRenderContext;
 }) {
   const { activeBlockerCountBySliceId, detail, guidanceItems, packageById, onSelectCard, onSelectGuidance, updateAnimations } = context;

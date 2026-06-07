@@ -14,7 +14,12 @@ export function useAutoCollapseWhenDone(
       return;
     }
 
-    if (expanded && !autoCollapsedDoneRef.current) {
+    if (!expanded) {
+      autoCollapsedDoneRef.current = true;
+      return;
+    }
+
+    if (!autoCollapsedDoneRef.current) {
       autoCollapsedDoneRef.current = true;
       onCollapse();
     }

@@ -1,6 +1,7 @@
 import { FileText, GitBranch, Layers3 } from "lucide-react";
 import type { RefObject } from "react";
 import { useEffect, useMemo, useState } from "react";
+import type { ContextPathPart } from "./workstream-context-path";
 
 const STICKY_CONTEXT_ACTIVE_THRESHOLD = 122;
 const STICKY_CONTEXT_VISIBILITY_THRESHOLD = 150;
@@ -8,7 +9,7 @@ const MAX_CONTEXT_PLAN_NODES = 2;
 type ContextPartKind = "plan" | "repo" | "request";
 type RollDirection = "down" | "up";
 type ContextState = {
-  path: string[];
+  path: ContextPathPart[];
   direction: RollDirection;
   previousDisplayPath: ContextPart[];
   rollingParts: boolean[];
@@ -22,6 +23,7 @@ type RenderedContextPart = {
   slot: string;
 };
 type ContextPart = {
+  id: string;
   kind: ContextPartKind;
   label: string;
 };
@@ -227,31 +229,40 @@ function parseContextPath(value?: string) {
 
   try {
     const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.filter((part): part is string => typeof part === "string" && part.trim().length > 0) : [];
+    return Array.isArray(parsed) ? parsed.map(parseContextPathPart).filter((part): part is ContextPathPart => Boolean(part)) : [];
   } catch {
     return [];
   }
+}
+
+function parseContextPathPart(part: unknown): ContextPathPart | null {
+  if (!part || typeof part !== "object") return null;
+
+  const record = part as Record<string, unknown>;
+  const id = typeof record.id === "string" ? record.id.trim() : "";
+  const label = typeof record.label === "string" ? record.label.trim() : "";
+  return id && label ? { id, label } : null;
 }
 
 function uniquePathParts(parts: ContextPart[]) {
   return parts.filter((part, index) => part.label && part.label !== parts[index - 1]?.label);
 }
 
-function contextDisplayPath(repoLabel: string, path: string[]) {
+function contextDisplayPath(repoLabel: string, path: ContextPathPart[]) {
   const [request, ...planNodes] = path;
   const parts: ContextPart[] = [
-    { kind: "repo", label: repoLabel },
-    ...(request ? [{ kind: "request" as const, label: request }] : []),
-    ...planNodes.slice(-MAX_CONTEXT_PLAN_NODES).map((label) => ({ kind: "plan" as const, label })),
+    { id: "repo", kind: "repo", label: repoLabel },
+    ...(request ? [{ id: request.id, kind: "request" as const, label: request.label }] : []),
+    ...planNodes.slice(-MAX_CONTEXT_PLAN_NODES).map((part) => ({ id: part.id, kind: "plan" as const, label: part.label })),
   ];
 
   return uniquePathParts(parts);
 }
 
 function sameContextPart(left?: ContextPart, right?: ContextPart) {
-  return left?.kind === right?.kind && left?.label === right?.label;
+  return left?.id === right?.id && left?.kind === right?.kind && left?.label === right?.label;
 }
 
-function samePath(left: string[], right: string[]) {
-  return left.length === right.length && left.every((part, index) => part === right[index]);
+function samePath(left: ContextPathPart[], right: ContextPathPart[]) {
+  return left.length === right.length && left.every((part, index) => part.id === right[index]?.id && part.label === right[index]?.label);
 }
