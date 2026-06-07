@@ -1,4 +1,4 @@
-import type { ClarificationQuestion, DashboardPayload, GuidanceItem, SoloSession, WorkPackageCard, WorkRequestCard, WorkRequestDetail } from "@/types/dashboard";
+import type { ActiveBlockingEdge, ClarificationQuestion, DashboardPayload, GuidanceItem, SoloSession, WorkPackageCard, WorkRequestCard, WorkRequestDetail } from "@/types/dashboard";
 import { operationalLabel, packageLane, sliceLane, sliceOperationalState, workRequestLane } from "@/lib/operational-state";
 import { sortedCopy } from "@/lib/collections";
 import type { BlockerItem, FinishedHighlight } from "./dashboard-state";
@@ -7,6 +7,7 @@ import { stripMarkdown } from "./dashboard-text";
 import { operatorApiUrl } from "./runtime";
 import type { RepoIdentitySource } from "./dashboard-persistence";
 import { addBranch, repoDisplayName, repoIdentityKey, repoRemoteName } from "./dashboard-persistence";
+import { activePackageBlockers, packageBlockerEdge } from "./blocker-selection";
 import { packageHasActiveBlocker } from "./workstream-data";
 
 export const FINISHED_HIGHLIGHT_LIMIT = 80;
@@ -81,27 +82,89 @@ export function clarificationGuidanceItem(detail: WorkRequestDetail, question: C
   };
 }
 
-export function activeBlockerItems(packages: WorkPackageCard[], packageSelections: ReadonlyMap<string, CardDetailSelection> = new Map()): BlockerItem[] {
-  return packages.reduce<BlockerItem[]>((items, pkg) => {
-    const operational = pkg.operational_state || null;
-    if (packageHasActiveBlocker(pkg)) {
-      items.push({
-        id: pkg.id,
-        title: pkg.title || pkg.id,
-        repo: repoDisplayName(pkg),
-        status: operational?.key || pkg.status,
-        blockerCount: Math.max(pkg.active_blocker_count || 0, pkg.status === "blocked" || operational?.key === "blocked" ? 1 : 0),
-        detail:
-          operational?.reason ||
-          (pkg.status === "blocked"
-            ? "This work package is blocked and needs another condition or dependency cleared before it can move."
-            : "This work package has active blockers attached to its execution path."),
-        selection: packageSelections.get(pkg.id) ?? { kind: "package", pkg },
-      });
+export function activeBlockerItems(
+  packages: WorkPackageCard[],
+  packageSelections: ReadonlyMap<string, CardDetailSelection> = new Map(),
+  activeBlockingEdges: ActiveBlockingEdge[] = [],
+): BlockerItem[] {
+  const edgesByPackageId = activeBlockingEdges.reduce<Map<string, ActiveBlockingEdge[]>>((edgesById, edge) => {
+    for (const packageId of activeBlockerPackageIds(edge)) {
+      const edges = edgesById.get(packageId) ?? [];
+      edges.push(edge);
+      edgesById.set(packageId, edges);
     }
 
-    return items;
-  }, []);
+    return edgesById;
+  }, new Map());
+
+  return packages.flatMap((pkg) => activeBlockerItemsForPackage(pkg, packageSelections, edgesByPackageId));
+}
+
+function activeBlockerPackageIds(edge: ActiveBlockingEdge) {
+  return [...new Set([
+    edge.work_package_id,
+    edge.from.kind === "work_package" ? edge.from.id : null,
+    edge.to.kind === "work_package" ? edge.to.id : null,
+  ].filter((id): id is string => Boolean(id)))];
+}
+
+function activeBlockerItemsForPackage(pkg: WorkPackageCard, packageSelections: ReadonlyMap<string, CardDetailSelection>, edgesByPackageId: ReadonlyMap<string, ActiveBlockingEdge[]>): BlockerItem[] {
+  if (!packageHasActiveBlocker(pkg)) return [];
+
+  const operational = pkg.operational_state || null;
+  const selection = packageSelections.get(pkg.id) ?? { kind: "package" as const, pkg };
+  const detail = selection.kind === "package" ? selection.detail : undefined;
+  const slice = selection.kind === "package" ? selection.slice : undefined;
+  const blockerEdges = edgesByPackageId.get(pkg.id) ?? [];
+  const packageBlockers = activePackageBlockers(pkg);
+
+  if (blockerEdges.length > 0) {
+    return blockerEdges.map((edge) => ({
+      id: edge.id,
+      title: edge.summary || pkg.title || edge.blocker_id || edge.id,
+      repo: repoDisplayName(pkg),
+      status: operational?.key || pkg.status,
+      blockerCount: 1,
+      detail: edge.body || operational?.reason || "This work package has an active blocker attached to its execution path.",
+      selection: { kind: "blocker", blocker: edge, pkg, detail, slice },
+    }));
+  }
+
+  if (packageBlockers.length > 0) {
+    return packageBlockers.map((blocker) => {
+      const edge = packageBlockerEdge(blocker, pkg, { detail, slice });
+
+      return {
+        id: edge.id,
+        title: edge.summary || pkg.title || edge.blocker_id || edge.id,
+        repo: repoDisplayName(pkg),
+        status: operational?.key || pkg.status,
+        blockerCount: 1,
+        detail: edge.body || operational?.reason || "This work package has an active blocker attached to its execution path.",
+        selection: { kind: "blocker", blocker: edge, pkg, detail, slice },
+      };
+    });
+  }
+
+  return [{
+    id: pkg.id,
+    title: pkg.title || pkg.id,
+    repo: repoDisplayName(pkg),
+    status: operational?.key || pkg.status,
+    blockerCount: fallbackPackageBlockerCount(pkg, operational?.key),
+    detail: packageBlockerSummary(pkg, operational?.reason),
+    selection,
+  }];
+}
+
+function fallbackPackageBlockerCount(pkg: WorkPackageCard, operationalKey: string | null | undefined) {
+  return Math.max(pkg.active_blocker_count || 0, pkg.status === "blocked" || operationalKey === "blocked" ? 1 : 0);
+}
+
+function packageBlockerSummary(pkg: WorkPackageCard, operationalReason: string | null | undefined) {
+  if (operationalReason) return operationalReason;
+  if (pkg.status === "blocked") return "This work package is blocked and needs another condition or dependency cleared before it can move.";
+  return "This work package has active blockers attached to its execution path.";
 }
 
 export function recentFinishedHighlights(

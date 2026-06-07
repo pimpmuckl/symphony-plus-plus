@@ -17,6 +17,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.Dashboard.BlockerProjection
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.{DefaultClient, MergeReconciler}
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
@@ -24,6 +25,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Service, as: OperatorSettingsService
   alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings, as: OperatorSettings
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
   alias SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
@@ -804,6 +806,24 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     )
   end
 
+  @spec operator_clear_work_package_blocker(Conn.t(), map()) :: Conn.t()
+  def operator_clear_work_package_blocker(conn, %{"work_package_id" => work_package_id, "blocker_id" => blocker_id} = params) do
+    send_local_operator_response(
+      conn,
+      :dangerous_override,
+      work_package_target(work_package_id),
+      :operator_clear_work_package_blocker,
+      fn repo ->
+        work_package_id = normalize_package_route_id(work_package_id)
+
+        with {:ok, event} <- clear_work_package_blocker_for_local_operator(repo, work_package_id, blocker_id, params),
+             {:ok, dashboard} <- operator_dashboard_payload(repo) do
+          json(conn, %{progress_event: %{id: event.id, blocker_id: blocker_id}, dashboard: dashboard})
+        end
+      end
+    )
+  end
+
   @spec operator_archive_work_package(Conn.t(), map()) :: Conn.t()
   def operator_archive_work_package(conn, %{"work_package_id" => work_package_id}) do
     send_local_operator_response(
@@ -1483,6 +1503,44 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp completed_no_pr_idempotency_key(planned_slice_id), do: "local-operator-completed-no-pr:#{planned_slice_id}"
+
+  defp clear_work_package_blocker_for_local_operator(repo, work_package_id, blocker_id, params) do
+    blocker_id = String.trim(to_string(blocker_id || ""))
+
+    with true <- valid_package_route_id?(work_package_id),
+         true <- blocker_id != "",
+         {:ok, _work_package} <- WorkPackageRepository.get(repo, work_package_id),
+         {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, work_package_id),
+         {:ok, blocker} <- active_blocker(progress_events, blocker_id) do
+      PlanningRepository.append_progress_event(repo, %{
+        work_package_id: work_package_id,
+        summary: "Cleared blocker: #{blocker.summary || blocker.id}",
+        body: text_param(params, "resolution") || "Cleared by local operator from the blocker detail modal.",
+        status: "resolved",
+        idempotency_key: "local-operator-clear-blocker:#{work_package_id}:#{blocker.id}:#{blocker.event_id}",
+        payload: %{
+          type: "blocker",
+          source_tool: "resolve_blocker",
+          blocker_id: blocker.id,
+          resolution: text_param(params, "resolution") || "Cleared by local operator.",
+          active: false
+        }
+      })
+    else
+      false -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp active_blocker(progress_events, blocker_id) do
+    progress_events
+    |> BlockerProjection.blockers()
+    |> Enum.find(&(&1.id == blocker_id and &1.active))
+    |> case do
+      nil -> {:error, :not_found}
+      blocker -> {:ok, blocker}
+    end
+  end
 
   defp append_hidden_work_package_id_for_local_operator(_repo, work_package_id)
        when not is_binary(work_package_id) or byte_size(work_package_id) == 0 do

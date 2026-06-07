@@ -17,11 +17,8 @@ import { openBlockersForRequest, openBlockersForSlices, openGuidanceForSlice, op
 import { requestUpdateKey, sliceUpdateKey } from "./update-animations";
 import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
 import { UnlinkedExecutionSection } from "./workstream-unlinked-section";
-
-type TreeIndex = {
-  childrenByParent: Map<string, ProductTreeNode[]>;
-  rootNodes: ProductTreeNode[];
-};
+import { buildTreeIndex } from "./workstream-tree-index";
+import type { TreeIndex } from "./workstream-tree-index";
 
 type ProductTreeRenderContext = {
   detail: WorkRequestDetail;
@@ -30,6 +27,7 @@ type ProductTreeRenderContext = {
   packageById: Map<string, WorkPackageCard>;
   activeBlockerCountBySliceId: Map<string, number>;
   activeBlockerKeysBySliceId: Map<string, Set<string>>;
+  activeBlockingEdges: ActiveBlockingEdge[];
   guidanceItems: GuidanceItem[];
   onSelectCard: CardDetailSelect;
   onSelectGuidance: (item: GuidanceItem) => void;
@@ -206,6 +204,7 @@ function ProductRequestRow({
             slices={slices}
             activeBlockerCountBySliceId={activeBlockerCountBySliceId}
             activeBlockerKeysBySliceId={activeBlockerKeysBySliceId}
+            activeBlockingEdges={activeBlockingEdges}
             guidanceItems={guidanceItems}
             onSelectGuidance={onSelectGuidance}
             onSelectCard={onSelectCard}
@@ -282,6 +281,7 @@ function ProductPlanBody({
   updateAnimations,
   activeBlockerCountBySliceId,
   activeBlockerKeysBySliceId,
+  activeBlockingEdges,
 }: {
   detail: WorkRequestDetail;
   packageById: Map<string, WorkPackageCard>;
@@ -292,6 +292,7 @@ function ProductPlanBody({
   updateAnimations: DashboardUpdateAnimations;
   activeBlockerCountBySliceId: Map<string, number>;
   activeBlockerKeysBySliceId: Map<string, Set<string>>;
+  activeBlockingEdges: ActiveBlockingEdge[];
 }) {
   const treeIndex = useMemo(() => buildTreeIndex(detail.product_tree?.nodes ?? [], detail.product_tree?.root_node_ids ?? []), [detail.product_tree]);
   const slicesById = useMemo(() => new Map(slices.map((slice) => [slice.id, slice])), [slices]);
@@ -304,6 +305,7 @@ function ProductPlanBody({
     packageById,
     activeBlockerCountBySliceId,
     activeBlockerKeysBySliceId,
+    activeBlockingEdges,
     guidanceItems,
     onSelectCard,
     onSelectGuidance,
@@ -330,6 +332,7 @@ function ProductPlanBody({
         slicesById={slicesById}
         packageById={packageById}
         activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+        activeBlockingEdges={activeBlockingEdges}
         guidanceItems={guidanceItems}
         onSelectGuidance={onSelectGuidance}
         onSelectCard={onSelectCard}
@@ -358,7 +361,7 @@ function ProductTreeNodeRow({
   depth: number;
   context: ProductTreeRenderContext;
 }) {
-  const { activeBlockerCountBySliceId, activeBlockerKeysBySliceId, detail, guidanceItems, onSelectCard, onSelectGuidance, packageById, treeIndex, slicesById } = context;
+  const { activeBlockerCountBySliceId, activeBlockerKeysBySliceId, activeBlockingEdges, detail, guidanceItems, onSelectCard, onSelectGuidance, packageById, treeIndex, slicesById } = context;
   const childNodes = treeIndex.childrenByParent.get(node.id) ?? [];
   const nodeSlices = (node.slice_ids ?? []).map((sliceId) => slicesById.get(sliceId)).filter((slice): slice is PlannedSlice => Boolean(slice));
   const nodeSubtreeSlices = productNodeSubtreeSlices(node, treeIndex, slicesById);
@@ -367,7 +370,7 @@ function ProductTreeNodeRow({
   const hasDisclosureContent = productNodeHasDisclosureContent(node, nodeSlices, childNodes);
   const [expanded, setExpanded] = useState(true);
   const openGuidance = () => openGuidanceForSlices(detail, nodeSubtreeSlices, packageById, guidanceItems, onSelectGuidance, onSelectCard);
-  const openBlockers = () => openBlockersForSlices(detail, nodeSubtreeSlices, packageById, activeBlockerCountBySliceId, onSelectCard);
+  const openBlockers = () => openBlockersForSlices(detail, nodeSubtreeSlices, packageById, activeBlockerCountBySliceId, activeBlockingEdges, onSelectCard);
 
   return (
     <div className="v3-product-node" style={{ "--tree-depth": depth } as CSSProperties} data-mark={nodeState.mark} data-tone={nodeState.tone}>
@@ -423,7 +426,7 @@ function ProductTreeNodeContent({
   depth: number;
   context: ProductTreeRenderContext;
 }) {
-  const { activeBlockerCountBySliceId, detail, guidanceItems, packageById, onSelectCard, onSelectGuidance, updateAnimations } = context;
+  const { activeBlockerCountBySliceId, activeBlockingEdges, detail, guidanceItems, packageById, onSelectCard, onSelectGuidance, updateAnimations } = context;
 
   return (
     <div id={contentId} className="v3-product-node-content" hidden={hidden}>
@@ -437,6 +440,7 @@ function ProductTreeNodeContent({
               slice={slice}
               pkg={packageById.get(slice.work_package_id || "")}
               activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+              activeBlockingEdges={activeBlockingEdges}
               guidanceItems={guidanceItems}
               onSelectGuidance={onSelectGuidance}
               onSelectCard={onSelectCard}
@@ -467,6 +471,7 @@ function DirectSliceGroup({
   slicesById,
   packageById,
   activeBlockerCountBySliceId,
+  activeBlockingEdges,
   guidanceItems,
   onSelectGuidance,
   onSelectCard,
@@ -477,6 +482,7 @@ function DirectSliceGroup({
   slicesById: Map<string, PlannedSlice>;
   packageById: Map<string, WorkPackageCard>;
   activeBlockerCountBySliceId: Map<string, number>;
+  activeBlockingEdges: ActiveBlockingEdge[];
   guidanceItems: GuidanceItem[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
@@ -494,6 +500,7 @@ function DirectSliceGroup({
           slice={slice}
           pkg={packageById.get(slice.work_package_id || "")}
           activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+          activeBlockingEdges={activeBlockingEdges}
           guidanceItems={guidanceItems}
           onSelectGuidance={onSelectGuidance}
           onSelectCard={onSelectCard}
@@ -509,6 +516,7 @@ function ProductSliceRow({
   slice,
   pkg,
   activeBlockerCountBySliceId,
+  activeBlockingEdges,
   guidanceItems,
   onSelectGuidance,
   onSelectCard,
@@ -518,6 +526,7 @@ function ProductSliceRow({
   slice: PlannedSlice;
   pkg?: WorkPackageCard;
   activeBlockerCountBySliceId: Map<string, number>;
+  activeBlockingEdges: ActiveBlockingEdge[];
   guidanceItems: GuidanceItem[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
@@ -533,9 +542,10 @@ function ProductSliceRow({
   const progress = sliceProgressPercent(pkg, lane, tone);
   const progressIconState = rowProgressIconState({ blockerCount, guidanceCount, progress, tone });
   const progressAttentionState = rowProgressAttentionState({ blockerCount, guidanceCount, tone });
+  const packageById = pkg ? new Map<string, WorkPackageCard>([[pkg.id, pkg]]) : new Map<string, WorkPackageCard>();
   const openSliceDetail = () => onSelectCard({ kind: "slice", detail, slice, pkg });
   const openGuidance = () => openGuidanceForSlice(detail, slice, pkg, guidanceItems, onSelectGuidance, onSelectCard);
-  const openBlockers = () => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice, pkg });
+  const openBlockers = () => openBlockersForSlices(detail, [slice], packageById, activeBlockerCountBySliceId, activeBlockingEdges, onSelectCard);
 
   return (
     <div
@@ -569,30 +579,4 @@ function sliceProgressPercent(pkg: WorkPackageCard | undefined, lane: ReturnType
   if (lane === "finished" || tone === "finished") return 100;
   if (lane === "implementing" || ["implementing", "review", "merge"].includes(tone)) return 50;
   return 0;
-}
-
-function buildTreeIndex(nodes: ProductTreeNode[], rootNodeIds: string[]): TreeIndex {
-  const sortedNodes = nodes.toSorted(compareProductNodes);
-  const nodeById = new Map(sortedNodes.map((node) => [node.id, node]));
-  const childrenByParent = new Map<string, ProductTreeNode[]>();
-  const explicitRoots = rootNodeIds.map((id) => nodeById.get(id)).filter((node): node is ProductTreeNode => Boolean(node));
-
-  sortedNodes.forEach((node) => {
-    if (!node.parent_id) return;
-    const children = childrenByParent.get(node.parent_id) ?? [];
-    children.push(node);
-    childrenByParent.set(node.parent_id, children);
-  });
-
-  return {
-    childrenByParent,
-    rootNodes: explicitRoots.length > 0 ? explicitRoots : sortedNodes.filter((node) => !node.parent_id),
-  };
-}
-
-function compareProductNodes(left: ProductTreeNode, right: ProductTreeNode) {
-  const leftPosition = Number.isFinite(left.position) ? left.position ?? 0 : 0;
-  const rightPosition = Number.isFinite(right.position) ? right.position ?? 0 : 0;
-  if (leftPosition !== rightPosition) return leftPosition - rightPosition;
-  return (left.title || left.id).localeCompare(right.title || right.id);
 }

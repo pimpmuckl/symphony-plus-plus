@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { FINISHED_HIGHLIGHT_LIMIT, recentFinishedHighlights } from "./dashboard-data";
+import { activeBlockerItems, FINISHED_HIGHLIGHT_LIMIT, recentFinishedHighlights } from "./dashboard-data";
 import { RepoSummaryStrip } from "./repo-workstream";
 import type { WorkPackageCard, WorkRequestCard, WorkRequestDetail } from "@/types/dashboard";
 import type { RepoSummary } from "./dashboard-data";
@@ -53,6 +53,54 @@ describe("dashboard data helpers", () => {
     const highlights = recentFinishedHighlights(packages, [request], [detail], new Map(), 1);
 
     expect(highlights.map((highlight) => highlight.id)).toEqual(["wr-finished", "pkg-new"]);
+  });
+
+  it("builds blocker list items from package-card active blocker details", () => {
+    const pkg: WorkPackageCard = {
+      id: "pkg-blocked",
+      title: "Blocked package",
+      status: "blocked",
+      active_blocker_count: 1,
+      active_blockers: [{ id: "blocker-1", active: true, summary: "Needs scope approval", body: "Review asked for one more file." }],
+    };
+
+    const items = activeBlockerItems([pkg]);
+
+    expect(items).toEqual([
+      expect.objectContaining({
+        id: "active_blocking_edge:pkg-blocked:blocker-1",
+        title: "Needs scope approval",
+        detail: "Review asked for one more file.",
+        selection: expect.objectContaining({
+          kind: "blocker",
+          blocker: expect.objectContaining({ blocker_id: "blocker-1", work_package_id: "pkg-blocked" }),
+          pkg,
+        }),
+      }),
+    ]);
+  });
+
+  it("keeps blocker list item ids unique across packages", () => {
+    const packages: WorkPackageCard[] = [
+      {
+        id: "pkg-a",
+        title: "Package A",
+        status: "blocked",
+        active_blocker_count: 1,
+        active_blockers: [{ id: "blocker-1", active: true, summary: "Shared blocker id" }],
+      },
+      {
+        id: "pkg-b",
+        title: "Package B",
+        status: "blocked",
+        active_blocker_count: 1,
+        active_blockers: [{ id: "blocker-1", active: true, summary: "Shared blocker id" }],
+      },
+    ];
+
+    const ids = activeBlockerItems(packages).map((item) => item.id);
+
+    expect(ids).toEqual(["active_blocking_edge:pkg-a:blocker-1", "active_blocking_edge:pkg-b:blocker-1"]);
   });
 
   it("hides zero plan and attention plates from repo summaries", () => {
