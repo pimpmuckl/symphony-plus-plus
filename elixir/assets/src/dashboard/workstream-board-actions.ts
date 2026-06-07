@@ -83,7 +83,7 @@ export function openBlockersForSlices(
   activeBlockingEdges: ActiveBlockingEdge[],
   onSelectCard: CardDetailSelect,
 ) {
-  const edge = blockerEdgeForSlices(detail, slices, packageById, activeBlockingEdges);
+  const edge = blockerEdgeForSlices(slices, packageById, activeBlockingEdges);
   if (edge) {
     openBlockerEdge(detail, slices, packageById, edge, onSelectCard);
     return;
@@ -178,16 +178,11 @@ function requestBlockerEdge(
 }
 
 function blockerEdgeForSlices(
-  detail: WorkRequestDetail,
   slices: PlannedSlice[],
   packageById: Map<string, WorkPackageCard>,
   activeBlockingEdges: ActiveBlockingEdge[],
 ) {
-  const requestId = detail.work_request.id;
-  const sliceIds = new Set(slices.map((slice) => slice.id));
-  const packageIds = new Set(slices.map((slice) => slice.work_package_id).filter((id): id is string => Boolean(id)));
-
-  return activeBlockingEdges.find((edge) => edgeMatchesRequest(edge, requestId, sliceIds, packageIds) || edgeMatchesAnySlice(edge, slices, packageById)) ?? null;
+  return activeBlockingEdges.find((edge) => edgeMatchesAnySlice(edge, slices, packageById)) ?? null;
 }
 
 function edgeMatchesAnySlice(edge: ActiveBlockingEdge, slices: PlannedSlice[], packageById: Map<string, WorkPackageCard>) {

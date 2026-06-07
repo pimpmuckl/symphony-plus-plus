@@ -29,12 +29,63 @@ describe("workstream board action routing", () => {
       from: { kind: "work_package", id: "pkg-1" },
       to: { kind: "work_package", id: "pkg-other" },
       work_package_id: "pkg-1",
+      planned_slice_id: slice.id,
       work_request_id: "wr-1",
     };
 
     openBlockersForRequest(detail, [slice], new Map([["pkg-1", pkg]]), new Map(), [edge], (selection) => selections.push(selection));
 
     expect(selections).toEqual([{ kind: "blocker", blocker: edge, pkg, detail, slice }]);
+  });
+
+  it("keeps slice blocker clicks scoped to the selected slice package", () => {
+    const selections: CardDetailSelection[] = [];
+    const detail = requestDetail("wr-1");
+    const sliceOne = plannedSlice("slice-1", "pkg-1");
+    const sliceTwo = plannedSlice("slice-2", "pkg-2");
+    const pkgOne: WorkPackageCard = { id: "pkg-1", status: "blocked" };
+    const pkgTwo: WorkPackageCard = {
+      id: "pkg-2",
+      status: "blocked",
+      active_blocker_count: 1,
+      active_blockers: [{ id: "blocker-2", active: true, summary: "Second slice blocker" }],
+    };
+    const requestWideEdgeForSliceOne: ActiveBlockingEdge = {
+      id: "edge-1",
+      blocker_id: "blocker-1",
+      from: { kind: "work_package", id: "pkg-1" },
+      to: { kind: "work_package", id: "pkg-other" },
+      work_package_id: "pkg-1",
+      planned_slice_id: sliceOne.id,
+      work_request_id: "wr-1",
+    };
+
+    openBlockersForSlices(
+      detail,
+      [sliceTwo],
+      new Map([
+        ["pkg-1", pkgOne],
+        ["pkg-2", pkgTwo],
+      ]),
+      new Map([["slice-2", 1]]),
+      [requestWideEdgeForSliceOne],
+      (selection) => selections.push(selection),
+    );
+
+    expect(selections).toEqual([
+      {
+        kind: "blocker",
+        blocker: expect.objectContaining({
+          blocker_id: "blocker-2",
+          work_package_id: "pkg-2",
+          planned_slice_id: "slice-2",
+        }),
+        pkg: pkgTwo,
+        detail,
+        slice: sliceTwo,
+      },
+    ]);
+    expect(selections[0]?.kind === "blocker" ? selections[0].blocker : null).not.toBe(requestWideEdgeForSliceOne);
   });
 
   it("routes package-card blocker fallback clicks to the real blocker modal", () => {
