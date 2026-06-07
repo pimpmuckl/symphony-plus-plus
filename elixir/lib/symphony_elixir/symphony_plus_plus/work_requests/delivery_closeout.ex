@@ -329,23 +329,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   end
 
   defp reject_non_recoverable_abandoned_runtime_context(context) do
-    reject_non_recoverable_runtime_context(context, [
-      "worker_grant_active",
-      "claim_lease_stale",
-      "agent_run_stale",
-      "package_terminal"
-    ])
+    reject_non_recoverable_runtime_context(context, recoverable_recut_runtime_reason_codes())
   end
 
   defp reject_non_recoverable_superseded_runtime_context(context) do
-    reject_non_recoverable_runtime_context(context, [
-      "worker_grant_active",
-      "claim_lease_stale",
-      "agent_run_stale",
-      "worker_recycled",
-      "package_terminal"
-    ])
+    reject_non_recoverable_runtime_context(context, recoverable_recut_runtime_reason_codes())
   end
+
+  defp recoverable_recut_runtime_reason_codes,
+    do: ["worker_grant_active", "claim_lease_stale", "agent_run_stale", "worker_recycled", "package_terminal"]
 
   defp reject_non_recoverable_runtime_context(context, allowed_reason_codes) do
     reason_codes = List.wrap(get_in(context, [:runtime_state, :reason_codes]))

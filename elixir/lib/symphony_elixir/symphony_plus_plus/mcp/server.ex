@@ -58,6 +58,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.RuntimeCleanup, as: WorkRequestRuntimeCleanup
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
@@ -117,6 +118,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "resolve_blocker",
     "read_work_request_delivery_board",
     "reconcile_work_request",
+    "cleanup_work_request_planned_slice_runtime",
     "record_planned_slice_delivery",
     "revoke_planned_slice_worker_key",
     "list_guidance_requests",
@@ -168,6 +170,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   ]
   @delivery_policy_tools [
     "reconcile_work_request",
+    "cleanup_work_request_planned_slice_runtime",
     "record_planned_slice_delivery",
     "revoke_planned_slice_worker_key"
   ]
@@ -1668,9 +1671,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "Record an idempotent planned-slice delivery closeout. Required evidence depends on outcome: pr_merged needs PR evidence, completed_no_pr needs direct evidence, superseded needs successor and reason, and abandoned needs rationale. Use abandoned for cleaned no-code failed dispatches that never reached implementation."
   end
 
-  defp architect_tool_description("revoke_planned_slice_worker_key") do
-    "Revoke one live worker grant for the WorkPackage linked to a scoped WorkRequest planned slice during in-progress recycle or delivery closeout cleanup."
-  end
+  defp architect_tool_description(tool) when tool in ["cleanup_work_request_planned_slice_runtime", "revoke_planned_slice_worker_key"],
+    do: delivery_runtime_tool_description(tool)
 
   defp architect_tool_description("list_guidance_requests") do
     "List package-scoped guidance requests visible to the architect grant's phase, repo, and base branch."
@@ -2116,6 +2118,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
   end
 
+  defp architect_tool_input_schema(tool) when tool in ["cleanup_work_request_planned_slice_runtime", "revoke_planned_slice_worker_key"],
+    do: delivery_runtime_tool_input_schema(tool)
+
   defp architect_tool_input_schema("record_planned_slice_delivery") do
     schema(
       %{
@@ -2142,18 +2147,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "abandoned_rationale" => markdown_string_schema("Required Markdown rationale for outcome abandoned.")
       },
       ["work_request_id", "planned_slice_id", "outcome", "idempotency_key"]
-    )
-  end
-
-  defp architect_tool_input_schema("revoke_planned_slice_worker_key") do
-    schema(
-      %{
-        "work_request_id" => described_string_schema("Scoped WorkRequest id that owns the planned slice."),
-        "planned_slice_id" => described_string_schema("Dispatched planned slice whose linked WorkPackage owns the worker grant."),
-        "grant_id" => described_string_schema("Live worker grant id for the linked WorkPackage. Raw worker secrets are never accepted or returned."),
-        "reason" => described_string_schema("Redacted audit reason for revoking the worker grant during recut, recycle, or delivery closeout cleanup.")
-      },
-      ["work_request_id", "planned_slice_id", "grant_id", "reason"]
     )
   end
 
@@ -2455,6 +2448,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_tool_input_schema("publish_phase_update") do
     schema(%{"phase_id" => string_schema(), "update" => object_schema()}, ["phase_id", "update"])
+  end
+
+  defp delivery_runtime_tool_input_schema("cleanup_work_request_planned_slice_runtime") do
+    schema(
+      %{
+        "work_request_id" => described_string_schema("Scoped WorkRequest id that owns the planned slice."),
+        "planned_slice_id" => described_string_schema("Dispatched planned slice whose linked WorkPackage owns the runtime artifacts."),
+        "outcome" =>
+          ["superseded", "abandoned"]
+          |> string_enum_schema()
+          |> Map.put("description", "Delivery outcome being prepared. cleanup_work_request_planned_slice_runtime only supports superseded or abandoned closeout cleanup."),
+        "reason" => described_string_schema("Redacted audit reason for recycling linked worker runtime before delivery closeout."),
+        "successor_planned_slice_id" => described_string_schema("Required for outcome superseded; must belong to the same WorkRequest."),
+        "successor_work_package_id" => described_string_schema("Optional successor package id; when present it must be linked to the declared successor planned slice inside the same WorkRequest."),
+        "superseded_reason" => markdown_string_schema("Required Markdown reason for outcome superseded."),
+        "abandoned_rationale" => markdown_string_schema("Required Markdown rationale for outcome abandoned.")
+      },
+      ["work_request_id", "planned_slice_id", "outcome", "reason"]
+    )
+  end
+
+  defp delivery_runtime_tool_input_schema("revoke_planned_slice_worker_key") do
+    schema(
+      %{
+        "work_request_id" => described_string_schema("Scoped WorkRequest id that owns the planned slice."),
+        "planned_slice_id" => described_string_schema("Dispatched planned slice whose linked WorkPackage owns the worker grant."),
+        "grant_id" => described_string_schema("Live worker grant id for the linked WorkPackage. Raw worker secrets are never accepted or returned."),
+        "reason" => described_string_schema("Redacted audit reason for revoking the worker grant during recut, recycle, or delivery closeout cleanup.")
+      },
+      ["work_request_id", "planned_slice_id", "grant_id", "reason"]
+    )
   end
 
   defp tool_specs_for_session(%Config{} = config, nil) do
@@ -4766,48 +4790,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp architect_tool("revoke_planned_slice_worker_key", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, live_session} <- Auth.require_session(session, config.repo),
-         :ok <- require_delivery_write_capability(live_session),
-         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
-         {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
-         {:ok, grant_id} <- required_argument(arguments, "grant_id"),
-         {:ok, reason} <- required_argument(arguments, "reason"),
-         {:ok, work_request, planned_slice, filters, scope} <-
-           authorized_planned_slice_scope(
-             config.repo,
-             live_session,
-             work_request_id,
-             planned_slice_id,
-             :work_package_repair_state,
-             "revoke_planned_slice_worker_key"
-           ),
-         {:ok, work_package_id} <- planned_slice_work_package_id(planned_slice),
-         {:ok, payload} <-
-           run_architect_transaction(config.repo, fn ->
-             revoke_planned_slice_worker_key_in_transaction(
-               config.repo,
-               live_session,
-               work_request,
-               planned_slice,
-               work_package_id,
-               grant_id,
-               reason,
-               filters
-             )
-           end) do
-      {:ok, tool_result(Map.put(payload, "scope", scope))}
-    else
-      {:tool_error, reason} ->
-        planned_slice_worker_revoke_tool_error(reason)
-
-      {:error, :not_found} ->
-        not_found_error("revoke_planned_slice_worker_key")
-
-      {:error, reason} ->
-        architect_error(reason, "revoke_planned_slice_worker_key")
-    end
-  end
+  defp architect_tool(name, arguments, %__MODULE__{} = server) when name in ["cleanup_work_request_planned_slice_runtime", "revoke_planned_slice_worker_key"],
+    do: delivery_runtime_architect_tool(name, arguments, server)
 
   defp architect_tool("list_guidance_requests", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- architect_session(config.repo, session, "read:guidance_request"),
@@ -5528,6 +5512,109 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp cleanup_work_request_planned_slice_runtime_tool(arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, live_session} <- Auth.require_session(session, config.repo),
+         :ok <- require_delivery_write_capability(live_session),
+         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
+         {:ok, outcome} <- required_runtime_cleanup_delivery_outcome(arguments),
+         {:ok, reason} <- required_argument(arguments, "reason"),
+         {:ok, delivery_evidence} <-
+           runtime_cleanup_delivery_evidence_attrs(arguments, outcome, work_request_id, planned_slice_id),
+         {:ok, work_request, planned_slice, filters, scope} <-
+           authorized_planned_slice_scope(
+             config.repo,
+             live_session,
+             work_request_id,
+             planned_slice_id,
+             :work_package_repair_state,
+             "cleanup_work_request_planned_slice_runtime"
+           ),
+         :ok <- require_planned_slice_delivery_scope(config.repo, work_request, planned_slice, delivery_evidence, filters),
+         {:ok, work_package_id} <- planned_slice_work_package_id(planned_slice),
+         {:ok, cleanup} <-
+           run_architect_transaction(config.repo, fn ->
+             cleanup_work_request_planned_slice_runtime_in_transaction(
+               config.repo,
+               live_session,
+               work_request,
+               planned_slice,
+               work_package_id,
+               reason,
+               delivery_evidence,
+               filters
+             )
+           end) do
+      {:ok,
+       tool_result(%{
+         "work_request" => work_request_mutation_payload(work_request),
+         "planned_slice" => planned_slice_payload(planned_slice),
+         "work_package" => child_work_package_payload(Map.fetch!(cleanup, :work_package)),
+         "runtime_cleanup" => Map.fetch!(cleanup, :runtime_cleanup),
+         "audit_event" => progress_event_payload(Map.fetch!(cleanup, :audit_event)),
+         "scope" => scope
+       })}
+    else
+      {:tool_error, reason} ->
+        {:error, -32_602, "Invalid params", %{"tool" => "cleanup_work_request_planned_slice_runtime", "reason" => reason}}
+
+      {:error, :not_found} ->
+        not_found_error("cleanup_work_request_planned_slice_runtime")
+
+      {:error, reason} ->
+        work_request_runtime_cleanup_error(reason)
+    end
+  end
+
+  defp delivery_runtime_architect_tool("cleanup_work_request_planned_slice_runtime", arguments, %__MODULE__{} = server),
+    do: cleanup_work_request_planned_slice_runtime_tool(arguments, server)
+
+  defp delivery_runtime_architect_tool("revoke_planned_slice_worker_key", arguments, %__MODULE__{} = server),
+    do: revoke_planned_slice_worker_key_tool(arguments, server)
+
+  defp revoke_planned_slice_worker_key_tool(arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, live_session} <- Auth.require_session(session, config.repo),
+         :ok <- require_delivery_write_capability(live_session),
+         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
+         {:ok, grant_id} <- required_argument(arguments, "grant_id"),
+         {:ok, reason} <- required_argument(arguments, "reason"),
+         {:ok, work_request, planned_slice, filters, scope} <-
+           authorized_planned_slice_scope(
+             config.repo,
+             live_session,
+             work_request_id,
+             planned_slice_id,
+             :work_package_repair_state,
+             "revoke_planned_slice_worker_key"
+           ),
+         {:ok, work_package_id} <- planned_slice_work_package_id(planned_slice),
+         {:ok, payload} <-
+           run_architect_transaction(config.repo, fn ->
+             revoke_planned_slice_worker_key_in_transaction(
+               config.repo,
+               live_session,
+               work_request,
+               planned_slice,
+               work_package_id,
+               grant_id,
+               reason,
+               filters
+             )
+           end) do
+      {:ok, tool_result(Map.put(payload, "scope", scope))}
+    else
+      {:tool_error, reason} ->
+        planned_slice_worker_revoke_tool_error(reason)
+
+      {:error, :not_found} ->
+        not_found_error("revoke_planned_slice_worker_key")
+
+      {:error, reason} ->
+        architect_error(reason, "revoke_planned_slice_worker_key")
+    end
+  end
+
   defp read_work_request_product_tree_arguments(arguments) do
     with {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
          {:ok, view} <- optional_product_tree_view(arguments),
@@ -5911,6 +5998,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp record_planned_slice_delivery_error(reason), do: architect_error(reason, "record_planned_slice_delivery")
+
+  defp work_request_runtime_cleanup_error(reason) do
+    if runtime_cleanup_precondition_error?(reason) do
+      delivery_closeout_precondition_error(
+        "cleanup_work_request_planned_slice_runtime",
+        runtime_cleanup_precondition_reason(reason)
+      )
+    else
+      architect_error(reason, "cleanup_work_request_planned_slice_runtime")
+    end
+  end
+
+  defp runtime_cleanup_precondition_error?(reason) do
+    reason in [:active_runtime, :claim_not_current, :worker_grant_revoke_conflict, :mcp_session_binding_conflict]
+  end
+
+  defp runtime_cleanup_precondition_reason(:worker_grant_revoke_conflict), do: :claim_not_current
+  defp runtime_cleanup_precondition_reason(:mcp_session_binding_conflict), do: :claim_not_current
+  defp runtime_cleanup_precondition_reason(reason), do: reason
 
   defp planned_slice_worker_revoke_tool_error(reason)
        when reason == "planned_slice_worker_revoke_conflict" do
@@ -6334,6 +6440,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       else
         {:tool_error, "invalid_outcome"}
       end
+    end
+  end
+
+  defp required_runtime_cleanup_delivery_outcome(arguments) do
+    with {:ok, outcome} <- required_argument(arguments, "outcome") do
+      if outcome in ["superseded", "abandoned"] do
+        {:ok, outcome}
+      else
+        {:tool_error, "invalid_outcome"}
+      end
+    end
+  end
+
+  defp delivery_runtime_tool_description("cleanup_work_request_planned_slice_runtime") do
+    "Recycle stale or superseded runtime authority for the WorkPackage linked to a scoped WorkRequest planned slice after superseded or abandoned delivery evidence is supplied. Revokes linked worker grants, releases non-paused local claim leases, clears recoverable worker MCP session bindings, and records audit evidence before delivery closeout."
+  end
+
+  defp delivery_runtime_tool_description("revoke_planned_slice_worker_key") do
+    "Revoke one live worker grant for the WorkPackage linked to a scoped WorkRequest planned slice during in-progress recycle or delivery closeout cleanup."
+  end
+
+  defp runtime_cleanup_delivery_evidence_attrs(arguments, outcome, work_request_id, planned_slice_id) do
+    with {:ok, successor_planned_slice_id} <- optional_string_argument(arguments, "successor_planned_slice_id"),
+         {:ok, successor_work_package_id} <- optional_string_argument(arguments, "successor_work_package_id"),
+         {:ok, superseded_reason} <- optional_string_argument(arguments, "superseded_reason"),
+         {:ok, abandoned_rationale} <- optional_string_argument(arguments, "abandoned_rationale") do
+      attrs =
+        %{
+          "work_request_id" => work_request_id,
+          "planned_slice_id" => planned_slice_id,
+          "outcome" => outcome,
+          "idempotency_key" => "runtime-cleanup-evidence"
+        }
+        |> optional_put("successor_planned_slice_id", successor_planned_slice_id)
+        |> optional_put("successor_work_package_id", successor_work_package_id)
+        |> optional_put("superseded_reason", superseded_reason)
+        |> optional_put("abandoned_rationale", abandoned_rationale)
+
+      validate_runtime_cleanup_delivery_evidence(attrs)
+    end
+  end
+
+  defp validate_runtime_cleanup_delivery_evidence(attrs) do
+    case attrs |> PlannedSliceDelivery.create_changeset() |> Ecto.Changeset.apply_action(:insert) do
+      {:ok, _delivery} -> {:ok, attrs}
+      {:error, _changeset} -> {:tool_error, "invalid_delivery_evidence"}
     end
   end
 
@@ -7369,6 +7521,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       revoke_child_worker_key_in_transaction(repo, session, grant_id, reason)
     end)
   end
+
+  defp cleanup_work_request_planned_slice_runtime_in_transaction(
+         repo,
+         %Session{} = session,
+         %WorkRequest{} = work_request,
+         %PlannedSlice{} = planned_slice,
+         work_package_id,
+         reason,
+         delivery_evidence,
+         filters
+       ) do
+    primary_scope? = primary_work_request_scope?(repo, work_request, filters)
+
+    with :ok <- lock_access_grant(repo, session.assignment.grant_id),
+         {:ok, _architect_grant} <- require_live_architect_grant(repo, session),
+         :ok <- lock_work_package(repo, Session.work_package_id(session)),
+         :ok <- lock_work_package(repo, work_package_id),
+         {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
+         :ok <-
+           require_scoped_delivery_work_package_visibility(
+             work_package,
+             work_request,
+             planned_slice,
+             primary_scope?,
+             filters
+           ),
+         :ok <- require_runtime_cleanup_delivery_state(work_package, delivery_evidence) do
+      WorkRequestRuntimeCleanup.cleanup(repo, work_request, planned_slice, work_package, session.assignment,
+        reason: reason,
+        delivery_evidence: delivery_evidence
+      )
+    end
+  end
+
+  defp require_runtime_cleanup_delivery_state(%WorkPackage{}, %{"outcome" => "superseded"}), do: :ok
+
+  defp require_runtime_cleanup_delivery_state(%WorkPackage{status: status}, %{"outcome" => "abandoned"})
+       when status in ["planning", "ready_for_worker"],
+       do: :ok
+
+  defp require_runtime_cleanup_delivery_state(%WorkPackage{}, %{"outcome" => "abandoned"}), do: {:tool_error, "work_package_not_abandonable"}
 
   defp revoke_planned_slice_worker_key_in_transaction(
          repo,
@@ -10296,8 +10489,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_capability("resolve_blocker"), do: "write:work_request"
   defp architect_tool_capability("read_work_request_delivery_board"), do: "read:work_request"
   defp architect_tool_capability("reconcile_work_request"), do: "read:work_request"
-  defp architect_tool_capability("record_planned_slice_delivery"), do: "write:work_request"
-  defp architect_tool_capability("revoke_planned_slice_worker_key"), do: "write:work_request"
+
+  defp architect_tool_capability(tool) when tool in ["cleanup_work_request_planned_slice_runtime", "record_planned_slice_delivery", "revoke_planned_slice_worker_key"],
+    do: "write:work_request"
+
   defp architect_tool_capability("list_guidance_requests"), do: "read:guidance_request"
   defp architect_tool_capability("read_guidance_request"), do: "read:guidance_request"
   defp architect_tool_capability("answer_guidance_request"), do: "write:guidance_request"

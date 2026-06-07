@@ -7,8 +7,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlannedSliceWorkerRevokeTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.GrantScope
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
+  alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
+  alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service, as: ClaimLeaseService
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Session}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.SessionBinding
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
@@ -36,6 +40,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlannedSliceWorkerRevokeTest do
         ProgressEvent,
         PlannedSliceDelivery,
         PlannedSlice,
+        SessionBinding,
+        AgentRun,
         ClaimLease,
         GrantScope,
         AccessGrant,
@@ -96,14 +102,229 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlannedSliceWorkerRevokeTest do
     assert repo.get!(WorkPackage, linked_package.id).status == "closed"
   end
 
+  test "architect cleanup recycles linked worker grant claim lease and recoverable MCP binding before superseded closeout", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, "implementing")
+    successor_slice = create_planned_slice!(repo, work_request, "WRS-MCP-DELIVERY-RUNTIME-CLEANUP-SUCCESSOR")
+    session = create_work_request_architect_session(repo, work_request)
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "active-worker")
+    assert {:ok, child_minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id, provenance: "child_worker_delegation")
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, child_minted.work_key.secret, claimed_by: "delegated-worker")
+
+    assert {:ok, claim_lease} =
+             ClaimLeaseService.claim(repo, linked_package.id, local_worker_actor("active-worker"),
+               access_grant_id: minted.grant.id,
+               stale_after_ms: 60_000
+             )
+
+    session_binding = insert_recoverable_session_binding!(repo, linked_package.id, minted.grant.id, claim_lease)
+
+    non_worker_binding =
+      insert_recoverable_session_binding!(repo, linked_package.id, minted.grant.id, claim_lease,
+        id_suffix: "#{linked_package.id}-architect",
+        grant_role: "architect"
+      )
+
+    other_binding = insert_recoverable_session_binding!(repo, "WP-OUTSIDE-RUNTIME-CLEANUP", minted.grant.id, claim_lease)
+
+    closeout_args = superseded_args(work_request, planned_slice, successor_slice.id)
+
+    active_response = mcp_tool(repo, session, "record_planned_slice_delivery", closeout_args)
+    assert get_in(active_response, ["error", "data", "reason"]) == "active_runtime"
+
+    cleanup_response =
+      mcp_tool(repo, session, "cleanup_work_request_planned_slice_runtime", cleanup_args(work_request, planned_slice, successor_slice.id))
+
+    cleanup_payload = get_in(cleanup_response, ["result", "structuredContent"])
+    assert cleanup_payload["work_package"]["id"] == linked_package.id
+    assert cleanup_payload["work_package"]["status"] == "implementing"
+    assert cleanup_payload["runtime_cleanup"]["status"] == "cleaned"
+    assert Enum.sort(cleanup_payload["runtime_cleanup"]["revoked_worker_grant_ids"]) == Enum.sort([minted.grant.id, child_minted.grant.id])
+    assert cleanup_payload["runtime_cleanup"]["released_claim_lease_ids"] == [claim_lease.id]
+    assert cleanup_payload["runtime_cleanup"]["cleared_mcp_session_binding_ids"] == [session_binding.id]
+    assert "claim_leases_released" in cleanup_payload["runtime_cleanup"]["reason_codes"]
+    assert "mcp_session_bindings_cleared" in cleanup_payload["runtime_cleanup"]["reason_codes"]
+
+    assert repo.get!(AccessGrant, minted.grant.id).revoked_at
+    assert repo.get!(AccessGrant, child_minted.grant.id).revoked_at
+    assert %ClaimLease{status: "released", release_reason: "work_request_runtime_cleanup"} = repo.get!(ClaimLease, claim_lease.id)
+    refute repo.get(SessionBinding, session_binding.id)
+    assert repo.get(SessionBinding, non_worker_binding.id)
+    assert repo.get(SessionBinding, other_binding.id)
+
+    event_payload = get_in(cleanup_payload, ["audit_event", "payload"])
+    assert event_payload["source_tool"] == "cleanup_work_request_planned_slice_runtime"
+    assert event_payload["work_request_id"] == work_request.id
+    assert event_payload["planned_slice_id"] == planned_slice.id
+    assert get_in(event_payload, ["delivery_evidence", "outcome"]) == "superseded"
+    assert get_in(event_payload, ["delivery_evidence", "successor_planned_slice_id"]) == successor_slice.id
+
+    closeout_response = mcp_tool(repo, session, "record_planned_slice_delivery", closeout_args)
+
+    assert get_in(closeout_response, ["result", "structuredContent", "planned_slice_delivery", "outcome"]) == "superseded"
+    assert repo.get!(WorkPackage, linked_package.id).status == "closed"
+  end
+
+  test "architect cleanup allows abandoned no-code closeout after claimed runtime is recycled", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, "ready_for_worker")
+    session = create_work_request_architect_session(repo, work_request)
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "no-code-worker")
+
+    assert {:ok, _claim_lease} =
+             ClaimLeaseService.claim(repo, linked_package.id, local_worker_actor("no-code-worker"),
+               access_grant_id: minted.grant.id,
+               stale_after_ms: 60_000
+             )
+
+    cleanup_response =
+      mcp_tool(repo, session, "cleanup_work_request_planned_slice_runtime", abandoned_cleanup_args(work_request, planned_slice))
+
+    assert get_in(cleanup_response, ["result", "structuredContent", "runtime_cleanup", "status"]) == "cleaned"
+
+    abandoned_response =
+      mcp_tool(repo, session, "record_planned_slice_delivery", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice.id,
+        "outcome" => "abandoned",
+        "idempotency_key" => "delivery-abandoned-after-runtime-cleanup",
+        "abandoned_rationale" => "The original no-code dispatch was replaced before implementation started."
+      })
+
+    assert get_in(abandoned_response, ["result", "structuredContent", "planned_slice_delivery", "outcome"]) == "abandoned"
+    assert repo.get!(WorkPackage, linked_package.id).status == "abandoned"
+  end
+
+  test "architect cleanup rejects missing delivery evidence without mutating runtime", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, "implementing")
+    session = create_work_request_architect_session(repo, work_request)
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "active-worker")
+
+    response =
+      mcp_tool(repo, session, "cleanup_work_request_planned_slice_runtime", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice.id,
+        "reason" => "No terminal delivery evidence is attached."
+      })
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "missing_outcome"
+    refute repo.get!(AccessGrant, minted.grant.id).revoked_at
+    refute Enum.any?(repo.all(ProgressEvent), &(&1.payload["source_tool"] == "cleanup_work_request_planned_slice_runtime"))
+  end
+
+  test "architect cleanup rejects abandoned evidence for an implementing package without mutating runtime", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, "implementing")
+    session = create_work_request_architect_session(repo, work_request)
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "active-worker")
+
+    response =
+      mcp_tool(repo, session, "cleanup_work_request_planned_slice_runtime", abandoned_cleanup_args(work_request, planned_slice))
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "work_package_not_abandonable"
+    refute repo.get!(AccessGrant, minted.grant.id).revoked_at
+    refute Enum.any?(repo.all(ProgressEvent), &(&1.payload["source_tool"] == "cleanup_work_request_planned_slice_runtime"))
+  end
+
+  test "architect cleanup rejects paused claim leases without mutating runtime", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, "implementing")
+    successor_slice = create_planned_slice!(repo, work_request, "WRS-MCP-DELIVERY-PAUSED-SUCCESSOR")
+    session = create_work_request_architect_session(repo, work_request)
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "paused-worker")
+
+    assert {:ok, claim_lease} =
+             ClaimLeaseService.claim(repo, linked_package.id, local_worker_actor("paused-worker"),
+               access_grant_id: minted.grant.id,
+               stale_after_ms: 60_000
+             )
+
+    assert {:ok, paused_lease} = ClaimLeaseService.pause(repo, claim_lease.id, local_worker_actor("architect"), reason: "operator pause")
+
+    response = mcp_tool(repo, session, "cleanup_work_request_planned_slice_runtime", cleanup_args(work_request, planned_slice, successor_slice.id))
+
+    assert get_in(response, ["error", "code"]) == -32_009
+    assert get_in(response, ["error", "data", "reason"]) == "active_runtime"
+    refute repo.get!(AccessGrant, minted.grant.id).revoked_at
+    assert %ClaimLease{status: "paused"} = repo.get!(ClaimLease, paused_lease.id)
+    refute Enum.any?(repo.all(ProgressEvent), &(&1.payload["source_tool"] == "cleanup_work_request_planned_slice_runtime"))
+  end
+
+  test "architect cleanup rejects fresh active AgentRun evidence without mutating runtime", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, "implementing")
+    successor_slice = create_planned_slice!(repo, work_request, "WRS-MCP-DELIVERY-AGENT-RUN-SUCCESSOR")
+    session = create_work_request_architect_session(repo, work_request)
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+
+    assert {:ok, _agent_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: linked_package.id,
+               access_grant_id: minted.grant.id,
+               actor_id: "active-agent"
+             })
+
+    response = mcp_tool(repo, session, "cleanup_work_request_planned_slice_runtime", cleanup_args(work_request, planned_slice, successor_slice.id))
+
+    assert get_in(response, ["error", "code"]) == -32_009
+    assert get_in(response, ["error", "data", "reason"]) == "active_runtime"
+    refute repo.get!(AccessGrant, minted.grant.id).revoked_at
+    refute Enum.any?(repo.all(ProgressEvent), &(&1.payload["source_tool"] == "cleanup_work_request_planned_slice_runtime"))
+  end
+
+  test "architect cleanup rejects linked package repo or base branch mismatches", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, "implementing")
+    successor_slice = create_planned_slice!(repo, work_request, "WRS-MCP-DELIVERY-SCOPE-SUCCESSOR")
+    session = create_work_request_architect_session(repo, work_request)
+
+    linked_package
+    |> Ecto.Changeset.change(%{base_branch: "not-main"})
+    |> repo.update!()
+
+    response = mcp_tool(repo, session, "cleanup_work_request_planned_slice_runtime", cleanup_args(work_request, planned_slice, successor_slice.id))
+
+    assert get_in(response, ["error", "code"]) == -32_003
+    assert get_in(response, ["error", "data", "reason"]) == "outside_session_scope"
+  end
+
+  test "architect cleanup rejects planned slices outside the WorkRequest scope", %{repo: repo} do
+    {work_request, _planned_slice, _linked_package} = linked_slice!(repo, "implementing")
+    {other_work_request, other_planned_slice, _other_package} = linked_slice!(repo, "implementing", "OTHER")
+    session = create_work_request_architect_session(repo, work_request)
+
+    response =
+      mcp_tool(repo, session, "cleanup_work_request_planned_slice_runtime", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => other_planned_slice.id,
+        "outcome" => "abandoned",
+        "abandoned_rationale" => "Attempted abandoned cleanup outside the scoped WorkRequest.",
+        "reason" => "Attempted cleanup for a slice from #{other_work_request.id}."
+      })
+
+    assert get_in(response, ["error", "code"]) == -32_004
+    assert get_in(response, ["error", "data", "reason"]) == "not_found"
+  end
+
   defp linked_slice!(repo, status) do
-    work_request = create_work_request!(repo)
-    planned_slice = create_planned_slice!(repo, work_request, "WRS-MCP-DELIVERY-IN-PROGRESS-RECYCLE")
+    linked_slice!(repo, status, "RECYCLE")
+  end
+
+  defp linked_slice!(repo, status, suffix) do
+    work_request = create_work_request!(repo, suffix)
+    planned_slice = create_planned_slice!(repo, work_request, "WRS-MCP-DELIVERY-IN-PROGRESS-#{suffix}")
     assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
 
     linked_package =
       create_matching_work_package!(repo, work_request, approved_slice,
-        id: "WP-MCP-DELIVERY-IN-PROGRESS-RECYCLE",
+        id: "WP-MCP-DELIVERY-IN-PROGRESS-#{suffix}",
         status: status
       )
 
@@ -112,9 +333,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlannedSliceWorkerRevokeTest do
     {work_request, dispatched_slice, linked_package}
   end
 
-  defp create_work_request!(repo) do
+  defp create_work_request!(repo, suffix) do
     attrs = %{
-      id: "WR-MCP-DELIVERY-IN-PROGRESS-RECYCLE",
+      id: "WR-MCP-DELIVERY-IN-PROGRESS-#{suffix}",
       title: "Recycle planned-slice workers",
       repo: "nextide/example",
       base_branch: "main",
@@ -209,6 +430,62 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlannedSliceWorkerRevokeTest do
       "superseded_reason" => "Recut after the old worker authority was explicitly recycled.",
       "successor_planned_slice_id" => successor_planned_slice_id
     }
+  end
+
+  defp cleanup_args(work_request, planned_slice, successor_planned_slice_id) do
+    %{
+      "work_request_id" => work_request.id,
+      "planned_slice_id" => planned_slice.id,
+      "outcome" => "superseded",
+      "successor_planned_slice_id" => successor_planned_slice_id,
+      "superseded_reason" => "Recut after the old worker authority was explicitly recycled.",
+      "reason" => "The linked worker runtime was superseded by established WorkRequest delivery truth."
+    }
+  end
+
+  defp abandoned_cleanup_args(work_request, planned_slice) do
+    %{
+      "work_request_id" => work_request.id,
+      "planned_slice_id" => planned_slice.id,
+      "outcome" => "abandoned",
+      "abandoned_rationale" => "The original no-code dispatch was replaced before implementation started.",
+      "reason" => "The linked no-code worker runtime is abandoned by established WorkRequest delivery truth."
+    }
+  end
+
+  defp local_worker_actor(claimed_by) do
+    %{
+      "actor_kind" => "agent",
+      "actor_id" => "local:#{claimed_by}",
+      "actor_display_name" => claimed_by
+    }
+  end
+
+  defp insert_recoverable_session_binding!(repo, work_package_id, access_grant_id, %ClaimLease{} = claim_lease, opts \\ []) do
+    now = DateTime.utc_now(:microsecond)
+    id_suffix = Keyword.get(opts, :id_suffix, work_package_id)
+    grant_role = Keyword.get(opts, :grant_role, "worker")
+
+    attrs = %{
+      id: "mcp-http-runtime-cleanup-#{id_suffix}",
+      client_key_hash: "client-hash-#{id_suffix}",
+      initialized: true,
+      recoverable: true,
+      recovery_kind: "claim_local_assignment",
+      access_grant_id: access_grant_id,
+      claim_lease_id: claim_lease.id,
+      work_package_id: work_package_id,
+      grant_role: grant_role,
+      claimed_by: claim_lease.actor_display_name,
+      actor_kind: claim_lease.actor_kind,
+      actor_id: claim_lease.actor_id,
+      actor_display_name: claim_lease.actor_display_name,
+      last_seen_at: now
+    }
+
+    %SessionBinding{}
+    |> SessionBinding.changeset(attrs)
+    |> repo.insert!()
   end
 
   defp mcp_tool(repo, %Session{} = session, name, arguments) do

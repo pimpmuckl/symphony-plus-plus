@@ -134,9 +134,12 @@ Record terminal outcomes with `record_planned_slice_delivery`:
 Use `reconcile_work_request` for structured PR/GitHub evidence repair. Do not
 infer delivery from prose decisions or chat. Phase-child PRs remain phase
 controlled; call `merge_child_into_phase` before `pr_merged` closeout when
-required. Reclaim or revoke stale planned-slice worker runtime through the
-ledger-backed tools before final closeout. If package evidence is missing or
-ambiguous, do not record WorkRequest delivery closeout; repair evidence first.
+required. Use `cleanup_work_request_planned_slice_runtime` to recycle linked
+worker grants, non-paused claim leases, and recoverable worker MCP session bindings
+before final closeout when superseded or abandoned delivery truth is established;
+include the same closeout evidence in the cleanup call.
+If package evidence is missing or ambiguous, do not record WorkRequest delivery
+closeout; repair evidence first.
 
 ## Stop
 

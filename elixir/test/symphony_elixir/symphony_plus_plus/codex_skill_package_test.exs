@@ -126,7 +126,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           "record_planned_slice_delivery",
           "reconcile_work_request",
           "PR-size or line-budget",
-          "Reclaim or revoke stale planned-slice worker runtime"
+          "cleanup_work_request_planned_slice_runtime"
         ] do
       assert architect_skill =~ marker
     end

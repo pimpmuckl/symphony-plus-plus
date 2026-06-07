@@ -11,7 +11,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
 
   @active_grant_roles ["worker", "architect"]
   @terminal_package_statuses ["merged", "merged_into_phase", "closed", "abandoned"]
-  @recycle_source_tools ["claim_local_assignment", "revoke_child_worker_key", "revoke_planned_slice_worker_key"]
+  @recycle_source_tools ["claim_local_assignment", "revoke_child_worker_key", "revoke_planned_slice_worker_key", "cleanup_work_request_planned_slice_runtime"]
   @stale_heartbeat_after_seconds 300
 
   @spec blocker_event_payload?(map()) :: boolean()

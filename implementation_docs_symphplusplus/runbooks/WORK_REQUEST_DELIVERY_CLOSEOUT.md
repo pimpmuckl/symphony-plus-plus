@@ -97,19 +97,25 @@ blocker events remain. The blocker events are not resolved or deleted; the
 closeout progress event records the active blocker ids and the delivery board
 keeps blocker attention on the terminal superseded slice.
 
-Supersession also retires unclaimed live worker grants and stale active local
-claim leases as recut cleanup when successor evidence is in scope. Claimed
-worker grants, fresh/current claim leases, paused claim leases, fresh active
-AgentRun rows, and architect/runtime evidence outside stale recut bookkeeping
-still fail closed.
+Supersession and abandonment can follow explicit WorkRequest-scoped runtime
+cleanup when stale linked runtime is the remaining blocker. Call
+`cleanup_work_request_planned_slice_runtime(work_request_id, planned_slice_id,
+outcome, reason, ...)` for the linked planned slice with the same superseded or
+abandoned evidence that will be used for `record_planned_slice_delivery`, then
+rerun `record_planned_slice_delivery` with that evidence. The cleanup tool
+revokes linked live worker grants, releases non-paused current local claim
+leases, clears recoverable worker MCP session bindings for the linked package,
+and records a redacted audit event. It does not expose raw worker secrets.
 
-When supersession is intentional but a claimed worker grant is the remaining
-runtime blocker, the architect can call
-`revoke_planned_slice_worker_key(work_request_id, planned_slice_id, grant_id,
-reason)` for the linked planned slice. The tool records redacted recycle
-evidence, moves active execution statuses to `blocked`, and does not expose raw
-worker secrets; after it succeeds, rerun `record_planned_slice_delivery` with
-the same superseded evidence.
+Cleanup is not a general worker stop button. `outcome=superseded` requires
+`successor_planned_slice_id` and `superseded_reason`; `outcome=abandoned`
+requires `abandoned_rationale` and only applies to no-code packages that are
+still `planning` or `ready_for_worker`.
+
+Paused claim leases and fresh active AgentRun rows still fail closed. If only a
+single live worker grant must be retired and claim/session cleanup is not
+needed, `revoke_planned_slice_worker_key(work_request_id, planned_slice_id,
+grant_id, reason)` remains available as a narrower compatibility path.
 
 If closeout rejects because of active runtime on an unsupported outcome,
 package metadata mismatch, weak PR evidence, or stale terminal conflict, do not
