@@ -1,15 +1,14 @@
 import type { CopyArchitectHandoff, PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
-import type { ProductTreeCompletionMark, ProductTreeNode } from "@/types/product-tree";
+import type { ProductTreeNode } from "@/types/product-tree";
 import { AlertTriangle, CheckCircle2, ChevronRight, CircleAlert, CircleDashed, CircleHelp, ClipboardCopy, Info, Layers3, MessageSquareText, Package, Split } from "lucide-react";
 import type { ComponentProps, CSSProperties, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AnimatedBadge } from "@/components/dashboard/motion";
 import { Button } from "@/components/ui/button";
-import { architectHandoffEligibleRequest, operationalBadgeVariant } from "@/lib/operational-state";
+import { architectHandoffEligibleRequest } from "@/lib/operational-state";
 import { cn } from "@/lib/utils";
 import type { CardDetailSelect } from "./runtime";
-import { completionMarkProgress } from "./workstream-progress";
 import { rowProgressAttentionState, rowProgressIconState, type RowProgressAttentionState, type RowProgressIconState } from "./workstream-row-state";
 
 type EntityCountChip = {
@@ -297,7 +296,8 @@ export function ProductNodeHeader({
   node,
   nodeSliceCount,
   visibleNodeKind,
-  mark,
+  progress,
+  statusBadgeVariant,
   tone,
   statusLabel,
   guidanceCount,
@@ -312,7 +312,8 @@ export function ProductNodeHeader({
   node: ProductTreeNode;
   nodeSliceCount: number;
   visibleNodeKind?: string | null;
-  mark: ProductTreeCompletionMark;
+  progress: number;
+  statusBadgeVariant?: ComponentProps<typeof AnimatedBadge>["variant"];
   tone: string;
   statusLabel: string;
   guidanceCount: number;
@@ -324,7 +325,6 @@ export function ProductNodeHeader({
   onOpenBlockers?: () => void;
   onToggle: () => void;
 }) {
-  const progress = completionMarkProgress(mark);
   const progressIconState = rowProgressIconState({ blockerCount, guidanceCount, progress, tone });
   const progressAttentionState = rowProgressAttentionState({ blockerCount, guidanceCount, tone });
   const nodeTitle = node.title || node.id;
@@ -365,7 +365,7 @@ export function ProductNodeHeader({
       />
       <span className="v3-row-status">
         <ProgressPill progress={progress} />
-        <RowBadgeSlot label={statusLabel} variant={completionBadgeVariant(mark)} />
+        <RowBadgeSlot label={statusLabel} variant={statusBadgeVariant} />
       </span>
       <EntityKindSlot icon={<Layers3 className="size-3.5" />} title="Product plan node" />
     </div>
@@ -393,11 +393,4 @@ export function ProgressPill({ progress }: { progress: number }) {
       <span>{progress}%</span>
     </span>
   );
-}
-
-function completionBadgeVariant(mark: ProductTreeCompletionMark): ReturnType<typeof operationalBadgeVariant> {
-  if (mark === "done") return "success";
-  if (mark === "partial") return "warning";
-  if (mark === "not_done") return "info";
-  return "secondary";
 }

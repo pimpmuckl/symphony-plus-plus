@@ -10,22 +10,21 @@ type RollDirection = "down" | "up";
 type ContextState = {
   path: string[];
   direction: RollDirection;
-  previousDisplayPath: string[];
+  previousDisplayPath: ContextPart[];
   rollingParts: boolean[];
 };
 type RenderedContextPart = {
   current?: string;
+  kind: ContextPartKind;
   previous?: string;
   rolling: boolean;
+  separator: boolean;
+  slot: string;
 };
 type ContextPart = {
   kind: ContextPartKind;
   label: string;
 };
-
-export function contextPathValue(path: string[]) {
-  return JSON.stringify(path.map((part) => part.trim()).filter(Boolean));
-}
 
 export function WorkstreamContextBar({
   boardRef,
@@ -40,11 +39,26 @@ export function WorkstreamContextBar({
   const displayPath = useMemo(() => contextDisplayPath(repoLabel, context.path), [context.path, repoLabel]);
   const renderedPath = useMemo(() => {
     const length = Math.max(displayPath.length, context.previousDisplayPath.length);
-    return Array.from({ length }, (_, index): RenderedContextPart => ({
-      current: displayPath[index],
-      previous: context.previousDisplayPath[index],
-      rolling: context.rollingParts[index] === true,
-    })).filter((part) => Boolean(part.current) || (part.rolling && Boolean(part.previous)));
+    const parts: RenderedContextPart[] = [];
+
+    for (let index = 0; index < length; index += 1) {
+      const current = displayPath[index];
+      const previous = context.previousDisplayPath[index];
+      const part = {
+        current: current?.label,
+        kind: current?.kind ?? previous?.kind ?? contextPartKind(index),
+        previous: previous?.label,
+        rolling: context.rollingParts[index] === true,
+        separator: index > 0,
+        slot: contextPartSlot(index),
+      };
+
+      if (part.current || (part.rolling && part.previous)) {
+        parts.push(part);
+      }
+    }
+
+    return parts;
   }, [context.previousDisplayPath, context.rollingParts, displayPath]);
 
   useEffect(() => {
@@ -67,7 +81,7 @@ export function WorkstreamContextBar({
             path,
             direction,
             previousDisplayPath,
-            rollingParts: Array.from({ length }, (_, index) => previousDisplayPath[index] !== nextDisplayPath[index]),
+            rollingParts: Array.from({ length }, (_, index) => !sameContextPart(previousDisplayPath[index], nextDisplayPath[index])),
           };
         });
       });
@@ -105,18 +119,18 @@ export function WorkstreamContextBar({
 
   return (
     <div className="v3-workstream-context-slot">
-      <div className="v3-workstream-context-bar" aria-label={`Current board position: ${displayPath.join(" / ")}`}>
+      <div className="v3-workstream-context-bar" aria-label={`Current board position: ${displayPath.map((part) => part.label).join(" / ")}`}>
         <GitBranch className="v3-workstream-context-leading-icon" aria-hidden="true" />
         <span className="v3-workstream-context-path" data-roll-direction={context.direction}>
-          {renderedPath.map((part, index) => (
-            <span key={index} className="v3-workstream-context-part">
+          {renderedPath.map((part) => (
+            <span key={part.slot} className="v3-workstream-context-part">
               <RollingCrumb
                 current={part.current}
                 previous={part.previous}
                 rolling={part.rolling}
                 direction={context.direction}
-                separator={index > 0}
-                kind={contextPartKind(index)}
+                separator={part.separator}
+                kind={part.kind}
               />
             </span>
           ))}
@@ -177,6 +191,12 @@ function contextPartKind(index: number): ContextPartKind {
   return index === 1 ? "request" : "plan";
 }
 
+function contextPartSlot(index: number) {
+  if (index === 0) return "repo";
+  if (index === 1) return "request";
+  return `plan-${index - 2}`;
+}
+
 function activeContextPath(board: HTMLDivElement | null) {
   if (!board) return [];
 
@@ -213,8 +233,8 @@ function parseContextPath(value?: string) {
   }
 }
 
-function uniquePathParts(parts: string[]) {
-  return parts.filter((part, index) => part && part !== parts[index - 1]);
+function uniquePathParts(parts: ContextPart[]) {
+  return parts.filter((part, index) => part.label && part.label !== parts[index - 1]?.label);
 }
 
 function contextDisplayPath(repoLabel: string, path: string[]) {
@@ -225,7 +245,11 @@ function contextDisplayPath(repoLabel: string, path: string[]) {
     ...planNodes.slice(-MAX_CONTEXT_PLAN_NODES).map((label) => ({ kind: "plan" as const, label })),
   ];
 
-  return uniquePathParts(parts.map((part) => part.label));
+  return uniquePathParts(parts);
+}
+
+function sameContextPart(left?: ContextPart, right?: ContextPart) {
+  return left?.kind === right?.kind && left?.label === right?.label;
 }
 
 function samePath(left: string[], right: string[]) {

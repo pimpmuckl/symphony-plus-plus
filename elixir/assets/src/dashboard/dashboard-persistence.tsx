@@ -79,6 +79,11 @@ export function readStoredHideEmptyWorkstreams() {
   return typeof storedValue === "boolean" ? storedValue : true;
 }
 
+export function readStoredShowWorkstreamContextBar() {
+  const storedValue = readDashboardUiState().showWorkstreamContextBar;
+  return typeof storedValue === "boolean" ? storedValue : true;
+}
+
 export function readStoredRepoWorkstreamOpen(stateKey: string, fallback: boolean) {
   const repoWorkstreams = readDashboardUiState().repoWorkstreams;
   const storedOpen = repoWorkstreams?.[stateKey];

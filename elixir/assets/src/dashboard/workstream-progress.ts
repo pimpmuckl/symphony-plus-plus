@@ -11,10 +11,10 @@ export type ActiveBlockerEntityCounts = {
 
 export function requestProgress(detail: WorkRequestDetail, packageById: Map<string, WorkPackageCard>) {
   const slices = detail.planned_slices ?? [];
-  const treeMarks = productTreeRootProgressMarks(detail, slices, packageById);
-  const marks = treeMarks.length > 0 ? completionMarkCounts(treeMarks) : sliceProgressMarkCounts(slices, packageById);
+  const treeProgress = productTreeRootProgress(detail, slices, packageById);
 
-  if (marks.total > 0) return Math.round(((marks.done + marks.partial * 0.5) / marks.total) * 100);
+  if (treeProgress.length > 0) return averageProgress(treeProgress);
+  if (slices.length > 0) return averageProgress(slices.map((slice) => sliceProgressPercent(slice, packageById.get(slice.work_package_id || ""))));
   return isFinishedBoardStatus(detail.work_request.operational_state?.key || detail.work_request.status) ? 100 : 0;
 }
 
@@ -28,10 +28,20 @@ export function sliceProgressPercent(slice: PlannedSlice, pkg?: WorkPackageCard)
   return total > 0 ? Math.round((completed / total) * 100) : 50;
 }
 
-export function completionMarkProgress(mark: ProductTreeCompletionMark) {
+function completionMarkProgress(mark: ProductTreeCompletionMark) {
   if (mark === "done") return 100;
   if (mark === "partial") return 50;
   return 0;
+}
+
+export function productNodeProgressPercent(
+  node: ProductTreeNode,
+  nodeSubtreeSlices: PlannedSlice[],
+  packageById: Map<string, WorkPackageCard>,
+) {
+  if (nodeSubtreeSlices.length === 0) return completionMarkProgress(node.computed_completion_mark || node.completion_mark || "unknown");
+
+  return averageProgress(nodeSubtreeSlices.map((slice) => sliceProgressPercent(slice, packageById.get(slice.work_package_id || ""))));
 }
 
 export function productTreeCounts(detail: WorkRequestDetail, activeBlockerCount: number) {
@@ -205,32 +215,72 @@ function openQuestionCount(detail: WorkRequestDetail) {
   return (detail.clarification_questions ?? []).filter((question) => question.status === "open").length;
 }
 
-function productTreeRootProgressMarks(detail: WorkRequestDetail, slices: PlannedSlice[], packageById: Map<string, WorkPackageCard>) {
+function productTreeRootProgress(detail: WorkRequestDetail, slices: PlannedSlice[], packageById: Map<string, WorkPackageCard>) {
   const nodes = detail.product_tree?.nodes ?? [];
   if (nodes.length === 0) return [];
 
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const childrenByParent = productTreeChildrenByParent(nodes);
+  const sliceById = new Map(slices.map((slice) => [slice.id, slice]));
   const rootNodeIds = detail.product_tree?.root_node_ids?.length ? detail.product_tree.root_node_ids : implicitRootNodeIds(nodes);
-  return [...rootNodeProgressMarks(rootNodeIds, nodeById), ...rootSliceProgressMarks(detail, slices, packageById)];
+  return [
+    ...rootNodeProgress(rootNodeIds, nodeById, childrenByParent, sliceById, packageById),
+    ...rootSliceProgress(detail, slices, packageById),
+  ];
 }
 
-function rootNodeProgressMarks(rootNodeIds: string[], nodeById: Map<string, ProductTreeNode>) {
-  const marks: ProductTreeCompletionMark[] = [];
+function rootNodeProgress(
+  rootNodeIds: string[],
+  nodeById: Map<string, ProductTreeNode>,
+  childrenByParent: Map<string, ProductTreeNode[]>,
+  sliceById: Map<string, PlannedSlice>,
+  packageById: Map<string, WorkPackageCard>,
+) {
+  const progress: number[] = [];
   for (const nodeId of rootNodeIds) {
     const node = nodeById.get(nodeId);
-    if (node) marks.push(node.computed_completion_mark || node.completion_mark || "unknown");
+    if (node) progress.push(productNodeProgressPercent(node, productNodeSubtreeSlices(node, childrenByParent, sliceById), packageById));
   }
-  return marks;
+  return progress;
 }
 
-function rootSliceProgressMarks(detail: WorkRequestDetail, slices: PlannedSlice[], packageById: Map<string, WorkPackageCard>) {
-  const marks: ProductTreeCompletionMark[] = [];
+function rootSliceProgress(detail: WorkRequestDetail, slices: PlannedSlice[], packageById: Map<string, WorkPackageCard>) {
+  const progress: number[] = [];
   const sliceById = new Map(slices.map((slice) => [slice.id, slice]));
   for (const sliceId of rootProductSliceIds(detail, slices)) {
     const slice = sliceById.get(sliceId);
-    if (slice) marks.push(sliceProgressMark(slice, packageById.get(slice.work_package_id || "")));
+    if (slice) progress.push(sliceProgressPercent(slice, packageById.get(slice.work_package_id || "")));
   }
-  return marks;
+  return progress;
+}
+
+function productTreeChildrenByParent(nodes: ProductTreeNode[]) {
+  const childrenByParent = new Map<string, ProductTreeNode[]>();
+  for (const node of nodes) {
+    if (!node.parent_id) continue;
+    const children = childrenByParent.get(node.parent_id) ?? [];
+    children.push(node);
+    childrenByParent.set(node.parent_id, children);
+  }
+
+  return childrenByParent;
+}
+
+function productNodeSubtreeSlices(
+  node: ProductTreeNode,
+  childrenByParent: Map<string, ProductTreeNode[]>,
+  sliceById: Map<string, PlannedSlice>,
+  visited = new Set<string>(),
+): PlannedSlice[] {
+  if (visited.has(node.id)) return [];
+  visited.add(node.id);
+
+  const slices = (node.slice_ids ?? []).map((sliceId) => sliceById.get(sliceId)).filter((slice): slice is PlannedSlice => Boolean(slice));
+  for (const child of childrenByParent.get(node.id) ?? []) {
+    slices.push(...productNodeSubtreeSlices(child, childrenByParent, sliceById, visited));
+  }
+
+  return slices;
 }
 
 function implicitRootNodeIds(nodes: ProductTreeNode[]) {
@@ -241,13 +291,7 @@ function implicitRootNodeIds(nodes: ProductTreeNode[]) {
   return rootIds;
 }
 
-function sliceProgressMarkCounts(slices: PlannedSlice[], packageById: Map<string, WorkPackageCard>) {
-  const marks: ProductTreeCompletionMark[] = [];
-  for (const slice of slices) marks.push(sliceProgressMark(slice, packageById.get(slice.work_package_id || "")));
-  return completionMarkCounts(marks);
-}
-
-export function sliceProgressMark(slice: PlannedSlice, pkg?: WorkPackageCard): ProductTreeCompletionMark {
+function sliceProgressMark(slice: PlannedSlice, pkg?: WorkPackageCard): ProductTreeCompletionMark {
   const lane = sliceLane(slice, pkg);
   if (lane === "finished") return "done";
 
@@ -272,20 +316,9 @@ const SLICE_PARTIAL_PROGRESS_STATES = new Set([
   "reviewing",
 ]);
 
-function completionMarkCounts(marks: ProductTreeCompletionMark[]) {
-  let done = 0;
-  let partial = 0;
-  let notDone = 0;
-  let unknown = 0;
-
-  for (const mark of marks) {
-    if (mark === "done") done += 1;
-    if (mark === "partial") partial += 1;
-    if (mark === "not_done") notDone += 1;
-    if (mark === "unknown") unknown += 1;
-  }
-
-  return { done, partial, total: done + partial + notDone + unknown };
+function averageProgress(values: number[]) {
+  if (values.length === 0) return 0;
+  return Math.round(values.reduce((total, value) => total + value, 0) / values.length);
 }
 
 function numberValue(...values: Array<number | null | undefined>) {

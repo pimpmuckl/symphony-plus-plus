@@ -173,7 +173,7 @@ export function blockerUpdateKey(item: BlockerItem) {
   return `blocker:${item.id}`;
 }
 
-export function finishedHighlightUpdateKey(item: FinishedHighlight) {
+function finishedHighlightUpdateKey(item: FinishedHighlight) {
   return `finished:${item.kind}:${item.id}`;
 }
 

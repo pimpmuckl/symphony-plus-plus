@@ -228,6 +228,7 @@ export type DashboardUiState = {
   repoWorkstreams?: Record<string, boolean>;
   finishedRequestChildren?: Record<string, boolean>;
   hideEmptyWorkstreams?: boolean;
+  showWorkstreamContextBar?: boolean;
   theme?: DashboardTheme;
 };
 

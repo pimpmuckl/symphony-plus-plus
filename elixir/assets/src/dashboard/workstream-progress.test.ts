@@ -20,6 +20,24 @@ describe("workstream progress", () => {
     expect(sliceProgressPercent(slice, pkg)).toBe(0);
   });
 
+  it("derives product-tree request progress from descendant slices before stale partial marks", () => {
+    const detail = workRequestDetail([
+      plannedSlice("slice-ready", "ready_for_worker", "pkg-ready"),
+    ]);
+    detail.product_tree = {
+      available: true,
+      mode: "product_tree",
+      nodes: [{ id: "node-ready", completion_mark: "partial", slice_ids: ["slice-ready"] }],
+      root_node_ids: ["node-ready"],
+      root_slice_ids: [],
+    };
+    const packages = new Map<string, WorkPackageCard>([
+      ["pkg-ready", { id: "pkg-ready", status: "ready_for_worker", plan: { completed_count: 1, total_count: 2 } }],
+    ]);
+
+    expect(requestProgress(detail, packages)).toBe(0);
+  });
+
   it("adds product-tree blockers and explicit blocker edges", () => {
     const detail = workRequestDetail([]);
     detail.product_tree = {

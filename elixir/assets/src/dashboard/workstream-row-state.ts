@@ -1,6 +1,8 @@
 import type { PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
 import type { ProductTreeCompletionMark, ProductTreeNode } from "@/types/product-tree";
-import { operationalLabel, sliceOperationalState } from "@/lib/operational-state";
+import { isFinishedBoardStatus, operationalLabel, sliceOperationalState } from "@/lib/operational-state";
+import type { BadgeTone } from "@/lib/operational-state";
+import { productNodeProgressPercent } from "./workstream-progress";
 
 const MIN_STATUS_LABEL_LENGTH = 8;
 const MIN_STATUS_BADGE_WIDTH_REM = 6.1;
@@ -8,6 +10,25 @@ const MAX_STATUS_BADGE_WIDTH_REM = 11;
 
 export type RowProgressIconState = "active" | "blocked" | "done" | "guidance" | "muted";
 export type RowProgressAttentionState = "blocked" | "guidance" | null;
+export type BoardRowStateKind = "active" | "blocked" | "deferred" | "done" | "guidance" | "in_progress" | "not_started" | "ready" | "unknown";
+export type BoardRowState = {
+  badgeVariant: BadgeTone;
+  kind: BoardRowStateKind;
+  label: string;
+  tone: string;
+};
+
+const BOARD_ROW_STATES: Record<BoardRowStateKind, BoardRowState> = {
+  active: { badgeVariant: "info", kind: "active", label: "Active", tone: "implementing" },
+  blocked: { badgeVariant: "danger", kind: "blocked", label: "Blocked", tone: "blocked" },
+  deferred: { badgeVariant: "secondary", kind: "deferred", label: "Deferred", tone: "muted" },
+  done: { badgeVariant: "success", kind: "done", label: "Done", tone: "finished" },
+  guidance: { badgeVariant: "danger", kind: "guidance", label: "Guidance Needed", tone: "guidance" },
+  in_progress: { badgeVariant: "warning", kind: "in_progress", label: "In Progress", tone: "review" },
+  not_started: { badgeVariant: "info", kind: "not_started", label: "Not started", tone: "slice" },
+  ready: { badgeVariant: "ready", kind: "ready", label: "Ready", tone: "queued" },
+  unknown: { badgeVariant: "secondary", kind: "unknown", label: "Unknown", tone: "slice" },
+};
 
 export function rowProgressIconState({
   blockerCount = 0,
@@ -49,6 +70,26 @@ export function statusBadgeWidthForLabels(labels: Iterable<string | null | undef
 
 export function statusBadgeWidthForRequestDetails(details: WorkRequestDetail[], packageById: Map<string, WorkPackageCard>) {
   return statusBadgeWidthForLabels(details.flatMap((detail) => requestStatusLabels(detail, packageById)));
+}
+
+export function requestBoardState(
+  detail: WorkRequestDetail,
+  packageById: Map<string, WorkPackageCard>,
+  counts: { blockerCount: number; guidanceCount: number },
+  progress: number,
+): BoardRowState {
+  const request = detail.work_request;
+  const rawStatus = request.operational_state?.key || request.status;
+  return aggregateBoardRowState({
+    blockerCount: counts.blockerCount,
+    completionDone: isFinishedBoardStatus(rawStatus) || progress >= 100,
+    fallbackLabel: operationalLabel(request.operational_state, request.status),
+    fallbackStatus: rawStatus,
+    guidanceCount: counts.guidanceCount,
+    progress,
+    slices: detail.planned_slices ?? [],
+    packageById,
+  });
 }
 
 export function requestStatusLabels(detail: WorkRequestDetail, packageById: Map<string, WorkPackageCard>) {
@@ -134,19 +175,36 @@ export function productNodeState(
   treeIndex: { childrenByParent: Map<string, ProductTreeNode[]> },
   activeBlockerCountBySliceId: Map<string, number>,
   activeBlockerKeysBySliceId?: Map<string, Set<string>>,
+  nodeSubtreeSlices: PlannedSlice[] = [],
+  packageById: Map<string, WorkPackageCard> = new Map(),
 ) {
   const activeBlockerCount = activeBlockerCountForNode(node, treeIndex, activeBlockerCountBySliceId, activeBlockerKeysBySliceId);
   const blockerCount = Math.max(node.blocker_count ?? 0, activeBlockerCount);
   const guidanceCount = node.guidance_count ?? Math.max((node.attention_count ?? 0) - blockerCount, 0);
   const mark = node.computed_completion_mark || node.completion_mark || "unknown";
+  const progress = productNodeProgressPercent(node, nodeSubtreeSlices, packageById);
+  const boardState = aggregateBoardRowState({
+    blockerCount,
+    completionDeferred: mark === "deferred",
+    completionDone: mark === "done" || progress >= 100,
+    fallbackLabel: productNodeStatusLabel(node, mark),
+    fallbackStatus: mark,
+    guidanceCount,
+    packageById,
+    progress,
+    slices: nodeSubtreeSlices,
+  });
 
   return {
+    badgeVariant: boardState.badgeVariant,
     blockerCount,
     guidanceCount,
     mark,
     nodeSliceCount: node.slice_count || nodeSliceCount,
-    statusLabel: productNodeStatusLabel(node, mark),
-    tone: productNodeTone(mark, guidanceCount, blockerCount),
+    progress,
+    statusKind: boardState.kind,
+    statusLabel: boardState.label,
+    tone: boardState.tone,
     visibleNodeKind: node.node_kind === "product_plan_node" ? null : node.node_kind,
   };
 }
@@ -155,14 +213,160 @@ function productNodeStatusLabel(node: ProductTreeNode, mark = node.computed_comp
   return node.completion_label || completionMarkLabel(mark);
 }
 
-function productNodeTone(mark: ProductTreeCompletionMark, guidanceCount: number, blockerCount: number) {
-  if (blockerCount > 0) return "blocked";
-  if (guidanceCount > 0) return "guidance";
-  if (mark === "done") return "finished";
-  if (mark === "partial") return "review";
-  if (mark === "deferred") return "muted";
-  return "slice";
+function aggregateBoardRowState({
+  blockerCount,
+  completionDeferred = false,
+  completionDone = false,
+  fallbackLabel,
+  fallbackStatus,
+  guidanceCount,
+  packageById,
+  progress,
+  slices,
+}: {
+  blockerCount: number;
+  completionDeferred?: boolean;
+  completionDone?: boolean;
+  fallbackLabel?: string | null;
+  fallbackStatus?: string | null;
+  guidanceCount: number;
+  packageById: Map<string, WorkPackageCard>;
+  progress: number;
+  slices: PlannedSlice[];
+}): BoardRowState {
+  const childState = aggregateChildSliceState(slices, packageById);
+  const derived = firstMatchingBoardRowState([
+    [childState.active, "active"],
+    [completionDone || childState.done, "done", finishedFallbackLabel(fallbackLabel)],
+    [blockerCount > 0 || childState.blocked, "blocked"],
+    [guidanceCount > 0 || childState.guidance, "guidance"],
+    [childState.ready, "ready"],
+    [progress > 0 || fallbackStatus === "partial", "in_progress"],
+    [completionDeferred || childState.deferred, "deferred", fallbackLabel],
+    [childState.notStarted, "not_started"],
+  ]);
+
+  return derived ?? boardRowStateFromStatus(fallbackStatus, fallbackLabel);
 }
+
+type AggregateChildSliceState = {
+  active: boolean;
+  blocked: boolean;
+  deferred: boolean;
+  done: boolean;
+  guidance: boolean;
+  notStarted: boolean;
+  ready: boolean;
+};
+
+function aggregateChildSliceState(slices: PlannedSlice[], packageById: Map<string, WorkPackageCard>): AggregateChildSliceState {
+  const state: AggregateChildSliceState = {
+    active: false,
+    blocked: false,
+    deferred: false,
+    done: slices.length > 0,
+    guidance: false,
+    notStarted: false,
+    ready: false,
+  };
+
+  for (const slice of slices) {
+    const kind = sliceBoardStateKind(slice, packageById.get(slice.work_package_id || ""));
+    state.active ||= kind === "active";
+    state.blocked ||= kind === "blocked";
+    state.deferred ||= kind === "deferred";
+    state.guidance ||= kind === "guidance";
+    state.notStarted ||= kind === "not_started";
+    state.ready ||= kind === "ready";
+    state.done &&= kind === "done";
+  }
+
+  return state;
+}
+
+function sliceBoardStateKind(slice: PlannedSlice, pkg?: WorkPackageCard): BoardRowStateKind {
+  const operational = sliceOperationalState(slice, pkg);
+  const status = operational?.key || slice.work_package_status || pkg?.operational_state?.key || pkg?.status || slice.status;
+  return firstMatchingBoardRowKind([
+    [sliceHasActiveWork(slice, pkg, status), "active"],
+    [isFinishedBoardStatus(status), "done"],
+    [sliceIsBlocked(slice, pkg, status), "blocked"],
+    [sliceGuidanceCount(slice, pkg) > 0, "guidance"],
+    [statusIn(READY_STATUSES, status), "ready"],
+    [statusIn(DEFERRED_STATUSES, status), "deferred"],
+    [statusIn(NOT_STARTED_STATUSES, status), "not_started"],
+  ]) ?? "unknown";
+}
+
+function sliceIsBlocked(slice: PlannedSlice, pkg: WorkPackageCard | undefined, status?: string | null) {
+  return status === "blocked" || sliceBlockerCount(slice, pkg, new Map()) > 0;
+}
+
+function sliceHasActiveWork(slice: PlannedSlice, pkg: WorkPackageCard | undefined, status?: string | null) {
+  return Boolean(packageHasActiveRuntime(pkg) || ACTIVE_WORK_STATUSES.has(status || "") || slice.operational_state?.has_active_worker);
+}
+
+function packageHasActiveRuntime(pkg?: WorkPackageCard) {
+  return Boolean(pkg?.active_agent_run || (typeof pkg?.runtime?.active_count === "number" && pkg.runtime.active_count > 0));
+}
+
+function boardRowState(kind: BoardRowStateKind, label?: string | null): BoardRowState {
+  const state = BOARD_ROW_STATES[kind];
+  return label?.trim() ? { ...state, label: label.trim() } : state;
+}
+
+function boardRowStateFromStatus(status?: string | null, label?: string | null): BoardRowState {
+  return firstMatchingBoardRowState([
+    [statusIn(ACTIVE_WORK_STATUSES, status), "active"],
+    [isFinishedBoardStatus(status), "done", finishedFallbackLabel(label)],
+    [status === "blocked", "blocked"],
+    [statusIsGuidance(status), "guidance", label],
+    [statusIn(READY_STATUSES, status), "ready", label],
+    [statusIn(DEFERRED_STATUSES, status), "deferred", label],
+    [statusIn(NOT_STARTED_STATUSES, status), "not_started", label],
+    [status === "partial" || status === "in_progress", "in_progress"],
+  ]) ?? boardRowState("unknown", label);
+}
+
+type BoardRowStateRule = [boolean, BoardRowStateKind, (string | null)?];
+
+function firstMatchingBoardRowState(rules: BoardRowStateRule[]) {
+  const rule = rules.find(([matches]) => matches);
+  return rule ? boardRowState(rule[1], rule[2]) : null;
+}
+
+function firstMatchingBoardRowKind(rules: Array<[boolean, BoardRowStateKind]>) {
+  return rules.find(([matches]) => matches)?.[1] ?? null;
+}
+
+function statusIn(statuses: Set<string>, status?: string | null) {
+  return statuses.has(status || "");
+}
+
+function finishedFallbackLabel(label?: string | null) {
+  const text = label?.trim();
+  return text && !["Finished", "Unknown"].includes(text) ? text : "Done";
+}
+
+const ACTIVE_WORK_STATUSES = new Set([
+  "active",
+  "ci_waiting",
+  "claimed",
+  "dispatched",
+  "implementing",
+  "in_progress",
+  "merge_ready",
+  "merging",
+  "merging_into_phase",
+  "needs_closeout",
+  "ready_for_architect_merge",
+  "ready_for_human_merge",
+  "reviewing",
+]);
+
+const READY_STATUSES = new Set(["approved", "ready_for_slicing", "ready_for_worker", "sliced"]);
+const NOT_STARTED_STATUSES = new Set(["created", "not_done", "planned", "planning"]);
+const DEFERRED_STATUSES = new Set(["abandoned", "deferred", "skipped", "superseded"]);
 
 function completionMarkLabel(mark: ProductTreeCompletionMark) {
   switch (mark) {

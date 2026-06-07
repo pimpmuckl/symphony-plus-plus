@@ -6,9 +6,10 @@ import type * as React from "react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { clearMotionTimers, later, measureElementHeight, nextFrame } from "@/components/dashboard/motion-utils";
 import { cn } from "@/lib/utils";
+import { BlockerPreviewCard } from "./blocker-preview-card";
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { BlockerItem } from "./dashboard-state";
-import { BlockerPreviewCard, GuidancePreviewCard } from "./status-cards";
+import { GuidancePreviewCard } from "./guidance-preview-card";
 import { CardDetailSelect, CardDetailSelection, DashboardUpdateAnimations, STATUS_TILE_TONES, StatusTileTone, TopPanelDirection, TopPanelKey, TopPanelPhase } from "./runtime";
 import { EmptyPanel } from "./detail-extras";
 import { blockerUpdateKey, guidanceUpdateKey } from "./update-animations";
@@ -161,29 +162,25 @@ function TopPanelContent({
     );
   }
 
-  if (panel === "blockers") {
-    return (
-      <TopTray title="Blocked packages and dependency waits">
-        {blockerItems.length === 0 ? (
-          <EmptyPanel title="No active blockers" compact />
-        ) : (
-          <AnimatedTopGrid className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
-            {blockerItems.map((item, index) => (
-              <BlockerPreviewCard
-                key={item.id}
-                item={item}
-                index={index}
-                onSelectCard={interactive ? () => onSelectCard(item.selection) : undefined}
-                motion={updateAnimations.motionFor(blockerUpdateKey(item))}
-              />
-            ))}
-          </AnimatedTopGrid>
-        )}
-      </TopTray>
-    );
-  }
-
-  return null;
+  return (
+    <TopTray title="Blocked packages and dependency waits">
+      {blockerItems.length === 0 ? (
+        <EmptyPanel title="No active blockers" compact />
+      ) : (
+        <AnimatedTopGrid className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
+          {blockerItems.map((item, index) => (
+            <BlockerPreviewCard
+              key={item.id}
+              item={item}
+              index={index}
+              onSelectCard={interactive ? () => onSelectCard(item.selection) : undefined}
+              motion={updateAnimations.motionFor(blockerUpdateKey(item))}
+            />
+          ))}
+        </AnimatedTopGrid>
+      )}
+    </TopTray>
+  );
 }
 
 export type TopPanelCarouselState = {

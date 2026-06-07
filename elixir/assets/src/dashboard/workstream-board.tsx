@@ -4,21 +4,21 @@ import { AlertTriangle, ChevronRight, CircleDashed, GitBranch, Layers3, MessageS
 import type { CSSProperties } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { operationalBadgeVariant, operationalLabel, requestStateCardTone } from "@/lib/operational-state";
 import { useCallback, useId, useMemo, useRef, useState } from "react";
 import { CardDetailSelect, DashboardUpdateAnimations } from "./runtime";
 import { clarificationGuidanceItem } from "./dashboard-data";
 import { firstParagraph, stripMarkdown } from "./dashboard-text";
 import { finishedRequestChildrenStorageKey, sortPackages, sortPlannedSlices, sortWorkRequestDetails } from "./workstream-data";
 import { activeBlockerEntityCounts, productTreeCounts, requestProgress, rootProductSliceIds } from "./workstream-progress";
-import { productNodeState, rowProgressAttentionState, rowProgressIconState } from "./workstream-row-state";
+import { productNodeState, requestBoardState, rowProgressAttentionState, rowProgressIconState } from "./workstream-row-state";
 import { EntityCountChips, EntityKindSlot, ProductNodeHeader, ProgressPill, RequestHeaderActions, RowBadgeSlot } from "./workstream-row-ui";
 import { openBlockersForRequest, openBlockersForSlices, openGuidanceForSlices, productNodeSubtreeSlices, requestGuidanceItem } from "./workstream-board-actions";
 import { requestUpdateKey } from "./update-animations";
 import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
 import { UnlinkedExecutionSection } from "./workstream-unlinked-section";
 import { useAutoCollapseWhenDone } from "./workstream-auto-collapse";
-import { contextPathValue, WorkstreamContextBar } from "./workstream-context-bar";
+import { WorkstreamContextBar } from "./workstream-context-bar";
+import { contextPathValue } from "./workstream-context-path";
 import { DirectSliceGroup, ProductSliceRow } from "./workstream-slice-row";
 
 type TreeIndex = {
@@ -52,6 +52,7 @@ export function WorkstreamBoard({
   expandedFinishedRequests,
   finishedRequestScopeKey,
   onSetFinishedRequestChildrenOpen,
+  showContextBar,
   updateAnimations,
 }: {
   repoLabel: string;
@@ -66,6 +67,7 @@ export function WorkstreamBoard({
   expandedFinishedRequests: Record<string, boolean>;
   finishedRequestScopeKey: string;
   onSetFinishedRequestChildrenOpen: (workRequestId: string, open: boolean) => void;
+  showContextBar: boolean;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const sortedDetails = useMemo(() => sortWorkRequestDetails(repoDetails), [repoDetails]);
@@ -77,7 +79,7 @@ export function WorkstreamBoard({
 
   return (
     <div className="workstream-board-shell">
-      <WorkstreamContextBar boardRef={boardRef} repoLabel={repoLabel} signature={contextSignature} />
+      {showContextBar ? <WorkstreamContextBar boardRef={boardRef} repoLabel={repoLabel} signature={contextSignature} /> : null}
       <div ref={boardRef} className="v3-workstream-board">
         {sortedDetails.map((detail, index) => {
           const stateKey = finishedRequestChildrenStorageKey(finishedRequestScopeKey, detail.work_request.id);
@@ -159,8 +161,9 @@ function ProductRequestRow({
     onSelectCard({ kind: "request", detail });
   };
   const openBlockers = () => openBlockersForRequest(detail, slices, packageById, activeBlockerCountBySliceId, activeBlockingEdges, onSelectCard);
-  const tone = requestStateCardTone(detail);
-  const requestLabel = operationalLabel(request.operational_state, request.status);
+  const requestState = requestBoardState(detail, packageById, counts, progress);
+  const tone = requestState.tone;
+  const requestLabel = requestState.label;
   const rowStyle = {
     animationDelay: `${index * 30}ms`,
   } as CSSProperties;
@@ -203,7 +206,7 @@ function ProductRequestRow({
         <RequestProgressSummary counts={counts} onOpenGuidance={openGuidance} onOpenBlockers={openBlockers} />
         <span className="v3-row-status">
           <ProgressPill progress={progress} />
-          <RowBadgeSlot label={requestLabel} variant={operationalBadgeVariant(request.operational_state, request.status)} />
+          <RowBadgeSlot label={requestLabel} variant={requestState.badgeVariant} />
         </span>
         <RequestScopeSlot counts={counts} />
       </div>
@@ -384,7 +387,7 @@ function ProductTreeNodeRow({
   const nodePath = [...path, nodeTitle];
   const nodeSlices = (node.slice_ids ?? []).map((sliceId) => slicesById.get(sliceId)).filter((slice): slice is PlannedSlice => Boolean(slice));
   const nodeSubtreeSlices = productNodeSubtreeSlices(node, treeIndex, slicesById);
-  const nodeState = productNodeState(node, nodeSlices.length, treeIndex, activeBlockerCountBySliceId, activeBlockerKeysBySliceId);
+  const nodeState = productNodeState(node, nodeSlices.length, treeIndex, activeBlockerCountBySliceId, activeBlockerKeysBySliceId, nodeSubtreeSlices, packageById);
   const contentId = useId();
   const hasDisclosureContent = productNodeHasDisclosureContent(node, nodeSlices, childNodes);
   const [expanded, setExpanded] = useState(() => nodeState.mark !== "done");
@@ -399,7 +402,8 @@ function ProductTreeNodeRow({
         node={node}
         nodeSliceCount={nodeState.nodeSliceCount}
         visibleNodeKind={nodeState.visibleNodeKind}
-        mark={nodeState.mark}
+        progress={nodeState.progress}
+        statusBadgeVariant={nodeState.badgeVariant}
         tone={nodeState.tone}
         statusLabel={nodeState.statusLabel}
         guidanceCount={nodeState.guidanceCount}

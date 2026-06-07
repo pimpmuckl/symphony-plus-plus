@@ -19,6 +19,11 @@ import { RepoSummary } from "./dashboard-data";
 import { StatusRail, UpdateSimulationControls } from "./status-rail";
 import { WorkspaceTabCarousel } from "./workspace-tabs";
 
+type DashboardDisplayPreferences = {
+  hideEmptyWorkstreams: boolean;
+  showWorkstreamContextBar: boolean;
+};
+
 export function DashboardShell({
   archiveAfterDays,
   archivedRequests,
@@ -31,10 +36,10 @@ export function DashboardShell({
   createWorkRequest,
   dashboard,
   dialogState,
+  displayPreferences,
   error,
   guidanceItems,
   hiddenWorkstreamCount,
-  hideEmptyWorkstreams,
   linkedWorkPackageIds,
   loading,
   onArchiveWorkPackage,
@@ -47,6 +52,7 @@ export function DashboardShell({
   onSelectCard,
   onSelectGuidance,
   onSetNewRequestOpen,
+  onShowWorkstreamContextBarChange,
   onSubmitComment,
   onSubmitGuidanceAnswer,
   onUpdateArchiveAfterDays,
@@ -71,10 +77,10 @@ export function DashboardShell({
   createWorkRequest: (form: NewRequestForm) => Promise<WorkRequestDetail>;
   dashboard: DashboardPayload | null;
   dialogState: AppDialogState;
+  displayPreferences: DashboardDisplayPreferences;
   error: string | null;
   guidanceItems: GuidanceItem[];
   hiddenWorkstreamCount: number;
-  hideEmptyWorkstreams: boolean;
   linkedWorkPackageIds: Set<string>;
   loading: boolean;
   onArchiveWorkPackage: WorkPackageArchiveMutation;
@@ -87,6 +93,7 @@ export function DashboardShell({
   onSelectCard: (selection: CardDetailSelection | null) => void;
   onSelectGuidance: (item: GuidanceItem | null) => void;
   onSetNewRequestOpen: (open: boolean) => void;
+  onShowWorkstreamContextBarChange: (show: boolean) => void;
   onSubmitComment: SubmitContextComment;
   onSubmitGuidanceAnswer: (item: GuidanceItem, submission: GuidanceAnswerSubmission) => Promise<void>;
   onUpdateArchiveAfterDays: (archiveAfterDays: number) => Promise<void>;
@@ -100,6 +107,7 @@ export function DashboardShell({
   workspacePanes: Record<WorkspaceTab, React.ReactNode>;
   workspaceTab: WorkspaceTab;
 }) {
+  const { hideEmptyWorkstreams, showWorkstreamContextBar } = displayPreferences;
   const localOperatorReconnectIssue = isLocalOperatorAuthRequiredMessage(error) || connectionIssue?.reconnectableLocalSession === true;
   const dashboardAlertMessage = error || (localOperatorReconnectIssue ? connectionIssue?.message || LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE : null);
 
@@ -137,8 +145,10 @@ export function DashboardShell({
                 archiveAfterDays={archiveAfterDays}
                 hideEmptyWorkstreams={hideEmptyWorkstreams}
                 hiddenWorkstreamCount={hiddenWorkstreamCount}
+                showWorkstreamContextBar={showWorkstreamContextBar}
                 onArchiveAfterDaysChange={onUpdateArchiveAfterDays}
                 onHideEmptyWorkstreamsChange={onHideEmptyWorkstreamsChange}
+                onShowWorkstreamContextBarChange={onShowWorkstreamContextBarChange}
               />
               <ArchivedRequestsDialog requests={archivedRequests} onRestoreWorkRequest={onRestoreWorkRequest} />
               <Button variant="outline" size="sm" onClick={() => void onRefreshDashboard()} disabled={refreshing} className="button-lift">

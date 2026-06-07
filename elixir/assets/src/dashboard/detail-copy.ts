@@ -44,11 +44,15 @@ export function packageBlockerCopyText({
 }
 
 function decisionOptionsCopyText(options: DecisionOption[]) {
-  return options
-    .filter((option) => option.id)
-    .map((option, index) =>
+  const lines: string[] = [];
+  let optionNumber = 0;
+
+  for (const option of options) {
+    if (!option.id) continue;
+    optionNumber += 1;
+    lines.push(
       [
-        `${index + 1}. ${option.label || option.id}`,
+        `${optionNumber}. ${option.label || option.id}`,
         option.description ? `Description: ${option.description}` : "",
         option.answer ? `Answer: ${option.answer}` : "",
         option.pros?.length ? `Pros: ${option.pros.join("; ")}` : "",
@@ -56,8 +60,10 @@ function decisionOptionsCopyText(options: DecisionOption[]) {
       ]
         .filter(Boolean)
         .join("\n"),
-    )
-    .join("\n\n");
+    );
+  }
+
+  return lines.join("\n\n");
 }
 
 function blockerCopyText(blocker: WorkPackageBlocker, index: number) {

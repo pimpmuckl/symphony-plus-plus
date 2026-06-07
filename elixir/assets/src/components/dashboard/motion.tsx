@@ -304,7 +304,7 @@ export function AnimatedCardBody({ motionKey, children }: { motionKey: string; c
   );
 }
 
-export function useFlipList(layoutKey: string) {
+function useFlipList(layoutKey: string) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const previousRectsRef = useRef<Map<string, DOMRect> | null>(null);
 
