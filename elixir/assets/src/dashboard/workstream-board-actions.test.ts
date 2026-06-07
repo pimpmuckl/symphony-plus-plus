@@ -34,7 +34,36 @@ describe("workstream board action routing", () => {
 
     openBlockersForRequest(detail, [slice], new Map([["pkg-1", pkg]]), new Map(), [edge], (selection) => selections.push(selection));
 
-    expect(selections).toEqual([{ kind: "package", pkg, detail }]);
+    expect(selections).toEqual([{ kind: "blocker", blocker: edge, pkg, detail, slice }]);
+  });
+
+  it("routes package-card blocker fallback clicks to the real blocker modal", () => {
+    const selections: CardDetailSelection[] = [];
+    const detail = requestDetail("wr-1");
+    const slice = plannedSlice("slice-1", "pkg-1");
+    const pkg: WorkPackageCard = {
+      id: "pkg-1",
+      status: "blocked",
+      active_blocker_count: 1,
+      active_blockers: [{ id: "blocker-1", active: true, summary: "Scope permission needed" }],
+    };
+
+    openBlockersForRequest(detail, [slice], new Map([["pkg-1", pkg]]), new Map([["slice-1", 1]]), [], (selection) => selections.push(selection));
+
+    expect(selections).toEqual([
+      {
+        kind: "blocker",
+        blocker: expect.objectContaining({
+          blocker_id: "blocker-1",
+          summary: "Scope permission needed",
+          work_package_id: "pkg-1",
+          planned_slice_id: "slice-1",
+        }),
+        pkg,
+        detail,
+        slice,
+      },
+    ]);
   });
 
   it("does not invent a slice blocker target when node summary blockers lack slice evidence", () => {
@@ -42,7 +71,7 @@ describe("workstream board action routing", () => {
     const detail = requestDetail("wr-1");
     const slice = plannedSlice("slice-1", "pkg-1");
 
-    openBlockersForSlices(detail, [slice], new Map(), new Map(), (selection) => selections.push(selection));
+    openBlockersForSlices(detail, [slice], new Map(), new Map(), [], (selection) => selections.push(selection));
 
     expect(selections).toEqual([{ kind: "request", detail }]);
   });

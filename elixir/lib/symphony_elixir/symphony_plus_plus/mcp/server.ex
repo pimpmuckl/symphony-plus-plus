@@ -23,6 +23,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.Dashboard.BlockerProjection
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.{Client, DryClient, PullRequest, PullRequestArtifact}
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
@@ -77,6 +78,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   ]
   @local_operator_text_max_length Comment.max_body_length()
   @local_operator_provenance_max_length 512
+  @blocker_closeout_decisions ["resolved", "still_active"]
+  @terminal_product_tree_completion_marks ["done", "deferred"]
+  @terminal_work_package_statuses ["merged", "merged_into_phase", "closed", "abandoned"]
   @local_assignment_claim_tool "claim_local_assignment"
   @local_architect_assignment_claim_tool "claim_local_architect_assignment"
   @session_claim_tools [@local_assignment_claim_tool, @local_architect_assignment_claim_tool]
@@ -1665,7 +1669,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_description("record_planned_slice_delivery") do
-    "Record an idempotent planned-slice delivery closeout. Required evidence depends on outcome: pr_merged needs PR evidence, completed_no_pr needs direct evidence, superseded needs successor and reason, and abandoned needs rationale. Use abandoned for cleaned no-code failed dispatches that never reached implementation."
+    "Record an idempotent planned-slice delivery closeout. Required evidence depends on outcome: pr_merged needs PR evidence, completed_no_pr needs direct evidence, superseded needs successor and reason, and abandoned needs rationale. Use abandoned for cleaned no-code failed dispatches that never reached implementation. If the linked WorkPackage has active blockers, answer blocker_closeout to say whether those blockers are resolved or intentionally still active."
   end
 
   defp architect_tool_description("revoke_planned_slice_worker_key") do
@@ -1717,7 +1721,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_description("upsert_work_request_product_plan_node") do
-    "Create, update, or reparent a V3 product plan node inside a scoped WorkRequest. Do not create a plan node solely to wrap one slice. Leave simple slices direct unless the node groups multiple units or records a real product boundary."
+    "Create, update, or reparent a V3 product plan node inside a scoped WorkRequest. Do not create a plan node solely to wrap one slice. Leave simple slices direct unless the node groups multiple units or records a real product boundary. If setting completion_mark to done or deferred and descendant blockers are active, answer blocker_closeout before completing the node."
   end
 
   defp architect_tool_description("move_work_request_planned_slice_to_product_node") do
@@ -1868,8 +1872,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
   end
 
-  defp worker_tool_input_schema(name) when name in ["get_current_assignment", "read_context", "read_task_plan", "mark_ready"] do
+  defp worker_tool_input_schema(name) when name in ["get_current_assignment", "read_context", "read_task_plan"] do
     schema(%{}, [])
+  end
+
+  defp worker_tool_input_schema("mark_ready") do
+    schema(%{"blocker_closeout" => blocker_closeout_schema()}, [])
   end
 
   defp worker_tool_input_schema("update_task_plan") do
@@ -1972,7 +1980,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool_input_schema("set_status") do
-    schema(scoped_properties(%{"status" => string_schema(), "expected_status" => string_schema(), "reason" => nullable_string_schema()}), [
+    schema(scoped_properties(%{"status" => string_schema(), "expected_status" => string_schema(), "reason" => nullable_string_schema(), "blocker_closeout" => blocker_closeout_schema()}), [
       "status",
       "expected_status"
     ])
@@ -2139,7 +2147,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "successor_planned_slice_id" => described_string_schema("Required for outcome superseded; must belong to the same WorkRequest."),
         "successor_work_package_id" => described_string_schema("Optional successor package id; when present it must be linked to the declared successor planned slice inside the same WorkRequest."),
         "superseded_reason" => markdown_string_schema("Required Markdown reason for outcome superseded."),
-        "abandoned_rationale" => markdown_string_schema("Required Markdown rationale for outcome abandoned.")
+        "abandoned_rationale" => markdown_string_schema("Required Markdown rationale for outcome abandoned."),
+        "blocker_closeout" => blocker_closeout_schema()
       },
       ["work_request_id", "planned_slice_id", "outcome", "idempotency_key"]
     )
@@ -2342,7 +2351,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "node_kind" => described_string_schema("Optional loose architect-facing grouping hint such as layer, capability, milestone, or risk."),
         "completion_mark" => string_enum_schema(Node.completion_marks()),
         "position" => nonnegative_integer_schema(),
-        "created_by" => described_string_schema("Optional architect identity for audit display.")
+        "created_by" => described_string_schema("Optional architect identity for audit display."),
+        "blocker_closeout" => blocker_closeout_schema()
       },
       ["work_request_id", "title"]
     )
@@ -2602,6 +2612,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp nullable_string_schema, do: %{"type" => ["string", "null"]}
   defp markdown_nullable_string_schema(description), do: Map.put(nullable_string_schema(), "description", description)
   defp object_schema, do: %{"type" => "object", "additionalProperties" => true}
+
+  defp blocker_closeout_schema do
+    %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{
+        "decision" =>
+          @blocker_closeout_decisions
+          |> string_enum_schema()
+          |> Map.put("description", "Use resolved when the active blockers are no longer true, or still_active when they must remain active after this finish transition."),
+        "blocker_ids" =>
+          string_array_schema()
+          |> Map.put("description", "Optional explicit active blocker ids. Omit to apply the decision to every active blocker in scope."),
+        "resolution" => markdown_string_schema("Required when decision is resolved. Human-facing note explaining why the blocker is clear."),
+        "summary" => described_string_schema("Optional short audit summary for the blocker closeout decision.")
+      },
+      "required" => ["decision"]
+    }
+  end
 
   defp decision_prompt_schema do
     %{
@@ -4740,6 +4769,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              "record_planned_slice_delivery"
            ),
          :ok <- require_planned_slice_delivery_scope(config.repo, work_request, planned_slice, attrs, filters),
+         {:ok, attrs, blocker_closeout} <-
+           maybe_apply_slice_delivery_blocker_closeout(config.repo, live_session, planned_slice, arguments, attrs),
          {:ok, delivery} <-
            mutate_product_tree(
              config.repo,
@@ -4756,11 +4787,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        tool_result(%{
          "work_request" => work_request_mutation_payload(work_request),
          "planned_slice_delivery" => planned_slice_delivery_payload(delivery),
+         "blocker_closeout" => blocker_closeout,
          "delivery_board" => delivery_board_payload(delivery_board),
          "scope" => scope
        })}
     else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "record_planned_slice_delivery", "reason" => reason}}
+      {:tool_error, reason} -> invalid_params_error("record_planned_slice_delivery", reason)
       {:error, :not_found} -> not_found_error("record_planned_slice_delivery")
       {:error, reason} -> record_planned_slice_delivery_error(reason)
     end
@@ -5217,6 +5249,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            |> optional_put("completion_mark", completion_mark)
            |> optional_put("position", position)
            |> optional_put("created_by", created_by),
+         {:ok, blocker_closeout} <-
+           maybe_apply_product_plan_node_blocker_closeout(
+             config.repo,
+             session,
+             work_request_id,
+             product_tree_node_id,
+             completion_mark,
+             arguments
+           ),
          {:ok, {product_tree_node, detail}} <-
            mutate_product_tree_with_projection(config.repo, work_request_id, tool, created_by, fn ->
              ProductTree.upsert_node(config.repo, attrs)
@@ -5225,6 +5266,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        tool_result(%{
          "work_request" => work_request_mutation_payload(work_request),
          "product_plan_node" => product_tree_node_payload(product_tree_node),
+         "blocker_closeout" => blocker_closeout,
          "product_tree" => json_safe_payload(detail.product_tree),
          "scope" => scope,
          "status" => %{"work_request_status" => work_request.status}
@@ -6368,6 +6410,290 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, attrs}
     end
   end
+
+  defp maybe_apply_slice_delivery_blocker_closeout(
+         repo,
+         %Session{} = session,
+         %PlannedSlice{work_package_id: work_package_id},
+         arguments,
+         attrs
+       ) do
+    case apply_scoped_blocker_closeout(repo, session, [work_package_id], arguments, "record_planned_slice_delivery") do
+      {:ok, %{"decision" => "still_active"} = closeout} ->
+        {:ok, Map.put(attrs, "allow_active_blocker_closeout", true), closeout}
+
+      {:ok, closeout} ->
+        {:ok, attrs, closeout}
+
+      {:tool_error, reason} ->
+        {:tool_error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp maybe_apply_work_package_status_blocker_closeout(repo, %Session{} = session, status, arguments)
+       when status in @terminal_work_package_statuses do
+    apply_scoped_blocker_closeout(repo, session, [Session.work_package_id(session)], arguments, "set_status")
+  end
+
+  defp maybe_apply_work_package_status_blocker_closeout(_repo, %Session{}, _status, _arguments) do
+    {:ok, blocker_closeout_not_needed()}
+  end
+
+  defp maybe_apply_product_plan_node_blocker_closeout(_repo, %Session{}, _work_request_id, _node_id, completion_mark, _arguments)
+       when completion_mark not in @terminal_product_tree_completion_marks do
+    {:ok, blocker_closeout_not_needed()}
+  end
+
+  defp maybe_apply_product_plan_node_blocker_closeout(_repo, %Session{}, _work_request_id, nil, _completion_mark, _arguments) do
+    {:ok, blocker_closeout_not_needed()}
+  end
+
+  defp maybe_apply_product_plan_node_blocker_closeout(repo, %Session{} = session, work_request_id, product_tree_node_id, _completion_mark, arguments) do
+    with {:ok, work_package_ids} <- product_plan_node_work_package_ids(repo, work_request_id, product_tree_node_id) do
+      apply_scoped_blocker_closeout(repo, session, work_package_ids, arguments, "upsert_work_request_product_plan_node")
+    end
+  end
+
+  defp apply_scoped_blocker_closeout(repo, %Session{} = session, work_package_ids, arguments, tool) do
+    with {:ok, closeout} <- optional_blocker_closeout_argument(arguments),
+         {:ok, active_blockers} <- active_blockers_for_work_packages(repo, work_package_ids) do
+      cond do
+        active_blockers == [] ->
+          {:ok, blocker_closeout_not_needed()}
+
+        is_nil(closeout) ->
+          {:tool_error, {:blocker_closeout_required, active_blocker_payloads(active_blockers)}}
+
+        true ->
+          apply_blocker_closeout_decision(repo, session, active_blockers, closeout, tool)
+      end
+    end
+  end
+
+  defp optional_blocker_closeout_argument(arguments) do
+    with {:ok, closeout} <- optional_object_argument(arguments, "blocker_closeout") do
+      normalize_blocker_closeout(closeout)
+    end
+  end
+
+  defp normalize_blocker_closeout(nil), do: {:ok, nil}
+
+  defp normalize_blocker_closeout(closeout) when is_map(closeout) do
+    with {:ok, decision} <- required_argument(closeout, "decision"),
+         :ok <- require_blocker_closeout_decision(decision),
+         {:ok, blocker_ids} <- optional_string_list_argument(closeout, "blocker_ids"),
+         {:ok, resolution} <- optional_string_argument(closeout, "resolution"),
+         {:ok, summary} <- optional_string_argument(closeout, "summary"),
+         :ok <- require_blocker_closeout_resolution(decision, resolution) do
+      {:ok, %{decision: decision, blocker_ids: blocker_ids, resolution: resolution, summary: summary}}
+    end
+  end
+
+  defp require_blocker_closeout_decision(decision) do
+    if decision in @blocker_closeout_decisions, do: :ok, else: {:tool_error, "invalid_blocker_closeout_decision"}
+  end
+
+  defp require_blocker_closeout_resolution("resolved", resolution) when is_binary(resolution), do: :ok
+  defp require_blocker_closeout_resolution("resolved", _resolution), do: {:tool_error, "missing_blocker_closeout_resolution"}
+  defp require_blocker_closeout_resolution("still_active", _resolution), do: :ok
+
+  defp optional_string_list_argument(arguments, key) do
+    case Map.fetch(arguments, key) do
+      :error ->
+        {:ok, []}
+
+      {:ok, nil} ->
+        {:ok, []}
+
+      {:ok, values} when is_list(values) ->
+        if Enum.all?(values, &is_binary/1) do
+          values =
+            values
+            |> Enum.map(&String.trim/1)
+            |> Enum.reject(&(&1 == ""))
+            |> Enum.uniq()
+
+          {:ok, values}
+        else
+          {:tool_error, "invalid_#{key}"}
+        end
+
+      {:ok, _value} ->
+        {:tool_error, "invalid_#{key}"}
+    end
+  end
+
+  defp apply_blocker_closeout_decision(repo, %Session{} = session, active_blockers, closeout, tool) do
+    with :ok <- require_blocker_closeout_covers_active_blockers(active_blockers, closeout.blocker_ids) do
+      case closeout.decision do
+        "resolved" -> resolve_active_blockers(repo, session, active_blockers, closeout, tool)
+        "still_active" -> preserve_active_blockers(repo, session, active_blockers, closeout, tool)
+      end
+    end
+  end
+
+  defp require_blocker_closeout_covers_active_blockers(_active_blockers, []), do: :ok
+
+  defp require_blocker_closeout_covers_active_blockers(active_blockers, blocker_ids) do
+    active_ids = active_blockers |> Enum.map(& &1.id) |> Enum.sort()
+    requested_ids = Enum.sort(blocker_ids)
+
+    if requested_ids == active_ids do
+      :ok
+    else
+      {:tool_error, {:blocker_closeout_scope_mismatch, active_ids, requested_ids}}
+    end
+  end
+
+  defp resolve_active_blockers(repo, %Session{} = session, active_blockers, closeout, tool) do
+    with {:ok, events} <-
+           Enum.reduce_while(active_blockers, {:ok, []}, fn blocker, {:ok, events} ->
+             case append_blocker_closeout_resolution(repo, session, blocker, closeout, tool) do
+               {:ok, event} -> {:cont, {:ok, [event | events]}}
+               {:error, reason} -> {:halt, {:error, reason}}
+             end
+           end) do
+      {:ok,
+       %{
+         "decision" => "resolved",
+         "active_blockers_before" => active_blocker_payloads(active_blockers),
+         "resolved_blocker_ids" => Enum.map(active_blockers, & &1.id),
+         "progress_event_ids" => events |> Enum.reverse() |> Enum.map(& &1.id)
+       }}
+    end
+  end
+
+  defp preserve_active_blockers(repo, %Session{} = session, active_blockers, closeout, tool) do
+    with {:ok, events} <-
+           Enum.reduce_while(active_blockers, {:ok, []}, fn blocker, {:ok, events} ->
+             case append_blocker_closeout_preservation(repo, session, blocker, closeout, tool) do
+               {:ok, event} -> {:cont, {:ok, [event | events]}}
+               {:error, reason} -> {:halt, {:error, reason}}
+             end
+           end) do
+      {:ok,
+       %{
+         "decision" => "still_active",
+         "active_blockers" => active_blocker_payloads(active_blockers),
+         "progress_event_ids" => events |> Enum.reverse() |> Enum.map(& &1.id)
+       }}
+    end
+  end
+
+  defp append_blocker_closeout_resolution(repo, %Session{} = session, blocker, closeout, tool) do
+    PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, blocker.work_package_id, %{
+      "summary" => closeout.summary || "Resolved blocker during #{tool}",
+      "body" => closeout.resolution,
+      "status" => "resolved",
+      "idempotency_key" => blocker_closeout_idempotency_key(tool, blocker, "resolved"),
+      "payload" => %{
+        "type" => "blocker",
+        "source_tool" => "resolve_blocker",
+        "blocker_id" => blocker.id,
+        "resolution" => closeout.resolution,
+        "active" => false,
+        "closeout_tool" => tool
+      }
+    })
+  end
+
+  defp append_blocker_closeout_preservation(repo, %Session{} = session, blocker, closeout, tool) do
+    PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, blocker.work_package_id, %{
+      "summary" => closeout.summary || "Preserved active blocker during #{tool}",
+      "body" => closeout.resolution || blocker.body || blocker.summary,
+      "status" => "blocked",
+      "idempotency_key" => blocker_closeout_idempotency_key(tool, blocker, "still_active"),
+      "payload" => %{
+        "type" => "blocker_closeout_decision",
+        "source_tool" => tool,
+        "blocker_id" => blocker.id,
+        "decision" => "still_active"
+      }
+    })
+  end
+
+  defp blocker_closeout_idempotency_key(tool, blocker, decision) do
+    ["blocker_closeout", tool, blocker.work_package_id, blocker.id, decision]
+    |> Enum.join(":")
+  end
+
+  defp active_blockers_for_work_packages(repo, work_package_ids) do
+    work_package_ids =
+      work_package_ids
+      |> Enum.filter(&filled_string?/1)
+      |> Enum.uniq()
+
+    Enum.reduce_while(work_package_ids, {:ok, []}, fn work_package_id, {:ok, blockers} ->
+      case active_blockers_for_work_package(repo, work_package_id) do
+        {:ok, package_blockers} -> {:cont, {:ok, blockers ++ package_blockers}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp active_blockers_for_work_package(repo, work_package_id) do
+    with {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, work_package_id) do
+      blockers =
+        progress_events
+        |> BlockerProjection.blockers()
+        |> Enum.filter(& &1.active)
+        |> Enum.map(&Map.put(&1, :work_package_id, work_package_id))
+
+      {:ok, blockers}
+    end
+  end
+
+  defp product_plan_node_work_package_ids(repo, work_request_id, product_tree_node_id) do
+    with {:ok, tree} <- ProductTree.tree_for_work_request(repo, work_request_id),
+         {:ok, planned_slices} <- WorkRequestService.list_planned_slices(repo, work_request_id) do
+      subtree_node_ids = product_tree_subtree_node_ids(tree.nodes, product_tree_node_id)
+      slice_ids = product_tree_subtree_slice_ids(tree.slice_links, subtree_node_ids)
+      package_ids = planned_slices |> Enum.filter(&(&1.id in slice_ids)) |> Enum.map(& &1.work_package_id)
+
+      {:ok, package_ids}
+    end
+  end
+
+  defp product_tree_subtree_node_ids(nodes, product_tree_node_id) do
+    children_by_parent = Enum.group_by(nodes, & &1.parent_id)
+
+    Stream.unfold([product_tree_node_id], fn
+      [] ->
+        nil
+
+      [node_id | rest] ->
+        child_ids = children_by_parent |> Map.get(node_id, []) |> Enum.map(& &1.id)
+        {node_id, rest ++ child_ids}
+    end)
+    |> Enum.to_list()
+  end
+
+  defp product_tree_subtree_slice_ids(slice_links, subtree_node_ids) do
+    subtree_node_ids = MapSet.new(subtree_node_ids)
+
+    slice_links
+    |> Enum.filter(&MapSet.member?(subtree_node_ids, &1.product_tree_node_id))
+    |> Enum.map(& &1.planned_slice_id)
+    |> Enum.uniq()
+  end
+
+  defp active_blocker_payloads(blockers), do: Enum.map(blockers, &active_blocker_payload/1)
+
+  defp active_blocker_payload(blocker) do
+    %{
+      "blocker_id" => blocker.id,
+      "work_package_id" => blocker.work_package_id,
+      "summary" => blocker.summary,
+      "body" => blocker.body,
+      "status" => blocker.status,
+      "updated_at" => blocker.updated_at
+    }
+  end
+
+  defp blocker_closeout_not_needed, do: %{"decision" => "none", "active_blockers" => []}
 
   defp optional_positive_integer_argument(arguments, key) do
     case Map.fetch(arguments, key) do
@@ -9187,10 +9513,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, expected_status} <- required_argument(arguments, "expected_status"),
          {:ok, reason} <- optional_reason(arguments),
          :ok <- reject_ready_status(status),
+         {:ok, blocker_closeout} <- maybe_apply_work_package_status_blocker_closeout(config.repo, session, status, arguments),
          {:ok, work_package} <- set_status_transaction(config.repo, session, expected_status, status, reason) do
-      {:ok, tool_result(%{"work_package" => work_package_payload(work_package)})}
+      {:ok, tool_result(%{"work_package" => work_package_payload(work_package), "blocker_closeout" => blocker_closeout})}
     else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "set_status", "reason" => reason}}
+      {:tool_error, reason} -> invalid_params_error("set_status", reason)
       {:error, _code, _message, _data} = error -> error
       {:error, reason} -> worker_error(reason, "set_status")
     end
@@ -9350,12 +9677,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp worker_tool("mark_ready", _arguments, %__MODULE__{config: config, session: session}) do
+  defp worker_tool("mark_ready", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
          :ok <- require_worker_assignment(session.assignment),
+         {:ok, blocker_closeout} <- apply_scoped_blocker_closeout(config.repo, session, [Session.work_package_id(session)], arguments, "mark_ready"),
          {:ok, work_package} <- mark_ready_transaction(config.repo, session) do
-      {:ok, tool_result(%{"work_package" => work_package_payload(work_package), "ready" => true})}
+      {:ok, tool_result(%{"work_package" => work_package_payload(work_package), "ready" => true, "blocker_closeout" => blocker_closeout})}
     else
+      {:tool_error, reason} ->
+        invalid_params_error("mark_ready", reason)
+
       {:error, {:readiness_failed, missing, reasons}} ->
         {:error, -32_602, "Invalid params", %{"tool" => "mark_ready", "reason" => "readiness_failed", "missing" => missing, "reasons" => reasons}}
 
@@ -12763,6 +13094,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        "round_id" => round_id,
        "status" => status,
        "fallback_explicit_fields" => fallback_fields
+     }}
+  end
+
+  defp invalid_params_error(tool, {:blocker_closeout_required, blockers}) do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "blocker_closeout_required",
+       "reason_code" => "blocker_closeout_required",
+       "message" => "Active blockers exist in this finish scope. Pass blocker_closeout with decision resolved or still_active.",
+       "active_blockers" => blockers
+     }}
+  end
+
+  defp invalid_params_error(tool, {:blocker_closeout_scope_mismatch, active_ids, requested_ids}) do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "blocker_closeout_scope_mismatch",
+       "reason_code" => "blocker_closeout_scope_mismatch",
+       "active_blocker_ids" => active_ids,
+       "requested_blocker_ids" => requested_ids
      }}
   end
 

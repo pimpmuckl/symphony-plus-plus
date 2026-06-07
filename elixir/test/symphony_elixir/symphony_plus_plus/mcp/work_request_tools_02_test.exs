@@ -3,6 +3,7 @@ Code.require_file("../../../support/symphony_plus_plus/mcp_case.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
+  alias SymphonyElixir.SymphonyPlusPlus.Dashboard.BlockerProjection
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.ProductTree
   alias SymphonyElixir.SymphonyPlusPlus.ProductTree.Revision
@@ -183,6 +184,167 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
 
     target_read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => handoff_work_request.id})
     assert get_in(target_read_response, ["result", "structuredContent", "work_request", "id"]) == handoff_work_request.id
+  end
+
+  test "record_planned_slice_delivery requires active blocker closeout and can preserve blockers", %{repo: repo} do
+    {work_request, planned_slice, work_package} =
+      linked_delivery_slice!(repo,
+        id_suffix: "PRESERVE",
+        package_status: "ready_for_human_merge"
+      )
+
+    {_anchor, session, _grant} =
+      create_work_request_handoff_architect_session(repo, work_request, [
+        "read:work_request",
+        "write:work_request",
+        "dispatch:work_request"
+      ])
+
+    append_active_blocker!(repo, work_package.id, "preserve-blocker")
+
+    missing_closeout_response =
+      mcp_tool(repo, session, "record_planned_slice_delivery", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice.id,
+        "outcome" => "pr_merged",
+        "idempotency_key" => "delivery-preserve-missing-closeout",
+        "pr_url" => "https://github.com/nextide/symphony-plus-plus/pull/201",
+        "pr_number" => 201,
+        "pr_repository" => "nextide/symphony-plus-plus",
+        "pr_merged_at" => "2026-06-07T10:00:00Z",
+        "merge_commit_sha" => "abc201"
+      })
+
+    assert get_in(missing_closeout_response, ["error", "data", "reason_code"]) == "blocker_closeout_required"
+    assert [%{"blocker_id" => "preserve-blocker", "work_package_id" => blocker_work_package_id}] = get_in(missing_closeout_response, ["error", "data", "active_blockers"])
+    assert blocker_work_package_id == work_package.id
+
+    preserve_response =
+      mcp_tool(repo, session, "record_planned_slice_delivery", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice.id,
+        "outcome" => "pr_merged",
+        "idempotency_key" => "delivery-preserve-with-closeout",
+        "pr_url" => "https://github.com/nextide/symphony-plus-plus/pull/201",
+        "pr_number" => 201,
+        "pr_repository" => "nextide/symphony-plus-plus",
+        "pr_merged_at" => "2026-06-07T10:00:00Z",
+        "merge_commit_sha" => "abc201",
+        "blocker_closeout" => %{
+          "decision" => "still_active",
+          "blocker_ids" => ["preserve-blocker"],
+          "summary" => "Blocker is intentionally preserved after merge"
+        }
+      })
+
+    assert get_in(preserve_response, ["result", "structuredContent", "planned_slice_delivery", "outcome"]) == "pr_merged"
+    assert get_in(preserve_response, ["result", "structuredContent", "blocker_closeout", "decision"]) == "still_active"
+    assert repo.get!(WorkPackage, work_package.id).status == "merged"
+
+    assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, work_package.id)
+    assert [%{active: true, id: "preserve-blocker"}] = progress_events |> BlockerProjection.blockers() |> Enum.filter(& &1.active)
+  end
+
+  test "record_planned_slice_delivery can resolve active blockers before closeout", %{repo: repo} do
+    {work_request, planned_slice, work_package} =
+      linked_delivery_slice!(repo,
+        id_suffix: "RESOLVE",
+        package_status: "reviewing"
+      )
+
+    {_anchor, session, _grant} =
+      create_work_request_handoff_architect_session(repo, work_request, [
+        "read:work_request",
+        "write:work_request",
+        "dispatch:work_request"
+      ])
+
+    append_active_blocker!(repo, work_package.id, "resolve-blocker")
+
+    response =
+      mcp_tool(repo, session, "record_planned_slice_delivery", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice.id,
+        "outcome" => "completed_no_pr",
+        "idempotency_key" => "delivery-resolve-with-closeout",
+        "no_pr_evidence" => "Operator confirmed this landed directly.",
+        "blocker_closeout" => %{
+          "decision" => "resolved",
+          "blocker_ids" => ["resolve-blocker"],
+          "resolution" => "The review-scope blocker was handled before closeout."
+        }
+      })
+
+    assert get_in(response, ["result", "structuredContent", "planned_slice_delivery", "outcome"]) == "completed_no_pr"
+    assert get_in(response, ["result", "structuredContent", "blocker_closeout", "decision"]) == "resolved"
+    assert repo.get!(WorkPackage, work_package.id).status == "closed"
+
+    assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, work_package.id)
+    refute Enum.any?(BlockerProjection.blockers(progress_events), & &1.active)
+    assert Enum.any?(progress_events, &(get_in(&1.payload, ["source_tool"]) == "resolve_blocker" and get_in(&1.payload, ["blocker_id"]) == "resolve-blocker"))
+  end
+
+  test "terminal product plan node completion asks for descendant blocker closeout", %{repo: repo} do
+    {work_request, planned_slice, work_package} =
+      linked_delivery_slice!(repo,
+        id_suffix: "PLAN-NODE",
+        package_status: "reviewing"
+      )
+
+    {_anchor, session, _grant} =
+      create_work_request_handoff_architect_session(repo, work_request, [
+        "read:work_request",
+        "write:work_request",
+        "dispatch:work_request"
+      ])
+
+    node_response =
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+        "work_request_id" => work_request.id,
+        "title" => "Blocked plan node"
+      })
+
+    product_tree_node_id = get_in(node_response, ["result", "structuredContent", "product_plan_node", "id"])
+
+    move_response =
+      mcp_tool(repo, session, "move_work_request_planned_slice_to_product_node", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice.id,
+        "product_tree_node_id" => product_tree_node_id
+      })
+
+    assert get_in(move_response, ["result", "structuredContent", "product_tree_slice_link", "product_tree_node_id"]) == product_tree_node_id
+
+    append_active_blocker!(repo, work_package.id, "node-blocker")
+
+    missing_closeout_response =
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+        "work_request_id" => work_request.id,
+        "product_tree_node_id" => product_tree_node_id,
+        "title" => "Blocked plan node",
+        "completion_mark" => "done"
+      })
+
+    assert get_in(missing_closeout_response, ["error", "data", "reason_code"]) == "blocker_closeout_required"
+
+    resolved_response =
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+        "work_request_id" => work_request.id,
+        "product_tree_node_id" => product_tree_node_id,
+        "title" => "Blocked plan node",
+        "completion_mark" => "done",
+        "blocker_closeout" => %{
+          "decision" => "resolved",
+          "blocker_ids" => ["node-blocker"],
+          "resolution" => "The node blocker was handled before marking the node done."
+        }
+      })
+
+    assert get_in(resolved_response, ["result", "structuredContent", "product_plan_node", "completion_mark"]) == "done"
+    assert get_in(resolved_response, ["result", "structuredContent", "blocker_closeout", "decision"]) == "resolved"
+
+    assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, work_package.id)
+    refute Enum.any?(BlockerProjection.blockers(progress_events), & &1.active)
   end
 
   test "legacy recovered handoff architects read same repo/base without persisted repo scope", %{repo: repo} do
@@ -1348,6 +1510,74 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
       ],
       &repo.query!("DROP TABLE IF EXISTS #{&1}")
     )
+  end
+
+  defp linked_delivery_slice!(repo, opts) do
+    suffix = Keyword.fetch!(opts, :id_suffix)
+    package_status = Keyword.fetch!(opts, :package_status)
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-BLOCKER-CLOSEOUT-#{suffix}",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "main",
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-BLOCKER-CLOSEOUT-#{suffix}",
+                 target_base_branch: work_request.base_branch,
+                 branch_pattern: "agent/blocker-closeout-#{String.downcase(suffix)}"
+               )
+             )
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    work_package =
+      [
+        id: "WP-MCP-BLOCKER-CLOSEOUT-#{suffix}",
+        title: approved_slice.title,
+        kind: approved_slice.work_package_kind,
+        repo: work_request.repo,
+        base_branch: approved_slice.target_base_branch,
+        branch_pattern: approved_slice.branch_pattern,
+        product_description: work_request.human_description,
+        allowed_file_globs: approved_slice.owned_file_globs,
+        acceptance_criteria: approved_slice.acceptance_criteria,
+        status: package_status
+      ]
+      |> WorkPackageFactory.attrs()
+      |> then(&WorkPackageRepository.create(repo, &1))
+      |> case do
+        {:ok, work_package} -> work_package
+        {:error, reason} -> flunk("failed to create WorkPackage: #{inspect(reason)}")
+      end
+
+    assert {:ok, dispatched_slice} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", work_package.id)
+
+    {work_request, dispatched_slice, work_package}
+  end
+
+  defp append_active_blocker!(repo, work_package_id, blocker_id) do
+    assert {:ok, event} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package_id,
+               summary: "Review scope blocker",
+               status: "blocked",
+               idempotency_key: blocker_id,
+               payload: %{
+                 type: "blocker",
+                 source_tool: "report_blocker",
+                 blocker_id: blocker_id,
+                 active: true
+               }
+             })
+
+    event
   end
 
   defp table_exists?(repo, table) do
