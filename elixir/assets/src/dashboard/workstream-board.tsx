@@ -389,13 +389,14 @@ function ProductTreeNodeRow({
   const nodeSlices = (node.slice_ids ?? []).map((sliceId) => slicesById.get(sliceId)).filter((slice): slice is PlannedSlice => Boolean(slice));
   const nodeSubtreeSlices = productNodeSubtreeSlices(node, treeIndex, slicesById);
   const nodeState = productNodeState(node, nodeSlices.length, treeIndex, activeBlockerCountBySliceId, activeBlockerKeysBySliceId, nodeSubtreeSlices, packageById);
+  const nodeFinished = nodeState.statusKind === "done" || nodeState.progress >= 100;
   const contentId = useId();
   const hasDisclosureContent = productNodeHasDisclosureContent(node, nodeSlices, childNodes);
-  const [expanded, setExpanded] = useState(() => nodeState.mark !== "done");
+  const [expanded, setExpanded] = useState(() => !nodeFinished);
   const openGuidance = () => openGuidanceForSlices(detail, nodeSubtreeSlices, packageById, guidanceItems, onSelectGuidance, onSelectCard);
   const openBlockers = () => openBlockersForSlices(detail, nodeSubtreeSlices, packageById, activeBlockerCountBySliceId, onSelectCard);
   const collapseNode = useCallback(() => setExpanded(false), [setExpanded]);
-  useAutoCollapseWhenDone(nodeState.mark === "done", expanded, collapseNode, nodeState.mark === "done");
+  useAutoCollapseWhenDone(nodeFinished, expanded, collapseNode, nodeFinished);
 
   return (
     <div className="v3-product-node" style={{ "--tree-depth": depth } as CSSProperties} data-mark={nodeState.mark} data-tone={nodeState.tone} data-v3-context-path={contextPathValue(nodePath)}>

@@ -245,7 +245,7 @@ function parseContextPathPart(part: unknown): ContextPathPart | null {
 }
 
 function uniquePathParts(parts: ContextPart[]) {
-  return parts.filter((part, index) => part.label && part.label !== parts[index - 1]?.label);
+  return parts.filter((part, index) => part.label && !sameContextPart(part, parts[index - 1]));
 }
 
 function contextDisplayPath(repoLabel: string, path: ContextPathPart[]) {
