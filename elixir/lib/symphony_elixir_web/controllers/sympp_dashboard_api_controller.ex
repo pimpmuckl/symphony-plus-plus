@@ -1517,7 +1517,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         summary: "Cleared blocker: #{blocker.summary || blocker.id}",
         body: text_param(params, "resolution") || "Cleared by local operator from the blocker detail modal.",
         status: "resolved",
-        idempotency_key: "local-operator-clear-blocker:#{work_package_id}:#{blocker.id}",
+        idempotency_key: "local-operator-clear-blocker:#{work_package_id}:#{blocker.id}:#{blocker.event_id}",
         payload: %{
           type: "blocker",
           source_tool: "resolve_blocker",

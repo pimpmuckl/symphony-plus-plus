@@ -345,6 +345,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
 
     assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, work_package.id)
     refute Enum.any?(BlockerProjection.blockers(progress_events), & &1.active)
+    assert length(resolve_blocker_events(progress_events, "node-blocker")) == 1
+
+    append_active_blocker!(repo, work_package.id, "node-blocker", idempotency_key: "node-blocker-reraised")
+
+    reraised_resolved_response =
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+        "work_request_id" => work_request.id,
+        "product_tree_node_id" => product_tree_node_id,
+        "title" => "Blocked plan node",
+        "completion_mark" => "done",
+        "blocker_closeout" => %{
+          "decision" => "resolved",
+          "blocker_ids" => ["node-blocker"],
+          "resolution" => "The re-raised node blocker was handled too."
+        }
+      })
+
+    assert get_in(reraised_resolved_response, ["result", "structuredContent", "blocker_closeout", "decision"]) == "resolved"
+    assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, work_package.id)
+    refute Enum.any?(BlockerProjection.blockers(progress_events), & &1.active)
+    assert length(resolve_blocker_events(progress_events, "node-blocker")) == 2
   end
 
   test "legacy recovered handoff architects read same repo/base without persisted repo scope", %{repo: repo} do
@@ -1562,13 +1583,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     {work_request, dispatched_slice, work_package}
   end
 
-  defp append_active_blocker!(repo, work_package_id, blocker_id) do
+  defp append_active_blocker!(repo, work_package_id, blocker_id, opts \\ []) do
     assert {:ok, event} =
              PlanningRepository.append_progress_event(repo, %{
                work_package_id: work_package_id,
                summary: "Review scope blocker",
                status: "blocked",
-               idempotency_key: blocker_id,
+               idempotency_key: Keyword.get(opts, :idempotency_key, blocker_id),
                payload: %{
                  type: "blocker",
                  source_tool: "report_blocker",
@@ -1578,6 +1599,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
              })
 
     event
+  end
+
+  defp resolve_blocker_events(progress_events, blocker_id) do
+    Enum.filter(progress_events, &(get_in(&1.payload, ["source_tool"]) == "resolve_blocker" and get_in(&1.payload, ["blocker_id"]) == blocker_id))
   end
 
   defp table_exists?(repo, table) do

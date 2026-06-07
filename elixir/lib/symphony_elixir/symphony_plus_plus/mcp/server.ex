@@ -6692,7 +6692,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp blocker_closeout_idempotency_key(tool, blocker, decision) do
-    ["blocker_closeout", tool, blocker.work_package_id, blocker.id, decision]
+    ["blocker_closeout", tool, blocker.work_package_id, blocker.id, blocker.event_id, decision]
     |> Enum.join(":")
   end
 

@@ -5631,7 +5631,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  payload: %{type: "blocker", source_tool: "report_blocker", blocker_id: "local-clear-blocker", active: true}
                })
 
-      payload =
+      _payload =
         local_operator_csrf_conn()
         |> post("/api/v1/sympp/operator/work-packages/#{work_package.id}/blockers/local-clear-blocker/clear", %{})
         |> json_response(200)
@@ -5639,11 +5639,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, work_package.id)
       refute Enum.any?(BlockerProjection.blockers(progress_events), & &1.active)
       assert Enum.any?(progress_events, &(get_in(&1.payload, ["source_tool"]) == "resolve_blocker" and get_in(&1.payload, ["blocker_id"]) == "local-clear-blocker"))
+      assert length(resolve_blocker_events(progress_events, "local-clear-blocker")) == 1
+
+      assert {:ok, _blocker} =
+               PlanningRepository.append_progress_event(repo, %{
+                 work_package_id: work_package.id,
+                 summary: "Review scope blocker returned",
+                 body: "Reviewer re-raised the same blocker id after more review.",
+                 status: "blocked",
+                 idempotency_key: "local-clear-blocker-reraised",
+                 payload: %{type: "blocker", source_tool: "report_blocker", blocker_id: "local-clear-blocker", active: true}
+               })
+
+      second_payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-packages/#{work_package.id}/blockers/local-clear-blocker/clear", %{})
+        |> json_response(200)
+
+      assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, work_package.id)
+      refute Enum.any?(BlockerProjection.blockers(progress_events), & &1.active)
+      assert length(resolve_blocker_events(progress_events, "local-clear-blocker")) == 2
 
       assert {:ok, persisted_package} = WorkPackageRepository.get(repo, work_package.id)
       assert persisted_package.status == "implementing"
 
-      package_card = payload["dashboard"]["board"]["groups"] |> Map.values() |> List.flatten() |> Enum.find(&(&1["id"] == work_package.id))
+      package_card = second_payload["dashboard"]["board"]["groups"] |> Map.values() |> List.flatten() |> Enum.find(&(&1["id"] == work_package.id))
       assert package_card["active_blocker_count"] == 0
       assert package_card["active_blockers"] == []
     end)
@@ -6531,6 +6551,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
   defp blocker_source_tool(true), do: "report_blocker"
   defp blocker_source_tool(false), do: "resolve_blocker"
+
+  defp resolve_blocker_events(progress_events, blocker_id) do
+    Enum.filter(progress_events, &(get_in(&1.payload, ["source_tool"]) == "resolve_blocker" and get_in(&1.payload, ["blocker_id"]) == blocker_id))
+  end
 
   defp work_request_attrs(overrides) do
     defaults = %{
