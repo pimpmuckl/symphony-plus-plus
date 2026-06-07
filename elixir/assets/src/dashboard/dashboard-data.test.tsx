@@ -68,7 +68,7 @@ describe("dashboard data helpers", () => {
 
     expect(items).toEqual([
       expect.objectContaining({
-        id: "blocker-1",
+        id: "active_blocking_edge:pkg-blocked:blocker-1",
         title: "Needs scope approval",
         detail: "Review asked for one more file.",
         selection: expect.objectContaining({
@@ -78,6 +78,29 @@ describe("dashboard data helpers", () => {
         }),
       }),
     ]);
+  });
+
+  it("keeps blocker list item ids unique across packages", () => {
+    const packages: WorkPackageCard[] = [
+      {
+        id: "pkg-a",
+        title: "Package A",
+        status: "blocked",
+        active_blocker_count: 1,
+        active_blockers: [{ id: "blocker-1", active: true, summary: "Shared blocker id" }],
+      },
+      {
+        id: "pkg-b",
+        title: "Package B",
+        status: "blocked",
+        active_blocker_count: 1,
+        active_blockers: [{ id: "blocker-1", active: true, summary: "Shared blocker id" }],
+      },
+    ];
+
+    const ids = activeBlockerItems(packages).map((item) => item.id);
+
+    expect(ids).toEqual(["active_blocking_edge:pkg-a:blocker-1", "active_blocking_edge:pkg-b:blocker-1"]);
   });
 
   it("hides zero plan and attention plates from repo summaries", () => {

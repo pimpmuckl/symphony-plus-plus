@@ -120,7 +120,7 @@ function activeBlockerItemsForPackage(pkg: WorkPackageCard, packageSelections: R
 
   if (blockerEdges.length > 0) {
     return blockerEdges.map((edge) => ({
-      id: edge.blocker_id || edge.id,
+      id: edge.id,
       title: edge.summary || pkg.title || edge.blocker_id || edge.id,
       repo: repoDisplayName(pkg),
       status: operational?.key || pkg.status,
@@ -135,7 +135,7 @@ function activeBlockerItemsForPackage(pkg: WorkPackageCard, packageSelections: R
       const edge = packageBlockerEdge(blocker, pkg, { detail, slice });
 
       return {
-        id: edge.blocker_id || edge.id,
+        id: edge.id,
         title: edge.summary || pkg.title || edge.blocker_id || edge.id,
         repo: repoDisplayName(pkg),
         status: operational?.key || pkg.status,
