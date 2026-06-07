@@ -78,6 +78,7 @@ $ArchitectTools = @(
   "resolve_blocker",
   "read_work_request_delivery_board",
   "reconcile_work_request",
+  "cleanup_work_request_planned_slice_runtime",
   "record_planned_slice_delivery",
   "revoke_planned_slice_worker_key",
   "list_guidance_requests",

@@ -878,8 +878,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     assert get_in(tools_by_name, ["reconcile_work_request", "inputSchema", "required"]) == ["work_request_id"]
     assert get_in(tools_by_name, ["reconcile_work_request", "inputSchema", "properties", "apply", "type"]) == "boolean"
 
+    cleanup_schema = get_in(tools_by_name, ["cleanup_work_request_planned_slice_runtime", "inputSchema"])
     delivery_schema = get_in(tools_by_name, ["record_planned_slice_delivery", "inputSchema"])
     revoke_schema = get_in(tools_by_name, ["revoke_planned_slice_worker_key", "inputSchema"])
+
+    assert cleanup_schema["required"] == ["work_request_id", "planned_slice_id", "outcome", "reason"]
+    assert get_in(cleanup_schema, ["properties", "outcome", "enum"]) == ["superseded", "abandoned"]
+    assert get_in(cleanup_schema, ["properties", "reason", "description"]) =~ "audit reason"
 
     assert delivery_schema["required"] == ["work_request_id", "planned_slice_id", "outcome", "idempotency_key"]
     assert get_in(delivery_schema, ["properties", "outcome", "enum"]) == ["pr_merged", "completed_no_pr", "superseded", "abandoned"]

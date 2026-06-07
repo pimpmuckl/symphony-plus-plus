@@ -94,6 +94,16 @@ target-scope checks.
 mints a worker grant, and returns the same simple `claim_local_assignment`
 bootstrap shape.
 
+`cleanup_work_request_planned_slice_runtime` is the WR architect cleanup path
+for linked planned-slice runtime that has been superseded or abandoned by
+delivery truth. It requires `outcome` plus the same superseded or abandoned
+evidence that will be used for closeout. It revokes linked worker grants,
+releases non-paused local claim leases, clears recoverable worker MCP session
+bindings for the linked WorkPackage, and records audit progress. Paused leases
+and fresh active AgentRun evidence fail closed; after cleanup, record the
+delivery outcome with
+`record_planned_slice_delivery`.
+
 `mint_child_worker_key` accepts an optional `template` object. The template may
 set non-secret `claimed_by`, `capabilities`, and `expires_at`; it cannot provide
 secret handoff options.
