@@ -1,10 +1,10 @@
-import type { GuidanceItem, PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
+import type { ActiveBlockingEdge, GuidanceItem, PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
 import { AlertTriangle, MessageSquareText } from "lucide-react";
 
 import { operationalBadgeVariant, operationalLabel, sliceCardTone, sliceLane, sliceOperationalState } from "@/lib/operational-state";
 import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
 import type { CardDetailSelect, DashboardUpdateAnimations } from "./runtime";
-import { openGuidanceForSlice } from "./workstream-board-actions";
+import { openBlockersForSlices, openGuidanceForSlice } from "./workstream-board-actions";
 import { sliceProgressPercent } from "./workstream-progress";
 import { rowProgressAttentionState, rowProgressIconState, sliceBlockerCount, sliceGuidanceCount } from "./workstream-row-state";
 import { EntityCountChips, ProgressStateIcon, RowBadgeSlot, SliceKindSlot } from "./workstream-row-ui";
@@ -18,6 +18,7 @@ export function DirectSliceGroup({
   slicesById,
   packageById,
   activeBlockerCountBySliceId,
+  activeBlockingEdges,
   guidanceItems,
   onSelectGuidance,
   onSelectCard,
@@ -29,6 +30,7 @@ export function DirectSliceGroup({
   slicesById: Map<string, PlannedSlice>;
   packageById: Map<string, WorkPackageCard>;
   activeBlockerCountBySliceId: Map<string, number>;
+  activeBlockingEdges: ActiveBlockingEdge[];
   guidanceItems: GuidanceItem[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
@@ -47,6 +49,7 @@ export function DirectSliceGroup({
           slice={slice}
           pkg={packageById.get(slice.work_package_id || "")}
           activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+          activeBlockingEdges={activeBlockingEdges}
           guidanceItems={guidanceItems}
           onSelectGuidance={onSelectGuidance}
           onSelectCard={onSelectCard}
@@ -62,6 +65,7 @@ export function ProductSliceRow({
   slice,
   pkg,
   activeBlockerCountBySliceId,
+  activeBlockingEdges,
   guidanceItems,
   onSelectGuidance,
   onSelectCard,
@@ -71,6 +75,7 @@ export function ProductSliceRow({
   slice: PlannedSlice;
   pkg?: WorkPackageCard;
   activeBlockerCountBySliceId: Map<string, number>;
+  activeBlockingEdges: ActiveBlockingEdge[];
   guidanceItems: GuidanceItem[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
@@ -86,9 +91,10 @@ export function ProductSliceRow({
   const progress = sliceProgressPercent(slice, pkg);
   const progressIconState = rowProgressIconState({ blockerCount, guidanceCount, progress, tone });
   const progressAttentionState = rowProgressAttentionState({ blockerCount, guidanceCount, tone });
+  const packageById = pkg ? new Map<string, WorkPackageCard>([[pkg.id, pkg]]) : new Map<string, WorkPackageCard>();
   const openSliceDetail = () => onSelectCard({ kind: "slice", detail, slice, pkg });
   const openGuidance = () => openGuidanceForSlice(detail, slice, pkg, guidanceItems, onSelectGuidance, onSelectCard);
-  const openBlockers = () => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice, pkg });
+  const openBlockers = () => openBlockersForSlices(detail, [slice], packageById, activeBlockerCountBySliceId, activeBlockingEdges, onSelectCard);
 
   return (
     <div

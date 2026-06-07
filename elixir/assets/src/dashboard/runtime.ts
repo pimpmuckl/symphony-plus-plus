@@ -1,4 +1,4 @@
-import type { ContextComment, DashboardPayload, HandoffCopyState, PlannedSlice, SoloSession, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
+import type { ActiveBlockingEdge, ContextComment, DashboardPayload, HandoffCopyState, PlannedSlice, SoloSession, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
 import type { UpdateMotion, UpdateMotionKind } from "@/components/dashboard/motion";
 
 declare global {
@@ -151,6 +151,7 @@ export type CardDetailSelection =
   | { kind: "request"; detail: WorkRequestDetail }
   | { kind: "slice"; detail: WorkRequestDetail; slice: PlannedSlice; pkg?: WorkPackageCard }
   | { kind: "package"; pkg: WorkPackageCard; detail?: WorkRequestDetail; slice?: PlannedSlice }
+  | { kind: "blocker"; blocker: ActiveBlockingEdge; pkg?: WorkPackageCard; detail?: WorkRequestDetail; slice?: PlannedSlice }
   | { kind: "solo"; session: SoloSession };
 
 export type CardDetailSelect = (selection: CardDetailSelection) => void;
@@ -174,6 +175,8 @@ export type WorkPackageStateAction = "merged" | "merged_and_archive" | "closed_a
 export type WorkPackageStateMutation = (workPackageId: string, action: WorkPackageStateAction, options?: { noPrEvidence?: string }) => Promise<void>;
 
 export type WorkPackageArchiveMutation = (workPackageId: string) => Promise<void>;
+
+export type WorkPackageBlockerClearMutation = (workPackageId: string, blockerId: string) => Promise<void>;
 
 export type RequestDetailUiState = {
   archiveError: string | null;

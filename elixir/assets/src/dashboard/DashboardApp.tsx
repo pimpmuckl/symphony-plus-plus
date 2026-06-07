@@ -2,7 +2,7 @@ import type { ArchitectHandoffPayload, ContextComment, CopyArchitectHandoff, Cre
 import type { NewRequestForm } from "@/components/dashboard/new-request-dialog";
 import type * as React from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { CardDetailSelection, DASHBOARD_POLL_INTERVAL_MS, DASHBOARD_RECONNECT_GRACE_MS, DashboardConnectionIssue, DashboardResponseSelector, DashboardRuntimeConfig, PR_SYNC_INTERVAL_MS, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageStateMutation, WorkRequestMutation, WorkRequestStateMutation, WorkspaceTab, copyTextToClipboard, dashboardCaughtMessage, dashboardFromEnvelope, dashboardRuntimeConfig, ensureDashboardRuntimeConfig, isReconnectableLocalOperatorError, jsonHeaders, mutationHeaders, operatorApiUrl, operatorFetch, readDashboardApiResponse, reconnectLocalOperatorSession, withLocalOperatorReconnect } from "./runtime";
+import { CardDetailSelection, DASHBOARD_POLL_INTERVAL_MS, DASHBOARD_RECONNECT_GRACE_MS, DashboardConnectionIssue, DashboardResponseSelector, DashboardRuntimeConfig, PR_SYNC_INTERVAL_MS, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageBlockerClearMutation, WorkPackageStateMutation, WorkRequestMutation, WorkRequestStateMutation, WorkspaceTab, copyTextToClipboard, dashboardCaughtMessage, dashboardFromEnvelope, dashboardRuntimeConfig, ensureDashboardRuntimeConfig, isReconnectableLocalOperatorError, jsonHeaders, mutationHeaders, operatorApiUrl, operatorFetch, readDashboardApiResponse, reconnectLocalOperatorSession, withLocalOperatorReconnect } from "./runtime";
 import { DashboardShell } from "./dashboard-shell";
 import { SoloSessions } from "./solo-sessions";
 import { WorkstreamsPane } from "./workspace-tabs";
@@ -379,6 +379,18 @@ function useDashboardController() {
     setSelectedCardDetail(null);
   }, [applyDashboardResponse, setSelectedCardDetail]);
 
+  const clearWorkPackageBlocker = useCallback<WorkPackageBlockerClearMutation>(async (workPackageId, blockerId) => {
+    await withLocalOperatorReconnect(async () => {
+      const response = await operatorFetch(operatorApiUrl(`/work-packages/${encodeURIComponent(workPackageId)}/blockers/${encodeURIComponent(blockerId)}/clear`), {
+        method: "POST",
+        headers: await mutationHeaders(),
+        body: JSON.stringify({}),
+      });
+      await applyDashboardResponse(response, "Blocker was not cleared", dashboardFromEnvelope);
+    });
+    setSelectedCardDetail(null);
+  }, [applyDashboardResponse, setSelectedCardDetail]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -444,7 +456,7 @@ function useDashboardController() {
   const packageSelections = useMemo(() => packageSelectionIndex(requestDetails, packages), [packages, requestDetails]);
   const archiveAfterDays = dashboard?.settings?.work_request_archive_after_days ?? 14;
   const guidanceItems = useMemo(() => allGuidanceItems(dashboard), [dashboard]);
-  const blockerItems = useMemo(() => activeBlockerItems(packages, packageSelections), [packages, packageSelections]);
+  const blockerItems = useMemo(() => activeBlockerItems(packages, packageSelections, dashboard?.active_blocking_edges ?? []), [dashboard?.active_blocking_edges, packages, packageSelections]);
   const finishedPackageLimit = dashboard?.board?.package_limits?.finished_work_packages?.limit;
   const finishedHighlightLimit = finishedPackageLimit === undefined ? FINISHED_HIGHLIGHT_LIMIT : finishedPackageLimit;
   const finishedHighlights = useMemo(() => recentFinishedHighlights(packages, requests, requestDetails, packageSelections, finishedHighlightLimit), [
@@ -529,6 +541,7 @@ function useDashboardController() {
     linkedWorkPackageIds,
     loading,
     onArchiveWorkPackage: archiveWorkPackage,
+    onClearWorkPackageBlocker: clearWorkPackageBlocker,
     onArchiveWorkRequest: archiveWorkRequest,
     onHideEmptyWorkstreamsChange: setHideEmptyWorkstreams,
     onReconnectDashboard: reconnectDashboard,

@@ -21,11 +21,8 @@ import { WorkstreamContextBar } from "./workstream-context-bar";
 import { contextPathValue } from "./workstream-context-path";
 import type { ContextPathPart } from "./workstream-context-path";
 import { DirectSliceGroup, ProductSliceRow } from "./workstream-slice-row";
-
-type TreeIndex = {
-  childrenByParent: Map<string, ProductTreeNode[]>;
-  rootNodes: ProductTreeNode[];
-};
+import { buildTreeIndex } from "./workstream-tree-index";
+import type { TreeIndex } from "./workstream-tree-index";
 
 type ProductTreeRenderContext = {
   detail: WorkRequestDetail;
@@ -34,6 +31,7 @@ type ProductTreeRenderContext = {
   packageById: Map<string, WorkPackageCard>;
   activeBlockerCountBySliceId: Map<string, number>;
   activeBlockerKeysBySliceId: Map<string, Set<string>>;
+  activeBlockingEdges: ActiveBlockingEdge[];
   guidanceItems: GuidanceItem[];
   onSelectCard: CardDetailSelect;
   onSelectGuidance: (item: GuidanceItem) => void;
@@ -243,6 +241,7 @@ function ProductRequestRow({
             slices={slices}
             activeBlockerCountBySliceId={activeBlockerCountBySliceId}
             activeBlockerKeysBySliceId={activeBlockerKeysBySliceId}
+            activeBlockingEdges={activeBlockingEdges}
             guidanceItems={guidanceItems}
             onSelectGuidance={onSelectGuidance}
             onSelectCard={onSelectCard}
@@ -321,6 +320,7 @@ function ProductPlanBody({
   requestPath,
   activeBlockerCountBySliceId,
   activeBlockerKeysBySliceId,
+  activeBlockingEdges,
 }: {
   detail: WorkRequestDetail;
   packageById: Map<string, WorkPackageCard>;
@@ -332,6 +332,7 @@ function ProductPlanBody({
   requestPath: ContextPathPart[];
   activeBlockerCountBySliceId: Map<string, number>;
   activeBlockerKeysBySliceId: Map<string, Set<string>>;
+  activeBlockingEdges: ActiveBlockingEdge[];
 }) {
   const treeIndex = useMemo(() => buildTreeIndex(detail.product_tree?.nodes ?? [], detail.product_tree?.root_node_ids ?? []), [detail.product_tree]);
   const slicesById = useMemo(() => new Map(slices.map((slice) => [slice.id, slice])), [slices]);
@@ -344,6 +345,7 @@ function ProductPlanBody({
     packageById,
     activeBlockerCountBySliceId,
     activeBlockerKeysBySliceId,
+    activeBlockingEdges,
     guidanceItems,
     onSelectCard,
     onSelectGuidance,
@@ -371,6 +373,7 @@ function ProductPlanBody({
         slicesById={slicesById}
         packageById={packageById}
         activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+        activeBlockingEdges={activeBlockingEdges}
         guidanceItems={guidanceItems}
         onSelectGuidance={onSelectGuidance}
         onSelectCard={onSelectCard}
@@ -402,7 +405,7 @@ function ProductTreeNodeRow({
   path: ContextPathPart[];
   context: ProductTreeRenderContext;
 }) {
-  const { activeBlockerCountBySliceId, activeBlockerKeysBySliceId, detail, guidanceItems, onSelectCard, onSelectGuidance, packageById, treeIndex, slicesById } = context;
+  const { activeBlockerCountBySliceId, activeBlockerKeysBySliceId, activeBlockingEdges, detail, guidanceItems, onSelectCard, onSelectGuidance, packageById, treeIndex, slicesById } = context;
   const childNodes = treeIndex.childrenByParent.get(node.id) ?? [];
   const nodeTitle = node.title || node.id;
   const nodePath = [...path, { id: node.id, label: nodeTitle }];
@@ -414,7 +417,7 @@ function ProductTreeNodeRow({
   const hasDisclosureContent = productNodeHasDisclosureContent(node, nodeSlices, childNodes);
   const [expanded, setExpanded] = useState(() => !nodeFinished);
   const openGuidance = () => openGuidanceForSlices(detail, nodeSubtreeSlices, packageById, guidanceItems, onSelectGuidance, onSelectCard);
-  const openBlockers = () => openBlockersForSlices(detail, nodeSubtreeSlices, packageById, activeBlockerCountBySliceId, onSelectCard);
+  const openBlockers = () => openBlockersForSlices(detail, nodeSubtreeSlices, packageById, activeBlockerCountBySliceId, activeBlockingEdges, onSelectCard);
   const collapseNode = useCallback(() => setExpanded(false), [setExpanded]);
   useAutoCollapseWhenDone(nodeFinished, expanded, collapseNode, nodeFinished);
 
@@ -476,7 +479,7 @@ function ProductTreeNodeContent({
   path: ContextPathPart[];
   context: ProductTreeRenderContext;
 }) {
-  const { activeBlockerCountBySliceId, detail, guidanceItems, packageById, onSelectCard, onSelectGuidance, updateAnimations } = context;
+  const { activeBlockerCountBySliceId, activeBlockingEdges, detail, guidanceItems, packageById, onSelectCard, onSelectGuidance, updateAnimations } = context;
 
   return (
     <div id={contentId} className="v3-product-node-content" hidden={hidden}>
@@ -490,6 +493,7 @@ function ProductTreeNodeContent({
               slice={slice}
               pkg={packageById.get(slice.work_package_id || "")}
               activeBlockerCountBySliceId={activeBlockerCountBySliceId}
+              activeBlockingEdges={activeBlockingEdges}
               guidanceItems={guidanceItems}
               onSelectGuidance={onSelectGuidance}
               onSelectCard={onSelectCard}
@@ -513,30 +517,4 @@ function ProductTreeNodeContent({
       ) : null}
     </div>
   );
-}
-
-function buildTreeIndex(nodes: ProductTreeNode[], rootNodeIds: string[]): TreeIndex {
-  const sortedNodes = nodes.toSorted(compareProductNodes);
-  const nodeById = new Map(sortedNodes.map((node) => [node.id, node]));
-  const childrenByParent = new Map<string, ProductTreeNode[]>();
-  const explicitRoots = rootNodeIds.map((id) => nodeById.get(id)).filter((node): node is ProductTreeNode => Boolean(node));
-
-  sortedNodes.forEach((node) => {
-    if (!node.parent_id) return;
-    const children = childrenByParent.get(node.parent_id) ?? [];
-    children.push(node);
-    childrenByParent.set(node.parent_id, children);
-  });
-
-  return {
-    childrenByParent,
-    rootNodes: explicitRoots.length > 0 ? explicitRoots : sortedNodes.filter((node) => !node.parent_id),
-  };
-}
-
-function compareProductNodes(left: ProductTreeNode, right: ProductTreeNode) {
-  const leftPosition = Number.isFinite(left.position) ? left.position ?? 0 : 0;
-  const rightPosition = Number.isFinite(right.position) ? right.position ?? 0 : 0;
-  if (leftPosition !== rightPosition) return leftPosition - rightPosition;
-  return (left.title || left.id).localeCompare(right.title || right.id);
 }

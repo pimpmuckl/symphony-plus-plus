@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import { AppDialogState, BlockerItem } from "./dashboard-state";
 import { ArchivedRequestsDialog, DashboardSettingsDialog, ThemeToggle } from "./dashboard-settings";
 import { CardDetailDialog } from "./card-detail-dialog";
-import { CardDetailSelection, DASHBOARD_LOGO_URL, DashboardConnectionIssue, DashboardTheme, DashboardUpdateAnimations, LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageStateMutation, WorkRequestMutation, WorkRequestStateMutation, WorkspaceTab, isLocalOperatorAuthRequiredMessage } from "./runtime";
+import { CardDetailSelection, DASHBOARD_LOGO_URL, DashboardConnectionIssue, DashboardTheme, DashboardUpdateAnimations, LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageBlockerClearMutation, WorkPackageStateMutation, WorkRequestMutation, WorkRequestStateMutation, WorkspaceTab, isLocalOperatorAuthRequiredMessage } from "./runtime";
 import { LiveLedgerBadge } from "./status-cards";
 import { RepoSummary } from "./dashboard-data";
 import { StatusRail, UpdateSimulationControls } from "./status-rail";
@@ -44,6 +44,7 @@ export function DashboardShell({
   loading,
   onArchiveWorkPackage,
   onArchiveWorkRequest,
+  onClearWorkPackageBlocker,
   onHideEmptyWorkstreamsChange,
   onReconnectDashboard,
   onRefreshDashboard,
@@ -85,6 +86,7 @@ export function DashboardShell({
   loading: boolean;
   onArchiveWorkPackage: WorkPackageArchiveMutation;
   onArchiveWorkRequest: WorkRequestMutation;
+  onClearWorkPackageBlocker: WorkPackageBlockerClearMutation;
   onHideEmptyWorkstreamsChange: (hide: boolean) => void;
   onReconnectDashboard: () => Promise<void>;
   onRefreshDashboard: () => Promise<void>;
@@ -244,6 +246,7 @@ export function DashboardShell({
           onChangeWorkRequestState={changeWorkRequestState}
           onChangeWorkPackageState={changeWorkPackageState}
           onArchiveWorkPackage={onArchiveWorkPackage}
+          onClearWorkPackageBlocker={onClearWorkPackageBlocker}
           linkedWorkPackageIds={linkedWorkPackageIds}
           onSubmitComment={onSubmitComment}
           onResolveComment={onResolveComment}

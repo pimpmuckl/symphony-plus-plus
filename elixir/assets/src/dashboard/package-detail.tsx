@@ -1,12 +1,14 @@
+import { CheckCircle2, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { DetailDisclosure, DetailFacts, DetailHeader, DetailList, DetailSection, DetailStatGrid } from "@/components/dashboard/detail-layout";
 import { MarkdownBlock } from "@/components/dashboard/markdown-block";
-import type { PlannedSlice, WorkPackageCard, WorkPackageDetailPayload, WorkRequestDetail } from "@/types/dashboard";
+import type { ActiveBlockingEdgeEndpoint, PlannedSlice, WorkPackageCard, WorkPackageDetailPayload, WorkRequestDetail } from "@/types/dashboard";
 import { isFinishedBoardStatus, operationalBadgeVariant, operationalLabel, sliceOperationalState } from "@/lib/operational-state";
 import { reviewLaneLabel } from "@/lib/review-signals";
 import { statusLabel } from "@/lib/status-labels";
-import { useCallback, useReducer } from "react";
-import { CardDetailSelection, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageStateAction, WorkPackageStateMutation } from "./runtime";
+import { useCallback, useReducer, useState } from "react";
+import { CardDetailSelection, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageBlockerClearMutation, WorkPackageStateAction, WorkPackageStateMutation } from "./runtime";
 import { CommentsPanel, useSyncedComments } from "./comments-panel";
 import { packageBlockerCopyText } from "./detail-copy";
 import { DetailAttentionList, RecentDecisionsDisclosure } from "./detail-extras";
@@ -14,6 +16,7 @@ import { commentStatLabel, detailDate, latestPackageProgress, packageOperational
 import { initialPackageDetailUiState, packageDetailUiReducer } from "./dashboard-state";
 import { repoDisplayName } from "./dashboard-persistence";
 import { PackageDetailBody, PackageDetailDialogs, type PackageDetailComments, type PackageDetailControls, type PackageDetailDialogControls, type PackageDetailPackage, type PackageDetailStatus } from "./package-detail-presentation";
+import { activePackageBlockers, packageBlockerEdge } from "./blocker-selection";
 
 export function SliceDetailContent({
   detail,
@@ -115,6 +118,106 @@ export function SliceDetailContent({
       </div>
     </>
   );
+}
+
+export function BlockerDetailContent({
+  selection,
+  detailPayload,
+  loading,
+  error,
+  onClearWorkPackageBlocker,
+}: {
+  selection: Extract<CardDetailSelection, { kind: "blocker" }>;
+  detailPayload: WorkPackageDetailPayload | null;
+  loading: boolean;
+  error: string | null;
+  onClearWorkPackageBlocker: WorkPackageBlockerClearMutation;
+}) {
+  const [pending, setPending] = useState(false);
+  const [clearError, setClearError] = useState<string | null>(null);
+  const pkg = selection.pkg || detailPayload?.work_package;
+  const detail = selection.detail;
+  const slice = selection.slice;
+  const loadedBlocker = matchingLoadedBlocker(selection.blocker.blocker_id, detailPayload);
+  const blocker = loadedBlocker && pkg ? packageBlockerEdge(loadedBlocker, pkg, { detail, slice }) : selection.blocker;
+  const blockerId = blocker.blocker_id;
+  const displayBlockerId = blockerId || blocker.id;
+  const workPackageId = pkg?.id || blocker.work_package_id || endpointId(blocker.from, "work_package") || endpointId(blocker.to, "work_package");
+  const title = blocker.summary || pkg?.title || displayBlockerId || "Active blocker";
+
+  async function clearBlocker() {
+    if (!workPackageId || !blockerId) return;
+
+    setPending(true);
+    setClearError(null);
+
+    try {
+      await onClearWorkPackageBlocker(workPackageId, blockerId);
+    } catch (caught) {
+      setClearError(caught instanceof Error ? caught.message : "Blocker was not cleared");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <>
+      <DetailHeader
+        title={title}
+        eyebrow={`${pkg ? repoDisplayName(pkg) : detail ? repoDisplayName(detail.work_request) : "Work package"} / active blocker`}
+        badge={<Badge variant="danger">Blocked</Badge>}
+      />
+      <div className="detail-modal-reveal-body grid gap-4">
+        <DetailStatGrid
+          stats={[
+            { label: "Blocker", value: displayBlockerId || "Not recorded" },
+            { label: "Package", value: workPackageId || "Not linked" },
+            { label: "Request", value: detail?.work_request.id || blocker.work_request_id || "Not linked" },
+            { label: "Slice", value: slice?.id || blocker.planned_slice_id || "Not linked" },
+            { label: "Updated", value: detailDate(blocker.updated_at) },
+          ]}
+        />
+        <DetailSection title="Blocker">
+          <MarkdownBlock value={blocker.body || blocker.summary || ""} empty={loading ? "Loading blocker detail..." : "No blocker body recorded."} />
+          {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
+        </DetailSection>
+        <DetailSection title="Context">
+          <DetailFacts
+            facts={[
+              ["From", endpointLabel(blocker.from)],
+              ["To", endpointLabel(blocker.to)],
+              ["Work Package", pkg?.title || workPackageId || "Not linked"],
+              ["Planned Slice", slice?.title || slice?.id || blocker.planned_slice_id || "Not linked"],
+              ["Work Request", detail?.work_request.title || detail?.work_request.id || blocker.work_request_id || "Not linked"],
+            ]}
+          />
+        </DetailSection>
+        <div className="flex flex-col items-start gap-2 border-t border-destructive/20 pt-4">
+          <Button type="button" size="sm" variant="destructive" onClick={() => void clearBlocker()} disabled={pending || !workPackageId || !blockerId}>
+            {pending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+            Clear
+          </Button>
+          {clearError ? <p className="text-xs text-destructive">{clearError}</p> : null}
+          {!workPackageId || !blockerId ? <p className="text-xs text-destructive">Blocker cannot be cleared because its package or blocker id is missing.</p> : null}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function matchingLoadedBlocker(blockerId: string | null | undefined, detailPayload: WorkPackageDetailPayload | null) {
+  const blockers = activePackageBlockers(detailPayload?.work_package ? { ...detailPayload.work_package, active_blockers: detailPayload.blockers || [] } : undefined);
+  if (blockerId) return blockers.find((blocker) => blocker.id === blockerId) || null;
+  return blockers[0] || null;
+}
+
+function endpointId(endpoint: ActiveBlockingEdgeEndpoint | undefined, kind: ActiveBlockingEdgeEndpoint["kind"]) {
+  return endpoint?.kind === kind ? endpoint.id : null;
+}
+
+function endpointLabel(endpoint: ActiveBlockingEdgeEndpoint | undefined) {
+  if (!endpoint) return "Not recorded";
+  return `${statusLabel(endpoint.kind)} ${endpoint.id}`;
 }
 
 export function PackageDetailContent({

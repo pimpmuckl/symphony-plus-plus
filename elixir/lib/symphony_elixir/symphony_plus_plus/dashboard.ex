@@ -770,6 +770,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
              runtime: runtime,
              latest_progress_at: latest_progress_at(progress_events),
              active_blocker_count: Enum.count(blockers, & &1.active),
+             active_blockers: active_blockers(blockers),
              artifact_count: status_summary.artifact_count,
              finding_count: status_summary.finding_count,
              plan: plan_summary(status_summary.plan_nodes),

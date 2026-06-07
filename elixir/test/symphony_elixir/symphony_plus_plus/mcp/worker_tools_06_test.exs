@@ -1640,8 +1640,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
         session: session
       )
 
-    assert "no_active_blockers" in get_in(blocked_response, ["error", "data", "missing"])
-    assert Enum.any?(get_in(blocked_response, ["error", "data", "reasons"]), &(&1["gate"] == "no_active_blockers"))
+    assert get_in(blocked_response, ["error", "data", "reason_code"]) == "blocker_closeout_required"
+    package_id = package.id
+    assert [%{"blocker_id" => "blocker-1", "work_package_id" => ^package_id}] = get_in(blocked_response, ["error", "data", "active_blockers"])
+
+    still_blocked_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "ready-still-blocked",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "mark_ready",
+            "arguments" => %{"blocker_closeout" => %{"decision" => "still_active", "blocker_ids" => ["blocker-1"]}}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert "no_active_blockers" in get_in(still_blocked_response, ["error", "data", "missing"])
+    assert Enum.any?(get_in(still_blocked_response, ["error", "data", "reasons"]), &(&1["gate"] == "no_active_blockers"))
 
     resolved_response =
       MCPHarness.request(

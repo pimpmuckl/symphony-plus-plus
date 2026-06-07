@@ -7,8 +7,8 @@ import { dashboardPrefersReducedMotion } from "@/components/dashboard/motion-uti
 import { formatStatus } from "@/lib/status-labels";
 import { operationalBadgeVariant, operationalLabel, sliceOperationalState } from "@/lib/operational-state";
 import { useEffect, useReducer, useState } from "react";
-import { CARD_DETAIL_HEIGHT_MS, CARD_DETAIL_LOADING_HOLD_MS, CARD_DETAIL_WIDTH_MS, CardDetailSelection, CardDetailStage, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageStateMutation, WorkRequestMutation, WorkRequestStateMutation, ensureDashboardRuntimeConfig, jsonHeaders, operatorApiUrl, operatorFetch, readDashboardApiResponse, withLocalOperatorReconnect } from "./runtime";
-import { PackageDetailContent, SliceDetailContent } from "./package-detail";
+import { CARD_DETAIL_HEIGHT_MS, CARD_DETAIL_LOADING_HOLD_MS, CARD_DETAIL_WIDTH_MS, CardDetailSelection, CardDetailStage, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageBlockerClearMutation, WorkPackageStateMutation, WorkRequestMutation, WorkRequestStateMutation, ensureDashboardRuntimeConfig, jsonHeaders, operatorApiUrl, operatorFetch, readDashboardApiResponse, withLocalOperatorReconnect } from "./runtime";
+import { BlockerDetailContent, PackageDetailContent, SliceDetailContent } from "./package-detail";
 import { RequestDetailContent } from "./request-detail";
 import { SoloSessionDetailContent } from "./solo-detail";
 import { repoDisplayName } from "./dashboard-persistence";
@@ -94,6 +94,7 @@ export function CardDetailDialog({
   onChangeWorkRequestState,
   onChangeWorkPackageState,
   onArchiveWorkPackage,
+  onClearWorkPackageBlocker,
   linkedWorkPackageIds,
   onSubmitComment,
   onResolveComment,
@@ -107,13 +108,14 @@ export function CardDetailDialog({
   onChangeWorkRequestState: WorkRequestStateMutation;
   onChangeWorkPackageState: WorkPackageStateMutation;
   onArchiveWorkPackage: WorkPackageArchiveMutation;
+  onClearWorkPackageBlocker: WorkPackageBlockerClearMutation;
   linkedWorkPackageIds: Set<string>;
   onSubmitComment: SubmitContextComment;
   onResolveComment: ResolveContextComment;
   canMutateComments: boolean;
 }) {
   const [state, dispatch] = useReducer(cardDetailDialogReducer, initialCardDetailDialogState);
-  const packageId = selection?.kind === "package" ? selection.pkg.id : null;
+  const packageId = cardDetailPackageId(selection);
   const soloSessionId = selection?.kind === "solo" ? selection.session.id : null;
   const selectionIdentity = cardDetailSelectionIdentity(selection);
   const prefersReducedDetailMotion = useDashboardReducedMotionPreference();
@@ -224,8 +226,6 @@ export function CardDetailDialog({
     }
   }, [detailStage, prefersReducedDetailMotion, selection, selectionIdentity]);
 
-  const effectiveLoadingPackage = selection?.kind === "package" && !state.package.payload && !state.package.error ? true : state.package.loading;
-  const effectiveLoadingSolo = selection?.kind === "solo" && !state.solo.payload && !state.solo.error ? true : state.solo.loading;
   const activeDetailStage = prefersReducedDetailMotion ? "ready" : detailStage.key === selectionIdentity ? detailStage.stage : "loading";
   const showStagedLoadingHeader = Boolean(selection && (activeDetailStage === "loading" || activeDetailStage === "width"));
   const detailMotionKey = cardDetailMotionKey(selection, {
@@ -242,49 +242,96 @@ export function CardDetailDialog({
       <DialogContent className="dashboard-dialog-content card-detail-dialog" data-detail-stage={activeDetailStage} resizeKey={`${activeDetailStage}:${detailMotionKey}`}>
         <NaturalDetailBody motionKey={detailMotionKey}>
           {selection && showStagedLoadingHeader ? <CardDetailLoadingContent selection={selection} stage={activeDetailStage} /> : null}
-          {selection?.kind === "request" && !showStagedLoadingHeader ? (
-            <RequestDetailContent
-              detail={selection.detail}
+          {!showStagedLoadingHeader ? (
+            <CardDetailReadyContent
+              selection={selection}
+              state={state}
               onSelectGuidance={onSelectGuidance}
               onCopyArchitectHandoff={onCopyArchitectHandoff}
               onArchiveWorkRequest={onArchiveWorkRequest}
               onChangeWorkRequestState={onChangeWorkRequestState}
-              onSubmitComment={onSubmitComment}
-              onResolveComment={onResolveComment}
-              canMutateComments={canMutateComments}
-            />
-          ) : null}
-          {selection?.kind === "slice" && !showStagedLoadingHeader ? (
-            <SliceDetailContent
-              detail={selection.detail}
-              slice={selection.slice}
-              pkg={selection.pkg}
-              onSubmitComment={onSubmitComment}
-              onResolveComment={onResolveComment}
-              canMutateComments={canMutateComments}
-            />
-          ) : null}
-          {selection?.kind === "package" && !showStagedLoadingHeader ? (
-            <PackageDetailContent
-              selection={selection}
-              detailPayload={state.package.payload}
-              loading={effectiveLoadingPackage}
-              error={state.package.error}
               onChangeWorkPackageState={onChangeWorkPackageState}
               onArchiveWorkPackage={onArchiveWorkPackage}
+              onClearWorkPackageBlocker={onClearWorkPackageBlocker}
               linkedWorkPackageIds={linkedWorkPackageIds}
               onSubmitComment={onSubmitComment}
               onResolveComment={onResolveComment}
               canMutateComments={canMutateComments}
             />
           ) : null}
-          {selection?.kind === "solo" && !showStagedLoadingHeader ? (
-            <SoloSessionDetailContent session={selection.session} detailPayload={state.solo.payload} loading={effectiveLoadingSolo} error={state.solo.error} />
-          ) : null}
         </NaturalDetailBody>
       </DialogContent>
     </Dialog>
   );
+}
+
+function CardDetailReadyContent({
+  selection,
+  state,
+  onSelectGuidance,
+  onCopyArchitectHandoff,
+  onArchiveWorkRequest,
+  onChangeWorkRequestState,
+  onChangeWorkPackageState,
+  onArchiveWorkPackage,
+  onClearWorkPackageBlocker,
+  linkedWorkPackageIds,
+  onSubmitComment,
+  onResolveComment,
+  canMutateComments,
+}: {
+  selection: CardDetailSelection | null;
+  state: CardDetailDialogState;
+  onSelectGuidance: (item: GuidanceItem) => void;
+  onCopyArchitectHandoff: CopyArchitectHandoff;
+  onArchiveWorkRequest: WorkRequestMutation;
+  onChangeWorkRequestState: WorkRequestStateMutation;
+  onChangeWorkPackageState: WorkPackageStateMutation;
+  onArchiveWorkPackage: WorkPackageArchiveMutation;
+  onClearWorkPackageBlocker: WorkPackageBlockerClearMutation;
+  linkedWorkPackageIds: Set<string>;
+  onSubmitComment: SubmitContextComment;
+  onResolveComment: ResolveContextComment;
+  canMutateComments: boolean;
+}) {
+  if (!selection) return null;
+
+  switch (selection.kind) {
+    case "request":
+      return (
+        <RequestDetailContent
+          detail={selection.detail}
+          onSelectGuidance={onSelectGuidance}
+          onCopyArchitectHandoff={onCopyArchitectHandoff}
+          onArchiveWorkRequest={onArchiveWorkRequest}
+          onChangeWorkRequestState={onChangeWorkRequestState}
+          onSubmitComment={onSubmitComment}
+          onResolveComment={onResolveComment}
+          canMutateComments={canMutateComments}
+        />
+      );
+    case "slice":
+      return <SliceDetailContent detail={selection.detail} slice={selection.slice} pkg={selection.pkg} onSubmitComment={onSubmitComment} onResolveComment={onResolveComment} canMutateComments={canMutateComments} />;
+    case "package":
+      return (
+        <PackageDetailContent
+          selection={selection}
+          detailPayload={state.package.payload}
+          loading={!state.package.payload && !state.package.error ? true : state.package.loading}
+          error={state.package.error}
+          onChangeWorkPackageState={onChangeWorkPackageState}
+          onArchiveWorkPackage={onArchiveWorkPackage}
+          linkedWorkPackageIds={linkedWorkPackageIds}
+          onSubmitComment={onSubmitComment}
+          onResolveComment={onResolveComment}
+          canMutateComments={canMutateComments}
+        />
+      );
+    case "blocker":
+      return <BlockerDetailContent selection={selection} detailPayload={state.package.payload} loading={!state.package.payload && !state.package.error} error={state.package.error} onClearWorkPackageBlocker={onClearWorkPackageBlocker} />;
+    case "solo":
+      return <SoloSessionDetailContent session={selection.session} detailPayload={state.solo.payload} loading={!state.solo.payload && !state.solo.error ? true : state.solo.loading} error={state.solo.error} />;
+  }
 }
 
 function useDashboardReducedMotionPreference() {
@@ -313,9 +360,23 @@ function cardDetailSelectionIdentity(selection: CardDetailSelection | null) {
       return `slice:${selection.slice.id}:${selection.pkg?.id || "undispatched"}`;
     case "package":
       return `package:${selection.pkg.id}`;
+    case "blocker":
+      return `blocker:${selection.blocker.blocker_id || selection.blocker.id}:${selection.pkg?.id || selection.blocker.work_package_id || "unknown"}`;
     case "solo":
       return `solo:${selection.session.id}`;
   }
+}
+
+function cardDetailPackageId(selection: CardDetailSelection | null) {
+  if (selection?.kind === "package") return selection.pkg.id;
+  if (selection?.kind !== "blocker") return null;
+
+  return (
+    selection.pkg?.id ||
+    selection.blocker.work_package_id ||
+    (selection.blocker.from.kind === "work_package" ? selection.blocker.from.id : null) ||
+    (selection.blocker.to.kind === "work_package" ? selection.blocker.to.id : null)
+  );
 }
 
 function cardDetailContentReady(selection: CardDetailSelection | null, state: CardDetailDialogState) {
@@ -332,6 +393,10 @@ function cardDetailContentReady(selection: CardDetailSelection | null, state: Ca
       const payloadId = payload.work_package?.id;
       return !payloadId || payloadId === selection.pkg.id;
     }
+    case "blocker":
+      if (selection.blocker.blocker_id) return true;
+      if (state.package.error) return true;
+      return Boolean(state.package.payload);
     case "solo": {
       if (state.solo.error) return true;
       const payload = state.solo.payload;
@@ -370,6 +435,8 @@ function cardDetailMotionKey(
       return `slice:${selection.slice.id}:${selection.pkg?.id || "undispatched"}`;
     case "package":
       return `package:${selection.pkg.id}:${detailLoadState(state.loadingPackage, state.packageDetail, state.packageError)}`;
+    case "blocker":
+      return `blocker:${selection.blocker.blocker_id || selection.blocker.id}:${selection.pkg?.id || selection.blocker.work_package_id || "unknown"}`;
     case "solo":
       return `solo:${selection.session.id}:${detailLoadState(state.loadingSolo, state.soloDetail, state.soloError)}`;
   }
@@ -389,6 +456,8 @@ function CardDetailLoadingContent({ selection, stage }: { selection: CardDetailS
       return <SliceDetailLoadingContent detail={selection.detail} slice={selection.slice} pkg={selection.pkg} stage={stage} />;
     case "package":
       return <PackageDetailLoadingContent selection={selection} stage={stage} />;
+    case "blocker":
+      return <BlockerDetailLoadingContent selection={selection} stage={stage} />;
     case "solo":
       return <SoloSessionDetailLoadingContent session={selection.session} stage={stage} />;
   }
@@ -464,6 +533,20 @@ function PackageDetailLoadingContent({ selection, stage }: { selection: Extract<
       title={pkg.title || pkg.id}
       eyebrow={`${repoDisplayName(pkg)} / ${pkg.base_branch || "main"} / ${pkg.kind || "work package"}`}
       badge={<Badge variant={operationalBadgeVariant(operational, pkg.status)}>{operationalLabel(operational, pkg.status)}</Badge>}
+      stage={stage}
+    />
+  );
+}
+
+function BlockerDetailLoadingContent({ selection, stage }: { selection: Extract<CardDetailSelection, { kind: "blocker" }>; stage: CardDetailStage }) {
+  const blocker = selection.blocker;
+  const pkg = selection.pkg;
+
+  return (
+    <DetailLoadingHeader
+      title={blocker.summary || pkg?.title || blocker.blocker_id || blocker.id}
+      eyebrow={`${pkg ? repoDisplayName(pkg) : selection.detail ? repoDisplayName(selection.detail.work_request) : "Work package"} / active blocker`}
+      badge={<Badge variant="danger">Blocked</Badge>}
       stage={stage}
     />
   );

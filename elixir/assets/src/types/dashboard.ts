@@ -1,4 +1,6 @@
 import type { ProductTreeProjection } from "./product-tree";
+export type { ActiveBlockingEdge, ActiveBlockingEdgeEndpoint, BlockerActor, WorkPackageBlocker } from "./dashboard-blockers";
+import type { ActiveBlockingEdge, WorkPackageBlocker } from "./dashboard-blockers";
 export type MarkdownText = string;
 export type PackagePlanSummary = {
   completed_count?: number;
@@ -143,6 +145,7 @@ export type WorkPackageCard = RepoIdentityFields & {
   comment_count?: number;
   open_comment_count?: number;
   active_blocker_count?: number;
+  active_blockers?: WorkPackageBlocker[];
   artifact_count?: number;
   finding_count?: number;
   latest_progress_at?: string | null;
@@ -394,24 +397,6 @@ export type WorkRequestDetail = {
   };
 };
 
-export type ActiveBlockingEdgeEndpoint = {
-  kind: "slice" | "work_package";
-  id: string;
-};
-
-export type ActiveBlockingEdge = {
-  id: string;
-  blocker_id: string;
-  from: ActiveBlockingEdgeEndpoint;
-  to: ActiveBlockingEdgeEndpoint;
-  summary?: string | null;
-  body?: MarkdownText | null;
-  updated_at?: string | null;
-  work_request_id?: string | null;
-  planned_slice_id?: string | null;
-  work_package_id?: string | null;
-};
-
 export type GuidanceRequest = RepoIdentityFields & {
   id: string;
   work_package_id: string;
@@ -567,15 +552,7 @@ export type WorkPackageDetailPayload = {
     sequence?: number | null;
     created_at?: string | null;
   }>;
-  blockers?: Array<{
-    id?: string;
-    active?: boolean;
-    summary?: string | null;
-    body?: MarkdownText | null;
-    status?: string | null;
-    resolution?: MarkdownText | null;
-    updated_at?: string | null;
-  }>;
+  blockers?: WorkPackageBlocker[];
   guidance_requests?: GuidanceRequest[];
   agent_runs?: Array<ActiveAgentRun & {
     id?: string;
