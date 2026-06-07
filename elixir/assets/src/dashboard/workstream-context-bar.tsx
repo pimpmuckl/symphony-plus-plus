@@ -89,17 +89,27 @@ export function WorkstreamContextBar({
       });
     };
     const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    const mutationObserver = typeof MutationObserver === "undefined" ? null : new MutationObserver(update);
 
     update();
     window.addEventListener("scroll", update, { passive: true });
     window.addEventListener("resize", update);
-    if (boardRef.current) resizeObserver?.observe(boardRef.current);
+    if (boardRef.current) {
+      resizeObserver?.observe(boardRef.current);
+      mutationObserver?.observe(boardRef.current, {
+        attributeFilter: ["data-v3-context-path", "hidden"],
+        attributes: true,
+        childList: true,
+        subtree: true,
+      });
+    }
 
     return () => {
       window.cancelAnimationFrame(frame);
       window.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
       resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
     };
   }, [boardRef, repoLabel, signature]);
 
