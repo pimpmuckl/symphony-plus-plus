@@ -24,7 +24,7 @@ describe("workstream row state", () => {
     expect(rowProgressIconState({ progress: 100, tone: "finished" })).toBe("done");
     expect(rowProgressIconState({ progress: 100, blockerCount: 1, tone: "finished" })).toBe("done");
     expect(rowProgressIconState({ progress: 100, guidanceCount: 1, tone: "finished" })).toBe("done");
-    expect(rowProgressIconState({ progress: 100, blockerCount: 1, tone: "blocked" })).toBe("done");
+    expect(rowProgressIconState({ progress: 100, blockerCount: 1, tone: "blocked" })).toBe("active");
     expect(rowProgressAttentionState({ blockerCount: 1, tone: "finished" })).toBe("blocked");
     expect(rowProgressAttentionState({ guidanceCount: 1, tone: "finished" })).toBe("guidance");
     expect(rowProgressIconState({ progress: 45, blockerCount: 1, tone: "implementing" })).toBe("active");
@@ -173,6 +173,39 @@ describe("workstream row state", () => {
 
     expect(state.label).toBe("Active");
     expect(state.tone).toBe("implementing");
+  });
+
+  it("keeps active rows active at 100 percent plan progress until finished", () => {
+    const detail: WorkRequestDetail = {
+      work_request: {
+        id: "wr-active-full-progress",
+        status: "sliced",
+        operational_state: { key: "sliced", label: "Sliced" },
+      },
+      planned_slices: [plannedSlice("slice-active-full-progress", "pkg-active", "active", "Active")],
+    };
+    const packages = new Map<string, WorkPackageCard>([
+      ["pkg-active", { id: "pkg-active", status: "active", plan: { completed_count: 1, total_count: 1 } }],
+    ]);
+
+    const requestState = requestBoardState(detail, packages, { blockerCount: 0, guidanceCount: 0 }, 100);
+    const nodeState = productNodeState(
+      {
+        id: "node-active-full-progress",
+        completion_mark: "partial",
+        slice_ids: ["slice-active-full-progress"],
+      },
+      1,
+      { childrenByParent: new Map() },
+      new Map(),
+      undefined,
+      detail.planned_slices ?? [],
+      packages,
+    );
+
+    expect(requestState.kind).toBe("active");
+    expect(nodeState.statusKind).toBe("active");
+    expect(nodeState.progress).toBe(100);
   });
 
   it("keeps finished request state primary when blockers remain", () => {

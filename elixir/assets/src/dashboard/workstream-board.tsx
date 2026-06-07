@@ -76,7 +76,7 @@ export function WorkstreamBoard({
   const packageById = useMemo(() => new Map(packages.map((pkg) => [pkg.id, pkg])), [packages]);
   const blockerCounts = useMemo(() => activeBlockerEntityCounts(activeBlockingEdges, repoDetails), [activeBlockingEdges, repoDetails]);
   const boardRef = useRef<HTMLDivElement | null>(null);
-  const contextSignature = useMemo(() => sortedDetails.map((detail) => detail.work_request.id).join("|"), [sortedDetails]);
+  const contextSignature = useMemo(() => workstreamContextSignature(sortedDetails), [sortedDetails]);
 
   return (
     <div className="workstream-board-shell">
@@ -111,6 +111,25 @@ export function WorkstreamBoard({
         ) : null}
       </div>
     </div>
+  );
+}
+
+function workstreamContextSignature(details: WorkRequestDetail[]) {
+  return JSON.stringify(
+    details.map((detail) => ({
+      nodes: (detail.product_tree?.nodes ?? []).map((node) => ({
+        id: node.id,
+        label: node.title || node.id,
+        parentId: node.parent_id || null,
+        sliceIds: node.slice_ids ?? [],
+      })),
+      request: {
+        id: detail.work_request.id,
+        label: detail.work_request.title || detail.work_request.id,
+      },
+      rootNodeIds: detail.product_tree?.root_node_ids ?? [],
+      rootSliceIds: detail.product_tree?.root_slice_ids ?? [],
+    })),
   );
 }
 
@@ -168,7 +187,7 @@ function ProductRequestRow({
   const rowStyle = {
     animationDelay: `${index * 30}ms`,
   } as CSSProperties;
-  const requestFinished = progress >= 100;
+  const requestFinished = requestState.kind === "done";
   const collapseRequest = useCallback(() => onSetOpen(false), [onSetOpen]);
   useAutoCollapseWhenDone(requestFinished, expanded, collapseRequest, requestFinished);
 
@@ -390,7 +409,7 @@ function ProductTreeNodeRow({
   const nodeSlices = (node.slice_ids ?? []).map((sliceId) => slicesById.get(sliceId)).filter((slice): slice is PlannedSlice => Boolean(slice));
   const nodeSubtreeSlices = productNodeSubtreeSlices(node, treeIndex, slicesById);
   const nodeState = productNodeState(node, nodeSlices.length, treeIndex, activeBlockerCountBySliceId, activeBlockerKeysBySliceId, nodeSubtreeSlices, packageById);
-  const nodeFinished = nodeState.statusKind === "done" || nodeState.progress >= 100;
+  const nodeFinished = nodeState.statusKind === "done";
   const contentId = useId();
   const hasDisclosureContent = productNodeHasDisclosureContent(node, nodeSlices, childNodes);
   const [expanded, setExpanded] = useState(() => !nodeFinished);

@@ -42,7 +42,7 @@ export function rowProgressIconState({
   tone?: string | null;
 }): RowProgressIconState {
   if (tone === "muted") return "muted";
-  if (progress >= 100 || tone === "finished") return "done";
+  if (tone === "finished") return "done";
   if (progress > 0) return "active";
   if (blockerCount > 0 || tone === "blocked") return "blocked";
   if (guidanceCount > 0 || tone === "guidance") return "guidance";
@@ -82,7 +82,7 @@ export function requestBoardState(
   const rawStatus = request.operational_state?.key || request.status;
   return aggregateBoardRowState({
     blockerCount: counts.blockerCount,
-    completionDone: isFinishedBoardStatus(rawStatus) || progress >= 100,
+    completionDone: isFinishedBoardStatus(rawStatus),
     fallbackLabel: operationalLabel(request.operational_state, request.status),
     fallbackStatus: rawStatus,
     guidanceCount: counts.guidanceCount,
@@ -186,7 +186,7 @@ export function productNodeState(
   const boardState = aggregateBoardRowState({
     blockerCount,
     completionDeferred: mark === "deferred",
-    completionDone: mark === "done" || progress >= 100,
+    completionDone: mark === "done",
     fallbackLabel: productNodeStatusLabel(node, mark),
     fallbackStatus: mark,
     guidanceCount,
