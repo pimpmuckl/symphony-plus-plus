@@ -211,7 +211,8 @@ export function BlockerDetailContent({
 
 function matchingLoadedBlocker(blockerId: string | null | undefined, detailPayload: WorkPackageDetailPayload | null) {
   const blockers = activePackageBlockers(detailPayload?.work_package ? { ...detailPayload.work_package, active_blockers: detailPayload.blockers || [] } : undefined);
-  return blockers.find((blocker) => blocker.id === blockerId) || blockers[0] || null;
+  if (blockerId) return blockers.find((blocker) => blocker.id === blockerId) || null;
+  return blockers[0] || null;
 }
 
 function endpointId(endpoint: ActiveBlockingEdgeEndpoint | undefined, kind: ActiveBlockingEdgeEndpoint["kind"]) {

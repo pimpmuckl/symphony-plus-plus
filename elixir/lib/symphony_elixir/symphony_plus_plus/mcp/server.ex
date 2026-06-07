@@ -4769,16 +4769,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              "record_planned_slice_delivery"
            ),
          :ok <- require_planned_slice_delivery_scope(config.repo, work_request, planned_slice, attrs, filters),
-         {:ok, attrs, blocker_closeout} <-
-           maybe_apply_slice_delivery_blocker_closeout(config.repo, live_session, planned_slice, arguments, attrs),
-         {:ok, delivery} <-
+         {:ok, attrs, blocker_closeout_plan} <-
+           maybe_prepare_slice_delivery_blocker_closeout(config.repo, live_session, planned_slice, arguments, attrs),
+         {:ok, {delivery, blocker_closeout}} <-
            mutate_product_tree(
              config.repo,
              work_request_id,
              "record_planned_slice_delivery",
              recorded_by,
              fn ->
-               WorkRequestService.record_planned_slice_delivery(config.repo, work_request_id, planned_slice_id, attrs)
+               with {:ok, blocker_closeout} <- apply_prepared_blocker_closeout(config.repo, live_session, blocker_closeout_plan),
+                    {:ok, delivery} <- WorkRequestService.record_planned_slice_delivery(config.repo, work_request_id, planned_slice_id, attrs) do
+                 {:ok, {delivery, blocker_closeout}}
+               end
              end
            ),
          {:ok, planned_slices} <- WorkRequestService.list_planned_slices(config.repo, work_request_id),
@@ -5249,8 +5252,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            |> optional_put("completion_mark", completion_mark)
            |> optional_put("position", position)
            |> optional_put("created_by", created_by),
-         {:ok, blocker_closeout} <-
-           maybe_apply_product_plan_node_blocker_closeout(
+         {:ok, blocker_closeout_plan} <-
+           maybe_prepare_product_plan_node_blocker_closeout(
              config.repo,
              session,
              work_request_id,
@@ -5258,9 +5261,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              completion_mark,
              arguments
            ),
-         {:ok, {product_tree_node, detail}} <-
+         {:ok, {{product_tree_node, blocker_closeout}, detail}} <-
            mutate_product_tree_with_projection(config.repo, work_request_id, tool, created_by, fn ->
-             ProductTree.upsert_node(config.repo, attrs)
+             with {:ok, product_tree_node} <- ProductTree.upsert_node(config.repo, attrs),
+                  {:ok, blocker_closeout} <- apply_prepared_blocker_closeout(config.repo, session, blocker_closeout_plan) do
+               {:ok, {product_tree_node, blocker_closeout}}
+             end
            end) do
       {:ok,
        tool_result(%{
@@ -6411,19 +6417,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp maybe_apply_slice_delivery_blocker_closeout(
+  defp maybe_prepare_slice_delivery_blocker_closeout(
          repo,
          %Session{} = session,
          %PlannedSlice{work_package_id: work_package_id},
          arguments,
          attrs
        ) do
-    case apply_scoped_blocker_closeout(repo, session, [work_package_id], arguments, "record_planned_slice_delivery") do
-      {:ok, %{"decision" => "still_active"} = closeout} ->
-        {:ok, Map.put(attrs, "allow_active_blocker_closeout", true), closeout}
+    case prepare_scoped_blocker_closeout(repo, session, [work_package_id], arguments, "record_planned_slice_delivery") do
+      {:ok, closeout_plan} ->
+        attrs =
+          if blocker_closeout_decision(closeout_plan) == "still_active" do
+            Map.put(attrs, "allow_active_blocker_closeout", true)
+          else
+            attrs
+          end
 
-      {:ok, closeout} ->
-        {:ok, attrs, closeout}
+        {:ok, attrs, closeout_plan}
 
       {:tool_error, reason} ->
         {:tool_error, reason}
@@ -6433,44 +6443,55 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp maybe_apply_work_package_status_blocker_closeout(repo, %Session{} = session, status, arguments)
+  defp maybe_prepare_work_package_status_blocker_closeout(repo, %Session{} = session, status, arguments)
        when status in @terminal_work_package_statuses do
-    apply_scoped_blocker_closeout(repo, session, [Session.work_package_id(session)], arguments, "set_status")
+    prepare_scoped_blocker_closeout(repo, session, [Session.work_package_id(session)], arguments, "set_status")
   end
 
-  defp maybe_apply_work_package_status_blocker_closeout(_repo, %Session{}, _status, _arguments) do
-    {:ok, blocker_closeout_not_needed()}
+  defp maybe_prepare_work_package_status_blocker_closeout(_repo, %Session{}, _status, _arguments) do
+    {:ok, :not_needed}
   end
 
-  defp maybe_apply_product_plan_node_blocker_closeout(_repo, %Session{}, _work_request_id, _node_id, completion_mark, _arguments)
+  defp maybe_prepare_product_plan_node_blocker_closeout(_repo, %Session{}, _work_request_id, _node_id, completion_mark, _arguments)
        when completion_mark not in @terminal_product_tree_completion_marks do
-    {:ok, blocker_closeout_not_needed()}
+    {:ok, :not_needed}
   end
 
-  defp maybe_apply_product_plan_node_blocker_closeout(_repo, %Session{}, _work_request_id, nil, _completion_mark, _arguments) do
-    {:ok, blocker_closeout_not_needed()}
+  defp maybe_prepare_product_plan_node_blocker_closeout(_repo, %Session{}, _work_request_id, nil, _completion_mark, _arguments) do
+    {:ok, :not_needed}
   end
 
-  defp maybe_apply_product_plan_node_blocker_closeout(repo, %Session{} = session, work_request_id, product_tree_node_id, _completion_mark, arguments) do
+  defp maybe_prepare_product_plan_node_blocker_closeout(repo, %Session{} = session, work_request_id, product_tree_node_id, _completion_mark, arguments) do
     with {:ok, work_package_ids} <- product_plan_node_work_package_ids(repo, work_request_id, product_tree_node_id) do
-      apply_scoped_blocker_closeout(repo, session, work_package_ids, arguments, "upsert_work_request_product_plan_node")
+      prepare_scoped_blocker_closeout(repo, session, work_package_ids, arguments, "upsert_work_request_product_plan_node")
     end
   end
 
-  defp apply_scoped_blocker_closeout(repo, %Session{} = session, work_package_ids, arguments, tool) do
+  defp prepare_scoped_blocker_closeout(repo, %Session{}, work_package_ids, arguments, tool) do
     with {:ok, closeout} <- optional_blocker_closeout_argument(arguments),
          {:ok, active_blockers} <- active_blockers_for_work_packages(repo, work_package_ids) do
       cond do
         active_blockers == [] ->
-          {:ok, blocker_closeout_not_needed()}
+          {:ok, :not_needed}
 
         is_nil(closeout) ->
           {:tool_error, {:blocker_closeout_required, active_blocker_payloads(active_blockers)}}
 
         true ->
-          apply_blocker_closeout_decision(repo, session, active_blockers, closeout, tool)
+          with :ok <- require_blocker_closeout_covers_active_blockers(active_blockers, closeout.blocker_ids) do
+            {:ok, %{active_blockers: active_blockers, closeout: closeout, tool: tool}}
+          end
       end
     end
+  end
+
+  defp blocker_closeout_decision(%{closeout: %{decision: decision}}), do: decision
+  defp blocker_closeout_decision(:not_needed), do: nil
+
+  defp apply_prepared_blocker_closeout(_repo, %Session{}, :not_needed), do: {:ok, blocker_closeout_not_needed()}
+
+  defp apply_prepared_blocker_closeout(repo, %Session{} = session, %{active_blockers: active_blockers, closeout: closeout, tool: tool}) do
+    apply_blocker_closeout_decision(repo, session, active_blockers, closeout, tool)
   end
 
   defp optional_blocker_closeout_argument(arguments) do
@@ -9513,8 +9534,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, expected_status} <- required_argument(arguments, "expected_status"),
          {:ok, reason} <- optional_reason(arguments),
          :ok <- reject_ready_status(status),
-         {:ok, blocker_closeout} <- maybe_apply_work_package_status_blocker_closeout(config.repo, session, status, arguments),
-         {:ok, work_package} <- set_status_transaction(config.repo, session, expected_status, status, reason) do
+         {:ok, blocker_closeout_plan} <- maybe_prepare_work_package_status_blocker_closeout(config.repo, session, status, arguments),
+         {:ok, {work_package, blocker_closeout}} <- set_status_transaction(config.repo, session, expected_status, status, reason, blocker_closeout_plan) do
       {:ok, tool_result(%{"work_package" => work_package_payload(work_package), "blocker_closeout" => blocker_closeout})}
     else
       {:tool_error, reason} -> invalid_params_error("set_status", reason)
@@ -9680,8 +9701,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_tool("mark_ready", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
          :ok <- require_worker_assignment(session.assignment),
-         {:ok, blocker_closeout} <- apply_scoped_blocker_closeout(config.repo, session, [Session.work_package_id(session)], arguments, "mark_ready"),
-         {:ok, work_package} <- mark_ready_transaction(config.repo, session) do
+         {:ok, blocker_closeout_plan} <- prepare_scoped_blocker_closeout(config.repo, session, [Session.work_package_id(session)], arguments, "mark_ready"),
+         {:ok, {work_package, blocker_closeout}} <- mark_ready_transaction(config.repo, session, blocker_closeout_plan) do
       {:ok, tool_result(%{"work_package" => work_package_payload(work_package), "ready" => true, "blocker_closeout" => blocker_closeout})}
     else
       {:tool_error, reason} ->
@@ -10033,29 +10054,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_expected_status(%WorkPackage{status: expected_status}, expected_status), do: :ok
   defp require_expected_status(%WorkPackage{}, _expected_status), do: {:tool_error, "stale_status"}
 
-  defp set_status_transaction(repo, %Session{} = session, expected_status, status, reason) do
+  defp set_status_transaction(repo, %Session{} = session, expected_status, status, reason, blocker_closeout_plan) do
     repo
     |> run_worker_transaction(fn ->
       with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
            {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
            :ok <- require_expected_status(state.work_package, expected_status),
            :ok <- reject_architect_controlled_child(state.work_package, status),
-           {:ok, _event} <- append_status_reason_event(repo, session, expected_status, status, reason) do
-        LifecycleService.transition(repo, state.work_package, status, actor(session))
+           {:ok, _event} <- append_status_reason_event(repo, session, expected_status, status, reason),
+           {:ok, work_package} <- LifecycleService.transition(repo, state.work_package, status, actor(session)),
+           {:ok, blocker_closeout} <- apply_prepared_blocker_closeout(repo, session, blocker_closeout_plan) do
+        {:ok, {work_package, blocker_closeout}}
       end
     end)
   end
 
-  defp mark_ready_transaction(repo, %Session{} = session) do
+  defp mark_ready_transaction(repo, %Session{} = session, blocker_closeout_plan) do
     repo
     |> run_worker_transaction(fn ->
       with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
            :ok <- lock_work_package(repo, Session.work_package_id(session)),
+           {:ok, blocker_closeout} <- apply_prepared_blocker_closeout(repo, session, blocker_closeout_plan),
            {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
            :ok <- readiness_gates(repo, state),
            ready_status = StateMachine.terminal_readiness_status(state.work_package),
            :ok <- StateMachine.validate_ready_transition(state.work_package, ready_status, actor(session)) do
-        WorkPackageRepository.update_status(repo, state.work_package.id, state.work_package.status, ready_status)
+        with {:ok, work_package} <- WorkPackageRepository.update_status(repo, state.work_package.id, state.work_package.status, ready_status) do
+          {:ok, {work_package, blocker_closeout}}
+        end
       end
     end)
   end
