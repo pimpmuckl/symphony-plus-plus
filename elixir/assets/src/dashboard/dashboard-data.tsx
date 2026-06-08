@@ -108,10 +108,10 @@ function activeBlockerPackageIds(edge: ActiveBlockingEdge) {
 }
 
 function activeBlockerItemsForPackage(pkg: WorkPackageCard, packageSelections: ReadonlyMap<string, CardDetailSelection>, edgesByPackageId: ReadonlyMap<string, ActiveBlockingEdge[]>): BlockerItem[] {
-  if (!packageHasActiveBlocker(pkg)) return [];
-
   const context = packageBlockerContext(pkg, packageSelections);
   const blockerEdges = edgesByPackageId.get(pkg.id) ?? [];
+  if (!packageHasActiveBlocker(pkg) && blockerEdges.length === 0) return [];
+
   const status = packageBlockerStatus(pkg);
   const reason = pkg.operational_state?.reason;
   const edgeItems = blockerEdgeItems(pkg, blockerEdges, status, reason, context);

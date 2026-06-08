@@ -236,13 +236,15 @@ function aggregateBoardRowState({
 }): BoardRowState {
   const childState = aggregateChildSliceState(slices, packageById);
   const derived = firstMatchingBoardRowState([
+    [completionDone, "done", finishedFallbackLabel(fallbackLabel)],
+    [completionDeferred, "deferred", fallbackLabel],
     [childState.active, "active"],
-    [completionDone || childState.done, "done", finishedFallbackLabel(fallbackLabel)],
+    [childState.done, "done", finishedFallbackLabel(fallbackLabel)],
     [blockerCount > 0 || childState.blocked, "blocked"],
     [guidanceCount > 0 || childState.guidance, "guidance"],
     [childState.ready, "ready"],
     [progress > 0 || fallbackStatus === "partial", "in_progress"],
-    [completionDeferred || childState.deferred, "deferred", fallbackLabel],
+    [childState.deferred, "deferred", fallbackLabel],
     [childState.notStarted, "not_started"],
   ]);
 

@@ -208,6 +208,35 @@ describe("workstream row state", () => {
     expect(nodeState.progress).toBe(100);
   });
 
+  it("keeps terminal request and product node state ahead of stale active children", () => {
+    const detail: WorkRequestDetail = {
+      work_request: {
+        id: "wr-done-active-child",
+        status: "delivered",
+        operational_state: { key: "delivered", label: "Delivered" },
+      },
+      planned_slices: [plannedSlice("slice-stale-active", "pkg-active", "active", "Active")],
+    };
+    const packages = new Map<string, WorkPackageCard>([["pkg-active", { id: "pkg-active", status: "active" }]]);
+    const requestState = requestBoardState(detail, packages, { blockerCount: 0, guidanceCount: 0 }, 100);
+    const nodeState = productNodeState(
+      {
+        id: "node-done-active-child",
+        completion_mark: "done",
+        slice_ids: ["slice-stale-active"],
+      },
+      1,
+      { childrenByParent: new Map() },
+      new Map(),
+      undefined,
+      detail.planned_slices ?? [],
+      packages,
+    );
+
+    expect(requestState.kind).toBe("done");
+    expect(nodeState.statusKind).toBe("done");
+  });
+
   it("keeps finished request state primary when blockers remain", () => {
     const detail: WorkRequestDetail = {
       work_request: {

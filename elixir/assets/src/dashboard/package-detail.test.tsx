@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { scopedBlockerDetailPayload } from "./package-detail";
+import { blockerDetailWorkPackageId, scopedBlockerDetailPayload } from "./package-detail";
 import type { CardDetailSelection } from "./runtime";
 import type { WorkPackageDetailPayload } from "@/types/dashboard";
 
@@ -25,5 +25,20 @@ describe("package detail blocker modal", () => {
     };
 
     expect(scopedBlockerDetailPayload(selection, detailPayload)).toBeNull();
+  });
+
+  it("does not use blocker source packages as clear targets", () => {
+    const selection: Extract<CardDetailSelection, { kind: "blocker" }> = {
+      kind: "blocker",
+      blocker: {
+        id: "edge-source-only",
+        blocker_id: "shared-blocker",
+        from: { kind: "work_package", id: "pkg-source" },
+        to: { kind: "slice", id: "slice-blocked" },
+        summary: "Selected blocker",
+      },
+    };
+
+    expect(blockerDetailWorkPackageId(selection, null)).toBeNull();
   });
 });

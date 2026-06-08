@@ -162,6 +162,22 @@ describe("dashboard data helpers", () => {
     expect(items.find((item) => item.selection.kind === "blocker" && item.selection.pkg?.id === blocked.id)?.id).toBe(edge.id);
   });
 
+  it("shows edge-backed blockers even when package status has not caught up", () => {
+    const blocked: WorkPackageCard = { id: "pkg-edge-only", title: "Edge-only package", status: "active", active_blocker_count: 0 };
+    const edge: ActiveBlockingEdge = {
+      id: "edge-only-blocker",
+      blocker_id: "blocker-edge-only",
+      from: { kind: "work_package", id: "pkg-source" },
+      to: { kind: "work_package", id: blocked.id },
+      summary: "Edge-only blocker",
+    };
+
+    const items = activeBlockerItems([blocked], new Map(), [edge]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.id).toBe(edge.id);
+  });
+
   it("hides zero plan and attention plates from repo summaries", () => {
     const repo = repoSummary({ guidanceCount: 0, blockerCount: 0 });
     const html = renderToStaticMarkup(<RepoSummaryStrip repo={repo} categoryCounts={{ requests: 1, planNodes: 0, slices: 2 }} />);
