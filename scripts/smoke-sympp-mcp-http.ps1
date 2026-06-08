@@ -12,8 +12,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ExpectedGenericUnboundTools = @(
-  "sympp.health",
+$SoloTools = @(
   "solo_attach",
   "solo_show",
   "solo_list",
@@ -27,9 +26,10 @@ $ExpectedGenericUnboundTools = @(
   "solo_pause",
   "solo_resume",
   "solo_complete",
-  "solo_archive",
-  "create_work_request"
+  "solo_archive"
 )
+
+$ExpectedGenericUnboundTools = @("sympp.health") + $SoloTools + @("create_work_request")
 
 $ExpectedHttpUnboundTools = @(
   "claim_local_assignment",
@@ -64,23 +64,6 @@ $ExpectedBoundWorkerTools = @(
   "submit_review_package",
   "attach_review_suite_result",
   "mark_ready"
-)
-
-$SoloTools = @(
-  "solo_attach",
-  "solo_show",
-  "solo_list",
-  "solo_record_task_plan",
-  "solo_append_progress",
-  "solo_append_finding",
-  "solo_record_decision",
-  "solo_report_blocker",
-  "solo_resolve_blocker",
-  "solo_record_validation",
-  "solo_pause",
-  "solo_resume",
-  "solo_complete",
-  "solo_archive"
 )
 
 $ArchitectTools = @(

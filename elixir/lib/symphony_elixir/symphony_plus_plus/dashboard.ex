@@ -24,6 +24,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
   alias SymphonyElixir.SymphonyPlusPlus.RepoIdentity
   alias SymphonyElixir.SymphonyPlusPlus.ReviewProfiles
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Normalization, as: SoloSessionNormalization
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service, as: SoloSessionsService
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
@@ -1782,6 +1783,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
             select: %{
               solo_session_id: entry.solo_session_id,
               id: entry.id,
+              entry_kind: entry.entry_kind,
               sequence: entry.sequence,
               status: entry.status,
               payload: entry.payload
@@ -1794,7 +1796,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       entries
       |> Enum.group_by(& &1.solo_session_id)
       |> Map.new(fn {session_id, session_entries} ->
-        {session_id, solo_session_active_blocker_count(session_entries)}
+        {session_id, SoloSessionNormalization.active_blocker_count(session_entries)}
       end)
 
     {:ok, counts}
@@ -1910,39 +1912,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       updated_at: timestamp(entry.updated_at)
     }
   end
-
-  defp solo_session_active_blocker_count(entries) do
-    entries
-    |> Enum.sort_by(&{Map.get(&1, :sequence) || 0, Map.get(&1, :id) || ""})
-    |> Enum.reduce(%{}, fn entry, statuses ->
-      Map.put(statuses, solo_session_blocker_identity(entry), solo_session_blocker_status(entry))
-    end)
-    |> Enum.count(fn {_blocker_id, status} -> status == "open" end)
-  end
-
-  defp solo_session_blocker_identity(entry) do
-    solo_session_payload_text(Map.get(entry, :payload), "blocker_id", :blocker_id) || Map.get(entry, :id)
-  end
-
-  defp solo_session_blocker_status(entry) do
-    case solo_session_payload_text(Map.get(entry, :payload), "blocker_status", :blocker_status) do
-      status when status in ["open", "resolved"] -> status
-      _status -> if Map.get(entry, :status) in ["resolved", "completed"], do: "resolved", else: "open"
-    end
-  end
-
-  defp solo_session_payload_text(payload, string_key, atom_key) when is_map(payload) do
-    case Map.get(payload, string_key) || Map.get(payload, atom_key) do
-      value when is_binary(value) ->
-        value = String.trim(value)
-        if value == "", do: nil, else: value
-
-      _value ->
-        nil
-    end
-  end
-
-  defp solo_session_payload_text(_payload, _string_key, _atom_key), do: nil
 
   defp redacted_payload(payload) when is_map(payload), do: Redactor.redact_output(payload)
   defp redacted_payload(_payload), do: %{}

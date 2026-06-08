@@ -61,9 +61,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Normalization do
     "archived" => "archive"
   }
 
-  @spec entry_kinds() :: [String.t()]
-  def entry_kinds, do: SoloSessionEntry.entry_kinds()
-
   @spec entry_statuses() :: [String.t()]
   def entry_statuses, do: SoloSessionEntry.statuses()
 
@@ -98,6 +95,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Normalization do
     |> normalize_fetch_error(:invalid_solo_entry_status, value)
   end
 
+  defp blocker_entry?(entry), do: entry_value(entry, :entry_kind) == "blocker"
+
+  defp entry_payload(entry), do: entry_value(entry, :payload)
+
+  defp entry_value(entry, key) when is_map(entry), do: Map.get(entry, key) || Map.get(entry, to_string(key))
+
+  defp payload_text(payload, string_key, atom_key) when is_map(payload) do
+    case Map.get(payload, string_key) || Map.get(payload, atom_key) do
+      value when is_binary(value) ->
+        value = String.trim(value)
+        if value == "", do: nil, else: value
+
+      _value ->
+        nil
+    end
+  end
+
+  defp payload_text(_payload, _string_key, _atom_key), do: nil
+
   @spec normalize_lifecycle_action(term()) :: {:ok, String.t()} | {:error, {:invalid_solo_lifecycle_action, term()}}
   def normalize_lifecycle_action(value) when is_binary(value) do
     value
@@ -128,6 +144,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Normalization do
   def validation_entry_status("passed"), do: "completed"
   def validation_entry_status(result) when result in ["failed", "blocked"], do: "blocked"
   def validation_entry_status(_result), do: "recorded"
+
+  @spec blocker_identity(SoloSessionEntry.t() | map()) :: String.t() | nil
+  def blocker_identity(entry) when is_map(entry) do
+    payload_text(entry_payload(entry), "blocker_id", :blocker_id) || entry_value(entry, :id)
+  end
+
+  @spec blocker_status(SoloSessionEntry.t() | map()) :: String.t()
+  def blocker_status(entry) when is_map(entry) do
+    case payload_text(entry_payload(entry), "blocker_status", :blocker_status) do
+      status when status in ["open", "resolved"] -> status
+      _status -> if entry_value(entry, :status) in ["resolved", "completed"], do: "resolved", else: "open"
+    end
+  end
+
+  @spec blocker_resolution(SoloSessionEntry.t() | map()) :: String.t() | nil
+  def blocker_resolution(entry) when is_map(entry) do
+    payload_text(entry_payload(entry), "resolution", :resolution)
+  end
+
+  @spec active_blocker_statuses([SoloSessionEntry.t() | map()]) :: %{optional(String.t()) => String.t()}
+  def active_blocker_statuses(entries) do
+    entries
+    |> Enum.filter(&blocker_entry?/1)
+    |> Enum.sort_by(&{entry_value(&1, :sequence) || 0, entry_value(&1, :id) || ""})
+    |> Enum.reduce(%{}, fn entry, statuses ->
+      case blocker_identity(entry) do
+        nil -> statuses
+        blocker_id -> Map.put(statuses, blocker_id, blocker_status(entry))
+      end
+    end)
+  end
+
+  @spec active_blocker_count([SoloSessionEntry.t() | map()]) :: non_neg_integer()
+  def active_blocker_count(entries) do
+    entries
+    |> active_blocker_statuses()
+    |> Enum.count(fn {_blocker_id, status} -> status == "open" end)
+  end
 
   @spec error_data({atom(), term()}, String.t()) :: map()
   def error_data({:invalid_solo_entry_status, value}, tool) do
