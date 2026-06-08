@@ -10,6 +10,9 @@ Solo Session entries may record task plans, progress, findings, blockers,
 decisions, and validation notes. They should stay small, redacted, and tied to
 one repo/base branch/workspace path.
 
+Agent-facing MCP and CLI surfaces should use intent-shaped commands for those
+entry types rather than asking agents to choose raw ledger `entry_kind` values.
+
 ## Not For
 
 - WorkPackage execution.

@@ -455,6 +455,7 @@ export type SoloSession = RepoIdentityFields & {
   last_activity_at?: string | null;
   inserted_at?: string | null;
   updated_at?: string | null;
+  active_blocker_count?: number | null;
   entry_counts?: Array<{
     kind?: string | null;
     label?: string | null;
@@ -465,6 +466,7 @@ export type SoloSession = RepoIdentityFields & {
     status?: string | null;
     title?: string | null;
     body?: MarkdownText | null;
+    payload?: Record<string, unknown> | null;
     kind_label?: string | null;
     created_at?: string | null;
   } | null;
@@ -479,6 +481,7 @@ export type SoloSessionEntry = {
   status_label?: string | null;
   title?: string | null;
   body?: MarkdownText | null;
+  payload?: Record<string, unknown> | null;
   created_at?: string | null;
   updated_at?: string | null;
 };

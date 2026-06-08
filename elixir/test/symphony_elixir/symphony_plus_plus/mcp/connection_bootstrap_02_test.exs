@@ -107,11 +107,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
           "claim_local_assignment",
           "claim_local_architect_assignment",
           "create_work_request",
-          "solo_append",
           "solo_attach",
           "solo_list",
+          "solo_record_task_plan",
+          "solo_append_progress",
+          "solo_append_finding",
+          "solo_record_decision",
+          "solo_report_blocker",
+          "solo_resolve_blocker",
+          "solo_record_validation",
+          "solo_pause",
+          "solo_resume",
+          "solo_complete",
+          "solo_archive",
           "solo_show",
-          "solo_update_status",
           "sympp.health"
         ] do
       assert Map.has_key?(unbound_tools_by_name, tool)
@@ -131,7 +140,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     assert get_in(unbound_tools_by_name, ["claim_local_architect_assignment", "inputSchema", "properties", "work_request_id", "type"]) == "string"
     assert get_in(unbound_tools_by_name, ["release_current_assignment", "inputSchema", "required"]) == []
     assert get_in(unbound_tools_by_name, ["release_current_assignment", "inputSchema", "properties", "reason", "type"]) == "string"
-    assert get_in(unbound_tools_by_name, ["solo_append", "inputSchema", "properties", "body", "description"]) =~ "Markdown"
+    assert get_in(unbound_tools_by_name, ["solo_append_progress", "inputSchema", "properties", "body", "description"]) =~ "Markdown"
 
     assert get_in(unbound_tools_by_name, ["create_work_request", "inputSchema", "required"]) == [
              "repo",

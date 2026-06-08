@@ -357,6 +357,117 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessionsTest do
     assert {:ok, [^first, ^second]} = Service.list_entries(repo, session.id)
   end
 
+  test "friendly entry helpers normalize agent labels and typed payloads", %{repo: repo} do
+    assert {:ok, session} = Service.create_or_attach_current(repo, session_attrs())
+
+    assert {:error, {:unsupported_solo_field, "status"}} =
+             Service.report_blocker(repo, session.id, %{
+               summary: "Bad blocker status",
+               status: "resolved"
+             })
+
+    assert {:ok, progress} =
+             Service.append_progress(repo, session.id, %{
+               summary: "Implementation started",
+               status: "active",
+               idempotency_key: "friendly-progress"
+             })
+
+    assert progress.entry_kind == "progress"
+    assert progress.status == "in_progress"
+    assert progress.title == "Implementation started"
+
+    assert {:ok, validation} =
+             Service.record_validation(repo, session.id, %{
+               summary: "Focused tests",
+               result: "pass",
+               command: "mix test test/symphony_elixir/symphony_plus_plus/solo_sessions_test.exs",
+               evidence: "Passed locally"
+             })
+
+    assert validation.entry_kind == "validation_note"
+    assert validation.status == "completed"
+    assert validation.payload["result"] == "passed"
+    assert validation.payload["command"] =~ "mix test"
+    assert validation.payload["evidence"] == "Passed locally"
+
+    assert {:ok, blocker} =
+             Service.report_blocker(repo, session.id, %{
+               summary: "Review asked for broader scope",
+               blocker_id: "scope-review"
+             })
+
+    assert blocker.entry_kind == "blocker"
+    assert blocker.status == "blocked"
+    assert blocker.payload["blocker_id"] == "scope-review"
+    assert blocker.payload["blocker_status"] == "open"
+
+    assert {:ok, resolved} =
+             Service.resolve_blocker(repo, session.id, %{
+               blocker_id: "scope-review",
+               resolution: "Architect approved the broader file set",
+               idempotency_key: "resolve-scope-review"
+             })
+
+    assert resolved.entry_kind == "blocker"
+    assert resolved.status == "resolved"
+    assert resolved.payload["blocker_id"] == "scope-review"
+    assert resolved.payload["blocker_status"] == "resolved"
+    assert resolved.payload["resolution"] == "Architect approved the broader file set"
+
+    assert {:ok, retried_resolved} =
+             Service.resolve_blocker(repo, session.id, %{
+               blocker_id: "scope-review",
+               resolution: "Architect approved the broader file set",
+               idempotency_key: "resolve-scope-review"
+             })
+
+    assert retried_resolved.id == resolved.id
+    assert {:ok, entries_after_retry} = Service.list_entries(repo, session.id)
+    assert Enum.count(entries_after_retry, &(&1.idempotency_key == "resolve-scope-review")) == 1
+
+    assert {:error, :solo_blocker_not_open} =
+             Service.resolve_blocker(repo, session.id, %{
+               blocker_id: "scope-review",
+               resolution: "Already resolved"
+             })
+
+    assert {:error, :solo_blocker_not_open} =
+             Service.resolve_blocker(repo, session.id, %{
+               blocker_id: "typo-scope-review",
+               resolution: "Never existed"
+             })
+
+    assert {:ok, legacy_blocker} =
+             Service.append_entry(repo, session.id, %{
+               entry_kind: "blocker",
+               title: "Legacy blocker row",
+               status: "blocked"
+             })
+
+    assert {:ok, legacy_resolved} =
+             Service.resolve_blocker(repo, session.id, %{
+               blocker_id: legacy_blocker.id,
+               resolution: "Resolved a legacy blocker by row id"
+             })
+
+    assert legacy_resolved.payload["blocker_id"] == legacy_blocker.id
+    assert legacy_resolved.payload["blocker_status"] == "resolved"
+
+    assert {:ok, decision} =
+             Service.record_decision(repo, session.id, %{
+               decision: "Keep Solo Session lifecycle soft",
+               rationale: "Solo tracks progress, not merge readiness",
+               scope_impact: "No WorkPackage readiness gates are added"
+             })
+
+    assert decision.entry_kind == "decision"
+    assert decision.status == "recorded"
+    assert decision.payload["decision"] == "Keep Solo Session lifecycle soft"
+    assert decision.body =~ "Rationale: Solo tracks progress"
+    assert decision.body =~ "Scope impact: No WorkPackage readiness gates"
+  end
+
   test "entry validation rejects invalid kind and status without advancing activity", %{repo: repo} do
     assert {:ok, session} = Service.create_or_attach_current(repo, session_attrs())
     Process.sleep(5)

@@ -17,6 +17,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
   alias SymphonyElixir.SymphonyPlusPlus.ProductTree
@@ -1719,10 +1720,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     session_ids = Enum.map(sessions, & &1.id)
 
     with {:ok, entry_counts} <- solo_session_entry_counts(repo, session_ids),
-         {:ok, latest_entries} <- latest_solo_session_entries(repo, session_ids) do
+         {:ok, latest_entries} <- latest_solo_session_entries(repo, session_ids),
+         {:ok, active_blocker_counts} <- solo_session_active_blocker_counts(repo, session_ids) do
       cards =
         Enum.map(sessions, fn %SoloSession{} = session ->
-          solo_session_card(session, Map.get(entry_counts, session.id, []), Map.get(latest_entries, session.id), repo_identity_catalog)
+          solo_session_card(
+            session,
+            Map.get(entry_counts, session.id, []),
+            Map.get(latest_entries, session.id),
+            Map.get(active_blocker_counts, session.id, 0),
+            repo_identity_catalog
+          )
         end)
 
       {:ok, cards}
@@ -1752,6 +1760,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       end)
       |> Map.new(fn {session_id, counts} ->
         {session_id, Enum.sort_by(counts, & &1.kind)}
+      end)
+
+    {:ok, counts}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp solo_session_active_blocker_counts(_repo, []), do: {:ok, %{}}
+
+  defp solo_session_active_blocker_counts(repo, session_ids) do
+    entries =
+      session_ids
+      |> Enum.chunk_every(@solo_session_query_chunk_size)
+      |> Enum.flat_map(fn chunk ->
+        repo.all(
+          from(entry in SoloSessionEntry,
+            where: entry.solo_session_id in ^chunk,
+            where: entry.entry_kind == "blocker",
+            order_by: [asc: entry.solo_session_id, asc: entry.sequence, asc: entry.id],
+            select: %{
+              solo_session_id: entry.solo_session_id,
+              id: entry.id,
+              sequence: entry.sequence,
+              status: entry.status,
+              payload: entry.payload
+            }
+          )
+        )
+      end)
+
+    counts =
+      entries
+      |> Enum.group_by(& &1.solo_session_id)
+      |> Map.new(fn {session_id, session_entries} ->
+        {session_id, solo_session_active_blocker_count(session_entries)}
       end)
 
     {:ok, counts}
@@ -1792,12 +1835,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         status: entry.status,
         title: entry.title,
         body: entry.body,
+        payload: entry.payload,
         created_at: entry.created_at
       }
     )
   end
 
-  defp solo_session_card(%SoloSession{} = session, entry_counts, latest_entry, repo_identity_catalog) do
+  defp solo_session_card(%SoloSession{} = session, entry_counts, latest_entry, active_blocker_count, repo_identity_catalog) do
     %{
       id: session.id,
       title: solo_session_title(session),
@@ -1808,6 +1852,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       last_activity_at: timestamp(session.last_activity_at),
       inserted_at: timestamp(session.inserted_at),
       updated_at: timestamp(session.updated_at),
+      active_blocker_count: active_blocker_count,
       entry_counts: entry_counts,
       latest_entry: latest_entry
     }
@@ -1845,6 +1890,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       status: Map.get(entry, :status),
       title: entry |> Map.get(:title) |> redacted_text() |> snippet(@solo_session_snippet_limit),
       body: entry |> Map.get(:body) |> redacted_text() |> snippet(@solo_session_snippet_limit),
+      payload: entry |> Map.get(:payload) |> redacted_payload(),
       created_at: entry |> Map.get(:created_at) |> timestamp()
     }
   end
@@ -1859,10 +1905,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       status_label: status_label(entry.status),
       title: entry.title |> redacted_text() |> present_text(),
       body: entry.body |> redacted_text() |> present_text(),
+      payload: redacted_payload(entry.payload),
       created_at: timestamp(entry.created_at),
       updated_at: timestamp(entry.updated_at)
     }
   end
+
+  defp solo_session_active_blocker_count(entries) do
+    entries
+    |> Enum.sort_by(&{Map.get(&1, :sequence) || 0, Map.get(&1, :id) || ""})
+    |> Enum.reduce(%{}, fn entry, statuses ->
+      Map.put(statuses, solo_session_blocker_identity(entry), solo_session_blocker_status(entry))
+    end)
+    |> Enum.count(fn {_blocker_id, status} -> status == "open" end)
+  end
+
+  defp solo_session_blocker_identity(entry) do
+    solo_session_payload_text(Map.get(entry, :payload), "blocker_id", :blocker_id) || Map.get(entry, :id)
+  end
+
+  defp solo_session_blocker_status(entry) do
+    case solo_session_payload_text(Map.get(entry, :payload), "blocker_status", :blocker_status) do
+      status when status in ["open", "resolved"] -> status
+      _status -> if Map.get(entry, :status) in ["resolved", "completed"], do: "resolved", else: "open"
+    end
+  end
+
+  defp solo_session_payload_text(payload, string_key, atom_key) when is_map(payload) do
+    case Map.get(payload, string_key) || Map.get(payload, atom_key) do
+      value when is_binary(value) ->
+        value = String.trim(value)
+        if value == "", do: nil, else: value
+
+      _value ->
+        nil
+    end
+  end
+
+  defp solo_session_payload_text(_payload, _string_key, _atom_key), do: nil
+
+  defp redacted_payload(payload) when is_map(payload), do: Redactor.redact_output(payload)
+  defp redacted_payload(_payload), do: %{}
 
   defp present_text(value) when is_binary(value) do
     value = String.trim(value)

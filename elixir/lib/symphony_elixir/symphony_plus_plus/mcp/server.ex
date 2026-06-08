@@ -67,7 +67,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @protocol_version "2025-03-26"
   @health_tool "sympp.health"
   @agent_text_mime_type "text/vnd.toon"
-  @solo_tools ["solo_attach", "solo_append", "solo_show", "solo_list", "solo_update_status"]
+  @solo_tools SoloTools.tool_names()
   @assignment_release_tool "release_current_assignment"
   @bootstrap_tools ["create_work_request"]
   @local_operator_tools ["add_work_request_comment", "record_work_request_operator_decision"]

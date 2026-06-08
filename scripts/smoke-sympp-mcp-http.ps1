@@ -15,10 +15,19 @@ $ErrorActionPreference = "Stop"
 $ExpectedGenericUnboundTools = @(
   "sympp.health",
   "solo_attach",
-  "solo_append",
   "solo_show",
   "solo_list",
-  "solo_update_status",
+  "solo_record_task_plan",
+  "solo_append_progress",
+  "solo_append_finding",
+  "solo_record_decision",
+  "solo_report_blocker",
+  "solo_resolve_blocker",
+  "solo_record_validation",
+  "solo_pause",
+  "solo_resume",
+  "solo_complete",
+  "solo_archive",
   "create_work_request"
 )
 
@@ -59,10 +68,19 @@ $ExpectedBoundWorkerTools = @(
 
 $SoloTools = @(
   "solo_attach",
-  "solo_append",
   "solo_show",
   "solo_list",
-  "solo_update_status"
+  "solo_record_task_plan",
+  "solo_append_progress",
+  "solo_append_finding",
+  "solo_record_decision",
+  "solo_report_blocker",
+  "solo_resolve_blocker",
+  "solo_record_validation",
+  "solo_pause",
+  "solo_resume",
+  "solo_complete",
+  "solo_archive"
 )
 
 $ArchitectTools = @(

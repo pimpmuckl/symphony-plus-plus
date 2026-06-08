@@ -76,6 +76,24 @@ record_work_request_operator_decision
 
 Solo Session tools are for ordinary local planning memory. They do not claim a
 WorkRequest or WorkPackage and do not grant dispatch or lifecycle authority.
+The unbound Solo MCP surface is intentionally intent-shaped:
+
+```text
+solo_attach
+solo_show
+solo_list
+solo_record_task_plan
+solo_append_progress
+solo_append_finding
+solo_record_decision
+solo_report_blocker
+solo_resolve_blocker
+solo_record_validation
+solo_pause
+solo_resume
+solo_complete
+solo_archive
+```
 
 ## Architect Tools
 

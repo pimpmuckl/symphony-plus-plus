@@ -82,23 +82,32 @@ mix sympp.solo attach \
   --title "Solo CLI pass"
 ```
 
-Append and read entries with the returned `solo_session.id`:
+Record and read entries with the returned `solo_session.id`:
 
 ```bash
-mix sympp.solo append \
+mix sympp.solo progress \
   --session-id <solo-session-id> \
-  --entry-kind progress \
-  --title "Implemented CLI surface" \
-  --body "Added attach, append, show, list, and lifecycle commands." \
+  --summary "Implemented CLI surface" \
+  --body "Added attach, progress, show, list, and lifecycle commands." \
   --idempotency-key solo-cli-progress-1
+
+mix sympp.solo validation \
+  --session-id <solo-session-id> \
+  --summary "Focused tests passed" \
+  --result passed \
+  --command "mix test test/mix/tasks/sympp_solo_test.exs" \
+  --idempotency-key solo-cli-validation-1
 
 mix sympp.solo show --session-id <solo-session-id>
 ```
 
-Supported entry kinds are `task_plan`, `finding`, `progress`, `blocker`,
-`decision`, and `validation_note`. The task also supports `list` filters for
-`repo`, `base_branch`, `workspace_path`, `caller_id`, and `status`, plus
-`pause`, `resume`, `complete`, and `archive` lifecycle aliases. If
+Entry commands are `plan`, `progress`, `finding`, `decision`, `blocker`,
+`resolve-blocker`, and `validation`. Friendly status aliases such as `active`
+and `done` are normalized by `plan`, `progress`, and `finding`; blockers use
+`blocker` to open and `resolve-blocker` to clear. Validation records use the
+typed `--result passed|failed|skipped|blocked|not_run`. The task also supports
+`list` filters for `repo`, `base_branch`, `workspace_path`, `caller_id`, and
+`status`, plus `pause`, `resume`, `complete`, and `archive` lifecycle verbs. If
 `--database` is omitted, the task uses the shared machine-local Symphony++
 default ledger, preferring `$HOME/.agents/splusplus/symphony_plus_plus.sqlite3`
 (`%USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3` on Windows) and
