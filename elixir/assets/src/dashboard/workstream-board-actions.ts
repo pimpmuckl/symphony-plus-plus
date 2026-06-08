@@ -154,7 +154,7 @@ function openBlockerEdge(
   onSelectCard: CardDetailSelect,
 ) {
   const slice = edgeSlice(edge, slices);
-  const packageId = edge.work_package_id || endpointId(edge.from, "work_package") || endpointId(edge.to, "work_package") || slice?.work_package_id || "";
+  const packageId = edge.work_package_id || endpointId(edge.to, "work_package") || slice?.work_package_id || "";
   const pkg = packageById.get(packageId);
 
   onSelectCard({ kind: "blocker", blocker: edge, detail, slice, pkg });

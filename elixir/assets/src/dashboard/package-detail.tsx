@@ -135,10 +135,11 @@ export function BlockerDetailContent({
 }) {
   const [pending, setPending] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
-  const pkg = selection.pkg || detailPayload?.work_package;
+  const scopedDetailPayload = scopedBlockerDetailPayload(selection, detailPayload);
+  const pkg = selection.pkg || scopedDetailPayload?.work_package;
   const detail = selection.detail;
   const slice = selection.slice;
-  const loadedBlocker = matchingLoadedBlocker(selection.blocker.blocker_id, detailPayload);
+  const loadedBlocker = matchingLoadedBlocker(selection.blocker.blocker_id, scopedDetailPayload);
   const blocker = loadedBlocker && pkg ? packageBlockerEdge(loadedBlocker, pkg, { detail, slice }) : selection.blocker;
   const blockerId = blocker.blocker_id;
   const displayBlockerId = blockerId || blocker.id;
@@ -205,10 +206,18 @@ export function BlockerDetailContent({
   );
 }
 
+export function scopedBlockerDetailPayload(
+  selection: Extract<CardDetailSelection, { kind: "blocker" }>,
+  detailPayload: WorkPackageDetailPayload | null,
+) {
+  const selectedPackageId = selection.pkg?.id || selection.blocker.work_package_id || endpointId(selection.blocker.to, "work_package");
+  return detailPayload && (!selectedPackageId || detailPayload.work_package?.id === selectedPackageId) ? detailPayload : null;
+}
+
 function matchingLoadedBlocker(blockerId: string | null | undefined, detailPayload: WorkPackageDetailPayload | null) {
   const blockers = activePackageBlockers(detailPayload?.work_package ? { ...detailPayload.work_package, active_blockers: detailPayload.blockers || [] } : undefined);
   if (blockerId) return blockers.find((blocker) => blocker.id === blockerId) || null;
-  return blockers[0] || null;
+  return null;
 }
 
 function endpointId(endpoint: ActiveBlockingEdgeEndpoint | undefined, kind: ActiveBlockingEdgeEndpoint["kind"]) {

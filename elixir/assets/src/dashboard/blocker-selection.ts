@@ -10,13 +10,15 @@ export function packageBlockerEdge(
   context: {
     detail?: WorkRequestDetail;
     slice?: PlannedSlice;
+    fallbackKey?: string | number;
   } = {},
 ): ActiveBlockingEdge {
   const { from, to } = packageBlockerEndpoints(blocker, pkg, context.slice);
-  const blockerId = blocker.id || `${pkg.id}:blocker`;
+  const blockerId = blocker.id || "";
+  const edgeKey = blockerEdgeKey(blocker, context.fallbackKey);
 
   return {
-    id: `active_blocking_edge:${pkg.id}:${blockerId}`,
+    id: `active_blocking_edge:${pkg.id}:${edgeKey}`,
     blocker_id: blockerId,
     from,
     to,
@@ -69,4 +71,9 @@ function packageEndpoint(pkg: WorkPackageCard): ActiveBlockingEdgeEndpoint {
 
 function sliceEndpoint(slice: PlannedSlice | undefined): ActiveBlockingEdgeEndpoint | null {
   return slice ? { kind: "slice", id: slice.id } : null;
+}
+
+function blockerEdgeKey(blocker: WorkPackageBlocker, fallbackKey: string | number | undefined) {
+  const key = blocker.id || blocker.event_id || blocker.updated_at || fallbackKey;
+  return String(key ?? "blocker");
 }

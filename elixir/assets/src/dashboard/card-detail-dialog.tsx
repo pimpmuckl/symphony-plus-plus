@@ -374,13 +374,14 @@ function cardDetailPackageId(selection: CardDetailSelection | null) {
   return (
     selection.pkg?.id ||
     selection.blocker.work_package_id ||
-    (selection.blocker.from.kind === "work_package" ? selection.blocker.from.id : null) ||
     (selection.blocker.to.kind === "work_package" ? selection.blocker.to.id : null)
   );
 }
 
 function cardDetailContentReady(selection: CardDetailSelection | null, state: CardDetailDialogState) {
   if (!selection) return false;
+
+  const packageId = cardDetailPackageId(selection);
 
   switch (selection.kind) {
     case "request":
@@ -394,9 +395,11 @@ function cardDetailContentReady(selection: CardDetailSelection | null, state: Ca
       return !payloadId || payloadId === selection.pkg.id;
     }
     case "blocker":
-      if (selection.blocker.blocker_id) return true;
       if (state.package.error) return true;
-      return Boolean(state.package.payload);
+      if (!packageId) return true;
+      if (!state.package.payload) return false;
+
+      return !state.package.payload.work_package?.id || state.package.payload.work_package.id === packageId;
     case "solo": {
       if (state.solo.error) return true;
       const payload = state.solo.payload;

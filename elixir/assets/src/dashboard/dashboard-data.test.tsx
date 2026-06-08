@@ -103,6 +103,48 @@ describe("dashboard data helpers", () => {
     expect(ids).toEqual(["active_blocking_edge:pkg-a:blocker-1", "active_blocking_edge:pkg-b:blocker-1"]);
   });
 
+  it("keeps package-only blockers when edge-backed blockers exist", () => {
+    const pkg: WorkPackageCard = {
+      id: "pkg-mixed",
+      title: "Mixed blockers",
+      status: "blocked",
+      active_blocker_count: 2,
+      active_blockers: [
+        { id: "edge-backed", active: true, summary: "Shown through edge" },
+        { id: "package-only", active: true, summary: "Shown from package" },
+      ],
+    };
+    const edge: ActiveBlockingEdge = {
+      id: "edge-card",
+      blocker_id: "edge-backed",
+      from: { kind: "work_package", id: "pkg-source" },
+      to: { kind: "work_package", id: pkg.id },
+      summary: "Edge blocker",
+    };
+
+    const items = activeBlockerItems([pkg], new Map(), [edge]);
+
+    expect(items.map((item) => item.id)).toEqual(["edge-card", "active_blocking_edge:pkg-mixed:package-only"]);
+  });
+
+  it("gives anonymous package blockers unique card ids without fake clear ids", () => {
+    const pkg: WorkPackageCard = {
+      id: "pkg-anonymous",
+      title: "Anonymous blockers",
+      status: "blocked",
+      active_blocker_count: 2,
+      active_blockers: [
+        { active: true, summary: "First anonymous blocker" },
+        { active: true, summary: "Second anonymous blocker" },
+      ],
+    };
+
+    const items = activeBlockerItems([pkg]);
+
+    expect(items.map((item) => item.id)).toEqual(["active_blocking_edge:pkg-anonymous:0", "active_blocking_edge:pkg-anonymous:1"]);
+    expect(items.map((item) => item.selection.kind === "blocker" ? item.selection.blocker.blocker_id : null)).toEqual(["", ""]);
+  });
+
   it("indexes blocker edge cards by the blocked package, not the blocker source", () => {
     const source: WorkPackageCard = { id: "pkg-source", status: "blocked", active_blocker_count: 1 };
     const blocked: WorkPackageCard = { id: "pkg-blocked", status: "blocked", active_blocker_count: 1 };
