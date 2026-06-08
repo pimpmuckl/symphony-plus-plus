@@ -10,7 +10,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { architectHandoffEligibleRequest } from "@/lib/operational-state";
 import { cn } from "@/lib/utils";
-import { AppDialogState, BlockerItem, FinishedHighlight } from "./dashboard-state";
+import { AppDialogState, BlockerItem } from "./dashboard-state";
 import { ArchivedRequestsDialog, DashboardSettingsDialog, ThemeToggle } from "./dashboard-settings";
 import { CardDetailDialog } from "./card-detail-dialog";
 import { CardDetailSelection, DASHBOARD_LOGO_URL, DashboardConnectionIssue, DashboardTheme, DashboardUpdateAnimations, LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageBlockerClearMutation, WorkPackageStateMutation, WorkRequestMutation, WorkRequestStateMutation, WorkspaceTab, isLocalOperatorAuthRequiredMessage } from "./runtime";
@@ -18,6 +18,11 @@ import { LiveLedgerBadge } from "./status-cards";
 import { RepoSummary } from "./dashboard-data";
 import { StatusRail, UpdateSimulationControls } from "./status-rail";
 import { WorkspaceTabCarousel } from "./workspace-tabs";
+
+type DashboardDisplayPreferences = {
+  hideEmptyWorkstreams: boolean;
+  showWorkstreamContextBar: boolean;
+};
 
 export function DashboardShell({
   archiveAfterDays,
@@ -31,11 +36,10 @@ export function DashboardShell({
   createWorkRequest,
   dashboard,
   dialogState,
+  displayPreferences,
   error,
-  finishedHighlights,
   guidanceItems,
   hiddenWorkstreamCount,
-  hideEmptyWorkstreams,
   linkedWorkPackageIds,
   loading,
   onArchiveWorkPackage,
@@ -49,6 +53,7 @@ export function DashboardShell({
   onSelectCard,
   onSelectGuidance,
   onSetNewRequestOpen,
+  onShowWorkstreamContextBarChange,
   onSubmitComment,
   onSubmitGuidanceAnswer,
   onUpdateArchiveAfterDays,
@@ -73,11 +78,10 @@ export function DashboardShell({
   createWorkRequest: (form: NewRequestForm) => Promise<WorkRequestDetail>;
   dashboard: DashboardPayload | null;
   dialogState: AppDialogState;
+  displayPreferences: DashboardDisplayPreferences;
   error: string | null;
-  finishedHighlights: FinishedHighlight[];
   guidanceItems: GuidanceItem[];
   hiddenWorkstreamCount: number;
-  hideEmptyWorkstreams: boolean;
   linkedWorkPackageIds: Set<string>;
   loading: boolean;
   onArchiveWorkPackage: WorkPackageArchiveMutation;
@@ -91,6 +95,7 @@ export function DashboardShell({
   onSelectCard: (selection: CardDetailSelection | null) => void;
   onSelectGuidance: (item: GuidanceItem | null) => void;
   onSetNewRequestOpen: (open: boolean) => void;
+  onShowWorkstreamContextBarChange: (show: boolean) => void;
   onSubmitComment: SubmitContextComment;
   onSubmitGuidanceAnswer: (item: GuidanceItem, submission: GuidanceAnswerSubmission) => Promise<void>;
   onUpdateArchiveAfterDays: (archiveAfterDays: number) => Promise<void>;
@@ -104,6 +109,7 @@ export function DashboardShell({
   workspacePanes: Record<WorkspaceTab, React.ReactNode>;
   workspaceTab: WorkspaceTab;
 }) {
+  const { hideEmptyWorkstreams, showWorkstreamContextBar } = displayPreferences;
   const localOperatorReconnectIssue = isLocalOperatorAuthRequiredMessage(error) || connectionIssue?.reconnectableLocalSession === true;
   const dashboardAlertMessage = error || (localOperatorReconnectIssue ? connectionIssue?.message || LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE : null);
 
@@ -141,8 +147,10 @@ export function DashboardShell({
                 archiveAfterDays={archiveAfterDays}
                 hideEmptyWorkstreams={hideEmptyWorkstreams}
                 hiddenWorkstreamCount={hiddenWorkstreamCount}
+                showWorkstreamContextBar={showWorkstreamContextBar}
                 onArchiveAfterDaysChange={onUpdateArchiveAfterDays}
                 onHideEmptyWorkstreamsChange={onHideEmptyWorkstreamsChange}
+                onShowWorkstreamContextBarChange={onShowWorkstreamContextBarChange}
               />
               <ArchivedRequestsDialog requests={archivedRequests} onRestoreWorkRequest={onRestoreWorkRequest} />
               <Button variant="outline" size="sm" onClick={() => void onRefreshDashboard()} disabled={refreshing} className="button-lift">
@@ -199,7 +207,6 @@ export function DashboardShell({
           <StatusRail
             guidanceItems={guidanceItems}
             blockerItems={blockerItems}
-            finishedHighlights={finishedHighlights}
             onSelectGuidance={onSelectGuidance}
             onSelectCard={onSelectCard}
             updateAnimations={updateAnimations}

@@ -1,6 +1,6 @@
 import type { SignalTone, StateCardTone } from "@/components/dashboard/state-card-style";
 import { statusLabel } from "@/lib/status-labels";
-import type { PackageOperationalAttention, PlannedSlice, WorkPackageCard, WorkRequestCard, WorkRequestDetail } from "@/types/dashboard";
+import type { PackageOperationalAttention, PlannedSlice, WorkPackageCard, WorkRequestCard } from "@/types/dashboard";
 
 export type BadgeTone = "default" | "secondary" | "outline" | "success" | "warning" | "danger" | "info" | "ready";
 export type BoardLane = "slices" | "implementing" | "finished";
@@ -133,29 +133,6 @@ const REQUEST_LANES: Record<string, RequestLane> = {
   started_paused: "slices",
   superseded: "finished",
 };
-
-function requestStatusFallbackCardTone(status: string): StateCardTone {
-  if (status === "ready_for_slicing") return "queued";
-  if (status === "sliced") return "slice";
-  return "request";
-}
-
-export function requestStateCardTone(detail: WorkRequestDetail): StateCardTone {
-  const request = detail.work_request;
-  const status = request.status || "";
-  const operational = request.operational_state || null;
-  const detailOpenQuestions = detail.clarification_questions?.filter((question) => question.status === "open").length || request.open_question_count || 0;
-  return requestToneForState(status, operational, detailOpenQuestions);
-}
-
-function requestToneForState(status: string, operational: WorkPackageCard["operational_state"], openQuestions: number): StateCardTone {
-  const operationalTone = operationalCardTone(operational, status);
-  const quietFinished = [operational?.key, status].some(isFinishedBoardStatus);
-
-  if (operationalTone && quietFinished) return operationalTone;
-  if (openQuestions > 0 || status === "human_info_needed") return "guidance";
-  return operationalTone || requestStatusFallbackCardTone(status);
-}
 
 export function architectHandoffEligibleRequest(request: WorkRequestCard) {
   const status = request.status || "";

@@ -4,6 +4,7 @@ import type { PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/d
 import type { ProductTreeNode } from "@/types/product-tree";
 import {
   productNodeState,
+  requestBoardState,
   rowProgressAttentionState,
   rowProgressIconState,
   requestStatusLabels,
@@ -23,11 +24,14 @@ describe("workstream row state", () => {
     expect(rowProgressIconState({ progress: 100, tone: "finished" })).toBe("done");
     expect(rowProgressIconState({ progress: 100, blockerCount: 1, tone: "finished" })).toBe("done");
     expect(rowProgressIconState({ progress: 100, guidanceCount: 1, tone: "finished" })).toBe("done");
-    expect(rowProgressIconState({ progress: 100, blockerCount: 1, tone: "blocked" })).toBe("done");
+    expect(rowProgressIconState({ progress: 100, blockerCount: 1, tone: "blocked" })).toBe("active");
     expect(rowProgressAttentionState({ blockerCount: 1, tone: "finished" })).toBe("blocked");
     expect(rowProgressAttentionState({ guidanceCount: 1, tone: "finished" })).toBe("guidance");
-    expect(rowProgressIconState({ progress: 45, blockerCount: 1, tone: "implementing" })).toBe("blocked");
-    expect(rowProgressIconState({ progress: 45, guidanceCount: 1, tone: "implementing" })).toBe("guidance");
+    expect(rowProgressIconState({ progress: 45, blockerCount: 1, tone: "implementing" })).toBe("active");
+    expect(rowProgressIconState({ progress: 45, guidanceCount: 1, tone: "implementing" })).toBe("active");
+    expect(rowProgressAttentionState({ blockerCount: 1, tone: "implementing" })).toBe("blocked");
+    expect(rowProgressAttentionState({ guidanceCount: 1, tone: "implementing" })).toBe("guidance");
+    expect(rowProgressIconState({ blockerCount: 1, tone: "blocked" })).toBe("blocked");
     expect(rowProgressIconState({ tone: "muted" })).toBe("muted");
     expect(rowProgressIconState({ progress: 100, tone: "muted" })).toBe("muted");
     expect(rowProgressIconState({ progress: 45, tone: "implementing" })).toBe("active");
@@ -107,6 +111,147 @@ describe("workstream row state", () => {
 
     expect(state.guidanceCount).toBe(0);
     expect(state.tone).toBe("review");
+    expect(state.statusLabel).toBe("In Progress");
+  });
+
+  it("labels active product nodes from active descendant slices instead of partial completion", () => {
+    const node: ProductTreeNode = {
+      id: "node-active-descendant",
+      title: "Active descendant node",
+      completion_mark: "partial",
+      slice_ids: ["slice-active"],
+    };
+    const state = productNodeState(
+      node,
+      1,
+      { childrenByParent: new Map() },
+      new Map(),
+      undefined,
+      [plannedSlice("slice-active", "pkg-active", "active", "Active")],
+      new Map(),
+    );
+
+    expect(state.statusLabel).toBe("Active");
+    expect(state.tone).toBe("implementing");
+    expect(state.badgeVariant).toBe("info");
+    expect(state.progress).toBe(50);
+  });
+
+  it("labels ready-only product nodes as ready without manufacturing partial progress", () => {
+    const node: ProductTreeNode = {
+      id: "node-ready-descendant",
+      title: "Ready descendant node",
+      completion_mark: "partial",
+      slice_ids: ["slice-ready"],
+    };
+    const state = productNodeState(
+      node,
+      1,
+      { childrenByParent: new Map() },
+      new Map(),
+      undefined,
+      [plannedSlice("slice-ready", "pkg-ready", "ready_for_worker", "Ready For Worker")],
+      new Map([["pkg-ready", { id: "pkg-ready", status: "ready_for_worker", plan: { completed_count: 1, total_count: 2 } }]]),
+    );
+
+    expect(state.statusLabel).toBe("Ready");
+    expect(state.badgeVariant).toBe("ready");
+    expect(state.progress).toBe(0);
+  });
+
+  it("derives request row state from active child slices before raw request status", () => {
+    const detail: WorkRequestDetail = {
+      work_request: {
+        id: "wr-active-child",
+        status: "sliced",
+        operational_state: { key: "sliced", label: "Sliced" },
+      },
+      planned_slices: [plannedSlice("slice-active-child", "pkg-active", "active", "Active")],
+    };
+
+    const state = requestBoardState(detail, new Map(), { blockerCount: 0, guidanceCount: 0 }, 50);
+
+    expect(state.label).toBe("Active");
+    expect(state.tone).toBe("implementing");
+  });
+
+  it("keeps active rows active at 100 percent plan progress until finished", () => {
+    const detail: WorkRequestDetail = {
+      work_request: {
+        id: "wr-active-full-progress",
+        status: "sliced",
+        operational_state: { key: "sliced", label: "Sliced" },
+      },
+      planned_slices: [plannedSlice("slice-active-full-progress", "pkg-active", "active", "Active")],
+    };
+    const packages = new Map<string, WorkPackageCard>([
+      ["pkg-active", { id: "pkg-active", status: "active", plan: { completed_count: 1, total_count: 1 } }],
+    ]);
+
+    const requestState = requestBoardState(detail, packages, { blockerCount: 0, guidanceCount: 0 }, 100);
+    const nodeState = productNodeState(
+      {
+        id: "node-active-full-progress",
+        completion_mark: "partial",
+        slice_ids: ["slice-active-full-progress"],
+      },
+      1,
+      { childrenByParent: new Map() },
+      new Map(),
+      undefined,
+      detail.planned_slices ?? [],
+      packages,
+    );
+
+    expect(requestState.kind).toBe("active");
+    expect(nodeState.statusKind).toBe("active");
+    expect(nodeState.progress).toBe(100);
+  });
+
+  it("keeps terminal request and product node state ahead of stale active children", () => {
+    const detail: WorkRequestDetail = {
+      work_request: {
+        id: "wr-done-active-child",
+        status: "delivered",
+        operational_state: { key: "delivered", label: "Delivered" },
+      },
+      planned_slices: [plannedSlice("slice-stale-active", "pkg-active", "active", "Active")],
+    };
+    const packages = new Map<string, WorkPackageCard>([["pkg-active", { id: "pkg-active", status: "active" }]]);
+    const requestState = requestBoardState(detail, packages, { blockerCount: 0, guidanceCount: 0 }, 100);
+    const nodeState = productNodeState(
+      {
+        id: "node-done-active-child",
+        completion_mark: "done",
+        slice_ids: ["slice-stale-active"],
+      },
+      1,
+      { childrenByParent: new Map() },
+      new Map(),
+      undefined,
+      detail.planned_slices ?? [],
+      packages,
+    );
+
+    expect(requestState.kind).toBe("done");
+    expect(nodeState.statusKind).toBe("done");
+  });
+
+  it("keeps finished request state primary when blockers remain", () => {
+    const detail: WorkRequestDetail = {
+      work_request: {
+        id: "wr-done-blocked",
+        status: "delivered",
+        operational_state: { key: "delivered", label: "Delivered" },
+      },
+      planned_slices: [],
+    };
+
+    const state = requestBoardState(detail, new Map(), { blockerCount: 1, guidanceCount: 0 }, 100);
+
+    expect(state.label).toBe("Delivered");
+    expect(state.tone).toBe("finished");
+    expect(state.badgeVariant).toBe("success");
   });
 
   it("does not attribute package-level blocker edges to sibling slice rows", () => {

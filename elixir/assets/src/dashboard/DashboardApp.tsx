@@ -7,13 +7,11 @@ import { DashboardShell } from "./dashboard-shell";
 import { SoloSessions } from "./solo-sessions";
 import { WorkstreamsPane } from "./workspace-tabs";
 import {
-  FINISHED_HIGHLIGHT_LIMIT,
   activeBlockerItems,
   allGuidanceItems,
   allPackages,
   dashboardContentFingerprint,
   guidanceAnswerUrl,
-  recentFinishedHighlights,
   repoSummaries,
 } from "./dashboard-data";
 import { appDialogReducer, appStateReducer, createInitialAppState, initialAppDialogState } from "./dashboard-state";
@@ -29,7 +27,7 @@ export function DashboardApp() {
 
 function useDashboardController() {
   const [appState, dispatchApp] = useReducer(appStateReducer, null, createInitialAppState);
-  const { dashboard, error, hideEmptyWorkstreams, loading, refreshing, theme, workspaceTab } = appState;
+  const { dashboard, error, hideEmptyWorkstreams, loading, refreshing, showWorkstreamContextBar, theme, workspaceTab } = appState;
   const [dialogState, dispatchDialog] = useReducer(appDialogReducer, initialAppDialogState);
   const [connectionIssue, setConnectionIssue] = useState<DashboardConnectionIssue | null>(null);
   const showUpdateSimulationControls = useMemo(() => shouldShowUpdateSimulationControls(), []);
@@ -62,6 +60,9 @@ function useDashboardController() {
   }, []);
   const setHideEmptyWorkstreams = useCallback((nextHideEmptyWorkstreams: boolean) => {
     dispatchApp({ type: "patch", state: { hideEmptyWorkstreams: nextHideEmptyWorkstreams } });
+  }, []);
+  const setShowWorkstreamContextBar = useCallback((nextShowWorkstreamContextBar: boolean) => {
+    dispatchApp({ type: "patch", state: { showWorkstreamContextBar: nextShowWorkstreamContextBar } });
   }, []);
   const setSelectedGuidance = useCallback((selectedGuidance: GuidanceItem | null) => {
     dispatchDialog({ type: "guidance", selectedGuidance });
@@ -431,6 +432,10 @@ function useDashboardController() {
   }, [hideEmptyWorkstreams]);
 
   useEffect(() => {
+    writeDashboardUiStateValue("showWorkstreamContextBar", showWorkstreamContextBar);
+  }, [showWorkstreamContextBar]);
+
+  useEffect(() => {
     applyDashboardTheme(theme);
   }, [theme]);
 
@@ -450,15 +455,6 @@ function useDashboardController() {
   const archiveAfterDays = dashboard?.settings?.work_request_archive_after_days ?? 14;
   const guidanceItems = useMemo(() => allGuidanceItems(dashboard), [dashboard]);
   const blockerItems = useMemo(() => activeBlockerItems(packages, packageSelections, dashboard?.active_blocking_edges ?? []), [dashboard?.active_blocking_edges, packages, packageSelections]);
-  const finishedPackageLimit = dashboard?.board?.package_limits?.finished_work_packages?.limit;
-  const finishedHighlightLimit = finishedPackageLimit === undefined ? FINISHED_HIGHLIGHT_LIMIT : finishedPackageLimit;
-  const finishedHighlights = useMemo(() => recentFinishedHighlights(packages, requests, requestDetails, packageSelections, finishedHighlightLimit), [
-    finishedHighlightLimit,
-    packages,
-    packageSelections,
-    requests,
-    requestDetails,
-  ]);
   const soloSessions = useMemo(() => dashboard?.solo_sessions?.solo_sessions ?? [], [dashboard]);
   const repos = useMemo(() => repoSummaries(packages, requests, guidanceItems, soloSessions, requestDetails), [
     packages,
@@ -474,7 +470,6 @@ function useDashboardController() {
   const hiddenWorkstreamCount = repos.length - workstreamRepos.length;
   const updateAnimations = useDashboardUpdateAnimations({
     blockerItems,
-    finishedHighlights,
     guidanceItems,
     packages,
     requestDetails,
@@ -494,6 +489,7 @@ function useDashboardController() {
           onSelectGuidance={setSelectedGuidance}
           onSelectCard={setSelectedCardDetail}
           onCopyArchitectHandoff={copyArchitectHandoff}
+          showWorkstreamContextBar={showWorkstreamContextBar}
           updateAnimations={updateAnimations}
         />
       ),
@@ -507,6 +503,7 @@ function useDashboardController() {
       requestDetailsByRepo,
       setSelectedCardDetail,
       setSelectedGuidance,
+      showWorkstreamContextBar,
       soloSessions,
       updateAnimations,
       workstreamRepos,
@@ -525,11 +522,10 @@ function useDashboardController() {
     createWorkRequest,
     dashboard,
     dialogState,
+    displayPreferences: { hideEmptyWorkstreams, showWorkstreamContextBar },
     error,
-    finishedHighlights,
     guidanceItems,
     hiddenWorkstreamCount,
-    hideEmptyWorkstreams,
     linkedWorkPackageIds,
     loading,
     onArchiveWorkPackage: archiveWorkPackage,
@@ -543,6 +539,7 @@ function useDashboardController() {
     onSelectCard: setSelectedCardDetail,
     onSelectGuidance: setSelectedGuidance,
     onSetNewRequestOpen: setNewRequestOpen,
+    onShowWorkstreamContextBarChange: setShowWorkstreamContextBar,
     onSubmitComment: submitComment,
     onSubmitGuidanceAnswer: submitGuidanceAnswer,
     onUpdateArchiveAfterDays: updateArchiveAfterDays,

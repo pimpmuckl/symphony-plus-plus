@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { activeBlockerEntityCounts, productTreeCounts, requestProgress } from "./workstream-progress";
+import { activeBlockerEntityCounts, productTreeCounts, requestProgress, sliceProgressPercent } from "./workstream-progress";
 import type { ActiveBlockingEdge, PlannedSlice, WorkRequestDetail, WorkPackageCard } from "@/types/dashboard";
 
 describe("workstream progress", () => {
@@ -11,6 +11,31 @@ describe("workstream progress", () => {
     ]);
 
     expect(requestProgress(detail, new Map<string, WorkPackageCard>())).toBe(25);
+  });
+
+  it("keeps ready-for-worker slices at zero progress", () => {
+    const slice = plannedSlice("slice-ready", "ready_for_worker", "pkg-ready");
+    const pkg: WorkPackageCard = { id: "pkg-ready", status: "ready_for_worker", plan: { completed_count: 1, total_count: 2 } };
+
+    expect(sliceProgressPercent(slice, pkg)).toBe(0);
+  });
+
+  it("derives product-tree request progress from descendant slices before stale partial marks", () => {
+    const detail = workRequestDetail([
+      plannedSlice("slice-ready", "ready_for_worker", "pkg-ready"),
+    ]);
+    detail.product_tree = {
+      available: true,
+      mode: "product_tree",
+      nodes: [{ id: "node-ready", completion_mark: "partial", slice_ids: ["slice-ready"] }],
+      root_node_ids: ["node-ready"],
+      root_slice_ids: [],
+    };
+    const packages = new Map<string, WorkPackageCard>([
+      ["pkg-ready", { id: "pkg-ready", status: "ready_for_worker", plan: { completed_count: 1, total_count: 2 } }],
+    ]);
+
+    expect(requestProgress(detail, packages)).toBe(0);
   });
 
   it("adds product-tree blockers and explicit blocker edges", () => {
@@ -35,8 +60,8 @@ describe("workstream progress", () => {
 
     const counts = activeBlockerEntityCounts(
       [
-        blockingEdge("blocker-slice", { kind: "slice", id: "slice-endpoint" }, { kind: "work_package", id: "unknown-package" }),
-        blockingEdge("blocker-package", { kind: "work_package", id: "pkg-shared" }, { kind: "work_package", id: "unknown-package" }),
+        blockingEdge("blocker-slice", { kind: "work_package", id: "unknown-package" }, { kind: "slice", id: "slice-endpoint" }),
+        blockingEdge("blocker-package", { kind: "work_package", id: "unknown-package" }, { kind: "work_package", id: "pkg-shared" }),
         blockingEdge("blocker-fallback", { kind: "work_package", id: "unknown-package" }, { kind: "work_package", id: "unknown-package" }, "wr-progress"),
       ],
       [detail],
@@ -88,15 +113,15 @@ describe("workstream progress", () => {
       [
         blockingEdge(
           "edge-a",
-          { kind: "work_package", id: "pkg-shared" },
           { kind: "work_package", id: "unknown-package" },
+          { kind: "work_package", id: "pkg-shared" },
           undefined,
           { blocker_id: "blocker-shared" },
         ),
         blockingEdge(
           "edge-b",
-          { kind: "work_package", id: "pkg-shared" },
           { kind: "work_package", id: "unknown-package" },
+          { kind: "work_package", id: "pkg-shared" },
           undefined,
           { blocker_id: "blocker-shared" },
         ),
@@ -110,6 +135,29 @@ describe("workstream progress", () => {
     expect(counts.packages.get("pkg-shared")).toBe(1);
     expect([...new Set(counts.sliceBlockerKeys.get("slice-a"))]).toEqual(["blocker-shared"]);
     expect([...new Set(counts.sliceBlockerKeys.get("slice-b"))]).toEqual(["blocker-shared"]);
+  });
+
+  it("does not count blocker source endpoints as blocked entities", () => {
+    const detail = workRequestDetail([
+      plannedSlice("slice-source", "active", "pkg-source"),
+      plannedSlice("slice-blocked", "blocked", "pkg-blocked"),
+    ]);
+
+    const counts = activeBlockerEntityCounts(
+      [
+        blockingEdge(
+          "source-does-not-own-blocker",
+          { kind: "work_package", id: "pkg-source" },
+          { kind: "work_package", id: "pkg-blocked" },
+        ),
+      ],
+      [detail],
+    );
+
+    expect(counts.slices.get("slice-source")).toBeUndefined();
+    expect(counts.packages.get("pkg-source")).toBeUndefined();
+    expect(counts.slices.get("slice-blocked")).toBe(1);
+    expect(counts.packages.get("pkg-blocked")).toBe(1);
   });
 });
 

@@ -3,13 +3,12 @@ import { UPDATE_ANIMATION_TTL_MS } from "@/components/dashboard/motion";
 import type { UpdateMotion, UpdateMotionKind } from "@/components/dashboard/motion";
 import { packageLane, sliceLane, sliceOperationalState, workRequestLane } from "@/lib/operational-state";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import { BlockerItem, FinishedHighlight, updateMotionsReducer } from "./dashboard-state";
+import { BlockerItem, updateMotionsReducer } from "./dashboard-state";
 import { DashboardUpdateAnimations, MAX_UPDATE_MOTION_ENTRIES, TopPanelKey, UpdateAnimationEntity } from "./runtime";
 import { soloSessionAttention, soloSessionLane, soloSessionUpdateKey } from "./solo-session-utils";
 
 export function useDashboardUpdateAnimations({
   blockerItems,
-  finishedHighlights,
   guidanceItems,
   packages,
   ready,
@@ -17,7 +16,6 @@ export function useDashboardUpdateAnimations({
   soloSessions,
 }: {
   blockerItems: BlockerItem[];
-  finishedHighlights: FinishedHighlight[];
   guidanceItems: GuidanceItem[];
   packages: WorkPackageCard[];
   ready: boolean;
@@ -30,7 +28,7 @@ export function useDashboardUpdateAnimations({
   const timersRef = useRef<number[]>([]);
   const tokenRef = useRef(0);
   const [motions, dispatchMotions] = useReducer(updateMotionsReducer, {});
-  const [countPulses, setCountPulses] = useState<Record<TopPanelKey, number>>({ blockers: 0, finished: 0, guidance: 0 });
+  const [countPulses, setCountPulses] = useState<Record<TopPanelKey, number>>({ blockers: 0, guidance: 0 });
 
   const applyMotions = useCallback((nextMotions: Record<string, UpdateMotion>) => {
     const motionEntries = Object.entries(nextMotions).slice(0, MAX_UPDATE_MOTION_ENTRIES);
@@ -61,7 +59,7 @@ export function useDashboardUpdateAnimations({
       return;
     }
 
-    const snapshot = dashboardAnimationSnapshot({ blockerItems, finishedHighlights, guidanceItems, packages, requestDetails, soloSessions });
+    const snapshot = dashboardAnimationSnapshot({ blockerItems, guidanceItems, packages, requestDetails, soloSessions });
     latestSnapshotRef.current = snapshot;
     const previousSnapshot = previousSnapshotRef.current;
 
@@ -81,7 +79,7 @@ export function useDashboardUpdateAnimations({
     previousSnapshotRef.current = snapshot;
 
     applyMotions(nextMotions);
-  }, [applyMotions, blockerItems, finishedHighlights, guidanceItems, packages, ready, requestDetails, soloSessions]);
+  }, [applyMotions, blockerItems, guidanceItems, packages, ready, requestDetails, soloSessions]);
 
   const motionFor = useCallback((key?: string | null) => (ready && key ? motions[key] : undefined), [motions, ready]);
   const countPulseFor = useCallback((panel: TopPanelKey) => countPulses[panel] || 0, [countPulses]);
@@ -106,14 +104,12 @@ export function useDashboardUpdateAnimations({
 
 function dashboardAnimationSnapshot({
   blockerItems,
-  finishedHighlights,
   guidanceItems,
   packages,
   requestDetails,
   soloSessions,
 }: {
   blockerItems: BlockerItem[];
-  finishedHighlights: FinishedHighlight[];
   guidanceItems: GuidanceItem[];
   packages: WorkPackageCard[];
   requestDetails: WorkRequestDetail[];
@@ -142,10 +138,6 @@ function dashboardAnimationSnapshot({
     snapshot.set(blockerUpdateKey(item), blockerAnimationEntity(item));
   });
 
-  finishedHighlights.forEach((item) => {
-    snapshot.set(finishedHighlightUpdateKey(item), finishedHighlightAnimationEntity(item));
-  });
-
   soloSessions.forEach((session) => {
     snapshot.set(soloSessionUpdateKey(session), soloSessionAnimationEntity(session));
   });
@@ -171,14 +163,6 @@ export function guidanceUpdateKey(item: GuidanceItem) {
 
 export function blockerUpdateKey(item: BlockerItem) {
   return `blocker:${item.id}`;
-}
-
-export function finishedHighlightUpdateKey(item: FinishedHighlight) {
-  return `finished:${item.kind}:${item.id}`;
-}
-
-export function finishedHighlightsListKey(items: FinishedHighlight[]) {
-  return items.map(finishedHighlightUpdateKey).join("|");
 }
 
 function classifyUpdateMotion(previous: UpdateAnimationEntity | undefined, current: UpdateAnimationEntity): UpdateMotionKind | null {
@@ -213,7 +197,6 @@ function simulatedMotionKeys(kind: UpdateMotionKind, snapshot: Map<string, Updat
 function topPanelForMotionKind(kind: UpdateMotionKind): TopPanelKey | null {
   if (kind === "guidance") return "guidance";
   if (kind === "blocker") return "blockers";
-  if (kind === "finished") return "finished";
   return null;
 }
 
@@ -325,16 +308,6 @@ function blockerAnimationEntity(item: BlockerItem): UpdateAnimationEntity {
     guidanceCount: 0,
     blockerCount: item.blockerCount,
     finished: false,
-  };
-}
-
-function finishedHighlightAnimationEntity(item: FinishedHighlight): UpdateAnimationEntity {
-  return {
-    signature: stableSignature([item.state, item.at, item.title, item.kind]),
-    status: item.state,
-    guidanceCount: 0,
-    blockerCount: 0,
-    finished: true,
   };
 }
 

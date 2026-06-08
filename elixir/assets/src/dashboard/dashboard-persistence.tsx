@@ -69,13 +69,18 @@ export function readStoredWorkspaceTab(): WorkspaceTab {
 
 export function readStoredTopPanel(): TopPanelKey | null {
   const state = readDashboardUiState();
-  if (!("topPanel" in state)) return "guidance";
+  if (!("topPanel" in state)) return null;
   if (state.topPanel === null) return null;
-  return isTopPanelKey(state.topPanel) ? state.topPanel : "guidance";
+  return isTopPanelKey(state.topPanel) ? state.topPanel : null;
 }
 
 export function readStoredHideEmptyWorkstreams() {
   const storedValue = readDashboardUiState().hideEmptyWorkstreams;
+  return typeof storedValue === "boolean" ? storedValue : true;
+}
+
+export function readStoredShowWorkstreamContextBar() {
+  const storedValue = readDashboardUiState().showWorkstreamContextBar;
   return typeof storedValue === "boolean" ? storedValue : true;
 }
 

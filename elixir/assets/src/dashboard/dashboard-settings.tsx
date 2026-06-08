@@ -49,18 +49,63 @@ export function ThemeToggle({ theme, onToggle }: { theme: DashboardTheme; onTogg
   );
 }
 
+function SettingsSwitch({
+  ariaLabel,
+  checked,
+  description,
+  label,
+  onChange,
+}: {
+  ariaLabel: string;
+  checked: boolean;
+  description: string;
+  label: string;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-md border bg-card/60 p-3">
+      <div className="min-w-0">
+        <span className="block text-sm font-medium">{label}</span>
+        <span className="mt-1 block text-xs text-muted-foreground">{description}</span>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={ariaLabel}
+        className={cn(
+          "relative h-6 w-11 shrink-0 rounded-full bg-muted transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          checked && "bg-primary",
+        )}
+        onClick={() => onChange(!checked)}
+      >
+        <span
+          className={cn(
+            "absolute left-1 top-1 size-4 rounded-full bg-background shadow transition-transform",
+            checked && "translate-x-5",
+          )}
+        />
+      </button>
+    </div>
+  );
+}
+
 export function DashboardSettingsDialog({
   archiveAfterDays,
   hideEmptyWorkstreams,
   hiddenWorkstreamCount,
+  showWorkstreamContextBar,
   onArchiveAfterDaysChange,
   onHideEmptyWorkstreamsChange,
+  onShowWorkstreamContextBarChange,
 }: {
   archiveAfterDays: number;
   hideEmptyWorkstreams: boolean;
   hiddenWorkstreamCount: number;
+  showWorkstreamContextBar: boolean;
   onArchiveAfterDaysChange: (value: number) => Promise<void>;
   onHideEmptyWorkstreamsChange: (value: boolean) => void;
+  onShowWorkstreamContextBarChange: (value: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
   const initialFocusRef = useRef<HTMLDivElement | null>(null);
@@ -76,6 +121,9 @@ export function DashboardSettingsDialog({
   const visibilityLabel = hideEmptyWorkstreams
     ? workstreamHiddenSummary(hiddenWorkstreamCount)
     : "Showing repos even when they have no requests, plan nodes, or slices.";
+  const contextBarLabel = showWorkstreamContextBar
+    ? "Shows the sticky repo, WR, and plan-node path while scrolling."
+    : "Board rows scroll without the sticky context path.";
   const archiveDaysDraft =
     archiveDaysDraftState.source === archiveAfterDays ? archiveDaysDraftState.value : String(archiveAfterDays);
   const archiveDaysError = archiveDaysErrorState.source === archiveAfterDays ? archiveDaysErrorState.message : null;
@@ -169,30 +217,21 @@ export function DashboardSettingsDialog({
             {archiveDaysError ? <p className="text-xs text-destructive">{archiveDaysError}</p> : null}
           </div>
 
-          <div className="flex items-center justify-between gap-4 rounded-md border bg-card/60 p-3">
-            <div className="min-w-0">
-              <span className="block text-sm font-medium">Hide empty repositories</span>
-              <span className="mt-1 block text-xs text-muted-foreground">{visibilityLabel}</span>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={hideEmptyWorkstreams}
-              aria-label="Hide empty repositories"
-              className={cn(
-                "relative h-6 w-11 shrink-0 rounded-full bg-muted transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                hideEmptyWorkstreams && "bg-primary",
-              )}
-              onClick={() => onHideEmptyWorkstreamsChange(!hideEmptyWorkstreams)}
-            >
-              <span
-                className={cn(
-                  "absolute left-1 top-1 size-4 rounded-full bg-background shadow transition-transform",
-                  hideEmptyWorkstreams && "translate-x-5",
-                )}
-              />
-            </button>
-          </div>
+          <SettingsSwitch
+            ariaLabel="Hide empty repositories"
+            checked={hideEmptyWorkstreams}
+            description={visibilityLabel}
+            label="Hide empty repositories"
+            onChange={onHideEmptyWorkstreamsChange}
+          />
+
+          <SettingsSwitch
+            ariaLabel="Show board context bar"
+            checked={showWorkstreamContextBar}
+            description={contextBarLabel}
+            label="Board context bar"
+            onChange={onShowWorkstreamContextBarChange}
+          />
         </DialogContent>
       </Dialog>
     </>

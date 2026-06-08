@@ -33,7 +33,7 @@ export const CARD_DETAIL_HEIGHT_MS = 620;
 
 export const LOCAL_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
-export const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
+export const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers"];
 
 const DEFAULT_DASHBOARD_API_BASE = "/api/v1/sympp/operator";
 
@@ -77,7 +77,7 @@ let dashboardRuntimeConfigGeneration = 0;
 
 export const DASHBOARD_LOGO_URL = dashboardRuntimeConfig?.logoUrl || "/splusplus-logo.png";
 
-export type TopPanelKey = "guidance" | "blockers" | "finished";
+export type TopPanelKey = "guidance" | "blockers";
 
 export type TopPanelDirection = "forward" | "backward";
 
@@ -95,7 +95,7 @@ export type DashboardTheme = "light" | "dark";
 
 export type CommentCardSignal = { open: number; total: number };
 
-export type StatusTileTone = "violet" | "amber" | "emerald";
+export type StatusTileTone = "violet" | "amber";
 
 export type RepoSummaryPlateTone = "requested" | "active" | "implementing" | "finished" | "guidance" | "blocker";
 
@@ -135,11 +135,6 @@ export const STATUS_TILE_TONES: Record<StatusTileTone, { card: string; icon: str
     card: "border-amber-200 bg-amber-50/25 dark:border-amber-700/70 dark:bg-amber-950/30",
     icon: "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-700/70 dark:bg-amber-950/70 dark:text-amber-200",
     value: "text-amber-700 dark:text-amber-200",
-  },
-  emerald: {
-    card: "border-emerald-200 bg-emerald-50/25 dark:border-emerald-700/70 dark:bg-emerald-950/30",
-    icon: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/70 dark:bg-emerald-950/70 dark:text-emerald-200",
-    value: "text-emerald-700 dark:text-emerald-200",
   },
 };
 
@@ -236,6 +231,7 @@ export type DashboardUiState = {
   repoWorkstreams?: Record<string, boolean>;
   finishedRequestChildren?: Record<string, boolean>;
   hideEmptyWorkstreams?: boolean;
+  showWorkstreamContextBar?: boolean;
   theme?: DashboardTheme;
 };
 

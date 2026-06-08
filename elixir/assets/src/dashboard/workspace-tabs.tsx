@@ -27,6 +27,7 @@ export function WorkstreamsPane({
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
+  showWorkstreamContextBar,
   updateAnimations,
 }: {
   repos: RepoSummary[];
@@ -37,6 +38,7 @@ export function WorkstreamsPane({
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
+  showWorkstreamContextBar: boolean;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const repoSummaryPlateWidthVars = useMemo<Record<string, string>>(() => {
@@ -81,6 +83,7 @@ export function WorkstreamsPane({
           onSelectGuidance={onSelectGuidance}
           onSelectCard={onSelectCard}
           onCopyArchitectHandoff={onCopyArchitectHandoff}
+          showWorkstreamContextBar={showWorkstreamContextBar}
           updateAnimations={updateAnimations}
         />
       ))}

@@ -2,7 +2,7 @@ import type { ArchitectHandoff, ArchitectHandoffCopyResult, DashboardPayload, Gu
 import type { UpdateMotion } from "@/components/dashboard/motion";
 import { useCallback, useRef, useState } from "react";
 import { CardDetailSelection, DashboardTheme, PackageDetailUiAction, PackageDetailUiState, RequestDetailUiAction, RequestDetailUiState, ScopedHandoffCopy, UpdateMotionsAction, WorkspaceTab } from "./runtime";
-import { readStoredHideEmptyWorkstreams, readStoredTheme, readStoredWorkspaceTab } from "./dashboard-persistence";
+import { readStoredHideEmptyWorkstreams, readStoredShowWorkstreamContextBar, readStoredTheme, readStoredWorkspaceTab } from "./dashboard-persistence";
 
 export function useScopedHandoffCopy(identity: string) {
   const [copy, setCopy] = useState<ScopedHandoffCopy>({ error: null, identity, state: "idle" });
@@ -71,6 +71,7 @@ export type AppState = {
   error: string | null;
   workspaceTab: WorkspaceTab;
   hideEmptyWorkstreams: boolean;
+  showWorkstreamContextBar: boolean;
   theme: DashboardTheme;
 };
 
@@ -87,6 +88,7 @@ export function createInitialAppState(): AppState {
     error: null,
     workspaceTab: readStoredWorkspaceTab(),
     hideEmptyWorkstreams: readStoredHideEmptyWorkstreams(),
+    showWorkstreamContextBar: readStoredShowWorkstreamContextBar(),
     theme: readStoredTheme(),
   };
 }

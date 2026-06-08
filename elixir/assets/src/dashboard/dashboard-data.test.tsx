@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { activeBlockerItems, FINISHED_HIGHLIGHT_LIMIT, recentFinishedHighlights } from "./dashboard-data";
 import { RepoSummaryStrip } from "./repo-workstream";
-import type { WorkPackageCard, WorkRequestCard, WorkRequestDetail } from "@/types/dashboard";
+import type { ActiveBlockingEdge, WorkPackageCard, WorkRequestCard, WorkRequestDetail } from "@/types/dashboard";
 import type { RepoSummary } from "./dashboard-data";
 
 describe("dashboard data helpers", () => {
@@ -101,6 +101,81 @@ describe("dashboard data helpers", () => {
     const ids = activeBlockerItems(packages).map((item) => item.id);
 
     expect(ids).toEqual(["active_blocking_edge:pkg-a:blocker-1", "active_blocking_edge:pkg-b:blocker-1"]);
+  });
+
+  it("keeps package-only blockers when edge-backed blockers exist", () => {
+    const pkg: WorkPackageCard = {
+      id: "pkg-mixed",
+      title: "Mixed blockers",
+      status: "blocked",
+      active_blocker_count: 2,
+      active_blockers: [
+        { id: "edge-backed", active: true, summary: "Shown through edge" },
+        { id: "package-only", active: true, summary: "Shown from package" },
+      ],
+    };
+    const edge: ActiveBlockingEdge = {
+      id: "edge-card",
+      blocker_id: "edge-backed",
+      from: { kind: "work_package", id: "pkg-source" },
+      to: { kind: "work_package", id: pkg.id },
+      summary: "Edge blocker",
+    };
+
+    const items = activeBlockerItems([pkg], new Map(), [edge]);
+
+    expect(items.map((item) => item.id)).toEqual(["edge-card", "active_blocking_edge:pkg-mixed:package-only"]);
+  });
+
+  it("gives anonymous package blockers unique card ids without fake clear ids", () => {
+    const pkg: WorkPackageCard = {
+      id: "pkg-anonymous",
+      title: "Anonymous blockers",
+      status: "blocked",
+      active_blocker_count: 2,
+      active_blockers: [
+        { active: true, summary: "First anonymous blocker" },
+        { active: true, summary: "Second anonymous blocker" },
+      ],
+    };
+
+    const items = activeBlockerItems([pkg]);
+
+    expect(items.map((item) => item.id)).toEqual(["active_blocking_edge:pkg-anonymous:0", "active_blocking_edge:pkg-anonymous:1"]);
+    expect(items.map((item) => item.selection.kind === "blocker" ? item.selection.blocker.blocker_id : null)).toEqual(["", ""]);
+  });
+
+  it("indexes blocker edge cards by the blocked package, not the blocker source", () => {
+    const source: WorkPackageCard = { id: "pkg-source", status: "blocked", active_blocker_count: 1 };
+    const blocked: WorkPackageCard = { id: "pkg-blocked", status: "blocked", active_blocker_count: 1 };
+    const edge: ActiveBlockingEdge = {
+      id: "edge-blocked",
+      blocker_id: "blocker-blocked",
+      from: { kind: "work_package", id: source.id },
+      to: { kind: "work_package", id: blocked.id },
+      summary: "Blocked package waits on source",
+    };
+
+    const items = activeBlockerItems([source, blocked], new Map(), [edge]);
+
+    expect(items.find((item) => item.selection.kind === "package" && item.selection.pkg.id === source.id)?.id).toBe(source.id);
+    expect(items.find((item) => item.selection.kind === "blocker" && item.selection.pkg?.id === blocked.id)?.id).toBe(edge.id);
+  });
+
+  it("shows edge-backed blockers even when package status has not caught up", () => {
+    const blocked: WorkPackageCard = { id: "pkg-edge-only", title: "Edge-only package", status: "active", active_blocker_count: 0 };
+    const edge: ActiveBlockingEdge = {
+      id: "edge-only-blocker",
+      blocker_id: "blocker-edge-only",
+      from: { kind: "work_package", id: "pkg-source" },
+      to: { kind: "work_package", id: blocked.id },
+      summary: "Edge-only blocker",
+    };
+
+    const items = activeBlockerItems([blocked], new Map(), [edge]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.id).toBe(edge.id);
   });
 
   it("hides zero plan and attention plates from repo summaries", () => {

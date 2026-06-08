@@ -4,19 +4,23 @@ import { AlertTriangle, ChevronRight, CircleDashed, GitBranch, Layers3, MessageS
 import type { CSSProperties } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { operationalBadgeVariant, operationalLabel, requestStateCardTone, sliceCardTone, sliceLane, sliceOperationalState } from "@/lib/operational-state";
-import { useId, useMemo, useState } from "react";
+import { useCallback, useId, useMemo, useRef, useState } from "react";
 import { CardDetailSelect, DashboardUpdateAnimations } from "./runtime";
 import { clarificationGuidanceItem } from "./dashboard-data";
 import { firstParagraph, stripMarkdown } from "./dashboard-text";
 import { finishedRequestChildrenStorageKey, sortPackages, sortPlannedSlices, sortWorkRequestDetails } from "./workstream-data";
 import { activeBlockerEntityCounts, productTreeCounts, requestProgress, rootProductSliceIds } from "./workstream-progress";
-import { productNodeState, rowProgressAttentionState, rowProgressIconState, sliceBlockerCount, sliceGuidanceCount } from "./workstream-row-state";
-import { EntityCountChips, EntityKindSlot, ProductNodeHeader, ProgressPill, ProgressStateIcon, RequestHeaderActions, RowBadgeSlot, SliceKindSlot } from "./workstream-row-ui";
-import { openBlockersForRequest, openBlockersForSlices, openGuidanceForSlice, openGuidanceForSlices, productNodeSubtreeSlices, requestGuidanceItem } from "./workstream-board-actions";
-import { requestUpdateKey, sliceUpdateKey } from "./update-animations";
+import { productNodeState, requestBoardState, rowProgressAttentionState, rowProgressIconState } from "./workstream-row-state";
+import { EntityCountChips, EntityKindSlot, ProductNodeHeader, ProgressPill, RequestHeaderActions, RowBadgeSlot } from "./workstream-row-ui";
+import { openBlockersForRequest, openBlockersForSlices, openGuidanceForSlices, productNodeSubtreeSlices, requestGuidanceItem } from "./workstream-board-actions";
+import { requestUpdateKey } from "./update-animations";
 import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
 import { UnlinkedExecutionSection } from "./workstream-unlinked-section";
+import { useAutoCollapseWhenDone } from "./workstream-auto-collapse";
+import { WorkstreamContextBar } from "./workstream-context-bar";
+import { contextPathValue } from "./workstream-context-path";
+import type { ContextPathPart } from "./workstream-context-path";
+import { DirectSliceGroup, ProductSliceRow } from "./workstream-slice-row";
 import { buildTreeIndex } from "./workstream-tree-index";
 import type { TreeIndex } from "./workstream-tree-index";
 
@@ -35,6 +39,7 @@ type ProductTreeRenderContext = {
 };
 
 export function WorkstreamBoard({
+  repoLabel,
   repoDetails,
   packages,
   unlinkedPackages,
@@ -46,8 +51,10 @@ export function WorkstreamBoard({
   expandedFinishedRequests,
   finishedRequestScopeKey,
   onSetFinishedRequestChildrenOpen,
+  showContextBar,
   updateAnimations,
 }: {
+  repoLabel: string;
   repoDetails: WorkRequestDetail[];
   packages: WorkPackageCard[];
   unlinkedPackages: WorkPackageCard[];
@@ -59,16 +66,20 @@ export function WorkstreamBoard({
   expandedFinishedRequests: Record<string, boolean>;
   finishedRequestScopeKey: string;
   onSetFinishedRequestChildrenOpen: (workRequestId: string, open: boolean) => void;
+  showContextBar: boolean;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const sortedDetails = useMemo(() => sortWorkRequestDetails(repoDetails), [repoDetails]);
   const sortedUnlinkedPackages = useMemo(() => sortPackages(unlinkedPackages), [unlinkedPackages]);
   const packageById = useMemo(() => new Map(packages.map((pkg) => [pkg.id, pkg])), [packages]);
   const blockerCounts = useMemo(() => activeBlockerEntityCounts(activeBlockingEdges, repoDetails), [activeBlockingEdges, repoDetails]);
+  const boardRef = useRef<HTMLDivElement | null>(null);
+  const contextSignature = useMemo(() => workstreamContextSignature(sortedDetails), [sortedDetails]);
 
   return (
     <div className="workstream-board-shell">
-      <div className="v3-workstream-board">
+      {showContextBar ? <WorkstreamContextBar boardRef={boardRef} repoLabel={repoLabel} signature={contextSignature} /> : null}
+      <div ref={boardRef} className="v3-workstream-board">
         {sortedDetails.map((detail, index) => {
           const stateKey = finishedRequestChildrenStorageKey(finishedRequestScopeKey, detail.work_request.id);
           const expanded = expandedFinishedRequests[stateKey] === true;
@@ -85,7 +96,7 @@ export function WorkstreamBoard({
               guidanceItems={guidanceItems}
               expanded={expanded}
               index={index}
-              onToggle={() => onSetFinishedRequestChildrenOpen(detail.work_request.id, !expanded)}
+              onSetOpen={(open) => onSetFinishedRequestChildrenOpen(detail.work_request.id, open)}
               onSelectGuidance={onSelectGuidance}
               onSelectCard={onSelectCard}
               onCopyArchitectHandoff={onCopyArchitectHandoff}
@@ -101,6 +112,25 @@ export function WorkstreamBoard({
   );
 }
 
+function workstreamContextSignature(details: WorkRequestDetail[]) {
+  return JSON.stringify(
+    details.map((detail) => ({
+      nodes: (detail.product_tree?.nodes ?? []).map((node) => ({
+        id: node.id,
+        label: node.title || node.id,
+        parentId: node.parent_id || null,
+        sliceIds: node.slice_ids ?? [],
+      })),
+      request: {
+        id: detail.work_request.id,
+        label: detail.work_request.title || detail.work_request.id,
+      },
+      rootNodeIds: detail.product_tree?.root_node_ids ?? [],
+      rootSliceIds: detail.product_tree?.root_slice_ids ?? [],
+    })),
+  );
+}
+
 function ProductRequestRow({
   detail,
   packageById,
@@ -111,7 +141,7 @@ function ProductRequestRow({
   guidanceItems,
   expanded,
   index,
-  onToggle,
+  onSetOpen,
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
@@ -126,13 +156,15 @@ function ProductRequestRow({
   guidanceItems: GuidanceItem[];
   expanded: boolean;
   index: number;
-  onToggle: () => void;
+  onSetOpen: (open: boolean) => void;
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const request = detail.work_request;
+  const requestTitle = request.title || request.id;
+  const requestPath = [{ id: request.id, label: requestTitle }];
   const slices = sortPlannedSlices(detail.planned_slices ?? []);
   const progress = requestProgress(detail, packageById);
   const counts = productTreeCounts(detail, activeBlockerCount);
@@ -147,22 +179,27 @@ function ProductRequestRow({
     onSelectCard({ kind: "request", detail });
   };
   const openBlockers = () => openBlockersForRequest(detail, slices, packageById, activeBlockerCountBySliceId, activeBlockingEdges, onSelectCard);
-  const tone = requestStateCardTone(detail);
-  const requestLabel = operationalLabel(request.operational_state, request.status);
+  const requestState = requestBoardState(detail, packageById, counts, progress);
+  const tone = requestState.tone;
+  const requestLabel = requestState.label;
   const rowStyle = {
     animationDelay: `${index * 30}ms`,
   } as CSSProperties;
+  const requestFinished = requestState.kind === "done";
+  const collapseRequest = useCallback(() => onSetOpen(false), [onSetOpen]);
+  useAutoCollapseWhenDone(requestFinished, expanded, collapseRequest, requestFinished);
 
   return (
     <section
       className="v3-request-row stagger-item"
       data-expanded={expanded ? "true" : "false"}
+      data-v3-context-path={contextPathValue(requestPath)}
       data-tone={tone}
       style={rowStyle}
       {...updateMotionAttributes(updateAnimations.motionFor(requestUpdateKey(detail)))}
     >
       <div className="v3-request-header v3-entity-row" data-tone={tone}>
-        <button type="button" className="v3-request-chevron-button" aria-expanded={expanded} aria-label={`${expanded ? "Collapse" : "Expand"} ${request.title || request.id}`} onClick={onToggle}>
+        <button type="button" className="v3-request-chevron-button" aria-expanded={expanded} aria-label={`${expanded ? "Collapse" : "Expand"} ${requestTitle}`} onClick={() => onSetOpen(!expanded)}>
           <ChevronRight className={cn("size-4 transition-transform duration-200", expanded && "rotate-90")} />
         </button>
         <RequestHeaderActions
@@ -174,9 +211,9 @@ function ProductRequestRow({
           onSelectCard={onSelectCard}
           onCopyArchitectHandoff={onCopyArchitectHandoff}
         />
-        <button type="button" className="v3-request-main" aria-expanded={expanded} onClick={onToggle}>
+        <button type="button" className="v3-request-main" aria-expanded={expanded} onClick={() => onSetOpen(!expanded)}>
           <span className="v3-request-title-group">
-            <span className="v3-request-title">{request.title || request.id}</span>
+            <span className="v3-request-title">{requestTitle}</span>
             <span className="v3-request-meta">
               <GitBranch className="size-3.5" />
               <span>{request.repo_display || request.repo || "repo"}</span>
@@ -187,7 +224,7 @@ function ProductRequestRow({
         <RequestProgressSummary counts={counts} onOpenGuidance={openGuidance} onOpenBlockers={openBlockers} />
         <span className="v3-row-status">
           <ProgressPill progress={progress} />
-          <RowBadgeSlot label={requestLabel} variant={operationalBadgeVariant(request.operational_state, request.status)} />
+          <RowBadgeSlot label={requestLabel} variant={requestState.badgeVariant} />
         </span>
         <RequestScopeSlot counts={counts} />
       </div>
@@ -209,6 +246,7 @@ function ProductRequestRow({
             onSelectGuidance={onSelectGuidance}
             onSelectCard={onSelectCard}
             updateAnimations={updateAnimations}
+            requestPath={requestPath}
           />
         </div>
       ) : null}
@@ -279,6 +317,7 @@ function ProductPlanBody({
   onSelectGuidance,
   onSelectCard,
   updateAnimations,
+  requestPath,
   activeBlockerCountBySliceId,
   activeBlockerKeysBySliceId,
   activeBlockingEdges,
@@ -290,6 +329,7 @@ function ProductPlanBody({
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
+  requestPath: ContextPathPart[];
   activeBlockerCountBySliceId: Map<string, number>;
   activeBlockerKeysBySliceId: Map<string, Set<string>>;
   activeBlockingEdges: ActiveBlockingEdge[];
@@ -321,6 +361,7 @@ function ProductPlanBody({
               key={node.id}
               node={node}
               depth={0}
+              path={requestPath}
               context={treeContext}
             />
           ))}
@@ -336,6 +377,7 @@ function ProductPlanBody({
         guidanceItems={guidanceItems}
         onSelectGuidance={onSelectGuidance}
         onSelectCard={onSelectCard}
+        requestPath={requestPath}
         updateAnimations={updateAnimations}
       />
       {!hasVisiblePlan ? <UnplannedRequestNote /> : null}
@@ -356,29 +398,37 @@ function ProductTreeNodeRow({
   node,
   depth,
   context,
+  path,
 }: {
   node: ProductTreeNode;
   depth: number;
+  path: ContextPathPart[];
   context: ProductTreeRenderContext;
 }) {
   const { activeBlockerCountBySliceId, activeBlockerKeysBySliceId, activeBlockingEdges, detail, guidanceItems, onSelectCard, onSelectGuidance, packageById, treeIndex, slicesById } = context;
   const childNodes = treeIndex.childrenByParent.get(node.id) ?? [];
+  const nodeTitle = node.title || node.id;
+  const nodePath = [...path, { id: node.id, label: nodeTitle }];
   const nodeSlices = (node.slice_ids ?? []).map((sliceId) => slicesById.get(sliceId)).filter((slice): slice is PlannedSlice => Boolean(slice));
   const nodeSubtreeSlices = productNodeSubtreeSlices(node, treeIndex, slicesById);
-  const nodeState = productNodeState(node, nodeSlices.length, treeIndex, activeBlockerCountBySliceId, activeBlockerKeysBySliceId);
+  const nodeState = productNodeState(node, nodeSlices.length, treeIndex, activeBlockerCountBySliceId, activeBlockerKeysBySliceId, nodeSubtreeSlices, packageById);
+  const nodeFinished = nodeState.statusKind === "done";
   const contentId = useId();
   const hasDisclosureContent = productNodeHasDisclosureContent(node, nodeSlices, childNodes);
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(() => !nodeFinished);
   const openGuidance = () => openGuidanceForSlices(detail, nodeSubtreeSlices, packageById, guidanceItems, onSelectGuidance, onSelectCard);
   const openBlockers = () => openBlockersForSlices(detail, nodeSubtreeSlices, packageById, activeBlockerCountBySliceId, activeBlockingEdges, onSelectCard);
+  const collapseNode = useCallback(() => setExpanded(false), [setExpanded]);
+  useAutoCollapseWhenDone(nodeFinished, expanded, collapseNode, nodeFinished);
 
   return (
-    <div className="v3-product-node" style={{ "--tree-depth": depth } as CSSProperties} data-mark={nodeState.mark} data-tone={nodeState.tone}>
+    <div className="v3-product-node" style={{ "--tree-depth": depth } as CSSProperties} data-mark={nodeState.mark} data-tone={nodeState.tone} data-v3-context-path={contextPathValue(nodePath)}>
       <ProductNodeHeader
         node={node}
         nodeSliceCount={nodeState.nodeSliceCount}
         visibleNodeKind={nodeState.visibleNodeKind}
-        mark={nodeState.mark}
+        progress={nodeState.progress}
+        statusBadgeVariant={nodeState.badgeVariant}
         tone={nodeState.tone}
         statusLabel={nodeState.statusLabel}
         guidanceCount={nodeState.guidanceCount}
@@ -398,6 +448,7 @@ function ProductTreeNodeRow({
           nodeSlices={nodeSlices}
           childNodes={childNodes}
           depth={depth}
+          path={nodePath}
           context={context}
         />
       ) : null}
@@ -417,6 +468,7 @@ function ProductTreeNodeContent({
   childNodes,
   depth,
   context,
+  path,
 }: {
   contentId: string;
   hidden: boolean;
@@ -424,6 +476,7 @@ function ProductTreeNodeContent({
   nodeSlices: PlannedSlice[];
   childNodes: ProductTreeNode[];
   depth: number;
+  path: ContextPathPart[];
   context: ProductTreeRenderContext;
 }) {
   const { activeBlockerCountBySliceId, activeBlockingEdges, detail, guidanceItems, packageById, onSelectCard, onSelectGuidance, updateAnimations } = context;
@@ -456,6 +509,7 @@ function ProductTreeNodeContent({
               key={child.id}
               node={child}
               depth={depth + 1}
+              path={path}
               context={context}
             />
           ))}
@@ -463,120 +517,4 @@ function ProductTreeNodeContent({
       ) : null}
     </div>
   );
-}
-
-function DirectSliceGroup({
-  detail,
-  sliceIds,
-  slicesById,
-  packageById,
-  activeBlockerCountBySliceId,
-  activeBlockingEdges,
-  guidanceItems,
-  onSelectGuidance,
-  onSelectCard,
-  updateAnimations,
-}: {
-  detail: WorkRequestDetail;
-  sliceIds: string[];
-  slicesById: Map<string, PlannedSlice>;
-  packageById: Map<string, WorkPackageCard>;
-  activeBlockerCountBySliceId: Map<string, number>;
-  activeBlockingEdges: ActiveBlockingEdge[];
-  guidanceItems: GuidanceItem[];
-  onSelectGuidance: (item: GuidanceItem) => void;
-  onSelectCard: CardDetailSelect;
-  updateAnimations: DashboardUpdateAnimations;
-}) {
-  const directSlices = sliceIds.map((sliceId) => slicesById.get(sliceId)).filter((slice): slice is PlannedSlice => Boolean(slice));
-  if (directSlices.length === 0) return null;
-
-  return (
-    <div className="v3-direct-slices">
-      {directSlices.map((slice) => (
-        <ProductSliceRow
-          key={slice.id}
-          detail={detail}
-          slice={slice}
-          pkg={packageById.get(slice.work_package_id || "")}
-          activeBlockerCountBySliceId={activeBlockerCountBySliceId}
-          activeBlockingEdges={activeBlockingEdges}
-          guidanceItems={guidanceItems}
-          onSelectGuidance={onSelectGuidance}
-          onSelectCard={onSelectCard}
-          updateAnimations={updateAnimations}
-        />
-      ))}
-    </div>
-  );
-}
-
-function ProductSliceRow({
-  detail,
-  slice,
-  pkg,
-  activeBlockerCountBySliceId,
-  activeBlockingEdges,
-  guidanceItems,
-  onSelectGuidance,
-  onSelectCard,
-  updateAnimations,
-}: {
-  detail: WorkRequestDetail;
-  slice: PlannedSlice;
-  pkg?: WorkPackageCard;
-  activeBlockerCountBySliceId: Map<string, number>;
-  activeBlockingEdges: ActiveBlockingEdge[];
-  guidanceItems: GuidanceItem[];
-  onSelectGuidance: (item: GuidanceItem) => void;
-  onSelectCard: CardDetailSelect;
-  updateAnimations: DashboardUpdateAnimations;
-}) {
-  const operational = sliceOperationalState(slice, pkg);
-  const rawStatus = slice.work_package_status || slice.status;
-  const lane = sliceLane(slice, pkg);
-  const tone = sliceCardTone(slice, pkg, lane);
-  const blockerCount = sliceBlockerCount(slice, pkg, activeBlockerCountBySliceId);
-  const guidanceCount = sliceGuidanceCount(slice, pkg);
-  const sliceLabel = operationalLabel(operational, rawStatus);
-  const progress = sliceProgressPercent(pkg, lane, tone);
-  const progressIconState = rowProgressIconState({ blockerCount, guidanceCount, progress, tone });
-  const progressAttentionState = rowProgressAttentionState({ blockerCount, guidanceCount, tone });
-  const packageById = pkg ? new Map<string, WorkPackageCard>([[pkg.id, pkg]]) : new Map<string, WorkPackageCard>();
-  const openSliceDetail = () => onSelectCard({ kind: "slice", detail, slice, pkg });
-  const openGuidance = () => openGuidanceForSlice(detail, slice, pkg, guidanceItems, onSelectGuidance, onSelectCard);
-  const openBlockers = () => openBlockersForSlices(detail, [slice], packageById, activeBlockerCountBySliceId, activeBlockingEdges, onSelectCard);
-
-  return (
-    <div
-      className="v3-slice-row v3-entity-row stagger-item"
-      data-tone={tone}
-      {...updateMotionAttributes(updateAnimations.motionFor(sliceUpdateKey(slice)))}
-    >
-      <ProgressStateIcon state={progressIconState} attentionState={progressAttentionState} progress={progress} label={sliceLabel} />
-      <button type="button" className="v3-slice-main-button" onClick={openSliceDetail}>
-        <span>{slice.title || slice.id}</span>
-      </button>
-      <EntityCountChips
-        reserveEmpty
-        items={[
-          { key: "guidance", icon: <MessageSquareText className="size-3.5" />, count: guidanceCount, label: "guidance needed", onClick: guidanceCount > 0 ? openGuidance : undefined, tone: "guidance" },
-          { key: "blockers", icon: <AlertTriangle className="size-3.5" />, count: blockerCount, label: "active blockers", onClick: blockerCount > 0 ? openBlockers : undefined, tone: "blocker" },
-        ]}
-      />
-      <span className="v3-row-status v3-slice-status">
-        <RowBadgeSlot label={sliceLabel} variant={operationalBadgeVariant(operational, rawStatus)} />
-      </span>
-      <SliceKindSlot detail={detail} slice={slice} pkg={pkg} onSelectCard={onSelectCard} />
-    </div>
-  );
-}
-
-function sliceProgressPercent(pkg: WorkPackageCard | undefined, lane: ReturnType<typeof sliceLane>, tone: string) {
-  const completed = pkg?.plan?.completed_count ?? 0;
-  const total = pkg?.plan?.total_count ?? 0;
-  if (total > 0) return Math.round((completed / total) * 100);
-  if (lane === "finished" || tone === "finished") return 100;
-  if (lane === "implementing" || ["implementing", "review", "merge"].includes(tone)) return 50;
-  return 0;
 }
