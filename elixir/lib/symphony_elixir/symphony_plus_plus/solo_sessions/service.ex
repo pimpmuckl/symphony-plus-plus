@@ -284,9 +284,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service do
   end
 
   defp matching_blocker_resolution?(%SoloSessionEntry{entry_kind: "blocker"} = entry, %{"payload" => payload}) do
-    blocker_status(entry) == "resolved" and
-      blocker_identity(entry) == Map.get(payload, "blocker_id") and
-      payload_text(entry.payload, "resolution", :resolution) == Map.get(payload, "resolution")
+    Normalization.blocker_status(entry) == "resolved" and
+      Normalization.blocker_identity(entry) == Map.get(payload, "blocker_id") and
+      Normalization.blocker_resolution(entry) == Map.get(payload, "resolution")
   end
 
   defp matching_blocker_resolution?(_entry, _attrs), do: false
@@ -310,46 +310,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service do
 
   defp require_open_blocker(repo, solo_session_id, blocker_id) do
     with {:ok, entries} <- list_entries(repo, solo_session_id) do
-      if Map.get(active_blocker_statuses(entries), blocker_id) == "open" do
+      if Map.get(Normalization.active_blocker_statuses(entries), blocker_id) == "open" do
         :ok
       else
         {:error, :solo_blocker_not_open}
       end
     end
   end
-
-  defp active_blocker_statuses(entries) do
-    entries
-    |> Enum.filter(&(&1.entry_kind == "blocker"))
-    |> Enum.sort_by(&(&1.sequence || 0))
-    |> Enum.reduce(%{}, fn entry, statuses ->
-      Map.put(statuses, blocker_identity(entry), blocker_status(entry))
-    end)
-  end
-
-  defp blocker_identity(%SoloSessionEntry{} = entry) do
-    payload_text(entry.payload, "blocker_id", :blocker_id) || entry.id
-  end
-
-  defp blocker_status(%SoloSessionEntry{} = entry) do
-    case payload_text(entry.payload, "blocker_status", :blocker_status) do
-      status when status in ["open", "resolved"] -> status
-      _status -> if entry.status in ["resolved", "completed"], do: "resolved", else: "open"
-    end
-  end
-
-  defp payload_text(payload, string_key, atom_key) when is_map(payload) do
-    case Map.get(payload, string_key) || Map.get(payload, atom_key) do
-      value when is_binary(value) ->
-        value = String.trim(value)
-        if value == "", do: nil, else: value
-
-      _value ->
-        nil
-    end
-  end
-
-  defp payload_text(_payload, _string_key, _atom_key), do: nil
 
   defp stable_blocker_id do
     "solo_blocker_" <> Base.url_encode64(:crypto.strong_rand_bytes(10), padding: false)
