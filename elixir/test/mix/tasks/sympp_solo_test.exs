@@ -23,10 +23,11 @@ defmodule Mix.Tasks.Sympp.SoloTest do
     SoloTask.run(["--help"])
     assert_received {:mix_shell, :info, [message]}
     assert message =~ "mix sympp.solo attach"
-    assert message =~ "mix sympp.solo append"
+    assert message =~ "mix sympp.solo plan|progress|finding"
+    assert message =~ "mix sympp.solo blocker"
   end
 
-  test "attaches appends and shows ordered redacted entries as JSON" do
+  test "attaches records progress and shows ordered redacted entries as JSON" do
     database_path = WorkPackageFactory.database_path()
     workspace_path = workspace_path("happy")
 
@@ -55,33 +56,31 @@ defmodule Mix.Tasks.Sympp.SoloTest do
       assert session["status"] == "active"
       assert session["title"] == "Plan [REDACTED]"
 
-      append =
+      progress =
         run_json([
-          "append",
+          "progress",
           "--database",
           database_path,
           "--session-id",
           session["id"],
-          "--entry-kind",
-          "task_plan",
-          "--title",
+          "--summary",
           "Use ghp_abcdefgh",
           "--body",
           "Body bearer abcdefghijkl",
           "--status",
-          "pending",
+          "active",
           "--idempotency-key",
           "entry-1",
           "--payload-json",
           ~s({"token":"ghp_abcdefgh","nested":{"url":"https://example.test/?token=ghp_abcdefgh"}})
         ])
 
-      assert append["action"] == "append"
-      entry = append["entry"]
-      assert entry["entry_kind"] == "task_plan"
+      assert progress["action"] == "progress"
+      entry = progress["entry"]
+      assert entry["entry_kind"] == "progress"
       assert entry["title"] == "Use [REDACTED]"
       assert entry["body"] == "Body [REDACTED]"
-      assert entry["status"] == "pending"
+      assert entry["status"] == "in_progress"
       assert entry["sequence"] == 1
       assert entry["idempotency_key"] == "entry-1"
       assert entry["payload"]["token"] == "[REDACTED]"
@@ -160,7 +159,7 @@ defmodule Mix.Tasks.Sympp.SoloTest do
     end
   end
 
-  test "idempotent append replays the original entry" do
+  test "idempotent decision replays the original entry" do
     database_path = WorkPackageFactory.database_path()
 
     try do
@@ -168,14 +167,12 @@ defmodule Mix.Tasks.Sympp.SoloTest do
 
       first =
         run_json([
-          "append",
+          "decision",
           "--database",
           database_path,
           "--session-id",
           session["id"],
-          "--entry-kind",
-          "decision",
-          "--title",
+          "--decision",
           "Use entries",
           "--idempotency-key",
           "same-key"
@@ -183,14 +180,12 @@ defmodule Mix.Tasks.Sympp.SoloTest do
 
       replay =
         run_json([
-          "append",
+          "decision",
           "--database",
           database_path,
           "--session-id",
           session["id"],
-          "--entry-kind",
-          "decision",
-          "--title",
+          "--decision",
           "Changed retry",
           "--idempotency-key",
           " same-key "
@@ -240,14 +235,12 @@ defmodule Mix.Tasks.Sympp.SoloTest do
 
     assert_raise Mix.Error, ~r/--payload-json must be valid JSON/, fn ->
       SoloTask.run([
-        "append",
+        "progress",
         "--database",
         database_path,
         "--session-id",
         "solo_missing",
-        "--entry-kind",
-        "progress",
-        "--title",
+        "--summary",
         "Bad payload",
         "--payload-json",
         "{"
@@ -258,14 +251,12 @@ defmodule Mix.Tasks.Sympp.SoloTest do
 
     assert_raise Mix.Error, ~r/--payload-json must decode to a JSON object/, fn ->
       SoloTask.run([
-        "append",
+        "progress",
         "--database",
         database_path,
         "--session-id",
         "solo_missing",
-        "--entry-kind",
-        "progress",
-        "--title",
+        "--summary",
         "Bad payload",
         "--payload-json",
         ~s(["not","object"])
@@ -279,7 +270,13 @@ defmodule Mix.Tasks.Sympp.SoloTest do
     database_path = WorkPackageFactory.database_path()
 
     commands = [
-      ["append", "--session-id", "solo_missing", "--entry-kind", "progress", "--title", "Missing"],
+      ["plan", "--session-id", "solo_missing", "--summary", "Missing"],
+      ["progress", "--session-id", "solo_missing", "--summary", "Missing"],
+      ["finding", "--session-id", "solo_missing", "--summary", "Missing"],
+      ["decision", "--session-id", "solo_missing", "--decision", "Missing"],
+      ["blocker", "--session-id", "solo_missing", "--summary", "Missing"],
+      ["resolve-blocker", "--session-id", "solo_missing", "--blocker-id", "blocker-1", "--resolution", "Done"],
+      ["validation", "--session-id", "solo_missing", "--summary", "Missing", "--result", "not_run"],
       ["show", "--session-id", "solo_missing"],
       ["list"],
       ["pause", "--session-id", "solo_missing"],
@@ -322,30 +319,56 @@ defmodule Mix.Tasks.Sympp.SoloTest do
     try do
       session = create_session(database_path, "validation")
 
-      assert_raise Mix.Error, ~r/entry_kind: is invalid/, fn ->
+      assert_raise Mix.Error, ~r/entry status "ready_for_merge" is invalid/, fn ->
         SoloTask.run([
-          "append",
+          "progress",
           "--database",
           database_path,
           "--session-id",
           session["id"],
-          "--entry-kind",
-          "claimed",
-          "--title",
-          "Bad kind"
+          "--summary",
+          "Bad status",
+          "--status",
+          "ready_for_merge"
+        ])
+      end
+
+      assert_raise Mix.Error, ~r/validation result "maybe" is invalid/, fn ->
+        SoloTask.run([
+          "validation",
+          "--database",
+          database_path,
+          "--session-id",
+          session["id"],
+          "--summary",
+          "Bad result",
+          "--result",
+          "maybe"
+        ])
+      end
+
+      assert_raise Mix.Error, ~r/does not support --status/, fn ->
+        SoloTask.run([
+          "blocker",
+          "--database",
+          database_path,
+          "--session-id",
+          session["id"],
+          "--summary",
+          "Bad blocker status",
+          "--status",
+          "resolved"
         ])
       end
 
       assert_raise Mix.Error, ~r/idempotency key is invalid or secret-like/, fn ->
         SoloTask.run([
-          "append",
+          "progress",
           "--database",
           database_path,
           "--session-id",
           session["id"],
-          "--entry-kind",
-          "progress",
-          "--title",
+          "--summary",
           "Bad key",
           "--idempotency-key",
           "wk_" <> String.duplicate("A", 43)

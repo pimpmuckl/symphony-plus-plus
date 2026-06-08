@@ -156,11 +156,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
           "list_guidance_requests",
           "record_work_request_decision",
           "add_work_request_planned_slice",
-          "solo_append",
           "solo_attach",
           "solo_list",
+          "solo_record_task_plan",
+          "solo_append_progress",
+          "solo_append_finding",
+          "solo_record_decision",
+          "solo_report_blocker",
+          "solo_resolve_blocker",
+          "solo_record_validation",
+          "solo_pause",
+          "solo_resume",
+          "solo_complete",
+          "solo_archive",
           "solo_show",
-          "solo_update_status",
           "sympp.health"
         ] do
       assert tool in names

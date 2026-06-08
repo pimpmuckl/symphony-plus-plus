@@ -3,6 +3,23 @@ Code.require_file("../../../support/symphony_plus_plus/mcp_case.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
+  @solo_tool_names [
+    "solo_attach",
+    "solo_show",
+    "solo_list",
+    "solo_record_task_plan",
+    "solo_append_progress",
+    "solo_append_finding",
+    "solo_record_decision",
+    "solo_report_blocker",
+    "solo_resolve_blocker",
+    "solo_record_validation",
+    "solo_pause",
+    "solo_resume",
+    "solo_complete",
+    "solo_archive"
+  ]
+
   defmodule WorkKeyClaimRaceRepo do
     import Ecto.Query, only: [from: 2]
 
@@ -64,12 +81,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
       |> get_in(["result", "tools"])
       |> Map.new(&{&1["name"], &1})
 
+    for tool <- @solo_tool_names do
+      assert Map.has_key?(unbound_tools_by_name, tool)
+    end
+
+    refute Map.has_key?(unbound_tools_by_name, "solo_append")
+    refute Map.has_key?(unbound_tools_by_name, "solo_update_status")
+
     assert get_in(unbound_tools_by_name, ["solo_attach", "inputSchema", "required"]) == ["repo", "base_branch", "workspace_path", "caller_id"]
-    assert get_in(unbound_tools_by_name, ["solo_append", "inputSchema", "required"]) == ["session_id", "entry_kind", "title"]
-    assert get_in(unbound_tools_by_name, ["solo_append", "inputSchema", "properties", "payload", "type"]) == "object"
+    assert get_in(unbound_tools_by_name, ["solo_append_progress", "inputSchema", "required"]) == ["session_id", "summary"]
+    assert get_in(unbound_tools_by_name, ["solo_append_progress", "inputSchema", "properties", "payload", "type"]) == "object"
+    assert get_in(unbound_tools_by_name, ["solo_record_validation", "inputSchema", "required"]) == ["session_id", "summary", "result"]
     assert get_in(unbound_tools_by_name, ["solo_show", "inputSchema", "required"]) == ["session_id"]
     assert get_in(unbound_tools_by_name, ["solo_list", "inputSchema", "required"]) == []
-    assert get_in(unbound_tools_by_name, ["solo_update_status", "inputSchema", "required"]) == ["session_id", "current_status", "next_status"]
+    assert get_in(unbound_tools_by_name, ["solo_pause", "inputSchema", "required"]) == ["session_id"]
 
     unbound_release_response =
       Server.handle(
@@ -101,11 +126,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
       |> get_in(["result", "tools"])
       |> Map.new(&{&1["name"], &1})
 
-    refute Map.has_key?(worker_tools_by_name, "solo_attach")
-    refute Map.has_key?(worker_tools_by_name, "solo_append")
-    refute Map.has_key?(worker_tools_by_name, "solo_show")
-    refute Map.has_key?(worker_tools_by_name, "solo_list")
-    refute Map.has_key?(worker_tools_by_name, "solo_update_status")
+    for tool <- @solo_tool_names do
+      refute Map.has_key?(worker_tools_by_name, tool)
+    end
+
     assert Map.has_key?(worker_tools_by_name, "release_current_assignment")
 
     {_anchor, architect_session, _grant} = create_phase_architect_session(repo, "SYMPP-SOLO-ARCH-TOOLS", ["read:phase"])
@@ -121,15 +145,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
       |> get_in(["result", "tools"])
       |> Map.new(&{&1["name"], &1})
 
-    refute Map.has_key?(architect_tools_by_name, "solo_attach")
-    refute Map.has_key?(architect_tools_by_name, "solo_append")
-    refute Map.has_key?(architect_tools_by_name, "solo_show")
-    refute Map.has_key?(architect_tools_by_name, "solo_list")
-    refute Map.has_key?(architect_tools_by_name, "solo_update_status")
+    for tool <- @solo_tool_names do
+      refute Map.has_key?(architect_tools_by_name, tool)
+    end
+
     assert Map.has_key?(architect_tools_by_name, "release_current_assignment")
   end
 
-  test "Solo MCP tools attach append show list redact and replay idempotent appends", %{repo: repo} do
+  test "Solo MCP tools attach record progress show list redact and replay idempotent entries", %{repo: repo} do
     workspace_path = solo_workspace_path("happy")
 
     attach_response =
@@ -152,30 +175,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     assert session["session_key"] =~ "solo_key_"
     assert session["title"] == "Plan [REDACTED]"
 
-    append_args = %{
+    progress_args = %{
       "session_id" => session["id"],
-      "entry_kind" => "progress",
-      "title" => "Use ghp_abcdefgh",
+      "summary" => "Use ghp_abcdefgh",
       "body" => "Body bearer abcdefghijkl",
-      "status" => "recorded",
+      "status" => "active",
       "idempotency_key" => "solo-entry-1",
       "payload" => %{"token" => "ghp_abcdefgh", "nested" => %{"url" => "https://example.test/?token=ghp_abcdefgh"}}
     }
 
-    append_response = mcp_tool(repo, nil, "solo_append", append_args)
-    entry = get_in(append_response, ["result", "structuredContent", "entry"])
-    append_text = assert_toon_tool_text!(append_response)
-    assert append_text =~ "action: solo_append"
-    assert append_text =~ "[REDACTED]"
-    refute append_text =~ "ghp_abcdefgh"
+    progress_response = mcp_tool(repo, nil, "solo_append_progress", progress_args)
+    entry = get_in(progress_response, ["result", "structuredContent", "entry"])
+    progress_text = assert_toon_tool_text!(progress_response)
+    assert progress_text =~ "action: solo_append_progress"
+    assert progress_text =~ "[REDACTED]"
+    refute progress_text =~ "ghp_abcdefgh"
 
     assert entry["entry_kind"] == "progress"
     assert entry["title"] == "Use [REDACTED]"
     assert entry["body"] == "Body [REDACTED]"
+    assert entry["status"] == "in_progress"
     assert entry["payload"]["token"] == "[REDACTED]"
     assert entry["payload"]["nested"]["url"] == "https://example.test/?token=[REDACTED]"
 
-    replay_response = mcp_tool(repo, nil, "solo_append", %{append_args | "title" => "Changed retry"})
+    replay_response = mcp_tool(repo, nil, "solo_append_progress", %{progress_args | "summary" => "Changed retry"})
     replay_entry = get_in(replay_response, ["result", "structuredContent", "entry"])
     assert replay_entry["id"] == entry["id"]
     assert replay_entry["title"] == entry["title"]
@@ -215,39 +238,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     session_id = get_in(attach_response, ["result", "structuredContent", "solo_session", "id"])
 
     pause_response =
-      mcp_tool(repo, nil, "solo_update_status", %{
-        "session_id" => session_id,
-        "current_status" => "active",
-        "next_status" => "paused"
-      })
+      mcp_tool(repo, nil, "solo_pause", %{"session_id" => session_id})
 
-    assert get_in(pause_response, ["result", "structuredContent", "action"]) == "solo_update_status"
+    assert get_in(pause_response, ["result", "structuredContent", "action"]) == "solo_pause"
     assert get_in(pause_response, ["result", "structuredContent", "solo_session", "status"]) == "paused"
 
     resume_response =
-      mcp_tool(repo, nil, "solo_update_status", %{
-        "session_id" => session_id,
-        "current_status" => "paused",
-        "next_status" => "active"
-      })
+      mcp_tool(repo, nil, "solo_resume", %{"session_id" => session_id})
 
     assert get_in(resume_response, ["result", "structuredContent", "solo_session", "status"]) == "active"
 
     complete_response =
-      mcp_tool(repo, nil, "solo_update_status", %{
-        "session_id" => session_id,
-        "current_status" => "active",
-        "next_status" => "completed"
-      })
+      mcp_tool(repo, nil, "solo_complete", %{"session_id" => session_id})
 
     assert get_in(complete_response, ["result", "structuredContent", "solo_session", "status"]) == "completed"
 
     archive_response =
-      mcp_tool(repo, nil, "solo_update_status", %{
-        "session_id" => session_id,
-        "current_status" => "completed",
-        "next_status" => "archived"
-      })
+      mcp_tool(repo, nil, "solo_archive", %{"session_id" => session_id})
 
     assert get_in(archive_response, ["result", "structuredContent", "solo_session", "status"]) == "archived"
     assert is_binary(get_in(archive_response, ["result", "structuredContent", "solo_session", "archived_at"]))
@@ -263,20 +270,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     paused_session_id = get_in(paused_attach_response, ["result", "structuredContent", "solo_session", "id"])
 
     assert get_in(
-             mcp_tool(repo, nil, "solo_update_status", %{
-               "session_id" => paused_session_id,
-               "current_status" => "active",
-               "next_status" => "paused"
-             }),
+             mcp_tool(repo, nil, "solo_pause", %{"session_id" => paused_session_id}),
              ["result", "structuredContent", "solo_session", "status"]
            ) == "paused"
 
     assert get_in(
-             mcp_tool(repo, nil, "solo_update_status", %{
-               "session_id" => paused_session_id,
-               "current_status" => "paused",
-               "next_status" => "completed"
-             }),
+             mcp_tool(repo, nil, "solo_complete", %{"session_id" => paused_session_id}),
              ["result", "structuredContent", "solo_session", "status"]
            ) == "completed"
   end
@@ -294,10 +293,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
 
     for index <- 1..55 do
       response =
-        mcp_tool(repo, nil, "solo_append", %{
+        mcp_tool(repo, nil, "solo_append_progress", %{
           "session_id" => session_id,
-          "entry_kind" => "progress",
-          "title" => "Entry #{index}",
+          "summary" => "Entry #{index}",
           "idempotency_key" => "recent-window-#{index}"
         })
 
@@ -336,14 +334,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     session_id = get_in(attach_response, ["result", "structuredContent", "solo_session", "id"])
 
     invalid_append_response =
-      mcp_tool(repo, nil, "solo_append", %{
+      mcp_tool(repo, nil, "solo_append_progress", %{
         "session_id" => session_id,
-        "entry_kind" => "progress",
-        "title" => "Reject secret key",
+        "summary" => "Reject secret key",
         "idempotency_key" => "wk_" <> String.duplicate("A", 43)
       })
 
     assert get_in(invalid_append_response, ["error", "data", "reason"]) == "invalid_entry_idempotency_key"
+
+    invalid_validation_response =
+      mcp_tool(repo, nil, "solo_record_validation", %{
+        "session_id" => session_id,
+        "summary" => "Reject bad result",
+        "result" => "maybe"
+      })
+
+    assert get_in(invalid_validation_response, ["error", "data", "reason"]) == "invalid_solo_validation_result"
+    assert "passed" in get_in(invalid_validation_response, ["error", "data", "allowed_values"])
+
+    missing_blocker_response =
+      mcp_tool(repo, nil, "solo_resolve_blocker", %{
+        "session_id" => session_id,
+        "blocker_id" => "missing-blocker",
+        "resolution" => "Nothing to resolve"
+      })
+
+    assert get_in(missing_blocker_response, ["error", "data", "reason"]) == "solo_blocker_not_open"
     assert repo.aggregate(SoloSessionEntry, :count, :id) == 0
   end
 
@@ -359,73 +375,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     session_id = get_in(attach_response, ["result", "structuredContent", "solo_session", "id"])
     assert {:ok, active_before} = SoloSessionRepository.get(repo, session_id)
 
-    stale_response =
-      mcp_tool(repo, nil, "solo_update_status", %{
-        "session_id" => session_id,
-        "current_status" => "paused",
-        "next_status" => "completed"
-      })
+    same_status_response = mcp_tool(repo, nil, "solo_resume", %{"session_id" => session_id})
 
-    assert get_in(stale_response, ["error", "data", "reason"]) == "stale_status"
-    assert {:ok, active_after_stale} = SoloSessionRepository.get(repo, session_id)
-    assert active_after_stale.status == "active"
-    assert active_after_stale.last_activity_at == active_before.last_activity_at
-    assert active_after_stale.updated_at == active_before.updated_at
-    assert active_after_stale.archived_at == active_before.archived_at
-
-    invalid_status_response =
-      mcp_tool(repo, nil, "solo_update_status", %{
-        "session_id" => session_id,
-        "current_status" => "active",
-        "next_status" => "claimed"
-      })
-
-    assert get_in(invalid_status_response, ["error", "data", "reason"]) == "invalid_status"
-    assert {:ok, active_after_invalid_status} = SoloSessionRepository.get(repo, session_id)
-    assert active_after_invalid_status.status == "active"
-    assert active_after_invalid_status.last_activity_at == active_before.last_activity_at
-    assert active_after_invalid_status.updated_at == active_before.updated_at
-
-    invalid_transition_response =
-      mcp_tool(repo, nil, "solo_update_status", %{
-        "session_id" => session_id,
-        "current_status" => "active",
-        "next_status" => "active"
-      })
-
-    assert get_in(invalid_transition_response, ["error", "data", "reason"]) == "invalid_transition"
-    assert {:ok, active_after_invalid_transition} = SoloSessionRepository.get(repo, session_id)
-    assert active_after_invalid_transition.status == "active"
-    assert active_after_invalid_transition.last_activity_at == active_before.last_activity_at
-    assert active_after_invalid_transition.updated_at == active_before.updated_at
+    assert get_in(same_status_response, ["result", "structuredContent", "solo_session", "status"]) == "active"
+    assert {:ok, active_after_same_status} = SoloSessionRepository.get(repo, session_id)
+    assert active_after_same_status.status == "active"
+    assert active_after_same_status.last_activity_at == active_before.last_activity_at
+    assert active_after_same_status.updated_at == active_before.updated_at
+    assert active_after_same_status.archived_at == active_before.archived_at
 
     missing_response =
-      mcp_tool(repo, nil, "solo_update_status", %{
-        "session_id" => "solo_missing",
-        "current_status" => "active",
-        "next_status" => "paused"
-      })
+      mcp_tool(repo, nil, "solo_pause", %{"session_id" => "solo_missing"})
 
     assert get_in(missing_response, ["error", "code"]) == -32_004
     assert get_in(missing_response, ["error", "data", "reason"]) == "not_found"
     assert repo.aggregate(SoloSession, :count, :id) == 1
 
     complete_response =
-      mcp_tool(repo, nil, "solo_update_status", %{
-        "session_id" => session_id,
-        "current_status" => "active",
-        "next_status" => "completed"
-      })
+      mcp_tool(repo, nil, "solo_complete", %{"session_id" => session_id})
 
     assert get_in(complete_response, ["result", "structuredContent", "solo_session", "status"]) == "completed"
     assert {:ok, completed_before} = SoloSessionRepository.get(repo, session_id)
 
+    completed_again_response = mcp_tool(repo, nil, "solo_complete", %{"session_id" => session_id})
+
+    assert get_in(completed_again_response, ["result", "structuredContent", "solo_session", "status"]) == "completed"
+    assert {:ok, completed_after_same_status} = SoloSessionRepository.get(repo, session_id)
+    assert completed_after_same_status.last_activity_at == completed_before.last_activity_at
+    assert completed_after_same_status.updated_at == completed_before.updated_at
+
     completed_to_active_response =
-      mcp_tool(repo, nil, "solo_update_status", %{
-        "session_id" => session_id,
-        "current_status" => "completed",
-        "next_status" => "active"
-      })
+      mcp_tool(repo, nil, "solo_resume", %{"session_id" => session_id})
 
     assert get_in(completed_to_active_response, ["error", "data", "reason"]) == "invalid_transition"
     assert {:ok, completed_after_invalid_transition} = SoloSessionRepository.get(repo, session_id)
@@ -492,15 +472,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
       Server.handle_response_state(
         %{
           "jsonrpc" => "2.0",
-          "id" => "solo-update-bound-deny",
+          "id" => "solo-pause-bound-deny",
           "method" => "tools/call",
           "params" => %{
-            "name" => "solo_update_status",
-            "arguments" => %{
-              "session_id" => session_id,
-              "current_status" => "active",
-              "next_status" => "paused"
-            }
+            "name" => "solo_pause",
+            "arguments" => %{"session_id" => session_id}
           }
         },
         claimed_server

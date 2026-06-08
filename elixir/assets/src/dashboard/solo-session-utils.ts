@@ -22,18 +22,33 @@ export function soloSessionAttention(session: SoloSession) {
     .toLowerCase();
 
   return {
-    guidanceCount:
-      entryCounts.reduce((count, entry) => count + (soloEntryMentions(entry, ["guidance", "human_info", "human info", "question"]) ? entry.count || 0 : 0), 0) ||
-      (/(guidance|human info|human_info|question)/.test(text) ? 1 : 0),
-    blockerCount:
-      entryCounts.reduce((count, entry) => count + (soloEntryMentions(entry, ["blocker", "blocked"]) ? entry.count || 0 : 0), 0) ||
-      (/(blocker|blocked)/.test(text) ? 1 : 0),
+    guidanceCount: soloGuidanceAttention(entryCounts, text),
+    blockerCount: soloBlockerAttention(session, entryCounts, text),
   };
 }
 
 function soloEntryMentions(entry: NonNullable<SoloSession["entry_counts"]>[number], needles: string[]) {
   const text = [entry.kind, entry.label].filter(Boolean).join(" ").toLowerCase();
   return needles.some((needle) => text.includes(needle));
+}
+
+function soloGuidanceAttention(entryCounts: NonNullable<SoloSession["entry_counts"]>, text: string) {
+  return (
+    entryCounts.reduce((count, entry) => count + (soloEntryMentions(entry, ["guidance", "human_info", "human info", "question"]) ? entry.count || 0 : 0), 0) ||
+    (/(guidance|human info|human_info|question)/.test(text) ? 1 : 0)
+  );
+}
+
+function soloBlockerAttention(session: SoloSession, entryCounts: NonNullable<SoloSession["entry_counts"]>, text: string) {
+  return (
+    soloActiveBlockerCount(session) ??
+    (entryCounts.reduce((count, entry) => count + (soloEntryMentions(entry, ["blocker", "blocked"]) ? entry.count || 0 : 0), 0) ||
+      (/(blocker|blocked)/.test(text) ? 1 : 0))
+  );
+}
+
+function soloActiveBlockerCount(session: SoloSession) {
+  return typeof session.active_blocker_count === "number" && Number.isFinite(session.active_blocker_count) ? session.active_blocker_count : null;
 }
 
 export function soloSessionStatusVariant(status?: string | null): BadgeTone {
@@ -62,6 +77,35 @@ export function latestSoloEntries(entries: SoloSessionEntry[]) {
 
 export function soloEntriesByKind(entries: SoloSessionEntry[], kinds: string[]) {
   return entries.filter((entry) => kinds.includes(entry.kind || ""));
+}
+
+export function activeSoloBlockerEntries(entries: SoloSessionEntry[]) {
+  const latestByBlockerId = new Map<string, { entry: SoloSessionEntry; status: string }>();
+
+  sortSoloEntries(entries)
+    .filter((entry) => entry.kind === "blocker")
+    .forEach((entry) => {
+      latestByBlockerId.set(soloBlockerId(entry), {
+        entry,
+        status: soloBlockerStatus(entry),
+      });
+    });
+
+  return Array.from(latestByBlockerId.values())
+    .filter(({ status }) => status !== "resolved")
+    .map(({ entry }) => entry);
+}
+
+function soloBlockerId(entry: SoloSessionEntry) {
+  const blockerId = entry.payload?.blocker_id;
+  if (typeof blockerId === "string" && blockerId.trim()) return blockerId.trim();
+  return entry.id || `solo-blocker:${entry.sequence ?? "unknown"}`;
+}
+
+function soloBlockerStatus(entry: SoloSessionEntry) {
+  const status = entry.payload?.blocker_status;
+  if (status === "open" || status === "resolved") return status;
+  return ["resolved", "completed"].includes(entry.status || "") ? "resolved" : "open";
 }
 
 export function soloPlanningGroups(entries: SoloSessionEntry[]) {
@@ -135,7 +179,9 @@ export function soloSessionPurpose(session: SoloSession, entries: SoloSessionEnt
 }
 
 export function soloEntrySummary(entry: SoloSessionEntry) {
-  return firstSentence(markdownSummary(entry.body));
+  const validationResult = typeof entry.payload?.result === "string" ? formatStatus(entry.payload.result) : "";
+  const resolution = typeof entry.payload?.resolution === "string" ? entry.payload.resolution : "";
+  return firstSentence(markdownSummary(entry.body)) || firstSentence(resolution) || validationResult;
 }
 
 function markdownSummary(value?: string | null) {

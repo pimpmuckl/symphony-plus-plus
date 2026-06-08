@@ -34,10 +34,19 @@ unbound session. The exposed tool names are:
 
 ```text
 solo_attach
-solo_append
 solo_show
 solo_list
-solo_update_status
+solo_record_task_plan
+solo_append_progress
+solo_append_finding
+solo_record_decision
+solo_report_blocker
+solo_resolve_blocker
+solo_record_validation
+solo_pause
+solo_resume
+solo_complete
+solo_archive
 ```
 
 Otherwise use the wrapper:
@@ -75,25 +84,30 @@ pwsh <plugin-root>/scripts/sympp-solo.ps1 attach `
   --caller-id <caller> --title "<task title>"
 ```
 
-## Append
+## Record
 
-Append only meaningful state changes. Use non-secret idempotency keys.
-Entry bodies are human-facing Markdown; keep titles and status labels plain.
+Record only meaningful state changes. Use non-secret idempotency keys.
+Entry bodies are human-facing Markdown; keep summaries and status labels plain.
 
-Entry kinds:
+Use intent-shaped commands rather than choosing raw entry kinds:
 
-- `task_plan`: phases, strategy changes, current next steps.
-- `finding`: durable discovery, root cause, rejected hypothesis, evidence.
-- `progress`: implementation step, handoff, or status update.
-- `blocker`: active issue requiring user/operator input.
-- `decision`: local technical decision with rationale.
-- `validation_note`: command result, blocked validation, residual risk.
+- `plan` / `solo_record_task_plan`: phases, strategy changes, current next steps.
+- `progress` / `solo_append_progress`: implementation step, handoff, or status update.
+- `finding` / `solo_append_finding`: durable discovery, root cause, rejected hypothesis, evidence.
+- `decision` / `solo_record_decision`: local technical decision with rationale.
+- `blocker` / `solo_report_blocker`: active issue requiring user/operator input.
+- `resolve-blocker` / `solo_resolve_blocker`: append-only blocker resolution by `blocker_id`.
+- `validation` / `solo_record_validation`: command result, blocked validation, residual risk.
 
 ```powershell
-pwsh <plugin-root>/scripts/sympp-solo.ps1 append `
-  --session-id <id> --entry-kind validation_note `
-  --title "Focused tests passed" --body "<command> passed." `
-  --status passed --idempotency-key "solo:<id>:validation:focused"
+pwsh <plugin-root>/scripts/sympp-solo.ps1 progress `
+  --session-id <id> --summary "Implemented Solo helper surface" `
+  --status active --idempotency-key "solo:<id>:progress:helpers"
+
+pwsh <plugin-root>/scripts/sympp-solo.ps1 validation `
+  --session-id <id> --summary "Focused tests passed" `
+  --result passed --command "<command>" `
+  --idempotency-key "solo:<id>:validation:focused"
 ```
 
 Keep large logs out of the ledger; summarize and reference local files if
@@ -103,8 +117,8 @@ needed.
 
 Use `show` after pauses, before major decisions, and before final response.
 Use `list` to recover active sessions by repo/base/workspace/caller.
-When using MCP tools, close or move sessions with `solo_update_status` by
-passing the current status and the desired next status.
+When using MCP tools, close or move sessions with `solo_pause`, `solo_resume`,
+`solo_complete`, or `solo_archive`. The tool reads the current status itself.
 
 Lifecycle:
 

@@ -8,7 +8,7 @@ import { formatStatus } from "@/lib/status-labels";
 import { repoDisplayName } from "./dashboard-persistence";
 import { DetailActivityList } from "./detail-extras";
 import { detailDate } from "./detail-utils";
-import { latestSoloEntries, soloBlockerMeta, soloEntriesByKind, soloEntrySummary, soloPlanningGroups, soloPlanningMeta, soloProgressMeta, soloSessionAttention, soloSessionAttentionText, soloSessionPurpose, soloSessionStatusVariant, sortSoloEntries } from "./solo-session-utils";
+import { activeSoloBlockerEntries, latestSoloEntries, soloBlockerMeta, soloEntrySummary, soloPlanningGroups, soloPlanningMeta, soloProgressMeta, soloSessionAttention, soloSessionAttentionText, soloSessionPurpose, soloSessionStatusVariant, sortSoloEntries } from "./solo-session-utils";
 
 export function SoloSessionDetailContent({
   session,
@@ -24,8 +24,14 @@ export function SoloSessionDetailContent({
   const detailSession: SoloSession & { workspace_path?: string | null; archived_at?: string | null } = detailPayload?.solo_session || session;
   const entries = sortSoloEntries(detailPayload?.entries || []);
   const latestEntries = latestSoloEntries(entries);
-  const activeBlockers = soloEntriesByKind(entries, ["blocker"]).filter((entry) => !["resolved", "completed"].includes(entry.status || ""));
-  const attention = soloSessionAttention({ ...session, ...detailSession, entry_counts: session.entry_counts, latest_entry: session.latest_entry });
+  const activeBlockers = activeSoloBlockerEntries(entries);
+  const attention = soloSessionAttention({
+    ...session,
+    ...detailSession,
+    entry_counts: session.entry_counts,
+    latest_entry: session.latest_entry,
+    active_blocker_count: soloDetailActiveBlockerCount(detailPayload, activeBlockers, session),
+  });
   const planningGroups = soloPlanningGroups(entries);
 
   return (
@@ -107,6 +113,10 @@ export function SoloSessionDetailContent({
       </div>
     </>
   );
+}
+
+function soloDetailActiveBlockerCount(detailPayload: SoloSessionDetailPayload | null, activeBlockers: SoloSessionEntry[], session: SoloSession) {
+  return detailPayload ? activeBlockers.length : session.active_blocker_count;
 }
 
 function SoloPlanningGroup({

@@ -6,6 +6,7 @@ defmodule Mix.Tasks.Sympp.Solo do
   alias Ecto.Adapters.SQL
   alias Ecto.Changeset
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Normalization
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
@@ -14,12 +15,14 @@ defmodule Mix.Tasks.Sympp.Solo do
 
   @shortdoc "Manages local Symphony++ Solo Sessions"
 
-  @commands ["attach", "append", "show", "list", "pause", "resume", "complete", "archive"]
   @lifecycle_commands ["pause", "resume", "complete", "archive"]
+  @entry_commands ["plan", "progress", "finding", "decision", "blocker", "resolve-blocker", "validation"]
+  @commands ["attach", "show", "list"] ++ @entry_commands ++ @lifecycle_commands
+  @existing_database_commands @commands -- ["attach"]
+  @entry_attr_keys ~w(summary decision rationale scope_impact severity blocker_id resolution result command evidence body status idempotency_key)a
   @durable_database_error_message "mix sympp.solo requires a durable file-backed SQLite database; in-memory databases are not supported because Solo Sessions must persist across CLI invocations."
   @sqlite_file_uri_error_message "mix sympp.solo supports --database as a durable local filesystem path only; SQLite file: URIs are not supported in Solo Session CLI v1."
   @unsupported_database_error_message "mix sympp.solo supports --database as a durable local filesystem path only; URI/DSN database targets are not supported in Solo Session CLI v1."
-  @existing_database_commands ["append", "show", "list", "pause", "resume", "complete", "archive"]
   @switches [
     database: :string,
     repo: :string,
@@ -28,7 +31,16 @@ defmodule Mix.Tasks.Sympp.Solo do
     caller_id: :string,
     title: :string,
     session_id: :string,
-    entry_kind: :string,
+    summary: :string,
+    decision: :string,
+    rationale: :string,
+    scope_impact: :string,
+    severity: :string,
+    blocker_id: :string,
+    resolution: :string,
+    result: :string,
+    command: :string,
+    evidence: :string,
     body: :string,
     status: :string,
     idempotency_key: :string,
@@ -56,7 +68,11 @@ defmodule Mix.Tasks.Sympp.Solo do
       "Usage: mix sympp.solo <command> [options]",
       Repo.default_database_help_text(),
       "  mix sympp.solo attach --repo <repo> --base-branch <branch> --workspace-path <abs-path> --caller-id <id> [--title <title>] [--database <sqlite-path>]",
-      "  mix sympp.solo append --session-id <id> --entry-kind <kind> --title <title> [--body <text>] [--status <status>] [--idempotency-key <key>] [--payload-json <json-object>] [--database <sqlite-path>]",
+      "  mix sympp.solo plan|progress|finding --session-id <id> --summary <text> [--body <text>] [--status <status>] [--idempotency-key <key>] [--payload-json <json-object>] [--database <sqlite-path>]",
+      "  mix sympp.solo blocker --session-id <id> --summary <text> [--body <text>] [--blocker-id <id>] [--idempotency-key <key>] [--payload-json <json-object>] [--database <sqlite-path>]",
+      "  mix sympp.solo decision --session-id <id> --decision <text> [--rationale <text>] [--scope-impact <text>] [--body <text>] [--idempotency-key <key>] [--payload-json <json-object>] [--database <sqlite-path>]",
+      "  mix sympp.solo resolve-blocker --session-id <id> --blocker-id <id> --resolution <text> [--summary <text>] [--body <text>] [--idempotency-key <key>] [--payload-json <json-object>] [--database <sqlite-path>]",
+      "  mix sympp.solo validation --session-id <id> --summary <text> --result passed|failed|skipped|blocked|not_run [--command <command>] [--evidence <text>] [--body <text>] [--idempotency-key <key>] [--payload-json <json-object>] [--database <sqlite-path>]",
       "  mix sympp.solo show --session-id <id> [--database <sqlite-path>]",
       "  mix sympp.solo list [--repo <repo>] [--base-branch <branch>] [--workspace-path <abs-path>] [--caller-id <id>] [--status <status>] [--database <sqlite-path>]",
       "  mix sympp.solo pause|resume|complete|archive --session-id <id> [--database <sqlite-path>]"
@@ -112,10 +128,10 @@ defmodule Mix.Tasks.Sympp.Solo do
     if missing_required?(opts, required), do: {:error, usage()}, else: {:ok, "attach", opts}
   end
 
-  defp validate_command_opts("append", opts) do
-    with :ok <- require_options(opts, [:session_id, :entry_kind, :title]),
+  defp validate_command_opts(command, opts) when command in @entry_commands do
+    with :ok <- require_options(opts, entry_required_options(command)),
          {:ok, opts} <- decode_payload_json(opts) do
-      {:ok, "append", opts}
+      {:ok, command, opts}
     else
       {:error, message} -> {:error, message}
     end
@@ -130,6 +146,11 @@ defmodule Mix.Tasks.Sympp.Solo do
   defp validate_command_opts(command, opts) when command in @lifecycle_commands do
     if missing_required?(opts, [:session_id]), do: {:error, usage()}, else: {:ok, command, opts}
   end
+
+  defp entry_required_options(command) when command in ["plan", "progress", "finding", "blocker"], do: [:session_id, :summary]
+  defp entry_required_options("decision"), do: [:session_id, :decision]
+  defp entry_required_options("resolve-blocker"), do: [:session_id, :blocker_id, :resolution]
+  defp entry_required_options("validation"), do: [:session_id, :summary, :result]
 
   defp run_command(command, opts) do
     original_repo = Repo.get_dynamic_repo()
@@ -170,24 +191,6 @@ defmodule Mix.Tasks.Sympp.Solo do
     end
   end
 
-  defp execute("append", opts) do
-    attrs =
-      %{
-        entry_kind: Keyword.fetch!(opts, :entry_kind),
-        title: Keyword.fetch!(opts, :title),
-        body: Keyword.get(opts, :body),
-        status: Keyword.get(opts, :status),
-        idempotency_key: Keyword.get(opts, :idempotency_key),
-        payload: Keyword.get(opts, :payload_json, %{})
-      }
-      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-      |> Map.new()
-
-    with {:ok, entry} <- Service.append_entry(Repo, Keyword.fetch!(opts, :session_id), attrs) do
-      {:ok, %{"action" => "append", "entry" => entry_payload(entry)}}
-    end
-  end
-
   defp execute("show", opts) do
     session_id = Keyword.fetch!(opts, :session_id)
 
@@ -213,13 +216,36 @@ defmodule Mix.Tasks.Sympp.Solo do
     end
   end
 
+  defp execute(command, opts) when command in @entry_commands do
+    session_id = Keyword.fetch!(opts, :session_id)
+    attrs = entry_attrs(opts)
+
+    with {:ok, entry} <- execute_entry_command(command, session_id, attrs) do
+      {:ok, %{"action" => command, "entry" => entry_payload(entry)}}
+    end
+  end
+
   defp execute(command, opts) when command in @lifecycle_commands do
     session_id = Keyword.fetch!(opts, :session_id)
 
-    with {:ok, session} <- Service.get(Repo, session_id),
-         {:ok, updated} <- Service.update_status(Repo, session_id, session.status, lifecycle_status(command)) do
+    with {:ok, updated} <- Service.apply_lifecycle_action(Repo, session_id, command) do
       {:ok, %{"action" => command, "solo_session" => session_payload(updated)}}
     end
+  end
+
+  defp execute_entry_command("plan", session_id, attrs), do: Service.record_task_plan(Repo, session_id, attrs)
+  defp execute_entry_command("progress", session_id, attrs), do: Service.append_progress(Repo, session_id, attrs)
+  defp execute_entry_command("finding", session_id, attrs), do: Service.append_finding(Repo, session_id, attrs)
+  defp execute_entry_command("decision", session_id, attrs), do: Service.record_decision(Repo, session_id, attrs)
+  defp execute_entry_command("blocker", session_id, attrs), do: Service.report_blocker(Repo, session_id, attrs)
+  defp execute_entry_command("resolve-blocker", session_id, attrs), do: Service.resolve_blocker(Repo, session_id, attrs)
+  defp execute_entry_command("validation", session_id, attrs), do: Service.record_validation(Repo, session_id, attrs)
+
+  defp entry_attrs(opts) do
+    opts
+    |> Keyword.take(@entry_attr_keys)
+    |> Keyword.put(:payload, Keyword.get(opts, :payload_json, %{}))
+    |> Map.new()
   end
 
   defp session_payload(%SoloSession{} = session) do
@@ -254,11 +280,6 @@ defmodule Mix.Tasks.Sympp.Solo do
       "updated_at" => iso8601(entry.updated_at)
     }
   end
-
-  defp lifecycle_status("pause"), do: "paused"
-  defp lifecycle_status("resume"), do: "active"
-  defp lifecycle_status("complete"), do: "completed"
-  defp lifecycle_status("archive"), do: "archived"
 
   defp decode_payload_json(opts) do
     case Keyword.fetch(opts, :payload_json) do
@@ -548,6 +569,9 @@ defmodule Mix.Tasks.Sympp.Solo do
   defp error_message(:session_not_mutable), do: "Solo Session does not accept new entries in its current status."
   defp error_message(:invalid_entry_idempotency_key), do: "Solo Session entry idempotency key is invalid or secret-like."
   defp error_message(:invalid_stale_after_days), do: "Solo Session stale-after-days value is invalid."
+  defp error_message(:solo_blocker_not_open), do: "Solo Session blocker was not found as an open blocker."
+  defp error_message({reason, _value} = error) when reason in [:invalid_solo_entry_status, :invalid_solo_lifecycle_action, :invalid_solo_validation_result], do: Normalization.error_message(error)
+  defp error_message({reason, _field} = error) when reason in [:missing_required_solo_field, :invalid_solo_payload, :unsupported_solo_field], do: Normalization.error_message(error)
   defp error_message({:repo_start_failed, reason}), do: "Failed to start Symphony++ repository: #{inspect(reason)}"
   defp error_message({:ecto_start_failed, reason}), do: "Failed to start Ecto SQL: #{inspect(reason)}"
   defp error_message({:solo_ledger_check_failed, reason}), do: "Failed to inspect Solo Session database: #{inspect(reason)}"
