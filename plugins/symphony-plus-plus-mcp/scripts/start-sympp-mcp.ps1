@@ -1940,6 +1940,75 @@ function Invoke-SelfTest {
     throw "Get-StartProcessCommand did not wrap PowerShell scripts for Start-Process."
   }
 
+  if ((Convert-SymppProcessorArchitectureToTargetArch "AMD64") -ne "x86_64" -or
+      (Convert-SymppProcessorArchitectureToTargetArch "ARM64") -ne "aarch64" -or
+      (Convert-SymppProcessorArchitectureToTargetArch "x86") -ne "x86") {
+    throw "Convert-SymppProcessorArchitectureToTargetArch did not normalize known Windows architectures."
+  }
+
+  $nativeEnvNames = @("PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432", "TARGET_ARCH", "TARGET_OS", "TARGET_ABI")
+  $oldNativeEnv = @{}
+  foreach ($name in $nativeEnvNames) {
+    $oldNativeEnv[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+  }
+  try {
+    foreach ($name in $nativeEnvNames) {
+      [Environment]::SetEnvironmentVariable($name, $null, "Process")
+    }
+    [Environment]::SetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "x86", "Process")
+    [Environment]::SetEnvironmentVariable("PROCESSOR_ARCHITEW6432", "AMD64", "Process")
+    if ((Get-SymppWindowsProcessorArchitecture) -ne "AMD64") {
+      throw "Get-SymppWindowsProcessorArchitecture did not prefer native WOW64 architecture."
+    }
+    Set-SymppWindowsNativeTargetEnvironment
+    if (Test-SymppWindowsPlatform) {
+      if ([Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Process") -ne "AMD64") {
+        throw "Set-SymppWindowsNativeTargetEnvironment did not normalize WOW64 PROCESSOR_ARCHITECTURE."
+      }
+      if ([Environment]::GetEnvironmentVariable("TARGET_ARCH", "Process") -ne "x86_64") {
+        throw "Set-SymppWindowsNativeTargetEnvironment did not seed the WOW64 native TARGET_ARCH."
+      }
+    }
+
+    [Environment]::SetEnvironmentVariable("PROCESSOR_ARCHITECTURE", $null, "Process")
+    [Environment]::SetEnvironmentVariable("PROCESSOR_ARCHITEW6432", $null, "Process")
+    Set-SymppWindowsNativeTargetEnvironment
+    if (Test-SymppWindowsPlatform) {
+      $processorArchitecture = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Process")
+      if ([string]::IsNullOrWhiteSpace($processorArchitecture)) {
+        throw "Set-SymppWindowsNativeTargetEnvironment did not seed PROCESSOR_ARCHITECTURE."
+      }
+      if ([Environment]::GetEnvironmentVariable("TARGET_OS", "Process") -ne "windows") {
+        throw "Set-SymppWindowsNativeTargetEnvironment did not seed TARGET_OS."
+      }
+      if ([Environment]::GetEnvironmentVariable("TARGET_ABI", "Process") -ne "msvc") {
+        throw "Set-SymppWindowsNativeTargetEnvironment did not seed TARGET_ABI."
+      }
+      $targetArch = [Environment]::GetEnvironmentVariable("TARGET_ARCH", "Process")
+      if ([string]::IsNullOrWhiteSpace($targetArch)) {
+        throw "Set-SymppWindowsNativeTargetEnvironment did not seed TARGET_ARCH."
+      }
+    } elseif (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("TARGET_OS", "Process"))) {
+      throw "Set-SymppWindowsNativeTargetEnvironment should not seed target env on non-Windows platforms."
+    }
+
+    [Environment]::SetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "KEEP_ARCH", "Process")
+    [Environment]::SetEnvironmentVariable("TARGET_ARCH", "keep-target", "Process")
+    [Environment]::SetEnvironmentVariable("TARGET_OS", "keep-os", "Process")
+    [Environment]::SetEnvironmentVariable("TARGET_ABI", "keep-abi", "Process")
+    Set-SymppWindowsNativeTargetEnvironment
+    if ([Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Process") -ne "KEEP_ARCH" -or
+        [Environment]::GetEnvironmentVariable("TARGET_ARCH", "Process") -ne "keep-target" -or
+        [Environment]::GetEnvironmentVariable("TARGET_OS", "Process") -ne "keep-os" -or
+        [Environment]::GetEnvironmentVariable("TARGET_ABI", "Process") -ne "keep-abi") {
+      throw "Set-SymppWindowsNativeTargetEnvironment overwrote explicit native target env."
+    }
+  } finally {
+    foreach ($name in $nativeEnvNames) {
+      [Environment]::SetEnvironmentVariable($name, $oldNativeEnv[$name], "Process")
+    }
+  }
+
   $joinedArgs = Join-ProcessArgumentList @("--database", "C:\Users\Jane Doe\ledger db.sqlite3", 'value"withquote')
   if ($joinedArgs -notmatch '"C:\\Users\\Jane Doe\\ledger db\.sqlite3"' -or $joinedArgs -notmatch '"value\\"withquote"') {
     throw "Join-ProcessArgumentList did not preserve spaced or quoted arguments."
@@ -2189,6 +2258,7 @@ $mix = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MIX)) { "mix" } else { $env:S
 $mise = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MISE)) { "mise" } else { $env:SYMPP_MISE }
 $defaultLauncher = Resolve-SymppDefaultLauncher $elixirDir $mise
 $launcher = Get-EnvMode "SYMPP_LAUNCHER" $defaultLauncher @("direct", "mise")
+Set-SymppWindowsNativeTargetEnvironment
 $defaultMixBuildRoot = Resolve-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp"
 if (-not $ValidateOnly) {
   Set-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp"

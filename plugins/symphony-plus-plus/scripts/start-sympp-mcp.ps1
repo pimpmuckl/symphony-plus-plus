@@ -69,6 +69,7 @@ $elixirDir = Join-Path $repoRoot "elixir"
 $mix = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MIX)) { "mix" } else { $env:SYMPP_MIX }
 $mise = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MISE)) { "mise" } else { $env:SYMPP_MISE }
 $launcher = if ([string]::IsNullOrWhiteSpace($env:SYMPP_LAUNCHER)) { Resolve-SymppDefaultLauncher $elixirDir $mise } else { $env:SYMPP_LAUNCHER.Trim().ToLowerInvariant() }
+Set-SymppWindowsNativeTargetEnvironment
 $defaultMixBuildRoot = Resolve-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp"
 if (-not $ValidateOnly) {
   Set-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp"

@@ -98,6 +98,82 @@ function Resolve-SymppDefaultLauncher([string]$ElixirDir, [string]$MiseCommand) 
   return "direct"
 }
 
+function Test-SymppWindowsPlatform {
+  return [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+}
+
+function Get-SymppWindowsProcessorArchitecture {
+  $arch = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITEW6432", "Process")
+  if ([string]::IsNullOrWhiteSpace($arch)) {
+    $arch = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Process")
+  }
+  if (-not [string]::IsNullOrWhiteSpace($arch)) {
+    return $arch
+  }
+
+  try {
+    $runtimeArch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+    if (-not [string]::IsNullOrWhiteSpace($runtimeArch)) {
+      return $runtimeArch
+    }
+  } catch {
+  }
+
+  if ([IntPtr]::Size -eq 8) {
+    return "AMD64"
+  }
+
+  return "x86"
+}
+
+function Convert-SymppProcessorArchitectureToTargetArch([string]$Architecture) {
+  if ([string]::IsNullOrWhiteSpace($Architecture)) {
+    return $null
+  }
+
+  switch ($Architecture.Trim().ToLowerInvariant()) {
+    "amd64" { return "x86_64" }
+    "x64" { return "x86_64" }
+    "arm64" { return "aarch64" }
+    "aarch64" { return "aarch64" }
+    "x86" { return "x86" }
+    "ia64" { return "ia64" }
+    default { return $null }
+  }
+}
+
+function Set-SymppWindowsNativeTargetEnvironment {
+  if (-not (Test-SymppWindowsPlatform)) {
+    return
+  }
+
+  $processorArchitecture = Get-SymppWindowsProcessorArchitecture
+  $processArchitecture = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Process")
+  $nativeArchitecture = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITEW6432", "Process")
+  if ([string]::IsNullOrWhiteSpace($processArchitecture) -or
+      (-not [string]::IsNullOrWhiteSpace($nativeArchitecture) -and $processArchitecture.Trim() -ne $processorArchitecture.Trim())) {
+    [Environment]::SetEnvironmentVariable("PROCESSOR_ARCHITECTURE", $processorArchitecture, "Process")
+    $env:PROCESSOR_ARCHITECTURE = $processorArchitecture
+  }
+
+  $targetArch = Convert-SymppProcessorArchitectureToTargetArch $processorArchitecture
+  if (-not [string]::IsNullOrWhiteSpace($targetArch) -and
+      [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("TARGET_ARCH", "Process"))) {
+    [Environment]::SetEnvironmentVariable("TARGET_ARCH", $targetArch, "Process")
+    $env:TARGET_ARCH = $targetArch
+  }
+
+  if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("TARGET_OS", "Process"))) {
+    [Environment]::SetEnvironmentVariable("TARGET_OS", "windows", "Process")
+    $env:TARGET_OS = "windows"
+  }
+
+  if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("TARGET_ABI", "Process"))) {
+    [Environment]::SetEnvironmentVariable("TARGET_ABI", "msvc", "Process")
+    $env:TARGET_ABI = "msvc"
+  }
+}
+
 function Resolve-SymppDefaultMixBuildRoot([string]$RepoRoot, [string]$Launcher, [string]$Purpose) {
   $sourceKey = Resolve-SymppSourceRevision $RepoRoot
   if (-not $sourceKey) {

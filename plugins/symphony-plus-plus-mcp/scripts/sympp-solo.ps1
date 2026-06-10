@@ -302,6 +302,7 @@ $soloTaskPath = Join-Path $elixirDir "lib/mix/tasks/sympp.solo.ex"
 $mix = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MIX)) { "mix" } else { $env:SYMPP_MIX }
 $mise = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MISE)) { "mise" } else { $env:SYMPP_MISE }
 $launcher = if ([string]::IsNullOrWhiteSpace($env:SYMPP_LAUNCHER)) { Resolve-SymppDefaultLauncher $elixirDir $mise } else { $env:SYMPP_LAUNCHER.Trim().ToLowerInvariant() }
+Set-SymppWindowsNativeTargetEnvironment
 $defaultMixBuildRoot = Resolve-SymppDefaultMixBuildRoot $repoRoot $launcher "solo"
 if (-not $ValidateOnly) {
   Set-SymppDefaultMixBuildRoot $repoRoot $launcher "solo"
