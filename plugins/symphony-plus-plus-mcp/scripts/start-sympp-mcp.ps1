@@ -1519,7 +1519,7 @@ function Wait-Until([scriptblock]$Predicate, [int]$TimeoutSec) {
   return $false
 }
 
-function New-ReusedBackendPlan([string]$Status, [string]$Url, $Health, [bool]$Managed, $Pid) {
+function New-ReusedBackendPlan([string]$Status, [string]$Url, $Health, [bool]$Managed, $ProcessId) {
   $url = $Url.TrimEnd("/")
   return [pscustomobject]@{
     status = $Status
@@ -1529,7 +1529,7 @@ function New-ReusedBackendPlan([string]$Status, [string]$Url, $Health, [bool]$Ma
     should_start = $false
     reused = $true
     managed = $Managed -eq $true
-    pid = $Pid
+    pid = $ProcessId
     source_revision = $Health.source_revision
   }
 }
@@ -1612,7 +1612,7 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
   }
 }
 
-function New-ReusedDashboardPlan([string]$Status, [string]$Origin, [bool]$Managed, $Pid) {
+function New-ReusedDashboardPlan([string]$Status, [string]$Origin, [bool]$Managed, $ProcessId) {
   $origin = $Origin.TrimEnd("/")
   return [pscustomobject]@{
     status = $Status
@@ -1622,7 +1622,7 @@ function New-ReusedDashboardPlan([string]$Status, [string]$Origin, [bool]$Manage
     should_start = $false
     reused = $true
     managed = $Managed -eq $true
-    pid = $Pid
+    pid = $ProcessId
   }
 }
 
@@ -2057,6 +2057,14 @@ function Invoke-SelfTest {
   }
   if (Test-RuntimeEntryExternalOverride $externalOverrideEntry "http://127.0.0.1:20000" "backend") {
     throw "Recorded external override entries should not match different endpoints."
+  }
+  $reusedBackend = New-ReusedBackendPlan "reused" "http://127.0.0.1:19998/" $healthyA $true 1234
+  if ($reusedBackend.pid -ne 1234 -or -not $reusedBackend.managed -or $reusedBackend.url -ne "http://127.0.0.1:19998") {
+    throw "Reusable backend plan should preserve managed process metadata."
+  }
+  $reusedDashboard = New-ReusedDashboardPlan "reused" "http://127.0.0.1:19999/" $true 1235
+  if ($reusedDashboard.pid -ne 1235 -or -not $reusedDashboard.managed -or $reusedDashboard.origin -ne "http://127.0.0.1:19999") {
+    throw "Reusable dashboard plan should preserve managed process metadata."
   }
 
   $oldRuntimeKey = New-RuntimeKey "http://127.0.0.1:19998" "http://127.0.0.1:19999" $revisionA

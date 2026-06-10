@@ -674,6 +674,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  test "MCP launcher self-test covers reusable runtime plans" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+
+    if powershell do
+      {output, status} =
+        System.cmd(
+          powershell,
+          [
+            "-NoProfile",
+            "-File",
+            @mcp_plugin_start_script_path,
+            "-SelfTest"
+          ],
+          stderr_to_stdout: true
+        )
+
+      assert status == 0, output
+      assert output =~ "Symphony++ MCP launcher self-test passed."
+    end
+  end
+
   test "enable command safely mutates only the MCP companion plugin config" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-enable-#{System.unique_integer([:positive])}")
