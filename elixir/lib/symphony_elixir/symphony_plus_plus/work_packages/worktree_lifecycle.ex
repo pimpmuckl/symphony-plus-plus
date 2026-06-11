@@ -7,6 +7,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreePath
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeTargetRoot
 
   @type repo :: module()
   @type git_failure :: %{
@@ -153,9 +155,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   end
 
   defp worktree_path(%WorkPackage{} = work_package, repo_root, branch, worktree_parent) do
-    with {:ok, branch_segment} <- unique_segment(branch, branch, @worktree_segment_prefix_length),
-         {:ok, package_segment} <- unique_segment(work_package.id, work_package.id, @worktree_segment_prefix_length),
-         {:ok, repo_segment} <- repo_worktree_segment(repo_root),
+    with {:ok, branch_segment} <- WorktreePath.unique_segment(branch, branch, @worktree_segment_prefix_length),
+         {:ok, package_segment} <- WorktreePath.unique_segment(work_package.id, work_package.id, @worktree_segment_prefix_length),
+         {:ok, repo_segment} <- WorktreePath.repo_segment(repo_root),
          candidate <- Path.join([worktree_parent, repo_segment, "#{package_segment}-#{branch_segment}"]),
          {:ok, candidate} <- canonicalize(candidate),
          :ok <- require_inside_root(candidate, worktree_parent) do
@@ -180,10 +182,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     end
   end
 
-  defp maybe_replay_prepared(_repo, %WorkPackage{worktree_path: recorded_path} = work_package, repo_root, base_branch, branch, worktree_path, opts)
+  defp maybe_replay_prepared(repo, %WorkPackage{worktree_path: recorded_path} = work_package, repo_root, base_branch, branch, worktree_path, opts)
        when is_binary(recorded_path) do
     with true <- File.dir?(worktree_path),
-         :ok <- require_git_worktree(worktree_path, repo_root, opts) do
+         :ok <- require_git_worktree(worktree_path, repo_root, opts),
+         {:ok, work_package} <- ensure_recorded_target_repo_root(repo, work_package, repo_root) do
       {:ok, result(work_package, "already_prepared", worktree_path, branch, base_branch, repo_root)}
     else
       false -> {:error, :recorded_worktree_missing}
@@ -223,7 +226,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   end
 
   defp record_prepared_worktree(repo, %WorkPackage{} = work_package, repo_root, base_branch, branch, worktree_path, branch_created?, opts) do
-    case Repository.update(repo, work_package.id, %{worktree_path: worktree_path}) do
+    case Repository.update(repo, work_package.id, %{worktree_path: worktree_path, worktree_target_repo_root: repo_root}) do
       {:ok, updated_work_package} ->
         {:ok, result(updated_work_package, "prepared", worktree_path, branch, base_branch, repo_root)}
 
@@ -234,6 +237,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
         {:error, {:worktree_record_failed, reason}}
     end
   end
+
+  defp ensure_recorded_target_repo_root(repo, %WorkPackage{worktree_target_repo_root: nil} = work_package, repo_root) do
+    Repository.update(repo, work_package.id, %{worktree_target_repo_root: repo_root})
+  end
+
+  defp ensure_recorded_target_repo_root(_repo, %WorkPackage{} = work_package, _repo_root), do: {:ok, work_package}
 
   defp local_branch_exists?(repo_root, branch, opts) do
     case git(repo_root, ["show-ref", "--verify", "--quiet", "refs/heads/#{branch}"], opts) do
@@ -270,6 +279,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     end
   end
 
+  defp cleanup_recorded_worktree(repo, %WorkPackage{worktree_path: nil, worktree_target_repo_root: target_repo_root} = work_package, _opts)
+       when is_binary(target_repo_root) do
+    with {:ok, updated_work_package} <- Repository.update(repo, work_package.id, cleared_worktree_attrs()) do
+      {:ok, result(updated_work_package, "already_clean", nil, nil, nil, nil)}
+    end
+  end
+
   defp cleanup_recorded_worktree(_repo, %WorkPackage{worktree_path: nil} = work_package, _opts) do
     {:ok, result(work_package, "already_clean", nil, nil, nil, nil)}
   end
@@ -278,14 +294,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     with {:ok, root} <- worktree_root(opts),
          {:ok, worktree_path} <- canonicalize(work_package.worktree_path),
          :ok <- require_inside_root(worktree_path, root),
-         opts <- cleanup_context_opts(opts, worktree_path) do
+         {:ok, work_package, opts} <- cleanup_recorded_target_repo_root_opts(repo, work_package, opts, worktree_path),
+         opts <- cleanup_context_opts(recorded_target_repo_root_opts(opts, work_package), worktree_path) do
       cleanup_existing_or_missing_worktree(repo, work_package, worktree_path, opts)
     end
   end
 
   defp cleanup_existing_or_missing_worktree(repo, %WorkPackage{} = work_package, worktree_path, opts) do
     cond do
-      File.dir?(worktree_path) and not git_metadata_present?(worktree_path) ->
+      File.dir?(worktree_path) and not WorktreeTargetRoot.git_metadata_present?(worktree_path) ->
         cleanup_non_git_recorded_worktree_directory(repo, work_package, worktree_path, opts)
 
       File.dir?(worktree_path) ->
@@ -307,7 +324,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
          :ok <- remove_stale_metadata_paths(stale_metadata_paths),
          :ok <- remove_empty_directory(worktree_path),
          :ok <- git(repo_root, ["worktree", "prune"], opts),
-         {:ok, updated_work_package} <- Repository.update(repo, work_package.id, %{worktree_path: nil}) do
+         {:ok, updated_work_package} <- Repository.update(repo, work_package.id, cleared_worktree_attrs()) do
       {:ok, result(updated_work_package, "stale_record_cleared", nil, nil, nil, repo_root)}
     end
   end
@@ -323,40 +340,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
          :ok <- require_git_worktree(worktree_path, repo_root, opts),
          :ok <- git(repo_root, ["worktree", "remove", worktree_path], opts),
          :ok <- git(repo_root, ["worktree", "prune"], opts),
-         {:ok, updated_work_package} <- Repository.update(repo, work_package.id, %{worktree_path: nil}) do
+         {:ok, updated_work_package} <- Repository.update(repo, work_package.id, cleared_worktree_attrs()) do
       {:ok, result(updated_work_package, "cleaned", worktree_path, nil, nil, repo_root)}
     else
       {:error, reason} -> {:error, reason}
     end
   end
-
-  defp git_metadata_present?(worktree_path) do
-    dot_git = Path.join(worktree_path, ".git")
-
-    cond do
-      File.dir?(dot_git) ->
-        File.regular?(Path.join(dot_git, "HEAD"))
-
-      File.regular?(dot_git) ->
-        usable_gitdir_file?(File.read(dot_git), worktree_path)
-
-      true ->
-        false
-    end
-  end
-
-  defp usable_gitdir_file?({:ok, contents}, worktree_path) do
-    case contents |> String.trim() |> String.split(":", parts: 2) do
-      ["gitdir", git_dir] ->
-        git_dir = Path.expand(String.trim(git_dir), worktree_path)
-        File.dir?(git_dir) and File.regular?(Path.join(git_dir, "HEAD"))
-
-      _contents ->
-        false
-    end
-  end
-
-  defp usable_gitdir_file?({:error, _reason}, _worktree_path), do: false
 
   defp require_removable_non_git_directory(worktree_path) do
     case File.ls(worktree_path) do
@@ -366,7 +355,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
       {:ok, [".git"]} ->
         dot_git = Path.join(worktree_path, ".git")
 
-        if File.regular?(dot_git) and not git_metadata_present?(worktree_path) do
+        if File.regular?(dot_git) and not WorktreeTargetRoot.git_metadata_present?(worktree_path) do
           {:ok, [dot_git]}
         else
           {:error, :invalid_worktree_path}
@@ -403,10 +392,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
          opts <- cleanup_context_opts(opts, repo_root, worktree_path),
          :ok <- require_missing_recorded_worktree_owner(repo_root, worktree_path, opts),
          :ok <- git(repo_root, ["worktree", "prune"], opts),
-         {:ok, updated_work_package} <- Repository.update(repo, work_package.id, %{worktree_path: nil}) do
+         {:ok, updated_work_package} <- Repository.update(repo, work_package.id, cleared_worktree_attrs()) do
       {:ok, result(updated_work_package, "stale_record_cleared", nil, nil, nil, repo_root)}
     end
   end
+
+  defp recorded_target_repo_root_opts(opts, %WorkPackage{worktree_target_repo_root: target_repo_root}) when is_binary(target_repo_root) do
+    if Keyword.has_key?(opts, :target_repo_root) or Keyword.has_key?(opts, :repo_root) do
+      opts
+    else
+      Keyword.put(opts, :target_repo_root, target_repo_root)
+    end
+  end
+
+  defp recorded_target_repo_root_opts(opts, %WorkPackage{}), do: opts
+
+  defp cleared_worktree_attrs, do: %{worktree_path: nil, worktree_target_repo_root: nil}
+
+  defp cleanup_recorded_target_repo_root_opts(_repo, %WorkPackage{worktree_target_repo_root: target_repo_root} = work_package, opts, _worktree_path)
+       when is_binary(target_repo_root) do
+    {:ok, work_package, opts}
+  end
+
+  defp cleanup_recorded_target_repo_root_opts(repo, %WorkPackage{} = work_package, opts, worktree_path) do
+    cond do
+      Keyword.has_key?(opts, :target_repo_root) or Keyword.has_key?(opts, :repo_root) ->
+        {:ok, work_package, opts}
+
+      true ->
+        target_repo_root = WorktreeTargetRoot.from_package(work_package, worktree_path)
+        backfill_recorded_target_repo_root(repo, work_package, opts, target_repo_root)
+    end
+  end
+
+  defp backfill_recorded_target_repo_root(repo, work_package, opts, {:ok, repo_root}) do
+    with {:ok, work_package} <- ensure_recorded_target_repo_root(repo, work_package, repo_root) do
+      {:ok, work_package, Keyword.put(opts, :target_repo_root, repo_root)}
+    end
+  end
+
+  defp backfill_recorded_target_repo_root(_repo, work_package, opts, _result), do: {:ok, work_package, opts}
 
   defp git_common_dir(path, opts) do
     with {:ok, common_dir} <- git_output(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], opts),
@@ -443,7 +468,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
 
   defp require_missing_recorded_worktree_owner(repo_root, worktree_path, opts) do
     with {:ok, output} <- git_output(repo_root, ["worktree", "list", "--porcelain"], opts) do
-      if worktree_list_includes?(output, worktree_path) or managed_path_matches_repo_hash?(repo_root, worktree_path) do
+      known_managed_path? = WorktreePath.managed_path_matches_repo_hash?(repo_root, worktree_path)
+
+      if worktree_list_includes?(output, worktree_path) or known_managed_path? do
         :ok
       else
         {:error, :invalid_worktree_path}
@@ -455,29 +482,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     output
     |> String.split(~r/\R/)
     |> Enum.filter(&String.starts_with?(&1, "worktree "))
-    |> Enum.any?(fn "worktree " <> path -> same_existing_path?(path, expected_path) end)
-  end
-
-  defp same_existing_path?(left, right) do
-    with {:ok, left} <- canonicalize(String.trim(left)),
-         {:ok, right} <- canonicalize(String.trim(right)) do
-      same_path?(left, right)
-    else
-      _result -> false
-    end
-  end
-
-  defp managed_path_matches_repo_hash?(repo_root, worktree_path) do
-    with {:ok, repo_segment} <- repo_worktree_segment(repo_root),
-         {:ok, legacy_repo_segment} <- unique_segment(Path.basename(repo_root), repo_root),
-         {:ok, worktree_path} <- canonicalize(worktree_path) do
-      worktree_path
-      |> Path.dirname()
-      |> Path.basename()
-      |> then(&(&1 in [repo_segment, legacy_repo_segment]))
-    else
-      _result -> false
-    end
+    |> Enum.any?(fn "worktree " <> path -> WorktreePath.same_existing_path?(path, expected_path) end)
   end
 
   defp replayable_managed_prepare_path?(%WorkPackage{} = work_package, repo_root, branch, recorded_path, worktree_parent) do
@@ -490,9 +495,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   end
 
   defp legacy_worktree_path(%WorkPackage{} = work_package, repo_root, branch, worktree_parent) do
-    with {:ok, branch_segment} <- unique_segment(branch, branch),
-         {:ok, package_segment} <- safe_segment(work_package.id),
-         {:ok, repo_segment} <- unique_segment(Path.basename(repo_root), repo_root),
+    with {:ok, branch_segment} <- WorktreePath.unique_segment(branch, branch),
+         {:ok, package_segment} <- WorktreePath.safe_segment(work_package.id),
+         {:ok, repo_segment} <- WorktreePath.unique_segment(Path.basename(repo_root), repo_root),
          candidate <- Path.join([worktree_parent, repo_segment, "#{package_segment}-#{branch_segment}"]),
          {:ok, candidate} <- canonicalize(candidate),
          :ok <- require_inside_root(candidate, worktree_parent) do
@@ -546,42 +551,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
       _other ->
         :error
     end
-  end
-
-  defp safe_segment(value) when is_binary(value) do
-    value =
-      value
-      |> String.trim()
-      |> String.replace(~r/[^A-Za-z0-9._-]+/, "-")
-      |> String.trim("-")
-
-    if value in ["", ".", ".."] do
-      {:error, :invalid_worktree_path}
-    else
-      {:ok, value}
-    end
-  end
-
-  defp unique_segment(display_value, fingerprint_value) do
-    unique_segment(display_value, fingerprint_value, :full)
-  end
-
-  defp unique_segment(display_value, fingerprint_value, prefix_length) do
-    with {:ok, safe_value} <- safe_segment(display_value) do
-      {:ok, "#{segment_prefix(safe_value, prefix_length)}-#{short_hash(fingerprint_value)}"}
-    end
-  end
-
-  defp repo_worktree_segment(repo_root), do: unique_segment(Path.basename(repo_root), repo_root, @worktree_segment_prefix_length)
-
-  defp segment_prefix(value, :full), do: value
-  defp segment_prefix(value, prefix_length), do: String.slice(value, 0, prefix_length)
-
-  defp short_hash(value) when is_binary(value) do
-    :sha256
-    |> :crypto.hash(value)
-    |> Base.url_encode64(padding: false)
-    |> binary_part(0, 10)
   end
 
   defp require_inside_root(path, root) do
