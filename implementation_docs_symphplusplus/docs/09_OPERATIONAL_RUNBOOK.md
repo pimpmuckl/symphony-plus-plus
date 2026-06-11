@@ -30,10 +30,29 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\sympp-mcp-cutover.
 
 The helper inventories `19998`, `19999`, and `20000-20120`, shows the exact S++
 launcher/cockpit/Vite PIDs it would stop, leaves unrelated listeners alone,
+checks whether the installed plugin cache matches the marketplace snapshot,
 runs `codex plugin marketplace upgrade`, validates the installed MCP launcher,
 starts the singleton backend/dashboard from the marketplace cache on
-`19998/19999`, refreshes runtime state, runs the MCP HTTP smoke, checks the
-dashboard route, and prints both stopped and left-running PIDs.
+`19998/19999`, refreshes contract-keyed runtime state, runs the MCP HTTP smoke,
+checks the dashboard route, and prints both stopped and left-running PIDs.
+
+If `codex plugin marketplace upgrade` cannot move the old installed cache out
+of the way, the helper can still recover when the marketplace source snapshot is
+already at the expected revision. After the verified S++ processes are stopped,
+it refreshes the installed `symphony-plus-plus-mcp` cache payload in place from
+the marketplace snapshot, and also refreshes the skill-only
+`symphony-plus-plus` cache payload when that package is installed in the target
+Codex home. It writes `.sympp-source-revision` markers and verifies file hashes
+before starting the singleton.
+
+The fallback does not delete or rename installed cache directories. It refuses
+in-place refresh when the marketplace manifest version does not match the
+existing cache directory version, when a cache path contains a reparse point, or
+when removed marketplace files, old source-root hints, active handles, or copy
+failures leave extra/stale installed cache files behind. It also requires
+marketplace-side revision evidence; an installed cache marker is not enough to
+prove the source snapshot being copied. Treat the printed message as the blocker
+and inspect that residue before retrying.
 
 Already-running Codex sessions do not hot-reload their MCP wrapper or cached
 `tools/list`. If only the singleton backend/dashboard restarted and the
