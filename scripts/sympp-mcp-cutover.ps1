@@ -16,6 +16,7 @@ $script:SymppCutoverDryRun = [bool]$WhatIfPreference
 if ($script:SymppCutoverDryRun) {
   $WhatIfPreference = $false
 }
+$script:SymppGeneratedPluginCacheFiles = @(".sympp-source-revision")
 
 function Write-Section([string]$Title) {
   if (-not $Json) {
@@ -135,7 +136,21 @@ function Get-RevisionFromInstallMetadata([string]$Path) {
   return $null
 }
 
-function Resolve-InstalledSourceRevision([string]$MarketplaceSourceRoot, [string]$InstalledPluginRoot) {
+function Get-FileSha256([string]$Path) {
+  $stream = [System.IO.File]::OpenRead($Path)
+  try {
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      return ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+    } finally {
+      $sha256.Dispose()
+    }
+  } finally {
+    $stream.Dispose()
+  }
+}
+
+function Resolve-MarketplaceSourceRevision([string]$MarketplaceSourceRoot) {
   try {
     return Get-GitRevision $MarketplaceSourceRoot
   } catch {
@@ -145,8 +160,7 @@ function Resolve-InstalledSourceRevision([string]$MarketplaceSourceRoot, [string
 
   foreach ($candidate in @(
       (Join-Path $MarketplaceSourceRoot ".codex-marketplace-install.json"),
-      (Join-Path $MarketplaceSourceRoot ".sympp-source-revision"),
-      (Join-Path $InstalledPluginRoot ".sympp-source-revision")
+      (Join-Path $MarketplaceSourceRoot ".sympp-source-revision")
     )) {
     $revision = if ($candidate.EndsWith(".json", [System.StringComparison]::OrdinalIgnoreCase)) {
       Get-RevisionFromInstallMetadata $candidate
@@ -158,7 +172,7 @@ function Resolve-InstalledSourceRevision([string]$MarketplaceSourceRoot, [string
     }
   }
 
-  throw "Could not resolve the installed Symphony++ source revision from git, .codex-marketplace-install.json, or .sympp-source-revision."
+  throw "Could not resolve the marketplace Symphony++ source revision from git, .codex-marketplace-install.json, or marketplace .sympp-source-revision."
 }
 
 function Normalize-ExpectedSourceRevision([string]$Revision) {
@@ -174,30 +188,25 @@ function Normalize-ExpectedSourceRevision([string]$Revision) {
   return $normalized
 }
 
-function Invoke-MarketplaceUpgrade([string]$CodexHomePath) {
-  $codex = Get-Command codex -ErrorAction SilentlyContinue | Select-Object -First 1
-  if (-not $codex) {
-    throw "codex was not found on PATH; pass -SkipMarketplaceUpgrade only when the installed marketplace/cache is already refreshed."
+function Resolve-InstalledPluginRoot([string]$CacheRoot, [string]$PluginName, [string]$RequiredRelativePath, [bool]$Required = $true) {
+  $pluginRoot = Join-Path $CacheRoot $PluginName
+  $pluginRoot = ConvertTo-FullPath $pluginRoot
+  if (-not (Test-Path -LiteralPath $pluginRoot -PathType Container)) {
+    if ($Required) {
+      throw "Installed $PluginName plugin cache does not exist: $pluginRoot"
+    }
+    return $null
   }
 
-  $previousCodexHome = $env:CODEX_HOME
-  try {
-    $env:CODEX_HOME = $CodexHomePath
-    return Invoke-CheckedCommand $codex.Source @("plugin", "marketplace", "upgrade") $HOME "codex plugin marketplace upgrade"
-  } finally {
-    $env:CODEX_HOME = $previousCodexHome
-  }
-}
-
-function Resolve-InstalledMcpPluginRoot([string]$CacheRoot) {
-  $pluginRoot = Join-Path $CacheRoot $McpPluginName
-  $pluginRoot = Require-Directory $pluginRoot "Installed MCP plugin cache"
   $candidates = @(
     Get-ChildItem -LiteralPath $pluginRoot -Directory |
-      Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "scripts\start-sympp-mcp.cmd") }
+      Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName $RequiredRelativePath) }
   )
   if ($candidates.Count -eq 0) {
-    throw "No installed $McpPluginName cache entry with scripts/start-sympp-mcp.cmd was found under $pluginRoot."
+    if ($Required) {
+      throw "No installed $PluginName cache entry with $RequiredRelativePath was found under $pluginRoot."
+    }
+    return $null
   }
 
   $sortable = @(
@@ -218,10 +227,283 @@ function Resolve-InstalledMcpPluginRoot([string]$CacheRoot) {
   return ($sortable | Sort-Object Version, LastWriteTimeUtc | Select-Object -Last 1).Path
 }
 
+function Invoke-MarketplaceUpgrade([string]$CodexHomePath) {
+  $codex = Get-Command codex -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $codex) {
+    throw "codex was not found on PATH; pass -SkipMarketplaceUpgrade only when the installed marketplace/cache is already refreshed."
+  }
+
+  $previousCodexHome = $env:CODEX_HOME
+  try {
+    $env:CODEX_HOME = $CodexHomePath
+    return Invoke-CheckedCommand $codex.Source @("plugin", "marketplace", "upgrade") $HOME "codex plugin marketplace upgrade"
+  } finally {
+    $env:CODEX_HOME = $previousCodexHome
+  }
+}
+
+function Resolve-InstalledMcpPluginRoot([string]$CacheRoot) {
+  return Resolve-InstalledPluginRoot $CacheRoot $McpPluginName "scripts\start-sympp-mcp.cmd" $true
+}
+
+function Resolve-InstalledDefaultPluginRoot([string]$CacheRoot) {
+  return Resolve-InstalledPluginRoot $CacheRoot $MarketplaceName ".codex-plugin\plugin.json" $false
+}
+
+function Get-PluginSourceRoot([string]$MarketplaceSourceRoot, [string]$PluginName) {
+  return Require-Directory (Join-Path $MarketplaceSourceRoot "plugins\$PluginName") "Marketplace $PluginName plugin payload"
+}
+
+function Get-PluginManifestVersion([string]$PluginRoot) {
+  $manifestPath = Require-File (Join-Path $PluginRoot ".codex-plugin\plugin.json") "Plugin manifest"
+  $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+  $version = ([string]$manifest.version).Trim()
+  if ([string]::IsNullOrWhiteSpace($version)) {
+    throw "Plugin manifest does not contain a version: $manifestPath"
+  }
+
+  return $version
+}
+
+function ConvertTo-PluginRelativePath([string]$PluginRoot, [string]$Path) {
+  return $Path.Substring($PluginRoot.Length).TrimStart("\", "/").Replace("/", "\")
+}
+
+function Test-GeneratedPluginCacheFile([string]$RelativeFile) {
+  foreach ($generatedFile in $script:SymppGeneratedPluginCacheFiles) {
+    if ([System.StringComparer]::OrdinalIgnoreCase.Equals($RelativeFile, $generatedFile)) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
+function Get-PluginPayloadRelativeFiles([string]$PluginRoot) {
+  $files = [System.Collections.Generic.List[string]]::new()
+  foreach ($file in @(Get-ChildItem -LiteralPath $PluginRoot -Recurse -File -Force)) {
+    $relativeFile = ConvertTo-PluginRelativePath $PluginRoot $file.FullName
+    if (-not (Test-GeneratedPluginCacheFile $relativeFile)) {
+      [void]$files.Add($relativeFile)
+    }
+  }
+
+  return @($files | Sort-Object -Unique)
+}
+
+function Get-PluginSourceRelativeFiles([string]$SourcePluginRoot) {
+  return Get-PluginPayloadRelativeFiles $SourcePluginRoot
+}
+
+function Test-PathHasReparsePoint([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return $false
+  }
+
+  $item = Get-Item -LiteralPath $Path -Force
+  return [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+}
+
+function Assert-NoReparsePoint([string]$Path, [string]$Label) {
+  if (Test-PathHasReparsePoint $Path) {
+    throw "$Label is a reparse point and will not be modified by the cutover fallback: $Path"
+  }
+}
+
+function Assert-NoReparsePointTree([string]$Path, [string]$Label) {
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return
+  }
+
+  Assert-NoReparsePoint $Path $Label
+  if (Test-Path -LiteralPath $Path -PathType Container) {
+    foreach ($child in @(Get-ChildItem -LiteralPath $Path -Recurse -Force)) {
+      if ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        throw "$Label contains a reparse point and will not be modified by the cutover fallback: $($child.FullName)"
+      }
+    }
+  }
+}
+
+function Get-PluginInstalledRelativeFiles([string]$InstalledPluginRoot) {
+  return Get-PluginPayloadRelativeFiles $InstalledPluginRoot
+}
+
+function Compare-InstalledPluginCachePayload([string]$MarketplaceSourceRoot, [string]$InstalledPluginRoot, [string]$PluginName, [string]$SourceRevision) {
+  $sourcePluginRoot = Get-PluginSourceRoot $MarketplaceSourceRoot $PluginName
+  $sourceVersion = Get-PluginManifestVersion $sourcePluginRoot
+  $installedVersion = Split-Path -Leaf (ConvertTo-FullPath $InstalledPluginRoot)
+  $versionMatches = [System.StringComparer]::OrdinalIgnoreCase.Equals($sourceVersion, $installedVersion)
+  $missingFiles = [System.Collections.Generic.List[string]]::new()
+  $changedFiles = [System.Collections.Generic.List[string]]::new()
+  $extraFiles = [System.Collections.Generic.List[string]]::new()
+  $relativeFiles = @(Get-PluginSourceRelativeFiles $sourcePluginRoot)
+  $sourceFileSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($relativeFile in $relativeFiles) {
+    [void]$sourceFileSet.Add($relativeFile)
+  }
+
+  foreach ($relativeFile in $relativeFiles) {
+    $sourcePath = Join-Path $sourcePluginRoot $relativeFile
+    $installedPath = Join-Path $InstalledPluginRoot $relativeFile
+    if (-not (Test-Path -LiteralPath $installedPath -PathType Leaf)) {
+      [void]$missingFiles.Add($relativeFile)
+      continue
+    }
+
+    if ((Get-FileSha256 $sourcePath) -ne (Get-FileSha256 $installedPath)) {
+      [void]$changedFiles.Add($relativeFile)
+    }
+  }
+
+  foreach ($installedRelativeFile in @(Get-PluginInstalledRelativeFiles $InstalledPluginRoot)) {
+    if (-not $sourceFileSet.Contains($installedRelativeFile)) {
+      [void]$extraFiles.Add($installedRelativeFile)
+    }
+  }
+
+  $revisionMarker = Join-Path $InstalledPluginRoot ".sympp-source-revision"
+  $revisionMarkerValue = Get-RevisionFromTextFile $revisionMarker
+  $revisionMarkerMatches = [string]::IsNullOrWhiteSpace($SourceRevision) -or
+    [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$revisionMarkerValue, [string]$SourceRevision)
+  $matches = $versionMatches -and $missingFiles.Count -eq 0 -and $changedFiles.Count -eq 0 -and $extraFiles.Count -eq 0 -and $revisionMarkerMatches
+
+  return [pscustomobject]@{
+    plugin = $PluginName
+    sourceRoot = $sourcePluginRoot
+    installedRoot = $InstalledPluginRoot
+    sourceVersion = $sourceVersion
+    installedVersion = $installedVersion
+    versionMatches = $versionMatches
+    sourceFileCount = $relativeFiles.Count
+    matches = $matches
+    missingFiles = @($missingFiles)
+    changedFiles = @($changedFiles)
+    extraFiles = @($extraFiles)
+    revisionMarker = $revisionMarker
+    revisionMarkerValue = $revisionMarkerValue
+    revisionMarkerMatches = $revisionMarkerMatches
+  }
+}
+
+function Get-InstalledCacheStatus([string]$MarketplaceSourceRoot, [string]$InstalledDefaultPluginRoot, [string]$InstalledMcpPluginRoot, [string]$SourceRevision) {
+  $plugins = [System.Collections.Generic.List[object]]::new()
+  if (-not [string]::IsNullOrWhiteSpace($InstalledDefaultPluginRoot)) {
+    [void]$plugins.Add((Compare-InstalledPluginCachePayload $MarketplaceSourceRoot $InstalledDefaultPluginRoot $MarketplaceName $SourceRevision))
+  }
+  [void]$plugins.Add((Compare-InstalledPluginCachePayload $MarketplaceSourceRoot $InstalledMcpPluginRoot $McpPluginName $SourceRevision))
+
+  return [pscustomobject]@{
+    sourceRevision = $SourceRevision
+    refreshNeeded = @($plugins | Where-Object { -not $_.matches }).Count -gt 0
+    plugins = $plugins
+  }
+}
+
+function Write-InstalledCacheStatus([object]$Status) {
+  foreach ($plugin in @($Status.plugins)) {
+    $state = if ($plugin.matches) { "fresh" } else { "stale" }
+    Write-Host "$($plugin.plugin): $state ($($plugin.sourceFileCount) source files checked)"
+    if (-not $plugin.matches) {
+      if (-not $plugin.versionMatches) {
+        Write-Host "  version: installed '$($plugin.installedVersion)' expected '$($plugin.sourceVersion)'"
+      }
+      if ($plugin.missingFiles.Count -gt 0) {
+        Write-Host "  missing: $(@($plugin.missingFiles) -join ', ')"
+      }
+      if ($plugin.changedFiles.Count -gt 0) {
+        Write-Host "  changed: $(@($plugin.changedFiles) -join ', ')"
+      }
+      if ($plugin.extraFiles.Count -gt 0) {
+        Write-Host "  extra: $(@($plugin.extraFiles) -join ', ')"
+      }
+      if (-not $plugin.revisionMarkerMatches) {
+        Write-Host "  source revision marker: '$($plugin.revisionMarkerValue)' expected '$($Status.sourceRevision)'"
+      }
+    }
+  }
+}
+
+function Copy-VerifiedPluginPayloadInPlace([object]$PluginStatus, [string]$SourceRevision) {
+  if (-not $PluginStatus.versionMatches) {
+    throw "Refusing in-place refresh for $($PluginStatus.plugin) because installed cache directory version '$($PluginStatus.installedVersion)' does not match marketplace manifest version '$($PluginStatus.sourceVersion)'. Run a marketplace install/upgrade that can create the correct versioned cache directory."
+  }
+  if ($PluginStatus.extraFiles.Count -gt 0) {
+    throw "Refusing in-place refresh for $($PluginStatus.plugin) because the installed cache contains files that are absent from the marketplace snapshot: $(@($PluginStatus.extraFiles) -join ', ')"
+  }
+
+  Assert-NoReparsePointTree $PluginStatus.sourceRoot "Marketplace plugin payload"
+  Assert-NoReparsePointTree $PluginStatus.installedRoot "Installed plugin cache payload"
+  Assert-NoReparsePoint $PluginStatus.revisionMarker "Installed plugin source revision marker"
+  New-Item -ItemType Directory -Path $PluginStatus.installedRoot -Force -ErrorAction Stop | Out-Null
+  foreach ($item in @(Get-ChildItem -LiteralPath $PluginStatus.sourceRoot -Force)) {
+    Copy-Item -LiteralPath $item.FullName -Destination $PluginStatus.installedRoot -Recurse -Force -ErrorAction Stop
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($SourceRevision)) {
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($PluginStatus.revisionMarker, "$SourceRevision`n", $utf8NoBom)
+  }
+}
+
+function Invoke-InstalledCacheRefreshFallback([object]$CacheStatus, [string]$SourceRevision) {
+  foreach ($plugin in @($CacheStatus.plugins | Where-Object { -not $_.matches })) {
+    if ($PSCmdlet.ShouldProcess($plugin.installedRoot, "Refresh verified Symphony++ installed plugin cache payload in place from marketplace snapshot")) {
+      Copy-VerifiedPluginPayloadInPlace $plugin $SourceRevision
+    }
+  }
+}
+
+function Assert-InstalledCacheFresh([object]$CacheStatus) {
+  if (-not $CacheStatus.refreshNeeded) {
+    return
+  }
+
+  $details = @(
+    foreach ($plugin in @($CacheStatus.plugins | Where-Object { -not $_.matches })) {
+      $reasons = [System.Collections.Generic.List[string]]::new()
+      if (-not $plugin.versionMatches) {
+        [void]$reasons.Add("version_mismatch=$($plugin.installedVersion)->$($plugin.sourceVersion)")
+      }
+      if ($plugin.missingFiles.Count -gt 0) {
+        [void]$reasons.Add("missing=$($plugin.missingFiles.Count)")
+      }
+      if ($plugin.changedFiles.Count -gt 0) {
+        [void]$reasons.Add("changed=$($plugin.changedFiles.Count)")
+      }
+      if ($plugin.extraFiles.Count -gt 0) {
+        [void]$reasons.Add("extra=$($plugin.extraFiles.Count)")
+      }
+      if (-not $plugin.revisionMarkerMatches) {
+        [void]$reasons.Add("revision_marker_mismatch")
+      }
+      "$($plugin.plugin) ($($reasons -join ', '))"
+    }
+  ) -join "; "
+
+  throw "Installed Symphony++ plugin cache still does not match the verified marketplace snapshot: $details"
+}
+
+function Get-CurrentProcessGuardSet {
+  $guard = [System.Collections.Generic.HashSet[int]]::new()
+  $currentProcessId = [int]$PID
+  while ($currentProcessId -gt 0 -and -not $guard.Contains($currentProcessId)) {
+    [void]$guard.Add($currentProcessId)
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId = $currentProcessId" -ErrorAction SilentlyContinue
+    if (-not $process -or -not $process.ParentProcessId -or [int]$process.ParentProcessId -eq $currentProcessId) {
+      break
+    }
+    $currentProcessId = [int]$process.ParentProcessId
+  }
+
+  return $guard
+}
+
 function Get-ProcessCommandLines {
+  $guardProcessIds = Get-CurrentProcessGuardSet
   return @(
     Get-CimInstance Win32_Process |
-      Where-Object { $_.ProcessId -ne $PID } |
+      Where-Object { -not $guardProcessIds.Contains([int]$_.ProcessId) } |
       ForEach-Object {
         [pscustomobject]@{
           ProcessId = [int]$_.ProcessId
@@ -604,25 +886,87 @@ function Invoke-InstalledWrapperInitialize([string]$InstalledPluginRoot, [string
   }
 }
 
-function Update-RuntimeStatePids([string]$RuntimeFile, [int]$BackendPid, [int]$DashboardPid, [string]$SourceRevision, [int]$BackendPort, [int]$DashboardPort) {
+function Normalize-McpContractFingerprint([string]$Fingerprint) {
+  if ([string]::IsNullOrWhiteSpace($Fingerprint)) {
+    return $null
+  }
+
+  $normalized = $Fingerprint.Trim().ToLowerInvariant()
+  if ($normalized -match "^[0-9a-f]{64}$") {
+    return $normalized
+  }
+
+  return $null
+}
+
+function Get-ExpectedMcpContractFingerprint([string]$InstalledPluginRoot) {
+  $script = Require-File (Join-Path $InstalledPluginRoot "scripts\start-sympp-mcp.ps1") "Installed MCP launcher script"
+  foreach ($line in @(Get-Content -LiteralPath $script)) {
+    if ($line -match '^\s*\$ExpectedMcpContractFingerprint\s*=\s*"([0-9a-fA-F]{64})"\s*$') {
+      return Normalize-McpContractFingerprint $Matches[1]
+    }
+  }
+
+  return $null
+}
+
+function Get-RuntimeStateContractFingerprint($State, [string]$FallbackFingerprint) {
+  $installedFingerprint = Normalize-McpContractFingerprint $FallbackFingerprint
+  if ($installedFingerprint) {
+    return $installedFingerprint
+  }
+
+  if ($null -ne $State.backend) {
+    if ($State.backend.PSObject.Properties["contract_fingerprint"]) {
+      $fingerprint = Normalize-McpContractFingerprint ([string]$State.backend.contract_fingerprint)
+      if ($fingerprint) {
+        return $fingerprint
+      }
+    }
+    if ($State.backend.PSObject.Properties["expected_contract_fingerprint"]) {
+      $fingerprint = Normalize-McpContractFingerprint ([string]$State.backend.expected_contract_fingerprint)
+      if ($fingerprint) {
+        return $fingerprint
+      }
+    }
+  }
+
+  return Normalize-McpContractFingerprint $FallbackFingerprint
+}
+
+function New-RuntimeKey([string]$BackendUrl, [string]$DashboardOrigin, [string]$ContractFingerprint) {
+  $backend = if ([string]::IsNullOrWhiteSpace($BackendUrl)) { "none" } else { $BackendUrl.TrimEnd("/").ToLowerInvariant() }
+  $dashboard = if ([string]::IsNullOrWhiteSpace($DashboardOrigin)) { "none" } else { $DashboardOrigin.TrimEnd("/").ToLowerInvariant() }
+  $contract = if ([string]::IsNullOrWhiteSpace($ContractFingerprint)) { "unknown" } else { $ContractFingerprint.Trim().ToLowerInvariant() }
+  return "contract=$contract;backend=$backend;dashboard=$dashboard"
+}
+
+function Update-RuntimeStatePids([string]$RuntimeFile, [int]$BackendPid, [int]$DashboardPid, [string]$SourceRevision, [int]$BackendPort, [int]$DashboardPort, [string]$ExpectedContractFingerprint) {
   $runtimeFilePath = Require-File $RuntimeFile "Runtime state file"
   $state = Get-Content -LiteralPath $runtimeFilePath -Raw | ConvertFrom-Json
+  $backendUrl = "http://127.0.0.1:$BackendPort"
+  $dashboardOrigin = "http://127.0.0.1:$DashboardPort"
+  $contractFingerprint = Get-RuntimeStateContractFingerprint $state $ExpectedContractFingerprint
   $state.generated_at = (Get-Date).ToString("o")
   $state.runtime_kind = "external_loopback"
-  $state.runtime_key = "source=$SourceRevision;backend=http://127.0.0.1:$BackendPort;dashboard=http://127.0.0.1:$DashboardPort"
+  $state.runtime_key = New-RuntimeKey $backendUrl $dashboardOrigin $contractFingerprint
   $state.backend.pid = $BackendPid
   $state.backend.port = $BackendPort
-  $state.backend.url = "http://127.0.0.1:$BackendPort"
-  $state.backend.mcp_url = "http://127.0.0.1:$BackendPort/mcp"
+  $state.backend.url = $backendUrl
+  $state.backend.mcp_url = "$backendUrl/mcp"
   $state.backend.status = "external_loopback"
   $state.backend.reused = $true
   $state.backend.managed = $false
   $state.backend.expected_source_revision = $SourceRevision
   $state.backend.source_revision = $SourceRevision
+  if ($contractFingerprint) {
+    $state.backend.expected_contract_fingerprint = $contractFingerprint
+    $state.backend.contract_fingerprint = $contractFingerprint
+  }
   $state.frontend.pid = $DashboardPid
   $state.frontend.port = $DashboardPort
-  $state.frontend.origin = "http://127.0.0.1:$DashboardPort"
-  $state.frontend.url = "http://127.0.0.1:$DashboardPort/sympp/board"
+  $state.frontend.origin = $dashboardOrigin
+  $state.frontend.url = "$dashboardOrigin/sympp/board"
   $state.frontend.status = "external_loopback"
   $state.frontend.reused = $true
   $state.frontend.managed = $false
@@ -671,10 +1015,12 @@ $logDir = Join-Path $symppHomePath "logs"
 $runtimeFile = Join-Path $symppHomePath "runtime\codex-plugin.json"
 $marketplaceSourceRoot = Require-Directory (Join-Path $codexHomePath ".tmp\marketplaces\$MarketplaceName") "Installed marketplace source root"
 $cacheRoot = Require-Directory (Join-Path $codexHomePath "plugins\cache\$MarketplaceName") "Installed plugin cache root"
+$installedDefaultPluginRoot = Resolve-InstalledDefaultPluginRoot $cacheRoot
 $installedPluginRoot = Resolve-InstalledMcpPluginRoot $cacheRoot
 $allPorts = @($BackendPort, $DashboardPort) + @(20000..20120)
 $sourceRevision = Normalize-ExpectedSourceRevision $ExpectedSourceRevision
 $marketplaceUpgradeAlreadyRun = $false
+$marketplaceUpgradeFailure = $null
 
 if (-not $script:SymppCutoverDryRun) {
   New-Item -ItemType Directory -Path $logDir -Force | Out-Null
@@ -684,12 +1030,13 @@ Write-Section "Installed Symphony++ MCP Cutover"
 if (-not $Json) {
   Write-Host "Codex home: $codexHomePath"
   Write-Host "Marketplace source: $marketplaceSourceRoot"
+  Write-Host "Installed default plugin: $installedDefaultPluginRoot"
   Write-Host "Installed MCP plugin: $installedPluginRoot"
   Write-Host "Runtime file: $runtimeFile"
 }
 
 if (-not $script:SymppCutoverDryRun -and -not $SkipMarketplaceUpgrade -and -not [string]::IsNullOrWhiteSpace($sourceRevision)) {
-  $currentMarketplaceRevision = Resolve-InstalledSourceRevision $marketplaceSourceRoot $installedPluginRoot
+  $currentMarketplaceRevision = Resolve-MarketplaceSourceRevision $marketplaceSourceRoot
   if ($currentMarketplaceRevision -ne $sourceRevision) {
     Write-Section "Marketplace Upgrade Preflight"
     $preflightUpgradeFailed = $false
@@ -711,12 +1058,25 @@ if (-not $script:SymppCutoverDryRun -and -not $SkipMarketplaceUpgrade -and -not 
 
     $marketplaceSourceRoot = Require-Directory (Join-Path $codexHomePath ".tmp\marketplaces\$MarketplaceName") "Installed marketplace source root"
     $cacheRoot = Require-Directory (Join-Path $codexHomePath "plugins\cache\$MarketplaceName") "Installed plugin cache root"
+    $installedDefaultPluginRoot = Resolve-InstalledDefaultPluginRoot $cacheRoot
     $installedPluginRoot = Resolve-InstalledMcpPluginRoot $cacheRoot
-    $currentMarketplaceRevision = Resolve-InstalledSourceRevision $marketplaceSourceRoot $installedPluginRoot
+    $currentMarketplaceRevision = Resolve-MarketplaceSourceRevision $marketplaceSourceRoot
     if ($currentMarketplaceRevision -ne $sourceRevision -and -not $preflightUpgradeFailed) {
       throw "Marketplace source revision mismatch before stopping runtime. Expected $sourceRevision but $marketplaceSourceRoot is at $currentMarketplaceRevision."
     }
   }
+}
+
+$cacheStatusRevision = if ([string]::IsNullOrWhiteSpace($sourceRevision)) {
+  if ($script:SymppCutoverDryRun) { $null } else { Resolve-MarketplaceSourceRevision $marketplaceSourceRoot }
+} else {
+  $sourceRevision
+}
+$initialCacheStatus = Get-InstalledCacheStatus $marketplaceSourceRoot $installedDefaultPluginRoot $installedPluginRoot $cacheStatusRevision
+
+Write-Section "Installed Cache Status"
+if (-not $Json) {
+  Write-InstalledCacheStatus $initialCacheStatus
 }
 
 $initialInventory = Get-CandidateProcesses $marketplaceSourceRoot $installedPluginRoot $allPorts
@@ -738,7 +1098,9 @@ if ($script:SymppCutoverDryRun) {
     message = "Dry run completed. No processes were stopped, no cache was upgraded, and no singleton was restarted."
     candidates = $initialInventory.Candidates
     nonSymppListeners = $initialInventory.NonSymppListeners
+    installedCache = $initialCacheStatus
     marketplaceSourceRoot = $marketplaceSourceRoot
+    installedDefaultPluginRoot = $installedDefaultPluginRoot
     installedPluginRoot = $installedPluginRoot
     runtimeFile = $runtimeFile
   }
@@ -765,26 +1127,65 @@ if (-not $Json) {
 if (-not $SkipMarketplaceUpgrade -and -not $marketplaceUpgradeAlreadyRun) {
   Write-Section "Marketplace Upgrade"
   if ($PSCmdlet.ShouldProcess("Codex marketplace $MarketplaceName", "Run codex plugin marketplace upgrade")) {
-    $upgrade = Invoke-MarketplaceUpgrade $codexHomePath
-    if (-not $Json -and -not [string]::IsNullOrWhiteSpace($upgrade.Stdout)) {
-      Write-Host $upgrade.Stdout.Trim()
+    try {
+      $upgrade = Invoke-MarketplaceUpgrade $codexHomePath
+      if (-not $Json -and -not [string]::IsNullOrWhiteSpace($upgrade.Stdout)) {
+        Write-Host $upgrade.Stdout.Trim()
+      }
+    } catch {
+      $marketplaceUpgradeFailure = $_.Exception.Message
+      if ([string]::IsNullOrWhiteSpace($sourceRevision)) {
+        throw "Marketplace upgrade failed and -ExpectedSourceRevision was not supplied. The installed-cache fallback only runs when the helper can prove the marketplace snapshot is at the intended revision. Rerun with -ExpectedSourceRevision <git-sha>, use -SkipMarketplaceUpgrade when the cache is intentionally pre-refreshed, or fix the marketplace upgrade failure.`n$marketplaceUpgradeFailure"
+      }
+      if (-not $Json) {
+        Write-Host "Marketplace upgrade failed after stopping verified S++ processes; evaluating installed-cache fallback."
+        Write-Host $marketplaceUpgradeFailure
+      }
     }
   }
 
   $marketplaceSourceRoot = Require-Directory (Join-Path $codexHomePath ".tmp\marketplaces\$MarketplaceName") "Installed marketplace source root"
   $cacheRoot = Require-Directory (Join-Path $codexHomePath "plugins\cache\$MarketplaceName") "Installed plugin cache root"
+  $installedDefaultPluginRoot = Resolve-InstalledDefaultPluginRoot $cacheRoot
   $installedPluginRoot = Resolve-InstalledMcpPluginRoot $cacheRoot
 }
 
 $sourceRevision = if ([string]::IsNullOrWhiteSpace($sourceRevision)) {
-  Resolve-InstalledSourceRevision $marketplaceSourceRoot $installedPluginRoot
+  Resolve-MarketplaceSourceRevision $marketplaceSourceRoot
 } else {
   $sourceRevision
 }
 
-$actualMarketplaceRevision = Resolve-InstalledSourceRevision $marketplaceSourceRoot $installedPluginRoot
+$actualMarketplaceRevision = Resolve-MarketplaceSourceRevision $marketplaceSourceRoot
 if ($actualMarketplaceRevision -ne $sourceRevision) {
-  throw "Marketplace source revision mismatch. Expected $sourceRevision but $marketplaceSourceRoot is at $actualMarketplaceRevision."
+  $upgradeDetail = if ($marketplaceUpgradeFailure) { " Marketplace upgrade failure: $marketplaceUpgradeFailure" } else { "" }
+  throw "Marketplace source revision mismatch. Expected $sourceRevision but $marketplaceSourceRoot is at $actualMarketplaceRevision.$upgradeDetail"
+}
+
+$cacheStatus = Get-InstalledCacheStatus $marketplaceSourceRoot $installedDefaultPluginRoot $installedPluginRoot $sourceRevision
+if ($cacheStatus.refreshNeeded) {
+  Write-Section "Installed Cache Refresh Fallback"
+  if (-not $Json) {
+    if ($marketplaceUpgradeFailure) {
+      Write-Host "Using fallback because marketplace upgrade failed but the marketplace source snapshot is at the expected revision."
+    } else {
+      Write-Host "Using fallback because the installed Symphony++ plugin cache does not match the verified marketplace snapshot."
+    }
+    Write-InstalledCacheStatus $cacheStatus
+  }
+
+  Invoke-InstalledCacheRefreshFallback $cacheStatus $sourceRevision
+  $installedDefaultPluginRoot = Resolve-InstalledDefaultPluginRoot $cacheRoot
+  $installedPluginRoot = Resolve-InstalledMcpPluginRoot $cacheRoot
+  $cacheStatus = Get-InstalledCacheStatus $marketplaceSourceRoot $installedDefaultPluginRoot $installedPluginRoot $sourceRevision
+  Assert-InstalledCacheFresh $cacheStatus
+  if (-not $Json) {
+    Write-Host "Installed Symphony++ plugin cache refreshed in place and verified."
+  }
+} elseif ($marketplaceUpgradeFailure) {
+  if (-not $Json) {
+    Write-Host "Marketplace upgrade failed, but the installed Symphony++ plugin cache already matches the verified marketplace snapshot."
+  }
 }
 
 Write-Section "Installed Launcher Validation"
@@ -823,10 +1224,14 @@ if (-not $Json) {
 
 Write-Section "Refresh Runtime State"
 $wrapperInit = Invoke-InstalledWrapperInitialize $installedPluginRoot $symppHomePath $runtimeFile
-$runtimeState = Update-RuntimeStatePids $runtimeFile $backendPid $dashboardPid $sourceRevision $BackendPort $DashboardPort
+$expectedContractFingerprint = Get-ExpectedMcpContractFingerprint $installedPluginRoot
+$runtimeState = Update-RuntimeStatePids $runtimeFile $backendPid $dashboardPid $sourceRevision $BackendPort $DashboardPort $expectedContractFingerprint
 if (-not $Json) {
   Write-Host "Runtime key: $($runtimeState.runtime_key)"
   Write-Host "Runtime kind: $($runtimeState.runtime_kind)"
+  if ($runtimeState.backend.PSObject.Properties["contract_fingerprint"]) {
+    Write-Host "MCP contract: $($runtimeState.backend.contract_fingerprint)"
+  }
 }
 
 Write-Section "Verification"
@@ -875,8 +1280,12 @@ $summary = [pscustomobject]@{
   status = "ok"
   message = "Installed Symphony++ MCP cutover completed."
   sourceRevision = $sourceRevision
+  mcpContractFingerprint = if ($runtimeState.backend.PSObject.Properties["contract_fingerprint"]) { $runtimeState.backend.contract_fingerprint } else { $null }
   marketplaceSourceRoot = $marketplaceSourceRoot
+  installedDefaultPluginRoot = $installedDefaultPluginRoot
   installedPluginRoot = $installedPluginRoot
+  installedCache = $cacheStatus
+  marketplaceUpgradeFailure = $marketplaceUpgradeFailure
   runtimeFile = $runtimeFile
   backend = @{
     port = $BackendPort
