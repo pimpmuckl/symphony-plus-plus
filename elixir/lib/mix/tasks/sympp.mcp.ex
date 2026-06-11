@@ -79,12 +79,7 @@ defmodule Mix.Tasks.Sympp.Mcp do
   end
 
   defp start_repo(database, requested_database?) do
-    repo_options = [
-      database: database,
-      name: Repo.process_name(database),
-      log: false,
-      pool_size: 1
-    ]
+    repo_options = Repo.child_options(database: database, name: Repo.process_name(database), log: false)
 
     case Repo.start_link(repo_options) do
       {:ok, pid} ->

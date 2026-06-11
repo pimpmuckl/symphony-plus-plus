@@ -15,6 +15,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
     :database,
     :repo_root,
     :claimed_by,
+    health_ledger_mode: :live,
     local_daemon_trusted: false
   ]
 
@@ -26,6 +27,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
           database: String.t() | nil,
           repo_root: String.t() | nil,
           claimed_by: String.t() | nil,
+          health_ledger_mode: :live | :configured_identity,
           local_daemon_trusted: boolean()
         }
 
@@ -47,6 +49,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
       database: Keyword.get(opts, :database),
       repo_root: Keyword.get(opts, :repo_root),
       claimed_by: Keyword.get(opts, :claimed_by),
+      health_ledger_mode: Keyword.get(opts, :health_ledger_mode, :live),
       local_daemon_trusted: Keyword.get(opts, :local_daemon_trusted, false)
     }
   end

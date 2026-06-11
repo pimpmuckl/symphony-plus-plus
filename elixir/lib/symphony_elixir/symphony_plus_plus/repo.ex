@@ -9,20 +9,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo do
   @default_database_file "symphony_plus_plus.sqlite3"
   @default_database_display_path "$HOME/.agents/splusplus/symphony_plus_plus.sqlite3"
   @default_database_help_text "Default ledger: preferred #{@default_database_display_path}; falls back under temp/relative .agents/splusplus if home is unavailable. Use --database only for isolation."
+  @default_pool_size 5
+  @default_queue_target 1_000
+  @default_queue_interval 5_000
 
   @spec child_options(keyword()) :: keyword()
   def child_options(opts \\ []) do
-    [
+    defaults = [
       database: Keyword.get_lazy(opts, :database, &database_path/0),
       name: Keyword.get(opts, :name, __MODULE__),
-      pool_size: Application.get_env(:symphony_elixir, :sympp_repo_pool_size, 5)
+      pool_size: Application.get_env(:symphony_elixir, :sympp_repo_pool_size, @default_pool_size),
+      queue_target: Application.get_env(:symphony_elixir, :sympp_repo_queue_target, @default_queue_target),
+      queue_interval: Application.get_env(:symphony_elixir, :sympp_repo_queue_interval, @default_queue_interval)
     ]
+
+    Keyword.merge(defaults, opts)
   end
 
   @spec database_path() :: String.t()
   def database_path do
     configured_database_path()
     |> normalize_database_path()
+  end
+
+  @doc false
+  @spec database_path_without_side_effects() :: String.t() | term()
+  def database_path_without_side_effects do
+    configured_database_path_without_side_effects()
+    |> normalize_database_path_without_side_effects()
   end
 
   @doc false
@@ -216,6 +230,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo do
   end
 
   defp normalize_database_path(database_path), do: Path.expand(database_path)
+
+  defp normalize_database_path_without_side_effects(database_path) when is_binary(database_path) do
+    if filesystem_database_path?(database_path), do: Path.expand(database_path), else: database_path
+  end
+
+  defp normalize_database_path_without_side_effects(database_path), do: database_path
 
   defp configured_binary_database_path(database_path) do
     if String.trim(database_path) == "" do
