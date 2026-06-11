@@ -34,15 +34,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeTargetRoot do
 
   @spec from_package(WorkPackage.t(), Path.t()) :: {:ok, Path.t()} | :error
   def from_package(%WorkPackage{repo: repo}, worktree_path) do
-    repo_name = repo_name_segment(repo)
-
-    [
-      repo,
-      standard_code_checkout(repo_name),
-      user_code_checkout(repo_name)
-    ]
-    |> Enum.filter(&is_binary/1)
-    |> Enum.uniq()
+    repo
+    |> checkout_candidates()
     |> Enum.find_value(fn candidate ->
       with {:ok, candidate} <- canonicalize(candidate),
            true <- File.dir?(candidate),
@@ -56,6 +49,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeTargetRoot do
       {:ok, _candidate} = result -> result
       nil -> :error
     end
+  end
+
+  @spec checkout_candidates(String.t() | nil) :: [Path.t()]
+  def checkout_candidates(repo), do: checkout_candidates(repo, nil)
+
+  @spec checkout_candidates(String.t() | nil, Path.t() | nil) :: [Path.t()]
+  def checkout_candidates(repo, repo_root) do
+    repo_name = repo_name_segment(repo)
+
+    [
+      repo_root,
+      repo,
+      standard_code_checkout(repo_name),
+      user_code_checkout(repo_name),
+      sibling_checkout(repo_root, repo_name)
+    ]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
   end
 
   defp usable_gitdir_file?({:ok, contents}, worktree_path) do
@@ -113,6 +124,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeTargetRoot do
   end
 
   defp user_code_checkout(_repo_name), do: nil
+
+  defp sibling_checkout(repo_root, repo_name) when is_binary(repo_root) and is_binary(repo_name) and repo_name != "" do
+    repo_root
+    |> Path.dirname()
+    |> Path.join(repo_name)
+  end
+
+  defp sibling_checkout(_repo_root, _repo_name), do: nil
 
   defp git_output(repo_root, args, opts) do
     with {:ok, git} <- git_executable(opts) do

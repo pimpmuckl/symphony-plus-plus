@@ -84,7 +84,9 @@ pass `branch`, `worktree_path`, `caller_id`, and `claimed_by` without asking
 for secrets.
 
 Dispatch workers with `prepare_work_package_worktree`; pass the WorkPackage id
-and use the returned `worker_launch.workspace_path` as the worker cwd.
+and use the returned `worker_launch.workspace_path` as the worker cwd. If
+prepare or cleanup returns `target_repo_root_required`, retry with the product
+checkout that owns the recorded worktree path.
 
 Worker prompts must include:
 

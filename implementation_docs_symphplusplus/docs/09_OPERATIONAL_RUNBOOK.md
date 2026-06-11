@@ -18,6 +18,8 @@ local Symphony++ ledger unless `--database <path>` is supplied.
 3. Prepare the worker's product-repo worktree with
    `prepare_work_package_worktree`. Pass the WorkPackage id; pass
    `target_repo_root` only when the helper cannot infer the product checkout.
+   If prepare or cleanup returns `target_repo_root_required`, retry with the
+   product checkout that owns the recorded worktree path.
    Use the returned `worker_launch.workspace_path` as the worker cwd.
 4. Start a worker MCP-enabled session in that worktree.
 5. Worker calls `claim_local_assignment` with the WorkPackage id.

@@ -419,10 +419,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
       Keyword.has_key?(opts, :target_repo_root) or Keyword.has_key?(opts, :repo_root) ->
         {:ok, work_package, opts}
 
-      File.dir?(worktree_path) and WorktreeTargetRoot.git_metadata_present?(worktree_path) ->
-        target_repo_root = WorktreeTargetRoot.from_live_worktree(worktree_path, opts)
-        backfill_recorded_target_repo_root(repo, work_package, opts, target_repo_root)
-
       true ->
         target_repo_root = WorktreeTargetRoot.from_package(work_package, worktree_path)
         backfill_recorded_target_repo_root(repo, work_package, opts, target_repo_root)

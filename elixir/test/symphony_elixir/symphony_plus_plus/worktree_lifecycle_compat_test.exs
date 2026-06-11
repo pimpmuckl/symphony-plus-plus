@@ -52,7 +52,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorktreeLifecycleCompatTest do
     attrs = %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/pre-migration-cleanup"}
 
     assert {:ok, package} =
-             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-PREMIGRATION", kind: "mcp", base_branch: "main"))
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-WT-PREMIGRATION",
+                 kind: "mcp",
+                 repo: fixture.repo_root,
+                 base_branch: "main"
+               )
+             )
 
     assert {:ok, prepared} = WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: codex_home)
     assert {:ok, _legacy_row} = Repository.update(repo, package.id, %{worktree_target_repo_root: nil})
@@ -71,6 +79,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorktreeLifecycleCompatTest do
     assert {:ok, cleared} = Repository.get(repo, package.id)
     assert cleared.worktree_path == nil
     assert cleared.worktree_target_repo_root == nil
+  end
+
+  test "cleanup refuses unowned live pre-migration worktree records", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle-foreign")
+    codex_home = Path.join(fixture.root, "codex-home")
+    attrs = %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/unowned-live-cleanup"}
+
+    assert {:ok, package} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-WT-PREMIGRATION-FOREIGN",
+                 kind: "mcp",
+                 repo: "nextide/example",
+                 base_branch: "main"
+               )
+             )
+
+    assert {:ok, prepared} = WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: codex_home)
+    assert {:ok, _legacy_row} = Repository.update(repo, package.id, %{worktree_target_repo_root: nil})
+
+    assert {:error, :invalid_target_repo_root} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+    assert File.dir?(prepared.worktree_path)
   end
 
   test "cleanup clears missing pre-migration worktree records from package repo path", %{repo: repo} do
