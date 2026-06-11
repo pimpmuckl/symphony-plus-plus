@@ -641,12 +641,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
     refute Enum.any?(statuses, fn {id, status, _reason} -> id != original_lease_id and status == "active" end)
   end
 
-  test "claim_local_assignment rejects cross-branch WorkRequest scope", %{repo: repo} do
-    package = create_local_claim_package!(repo, "SYMPP-LOCAL-WR-BASE-MISMATCH")
+  test "claim_local_assignment accepts linked WorkRequest with slice delivery base", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-WR-DELIVERY-BASE")
 
     work_request =
       create_work_request!(repo,
-        id: "WR-MCP-LOCAL-BASE-MISMATCH",
+        id: "WR-MCP-LOCAL-DELIVERY-BASE",
         repo: package.repo,
         base_branch: "main",
         status: "ready_for_slicing"
@@ -657,8 +657,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
                repo,
                work_request.id,
                work_request_planned_slice_attrs(
-                 id: "WRS-MCP-LOCAL-BASE-MISMATCH",
+                 id: "WRS-MCP-LOCAL-DELIVERY-BASE",
                  target_base_branch: package.base_branch,
+                 branch_pattern: package.branch_pattern
+               )
+             )
+
+    repo.update!(Ecto.Changeset.change(planned_slice, work_package_id: package.id))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-wr-delivery-base",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" => local_assignment_claim_args(package)
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-wr-delivery-base-state")
+      )
+
+    assert get_in(response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert claimed_server.session.assignment.work_package_id == package.id
+    assert {:ok, claimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert claimed_grant.claimed_at != nil
+    refute inspect(response) =~ minted.work_key.secret
+  end
+
+  test "claim_local_assignment rejects linked WorkRequest delivery-base drift", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-WR-DELIVERY-DRIFT")
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-DELIVERY-DRIFT",
+        repo: package.repo,
+        base_branch: "main",
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-LOCAL-DELIVERY-DRIFT",
+                 target_base_branch: "feature/other-delivery-base",
                  branch_pattern: package.branch_pattern
                )
              )
@@ -670,17 +716,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
       Server.handle_state(
         %{
           "jsonrpc" => "2.0",
-          "id" => "local-wr-base-mismatch",
+          "id" => "local-wr-delivery-drift",
           "method" => "tools/call",
-          "params" => %{
-            "name" => "claim_local_assignment",
-            "arguments" => local_assignment_claim_args(package, %{"work_request_id" => work_request.id})
-          }
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
         },
-        local_mcp_server(local_mcp_config(repo), "local-wr-base-mismatch-state")
+        local_mcp_server(local_mcp_config(repo), "local-wr-delivery-drift-state")
       )
 
-    assert get_in(response, ["error", "data", "reason"]) == "work_request_scope_mismatch"
+    assert get_in(response, ["error", "data", "reason"]) == "package_delivery_base_mismatch"
     assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
     assert unclaimed_grant.claimed_at == nil
   end
