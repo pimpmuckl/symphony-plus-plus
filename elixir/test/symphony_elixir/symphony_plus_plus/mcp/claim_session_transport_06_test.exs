@@ -28,6 +28,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport06Test do
     assert server.session.assignment.work_package_id == package.id
   end
 
+  test "batch claim guard returns unauthorized after an earlier claim binds the batch", %{repo: repo} do
+    first_package = create_local_claim_package!(repo, "SYMPP-BATCH-FIRST-CLAIM")
+    second_package = create_local_claim_package!(repo, "SYMPP-BATCH-SECOND-CLAIM")
+    assert {:ok, _first_minted} = AccessGrantService.mint_worker_grant(repo, first_package.id)
+    assert {:ok, _second_minted} = AccessGrantService.mint_worker_grant(repo, second_package.id)
+
+    {responses, server} =
+      Server.handle_state(
+        [
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "claim-first",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(first_package)}
+          },
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "claim-second",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "claim_local_assignment",
+              "arguments" => local_assignment_claim_args(second_package, %{"claimed_by" => "worker-2"})
+            }
+          }
+        ],
+        local_mcp_server(local_mcp_config(repo), "local-batch-double-claim-state")
+      )
+
+    first_response = Enum.at(responses, 0)
+    second_response = Enum.at(responses, 1)
+
+    assert get_in(first_response, ["result", "structuredContent", "assignment", "work_package_id"]) == first_package.id
+    assert get_in(second_response, ["error", "data", "reason"]) == "session_already_bound"
+    assert get_in(second_response, ["error", "data", "action"]) == "use_fresh_mcp_session_or_release_current_assignment"
+
+    assert get_in(second_response, ["error", "data", "current_assignment"]) == %{
+             "grant_role" => "worker",
+             "work_package_id" => first_package.id,
+             "claimed_by" => "local-worker-1",
+             "repo" => first_package.repo,
+             "base_branch" => first_package.base_branch
+           }
+
+    assert server.session.assignment.work_package_id == first_package.id
+  end
+
   test "batch final state keeps refreshed local claim session after later non-claim items", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-BATCH-REFRESHED-CLAIM")
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)

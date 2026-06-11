@@ -768,19 +768,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp handle_batch(payloads, %__MODULE__{} = server) do
-    {items, _claimed?} =
-      Enum.map_reduce(payloads, false, fn payload, claimed? ->
-        if claimed? and batch_session_claim_request?(payload, server) do
-          {{payload, batch_session_claim_rebind_item(payload, server)}, true}
-        else
-          item = handle_batch_item(payload, server)
-
-          claim_succeeded? =
-            batch_session_claim_request?(payload, server) and batch_session_claim_success?(item, server)
-
-          {{payload, item}, claimed? or claim_succeeded?}
-        end
-      end)
+    {items, _claim_state} =
+      Enum.map_reduce(payloads, {false, nil}, &handle_batch_claim_state(&1, &2, server))
 
     responses =
       items
@@ -791,6 +780,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     {if(responses == [], do: nil, else: responses), updated_server}
   end
+
+  defp handle_batch_claim_state(payload, {true, claimed_server} = claim_state, %__MODULE__{} = server) do
+    if batch_session_claim_request?(payload, server) do
+      {{payload, batch_session_claim_rebind_item(payload, claimed_server || server)}, claim_state}
+    else
+      handle_unblocked_batch_item(payload, claim_state, server)
+    end
+  end
+
+  defp handle_batch_claim_state(payload, claim_state, %__MODULE__{} = server) do
+    handle_unblocked_batch_item(payload, claim_state, server)
+  end
+
+  defp handle_unblocked_batch_item(payload, {claimed?, claimed_server}, %__MODULE__{} = server) do
+    item = handle_batch_item(payload, server)
+    claim_succeeded? = batch_session_claim_request?(payload, server) and batch_session_claim_success?(item, server)
+    claimed_server = batch_claimed_server(claim_succeeded?, item, claimed_server)
+
+    {{payload, item}, {claimed? or claim_succeeded?, claimed_server}}
+  end
+
+  defp batch_claimed_server(true, item, claimed_server), do: batch_session_claim_server(item) || claimed_server
+  defp batch_claimed_server(false, _item, claimed_server), do: claimed_server
 
   defp batch_updated_server(items, %__MODULE__{} = server) do
     Enum.reduce(items, server, fn
@@ -820,6 +832,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp batch_session_claim_success?(_item, %__MODULE__{}), do: false
 
+  defp batch_session_claim_server({_response, %__MODULE__{session: %Session{}} = updated_server}), do: updated_server
+  defp batch_session_claim_server(_item), do: nil
+
   defp batch_session_claim_request?(
          %{"jsonrpc" => "2.0", "id" => id, "method" => "tools/call", "params" => %{"name" => name}},
          %__MODULE__{initialized: true}
@@ -841,7 +856,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp batch_session_claim_rebind_item(%{"id" => id, "params" => %{"name" => name}}, %__MODULE__{} = server)
        when valid_request_id(id) and name in @session_claim_tools do
-    {error_response(id, -32_001, "Unauthorized", %{"tool" => name, "reason" => "session_already_bound"}), server}
+    {error_response(id, -32_001, "Unauthorized", session_already_bound_data(name, server)), server}
   end
 
   defp batch_session_claim_rebind_item(_payload, %__MODULE__{} = server), do: {nil, server}
@@ -3205,7 +3220,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       :ok
     else
       case Auth.require_session(session, repo) do
-        {:ok, %Session{}} -> {:error, :session_already_bound}
+        {:ok, %Session{}} -> {:error, {:session_already_bound, current_assignment_summary(repo, session)}}
         {:error, {:service_unavailable, _reason} = reason} -> {:error, reason}
         {:error, _reason} -> :ok
       end
@@ -3712,7 +3727,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, work_request} <- WorkRequestRepository.get(config.repo, claim.work_request_id),
          claim <- hydrate_local_architect_assignment_claim(work_request, claim),
          :ok <- require_local_architect_assignment_rebind_allowed(config.repo, session, claim),
-         {:ok, anchor} <- WorkPackageRepository.get(config.repo, claim.architect_anchor_work_package_id),
+         {:ok, anchor} <- require_local_architect_handoff_anchor(config.repo, work_request, claim),
          :ok <- validate_local_architect_assignment_scope(work_request, anchor, claim),
          {:ok, lease, lease_action} <- ensure_local_architect_assignment_claim_lease(config.repo, anchor, claim) do
       case claim_local_architect_assignment_session(config.repo, anchor, claim) do
@@ -3781,7 +3796,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       :ok
     else
       case Auth.require_session(session, repo) do
-        {:ok, %Session{}} -> {:error, :session_already_bound}
+        {:ok, %Session{}} -> {:error, {:session_already_bound, current_assignment_summary(repo, session)}}
         {:error, {:service_unavailable, _reason} = reason} -> {:error, reason}
         {:error, _reason} -> :ok
       end
@@ -3810,6 +3825,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- require_optional_phase_scope(claim.phase_id, expected_phase_id),
          :ok <- require_architect_handoff_anchor_kind(anchor) do
       require_live_local_work_package(anchor)
+    end
+  end
+
+  defp require_local_architect_handoff_anchor(repo, %WorkRequest{} = work_request, claim) do
+    expected_anchor_id = ArchitectHandoff.anchor_id_for_work_request(work_request)
+    expected_phase_id = ArchitectHandoff.phase_id_for_work_request(work_request)
+
+    with :ok <- require_local_value_match(work_request.repo, claim.repo, :repo_scope_mismatch),
+         :ok <- require_local_value_match(work_request.base_branch, claim.base_branch, :base_branch_scope_mismatch),
+         :ok <-
+           require_local_value_match(
+             expected_anchor_id,
+             claim.architect_anchor_work_package_id,
+             :architect_anchor_scope_mismatch
+           ),
+         :ok <- require_optional_phase_scope(claim.phase_id, expected_phase_id) do
+      case WorkPackageRepository.get(repo, expected_anchor_id) do
+        {:ok, %WorkPackage{} = anchor} ->
+          {:ok, anchor}
+
+        {:error, :not_found} ->
+          {:error, {:architect_handoff_not_prepared, work_request}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -4188,6 +4229,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp local_assignment_claim_error({:storage_failed, _reason} = reason), do: service_error(reason, @local_assignment_claim_tool)
   defp local_assignment_claim_error({:migration_failed, _reason} = reason), do: service_error(reason, @local_assignment_claim_tool)
 
+  defp local_assignment_claim_error({:session_already_bound, current_assignment}) do
+    {:error, -32_001, "Unauthorized", session_already_bound_data(@local_assignment_claim_tool, current_assignment)}
+  end
+
   defp local_assignment_claim_error(:claim_lease_active_for_other_actor) do
     {:error, -32_001, "Unauthorized",
      claim_lease_active_for_other_actor_data(
@@ -4208,6 +4253,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp local_architect_assignment_claim_error({:migration_failed, _reason} = reason),
     do: service_error(reason, @local_architect_assignment_claim_tool)
 
+  defp local_architect_assignment_claim_error({:architect_handoff_not_prepared, %WorkRequest{} = work_request}) do
+    {:error, -32_001, "Unauthorized", architect_handoff_not_prepared_data(work_request)}
+  end
+
+  defp local_architect_assignment_claim_error({:session_already_bound, current_assignment}) do
+    {:error, -32_001, "Unauthorized", session_already_bound_data(@local_architect_assignment_claim_tool, current_assignment)}
+  end
+
   defp local_architect_assignment_claim_error(:claim_lease_active_for_other_actor) do
     {:error, -32_001, "Unauthorized",
      claim_lease_active_for_other_actor_data(
@@ -4226,6 +4279,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "reason" => "claim_lease_active_for_other_actor",
       "action" => "reuse_claim_identity_or_recycle_stale_claim",
       "hint" => hint
+    }
+  end
+
+  defp architect_handoff_not_prepared_data(%WorkRequest{} = work_request) do
+    %{
+      "tool" => @local_architect_assignment_claim_tool,
+      "reason" => "architect_handoff_not_prepared",
+      "action" => "prepare_architect_handoff",
+      "work_request_id" => work_request.id,
+      "expected_architect_anchor_work_package_id" => ArchitectHandoff.anchor_id_for_work_request(work_request),
+      "expected_phase_id" => ArchitectHandoff.phase_id_for_work_request(work_request),
+      "message" => "This WorkRequest exists, but its local architect handoff anchor has not been prepared.",
+      "hint" => "Ask the local operator to prepare the architect handoff, then retry claim_local_architect_assignment."
+    }
+  end
+
+  defp session_already_bound_data(tool, %__MODULE__{session: %Session{}} = server) do
+    session_already_bound_data(tool, current_assignment_summary(server))
+  end
+
+  defp session_already_bound_data(tool, %__MODULE__{}) do
+    session_already_bound_data(tool, nil)
+  end
+
+  defp session_already_bound_data(tool, current_assignment) when is_map(current_assignment) do
+    tool
+    |> session_already_bound_data(nil)
+    |> Map.put("current_assignment", current_assignment)
+  end
+
+  defp session_already_bound_data(tool, _current_assignment) do
+    %{
+      "tool" => tool,
+      "reason" => "session_already_bound",
+      "action" => "use_fresh_mcp_session_or_release_current_assignment",
+      "hint" => "This MCP session is already bound. Start a fresh MCP session for a different assignment, or call release_current_assignment only if abandoning the current binding."
     }
   end
 
@@ -9856,6 +9945,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     current_assignment_context(repo, session)
   end
 
+  defp current_assignment_summary(%__MODULE__{config: %Config{repo: repo}, session: %Session{} = session}) do
+    current_assignment_summary(repo, session)
+  end
+
   defp current_assignment_context(repo, %Session{assignment: assignment} = session) do
     package_context = assignment_work_package_context(repo, assignment.work_package_id)
     repo_scope = assignment_repo_scope(assignment)
@@ -9872,6 +9965,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> put_safe_claim_lease(repo, session)
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
+  end
+
+  defp current_assignment_summary(repo, %Session{assignment: assignment}) do
+    package_context = assignment_work_package_context(repo, assignment.work_package_id)
+    repo_scope = assignment_repo_scope(assignment)
+
+    %{
+      "grant_role" => assignment.grant_role,
+      "work_package_id" => assignment.work_package_id,
+      "claimed_by" => assignment.claimed_by,
+      "phase_id" => assignment.phase_id
+    }
+    |> optional_put("repo", package_context["repo"] || repo_scope["repo"])
+    |> optional_put("base_branch", package_context["base_branch"] || repo_scope["base_branch"])
+    |> optional_put("work_request_id", assignment_work_request_id(repo, assignment))
+    |> drop_nil_values()
   end
 
   defp assignment_work_package_context(repo, work_package_id) when is_binary(work_package_id) do
