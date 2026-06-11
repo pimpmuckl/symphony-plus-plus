@@ -140,6 +140,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap01Test do
     assert invalid_message == Config.usage()
   end
 
+  test "config source revision can be pinned by launcher environment" do
+    old_revision = System.get_env("SYMPP_SOURCE_REVISION")
+    pinned_revision = "ABCDEF1234567890ABCDEF1234567890ABCDEF12"
+
+    try do
+      :persistent_term.erase({Config, :source_revision})
+      System.put_env("SYMPP_SOURCE_REVISION", pinned_revision)
+
+      assert Config.source_revision() == String.downcase(pinned_revision)
+      assert Config.default().source_revision == String.downcase(pinned_revision)
+    after
+      if old_revision do
+        System.put_env("SYMPP_SOURCE_REVISION", old_revision)
+      else
+        System.delete_env("SYMPP_SOURCE_REVISION")
+      end
+
+      :persistent_term.erase({Config, :source_revision})
+    end
+  end
+
   test "MCP timestamp serialization treats naive datetimes as UTC instants" do
     assert Server.mcp_timestamp(~U[2026-05-12 12:34:56.123456Z]) == "2026-05-12T12:34:56.123456Z"
     assert Server.mcp_timestamp(~N[2026-05-12 12:34:56.123456]) == "2026-05-12T12:34:56.123456Z"

@@ -45,7 +45,7 @@ function Write-Usage {
   Write-Host "  SYMPP_MCP_HTTP_TIMEOUT_SEC           Per-request bridge timeout. Defaults to 300."
   Write-Host "  SYMPP_STARTUP_LOCK_TIMEOUT_SEC       Local startup lock wait. Defaults to the configured startup waits plus 30 seconds, with a 120-second floor."
   Write-Host ""
-  Write-Host "Installed plugins use a local refresh .sympp-source-root hint when present, otherwise marketplace source discovery."
+  Write-Host "Installed plugins prefer a compatible marketplace source clone; local refresh .sympp-source-root hints are a fallback."
 }
 
 function Write-Diagnostic([string]$Message) {
@@ -62,6 +62,56 @@ function Resolve-OptionalPath([string]$Path) {
 
 function Test-SymphonySourceRoot([string]$Path) {
   return (-not [string]::IsNullOrWhiteSpace($Path)) -and (Test-Path -LiteralPath (Join-Path $Path "elixir/mix.exs"))
+}
+
+function Get-FileSha256([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return $null
+  }
+
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+      return (($sha256.ComputeHash($stream) | ForEach-Object { $_.ToString("x2") }) -join "")
+    } finally {
+      $stream.Dispose()
+    }
+  } finally {
+    $sha256.Dispose()
+  }
+}
+
+function Test-InstalledPluginPayloadMatchesMarketplaceSource([string]$PluginRoot, [string]$SourceRoot) {
+  $packageRoot = Split-Path -Parent ([System.IO.Path]::GetFullPath($PluginRoot))
+  $packageName = Split-Path -Leaf $packageRoot
+  $sourcePluginRoot = Join-Path $SourceRoot "plugins/$packageName"
+  $relativePaths = @(
+    ".codex-plugin/plugin.json",
+    ".mcp.json",
+    "scripts/start-sympp-mcp.ps1",
+    "scripts/sympp-launcher-runtime.ps1"
+  )
+  $checked = 0
+
+  foreach ($relativePath in $relativePaths) {
+    $installedPath = Join-Path $PluginRoot $relativePath
+    if (-not (Test-Path -LiteralPath $installedPath)) {
+      continue
+    }
+
+    $sourcePath = Join-Path $sourcePluginRoot $relativePath
+    if (-not (Test-Path -LiteralPath $sourcePath)) {
+      return $false
+    }
+
+    if ((Get-FileSha256 $installedPath) -ne (Get-FileSha256 $sourcePath)) {
+      return $false
+    }
+    $checked += 1
+  }
+
+  return $checked -gt 0
 }
 
 function Resolve-RepoRootFromMarketplaceCache([string]$PluginRoot) {
@@ -82,6 +132,17 @@ function Resolve-RepoRootFromMarketplaceCache([string]$PluginRoot) {
   if ((Test-SymphonySourceRoot $candidate) -and
       (Test-Path -LiteralPath (Join-Path $candidate "plugins/symphony-plus-plus/.codex-plugin/plugin.json")) -and
       (Test-Path -LiteralPath (Join-Path $candidate "plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json"))) {
+    if (-not (Test-InstalledPluginPayloadMatchesMarketplaceSource $versionRoot $candidate)) {
+      throw "Codex marketplace source clone does not match the installed Symphony++ MCP plugin cache. Run codex plugin marketplace upgrade or refresh the installed cache before starting the MCP runtime: $candidate"
+    }
+
+    $installedRevision = Get-SymppPinnedSourceRevision $versionRoot
+    $candidateRevision = Resolve-SymppSourceRevision $candidate
+    if ($installedRevision -and $candidateRevision -and
+        -not [System.StringComparer]::OrdinalIgnoreCase.Equals($installedRevision, $candidateRevision)) {
+      throw "Codex marketplace source clone revision $candidateRevision does not match installed Symphony++ MCP cache revision $installedRevision. Refresh the installed plugin cache before starting the MCP runtime."
+    }
+
     return $candidate
   }
 
@@ -119,17 +180,17 @@ function Resolve-RepoRoot {
     return $sourceCandidate
   }
 
+  $marketplaceRoot = Resolve-RepoRootFromMarketplaceCache $pluginRoot
+  if ($marketplaceRoot) {
+    return $marketplaceRoot
+  }
+
   $sourceRootHint = Resolve-RepoRootFromSourceHint $pluginRoot
   if ($sourceRootHint.valid) {
     return $sourceRootHint.root
   }
   if ($sourceRootHint.found) {
     throw "Installed plugin source-root hint is invalid. Refresh the plugin cache or set SYMPP_REPO_ROOT."
-  }
-
-  $marketplaceRoot = Resolve-RepoRootFromMarketplaceCache $pluginRoot
-  if ($marketplaceRoot) {
-    return $marketplaceRoot
   }
 
   throw "Cannot infer the Symphony++ runtime source. Reinstall or refresh the Symphony++ marketplace, or set SYMPP_REPO_ROOT to the source checkout root before starting the plugin MCP server."
@@ -141,7 +202,7 @@ function Resolve-SymppHome {
     return $configured
   }
 
-  return [System.IO.Path]::GetFullPath((Join-Path $HOME ".agents/splusplus"))
+  return Resolve-SymppPluginHome
 }
 
 function Resolve-RuntimeFile {
@@ -1005,6 +1066,15 @@ function Format-SourceRevisionForDiagnostic([string]$Revision) {
   return $Revision
 }
 
+function Set-SymppSourceRevisionEnvironment([string]$Revision) {
+  if ([string]::IsNullOrWhiteSpace($Revision)) {
+    return
+  }
+
+  $env:SYMPP_SOURCE_REVISION = $Revision
+  [Environment]::SetEnvironmentVariable("SYMPP_SOURCE_REVISION", $Revision, "Process")
+}
+
 function Test-HealthySymppDashboard([string]$DashboardOrigin) {
   if ([string]::IsNullOrWhiteSpace($DashboardOrigin)) {
     return $false
@@ -1244,7 +1314,45 @@ function Stop-ManagedRuntimeEntry([string]$Role, $Entry) {
     return $false
   }
 
-  return Stop-ManagedRuntimeProcess $Role $Entry.pid (Get-RuntimeEntryPort $Entry)
+  $entryPort = Get-RuntimeEntryPort $Entry
+  $managedPid = 0
+  if (-not [int]::TryParse([string]$Entry.pid, [ref]$managedPid) -or $managedPid -le 0) {
+    $listenerPid = if ($entryPort -gt 0) { Get-ManagedListenerPid $Role $entryPort } else { $null }
+    if ($listenerPid) {
+      Write-Diagnostic "Pruning stale managed Symphony++ $Role runtime entry with missing pid; matching listener pid=$listenerPid remains unmanaged because ownership cannot be proven from the stale record."
+    } else {
+      Write-Diagnostic "Pruning stale managed Symphony++ $Role runtime entry with missing pid."
+    }
+
+    return $true
+  }
+
+  if (-not (Test-ProcessAlive $managedPid)) {
+    $listenerPid = if ($entryPort -gt 0) { Get-ManagedListenerPid $Role $entryPort } else { $null }
+    if ($listenerPid) {
+      Write-Diagnostic "Pruning stale managed Symphony++ $Role runtime entry for exited pid=$managedPid; matching listener pid=$listenerPid remains unmanaged because ownership cannot be proven from the stale record."
+    } else {
+      Write-Diagnostic "Pruning stale managed Symphony++ $Role runtime entry for exited pid=$managedPid."
+    }
+
+    return $true
+  }
+
+  return Stop-ManagedRuntimeProcess $Role $managedPid $entryPort
+}
+
+function Test-RuntimeStateExternalLoopback($RuntimeState) {
+  if ($null -eq $RuntimeState) {
+    return $false
+  }
+
+  if ($null -eq $RuntimeState.backend -or $null -eq $RuntimeState.frontend -or
+      $RuntimeState.backend.managed -eq $true -or $RuntimeState.frontend.managed -eq $true) {
+    return $false
+  }
+
+  return [string]$RuntimeState.backend.status -eq "external_loopback" -and
+    [string]$RuntimeState.frontend.status -eq "external_loopback"
 }
 
 function Test-RuntimeEntryEndpointMatches([string]$Role, $Entry, [string]$Endpoint) {
@@ -1789,7 +1897,9 @@ function Resolve-FastAttachRuntimePlan {
     return $null
   }
 
-  if ($RuntimeState.backend.managed -ne $true -or $RuntimeState.frontend.managed -ne $true) {
+  $managedRuntime = $RuntimeState.backend.managed -eq $true -and $RuntimeState.frontend.managed -eq $true
+  $externalLoopbackRuntime = Test-RuntimeStateExternalLoopback $RuntimeState
+  if (-not $managedRuntime -and -not $externalLoopbackRuntime) {
     return $null
   }
 
@@ -1833,8 +1943,9 @@ function Resolve-FastAttachRuntimePlan {
     return $null
   }
 
-  $backendPlan = New-ReusedBackendPlan "fast_attach" $backendUrl $backendHealth $true $RuntimeState.backend.pid
-  $dashboardPlan = New-ReusedDashboardPlan "fast_attach" $dashboardOrigin $true $RuntimeState.frontend.pid
+  $planStatus = if ($managedRuntime) { "fast_attach" } else { "external_loopback" }
+  $backendPlan = New-ReusedBackendPlan $planStatus $backendUrl $backendHealth $managedRuntime $RuntimeState.backend.pid
+  $dashboardPlan = New-ReusedDashboardPlan $planStatus $dashboardOrigin $managedRuntime $RuntimeState.frontend.pid
   $runtimeKey = New-RuntimeKey $backendPlan.url $dashboardPlan.origin $backendHealth.source_revision
   if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals((Get-RuntimeStateKey $RuntimeState), $runtimeKey)) {
     return $null
@@ -1861,15 +1972,19 @@ function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [
       $managed = $false
       $entryPid = $null
       $status = "external_loopback"
-      if (Test-RuntimeEntryEndpointMatches "frontend" $preferredEntry $preferredOrigin) {
+      if (Test-RuntimeEntryExternalOverride $preferredEntry $preferredOrigin "frontend") {
+        Write-Diagnostic "Ignoring recorded external dashboard $preferredOrigin for implicit default-port reuse. Set SYMPP_DASHBOARD_ORIGIN=$preferredOrigin to reuse it explicitly."
+      } elseif (Test-RuntimeEntryEndpointMatches "frontend" $preferredEntry $preferredOrigin) {
         $managed = $preferredEntry.managed -eq $true
         $entryPid = $preferredEntry.pid
         if ($managed) {
           $status = "reused"
         }
-      }
 
-      return New-ReusedDashboardPlan $status $preferredOrigin $managed $entryPid
+        return New-ReusedDashboardPlan $status $preferredOrigin $managed $entryPid
+      } else {
+        return New-ReusedDashboardPlan $status $preferredOrigin $managed $entryPid
+      }
     }
   }
 
@@ -2190,6 +2305,51 @@ function Invoke-SelfTest {
     Remove-Item -LiteralPath $hintSelfTestRoot -Recurse -Force -ErrorAction SilentlyContinue
   }
 
+  $marketplaceSelfTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) "sympp-plugin-marketplace-cache-$([guid]::NewGuid().ToString('N'))"
+  try {
+    $codexHome = Join-Path $marketplaceSelfTestRoot "codex"
+    $pluginRoot = Join-Path $codexHome "plugins/cache/symphony-plus-plus/symphony-plus-plus-mcp/0.1.0"
+    $sourceRoot = Join-Path $codexHome ".tmp/marketplaces/symphony-plus-plus"
+    $sourcePluginRoot = Join-Path $sourceRoot "plugins/symphony-plus-plus-mcp"
+    New-Item -ItemType Directory -Path (Join-Path $sourceRoot "elixir") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $sourceRoot "plugins/symphony-plus-plus/.codex-plugin") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $sourcePluginRoot ".codex-plugin") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $sourcePluginRoot "scripts") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $pluginRoot ".codex-plugin") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $pluginRoot "scripts") -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $sourceRoot "elixir/mix.exs") -Value "# self-test" -NoNewline
+    Set-Content -LiteralPath (Join-Path $sourceRoot "plugins/symphony-plus-plus/.codex-plugin/plugin.json") -Value '{"name":"symphony-plus-plus"}' -NoNewline
+    Set-Content -LiteralPath (Join-Path $sourcePluginRoot ".codex-plugin/plugin.json") -Value '{"name":"symphony-plus-plus-mcp"}' -NoNewline
+    Set-Content -LiteralPath (Join-Path $pluginRoot ".codex-plugin/plugin.json") -Value '{"name":"symphony-plus-plus-mcp"}' -NoNewline
+    foreach ($relativePath in @("scripts/start-sympp-mcp.ps1", "scripts/sympp-launcher-runtime.ps1")) {
+      Set-Content -LiteralPath (Join-Path $sourcePluginRoot $relativePath) -Value "# matching payload" -NoNewline
+      Set-Content -LiteralPath (Join-Path $pluginRoot $relativePath) -Value "# matching payload" -NoNewline
+    }
+
+    if ((Resolve-RepoRootFromMarketplaceCache $pluginRoot) -ne ([System.IO.Path]::GetFullPath($sourceRoot))) {
+      throw "Marketplace source discovery should accept a source clone that matches the installed plugin payload."
+    }
+
+    Set-Content -LiteralPath (Join-Path $pluginRoot "scripts/sympp-launcher-runtime.ps1") -Value "# stale installed payload" -NoNewline
+    $mismatchRejected = $false
+    try {
+      [void](Resolve-RepoRootFromMarketplaceCache $pluginRoot)
+    } catch {
+      $mismatchRejected = $_.Exception.Message -match "does not match the installed Symphony\+\+ MCP plugin cache"
+    }
+    if (-not $mismatchRejected) {
+      throw "Marketplace source discovery should reject mismatched installed plugin payloads."
+    }
+
+    $pinnedRevision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    Set-Content -LiteralPath (Join-Path $pluginRoot ".sympp-source-revision") -Value "$pinnedRevision`n" -NoNewline
+    if ((Resolve-SymppSourceRevision (Join-Path $marketplaceSelfTestRoot "not-a-git-repo") $pluginRoot) -ne $pinnedRevision) {
+      throw "Pinned installed source revision should be used when git and marketplace metadata are unavailable."
+    }
+  } finally {
+    Remove-Item -LiteralPath $marketplaceSelfTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
   $old = [Environment]::GetEnvironmentVariable("SYMPP_SELFTEST_FLAG", "Process")
   try {
     [Environment]::SetEnvironmentVariable("SYMPP_SELFTEST_FLAG", "off", "Process")
@@ -2361,6 +2521,16 @@ function Invoke-SelfTest {
   $revisionA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   $revisionB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   $healthyA = [pscustomobject]@{ healthy = $true; source_revision = $revisionA }
+  $oldSourceRevisionEnv = [Environment]::GetEnvironmentVariable("SYMPP_SOURCE_REVISION", "Process")
+  try {
+    Set-SymppSourceRevisionEnvironment $revisionA
+    if ([Environment]::GetEnvironmentVariable("SYMPP_SOURCE_REVISION", "Process") -ne $revisionA -or $env:SYMPP_SOURCE_REVISION -ne $revisionA) {
+      throw "Set-SymppSourceRevisionEnvironment should expose the expected source revision to child backend processes."
+    }
+  } finally {
+    [Environment]::SetEnvironmentVariable("SYMPP_SOURCE_REVISION", $oldSourceRevisionEnv, "Process")
+    $env:SYMPP_SOURCE_REVISION = $oldSourceRevisionEnv
+  }
   if (-not (Test-BackendSourceMatches $healthyA $revisionA)) {
     throw "Source-matching backend health should be reusable."
   }
@@ -2454,7 +2624,29 @@ function Invoke-SelfTest {
     frontend = [pscustomobject]@{ managed = $true; origin = "http://127.0.0.1:19999"; port = 19999; pid = 1235 }
   }
   if ($null -ne (Resolve-FastAttachRuntimePlan $externalRuntimeState $revisionA 19998 19999 $false $false $null $null $healthyA $true $true)) {
-    throw "Fast attach should only reuse launcher-managed runtime entries."
+    throw "Fast attach should reject mixed managed/external runtime entries."
+  }
+  $explicitDashboardRuntimeState = [pscustomobject]@{
+    runtime_kind = "external_loopback"
+    runtime_key = $oldRuntimeKey
+    backend = [pscustomobject]@{ status = "external_loopback"; managed = $false; url = "http://127.0.0.1:19998"; port = 19998; pid = 1234; source_revision = $revisionA }
+    frontend = [pscustomobject]@{ status = "external_override"; managed = $false; origin = "http://127.0.0.1:19999"; port = 19999; pid = 1235 }
+  }
+  if ($null -ne (Resolve-FastAttachRuntimePlan $explicitDashboardRuntimeState $revisionA 19998 19999 $false $false $null $null $healthyA $true $true)) {
+    throw "Fast attach should not promote explicit external dashboard origins into implicit external_loopback reuse."
+  }
+  $externalLoopbackRuntimeState = [pscustomobject]@{
+    runtime_kind = "external_loopback"
+    runtime_key = $oldRuntimeKey
+    backend = [pscustomobject]@{ status = "external_loopback"; managed = $false; url = "http://127.0.0.1:19998"; port = 19998; pid = 1234; source_revision = $revisionA }
+    frontend = [pscustomobject]@{ status = "external_loopback"; managed = $false; origin = "http://127.0.0.1:19999"; port = 19999; pid = 1235 }
+  }
+  $externalFastAttachPlan = Resolve-FastAttachRuntimePlan $externalLoopbackRuntimeState $revisionA 19998 19999 $false $false $null $null $healthyA $true $true
+  if ($null -eq $externalFastAttachPlan -or
+      $externalFastAttachPlan.backend_plan.status -ne "external_loopback" -or
+      $externalFastAttachPlan.backend_plan.managed -or
+      $externalFastAttachPlan.dashboard_plan.managed) {
+    throw "Fast attach should reuse healthy external_loopback default runtime entries without taking ownership."
   }
 
   $newBackendPlan = [pscustomobject]@{ url = "http://127.0.0.1:20000" }
@@ -2489,6 +2681,15 @@ function Invoke-SelfTest {
   }
 
   $runtimePath = Join-Path ([System.IO.Path]::GetTempPath()) "sympp-plugin-selftest-runtime.json"
+  $staleSuperseded = [pscustomobject]@{
+    runtime_key = $olderRuntimeKey
+    backend = [pscustomobject]@{ managed = $true; url = "http://127.0.0.1:19996"; port = 19996; pid = 0 }
+    frontend = [pscustomobject]@{ managed = $true; origin = "http://127.0.0.1:19997"; port = 19997; pid = 987654321 }
+  }
+  if (@(Stop-SupersededRuntimeStatesIfUnused $runtimePath @($staleSuperseded)).Count -ne 0) {
+    throw "Dead managed superseded runtime entries should be pruned instead of retried forever."
+  }
+
   $state = [pscustomobject]@{
     runtime_key = $oldRuntimeKey
     backend = [pscustomobject]@{
@@ -2562,6 +2763,9 @@ $mix = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MIX)) { "mix" } else { $env:S
 $mise = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MISE)) { "mise" } else { $env:SYMPP_MISE }
 $defaultLauncher = Resolve-SymppDefaultLauncher $elixirDir $mise
 $launcher = Get-EnvMode "SYMPP_LAUNCHER" $defaultLauncher @("direct", "mise")
+$pluginRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$expectedSourceRevision = Resolve-SymppSourceRevision $repoRoot $pluginRoot
+Set-SymppSourceRevisionEnvironment $expectedSourceRevision
 Set-SymppWindowsNativeTargetEnvironment
 $defaultMixBuildRoot = Resolve-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp"
 if (-not $ValidateOnly) {
@@ -2642,7 +2846,6 @@ $dashboardPlan = $null
 $bridgeLeasePath = $null
 $runtimeKey = $null
 $supersededStates = @()
-$expectedSourceRevision = Resolve-SymppSourceRevision $repoRoot
 
 $fastAttachCandidate = Resolve-FastAttachRuntimePlan `
   (Read-RuntimeState $runtimeFile) `

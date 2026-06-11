@@ -81,7 +81,10 @@ but tools are still absent, restart or reload the dedicated MCP-enabled session.
 Keep this companion out of generic worker, `worker_smart`, review-suite, and
 `codex review` configs so ordinary review and execution sessions stay MCP-clean.
 
-When the dedicated Codex session starts, the launcher writes the actual backend
+When an installed dedicated Codex session starts, the launcher prefers the
+compatible marketplace source clone that matches the installed MCP plugin
+payload, falling back to local refresh source-root hints only when marketplace
+source discovery is unavailable. When the launcher starts, it writes the actual backend
 port, dashboard URL, process ids, and log paths to
 `%USERPROFILE%\.agents\splusplus\runtime\codex-plugin.json` by default.
 Override with `SYMPP_RUNTIME_FILE`, `SYMPP_BACKEND_PORT`,
@@ -92,7 +95,12 @@ a healthy matching runtime; if the running runtime is for an older commit, the
 launcher starts a new managed runtime and records new leases against that
 runtime key. When the last bridge lease for a runtime key exits, the launcher
 stops only managed backend/frontend PIDs for that key that it can still verify
-as Symphony++ processes. Explicit `SYMPP_BACKEND_URL` and
+as Symphony++ processes. A healthy default-port backend/dashboard pair on
+`127.0.0.1:19998` and `127.0.0.1:19999` that matches the launcher source is
+recorded as `external_loopback` when it was not started by the bridge. That
+mode is intentionally attach-only: bridge exits must not stop the backend or
+dashboard, but later launches may reuse it quickly and prune stale managed
+runtime records around it. Explicit `SYMPP_BACKEND_URL` and
 `SYMPP_DASHBOARD_ORIGIN` targets are external, remain operator-owned, and are
 not promoted into later implicit reuse.
 

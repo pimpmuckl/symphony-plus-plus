@@ -135,13 +135,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
   end
 
   defp load_source_revision do
+    env_revision = source_revision_from_env()
+
+    if env_revision do
+      env_revision
+    else
+      source_revision_from_git()
+    end
+  end
+
+  defp source_revision_from_env do
+    "SYMPP_SOURCE_REVISION"
+    |> System.get_env()
+    |> normalize_source_revision()
+  end
+
+  defp source_revision_from_git do
     with git when is_binary(git) <- System.find_executable("git") || System.find_executable("git.exe"),
          {revision, 0} <- System.cmd(git, ["-C", @default_repo_root, "rev-parse", "--verify", "HEAD"], stderr_to_stdout: true),
-         revision <- String.trim(revision),
-         true <- revision =~ ~r/\A[0-9a-f]{40}\z/i do
-      String.downcase(revision)
+         revision when is_binary(revision) <- normalize_source_revision(revision) do
+      revision
     else
       _missing_or_invalid -> nil
     end
   end
+
+  defp normalize_source_revision(revision) when is_binary(revision) do
+    revision = String.trim(revision)
+
+    if revision =~ ~r/\A[0-9a-f]{40}\z/i do
+      String.downcase(revision)
+    end
+  end
+
+  defp normalize_source_revision(_revision), do: nil
 end

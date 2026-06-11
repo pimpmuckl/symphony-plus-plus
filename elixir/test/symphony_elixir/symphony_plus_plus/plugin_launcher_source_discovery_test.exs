@@ -289,6 +289,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     File.mkdir_p!(Path.join(marketplace_root, "scripts"))
     File.write!(Path.join(marketplace_root, "scripts/refresh-local-plugin.ps1"), "")
     File.write!(Path.join(marketplace_root, "scripts/smoke-sympp-mcp-http.ps1"), "")
+    File.mkdir_p!(Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts"))
+
+    File.cp!(
+      @mcp_plugin_start_script_path,
+      Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1")
+    )
+
+    File.cp!(
+      Path.join(Path.dirname(@mcp_plugin_start_script_path), "sympp-launcher-runtime.ps1"),
+      Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-launcher-runtime.ps1")
+    )
 
     for plugin_name <- ~w(symphony-plus-plus symphony-plus-plus-mcp) do
       manifest_path = Path.join([marketplace_root, "plugins", plugin_name, ".codex-plugin", "plugin.json"])
