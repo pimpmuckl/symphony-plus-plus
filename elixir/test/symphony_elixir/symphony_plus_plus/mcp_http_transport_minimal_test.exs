@@ -345,6 +345,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
     assert get_in(health.response, ["result", "structuredContent", "status"]) == "ok"
     assert get_in(health.response, ["result", "structuredContent", "mode"]) == "http"
     assert get_in(health.response, ["result", "structuredContent", "ledger", "reachable"]) == true
+    assert get_in(health.response, ["result", "structuredContent", "source", "mcp_contract"]) == Server.mcp_contract_identity()
   end
 
   test "a second client cannot reuse initialized state from a state key", %{config: config} do

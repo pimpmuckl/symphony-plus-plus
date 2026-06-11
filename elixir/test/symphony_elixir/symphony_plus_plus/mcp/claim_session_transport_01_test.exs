@@ -71,7 +71,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
     assert get_in(result, ["ledger", "identity", "kind"]) == "sqlite"
     assert get_in(result, ["ledger", "identity", "source"]) == "default"
     assert result["mode"] == "stdio"
-    assert result["source"] == %{"revision" => "abcdef1234567890abcdef1234567890abcdef12"}
+    assert result["source"]["revision"] == "abcdef1234567890abcdef1234567890abcdef12"
+    assert result["source"]["mcp_contract"] == Server.mcp_contract_identity()
+    assert result["source"]["mcp_contract"]["fingerprint"] =~ ~r/\A[0-9a-f]{64}\z/
     refute text =~ "SYMPP-P3-001"
   end
 
@@ -86,7 +88,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
     payload = Jason.decode!(text)
 
     assert payload["mode"] == "stdio"
-    assert payload["source"] == %{"revision" => "0123456789abcdef0123456789abcdef01234567"}
+    assert payload["source"]["revision"] == "0123456789abcdef0123456789abcdef01234567"
+    assert payload["source"]["mcp_contract"] == Server.mcp_contract_identity()
   end
 
   test "health tool rejects arguments outside its empty schema", %{repo: repo} do

@@ -161,6 +161,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap01Test do
     end
   end
 
+  test "health contract fingerprint is independent from source revision", %{repo: repo} do
+    revision_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    revision_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+    health_a =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "health-a",
+          "method" => "tools/call",
+          "params" => %{"name" => "sympp.health", "arguments" => %{}}
+        },
+        config: Config.default(repo: repo, source_revision: revision_a)
+      )
+
+    health_b =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "health-b",
+          "method" => "tools/call",
+          "params" => %{"name" => "sympp.health", "arguments" => %{}}
+        },
+        config: Config.default(repo: repo, source_revision: revision_b)
+      )
+
+    assert get_in(health_a, ["result", "structuredContent", "source", "revision"]) == revision_a
+    assert get_in(health_b, ["result", "structuredContent", "source", "revision"]) == revision_b
+    assert get_in(health_a, ["result", "structuredContent", "source", "mcp_contract"]) == Server.mcp_contract_identity()
+    assert get_in(health_b, ["result", "structuredContent", "source", "mcp_contract"]) == Server.mcp_contract_identity()
+  end
+
   test "MCP timestamp serialization treats naive datetimes as UTC instants" do
     assert Server.mcp_timestamp(~U[2026-05-12 12:34:56.123456Z]) == "2026-05-12T12:34:56.123456Z"
     assert Server.mcp_timestamp(~N[2026-05-12 12:34:56.123456]) == "2026-05-12T12:34:56.123456Z"
