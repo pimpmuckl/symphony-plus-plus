@@ -415,13 +415,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   end
 
   defp cleanup_recorded_target_repo_root_opts(repo, %WorkPackage{} = work_package, opts, worktree_path) do
-    cond do
-      Keyword.has_key?(opts, :target_repo_root) or Keyword.has_key?(opts, :repo_root) ->
-        {:ok, work_package, opts}
-
-      true ->
-        target_repo_root = WorktreeTargetRoot.from_package(work_package, worktree_path)
-        backfill_recorded_target_repo_root(repo, work_package, opts, target_repo_root)
+    if Keyword.has_key?(opts, :target_repo_root) or Keyword.has_key?(opts, :repo_root) do
+      {:ok, work_package, opts}
+    else
+      target_repo_root = WorktreeTargetRoot.from_package(work_package, worktree_path)
+      backfill_recorded_target_repo_root(repo, work_package, opts, target_repo_root)
     end
   end
 

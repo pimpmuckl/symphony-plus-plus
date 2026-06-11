@@ -283,8 +283,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
 
     claim_arguments =
       claim_arguments
-      |> Map.put_new("branch", "<prepared-worker-branch>")
-      |> Map.put_new("claimed_by", "<stable-worker-id>")
       |> Enum.sort_by(fn {key, _value} -> key end)
       |> Enum.map_join(", ", fn {key, value} -> "#{key}=#{prompt_data(value)}" end)
 

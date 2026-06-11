@@ -3409,32 +3409,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp validate_local_work_request_scope(repo, %WorkPackage{} = work_package, work_request_id) do
     with {:ok, work_request} <- WorkRequestRepository.get(repo, work_request_id),
-         :ok <- require_local_value_match(work_request.repo, work_package.repo, :work_request_scope_mismatch),
+         :ok <- require_local_value_match(work_request.repo, work_package.repo, :work_request_repo_scope_mismatch),
+         {:ok, planned_slice} <- local_work_request_package_link(repo, work_request_id, work_package.id),
          :ok <-
            require_local_value_match(
-             work_request.base_branch,
+             planned_slice.target_base_branch,
              work_package.base_branch,
-             :work_request_scope_mismatch
-           ),
-         true <- local_work_request_package_linked?(repo, work_request_id, work_package.id) do
+             :package_delivery_base_mismatch
+           ) do
       :ok
     else
-      false -> {:error, :work_request_scope_mismatch}
       {:error, :not_found} -> {:error, :work_request_scope_mismatch}
       {:error, _reason} = error -> error
     end
   end
 
-  defp local_work_request_package_linked?(repo, work_request_id, work_package_id) do
-    query =
-      from(planned_slice in PlannedSlice,
-        where: planned_slice.work_request_id == ^work_request_id,
-        where: planned_slice.work_package_id == ^work_package_id,
-        select: 1,
-        limit: 1
-      )
-
-    repo.one(query) == 1
+  defp local_work_request_package_link(repo, work_request_id, work_package_id) do
+    case repo.one(
+           from(planned_slice in PlannedSlice,
+             where: planned_slice.work_request_id == ^work_request_id,
+             where: planned_slice.work_package_id == ^work_package_id,
+             limit: 1
+           )
+         ) do
+      %PlannedSlice{} = planned_slice -> {:ok, planned_slice}
+      nil -> {:error, :work_request_package_link_mismatch}
+    end
   end
 
   defp ensure_local_assignment_claim_lease(repo, %WorkPackage{} = work_package, claim) do
@@ -7841,8 +7841,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         nil
     end
   end
-
-  defp remote_owner_repo_parts(_remote), do: nil
 
   defp uri_owner_repo_parts(remote) do
     uri = URI.parse(remote)
