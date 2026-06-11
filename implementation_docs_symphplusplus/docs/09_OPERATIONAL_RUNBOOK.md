@@ -15,9 +15,10 @@ local Symphony++ ledger unless `--database <path>` is supplied.
 
 1. Architect dispatches a planned slice with `dispatch_work_request_planned_slice`.
 2. Confirm the response includes `work_package.id` and `worker_bootstrap`.
-3. Prepare or select the worker's product-repo worktree. The normal architect
-   tool is `prepare_work_package_worktree`; an equivalent operator-created
-   worktree is acceptable when it is recorded or supplied in launch context.
+3. Prepare the worker's product-repo worktree with
+   `prepare_work_package_worktree`. Pass the WorkPackage id; pass
+   `target_repo_root` only when the helper cannot infer the product checkout.
+   Use the returned `worker_launch.workspace_path` as the worker cwd.
 4. Start a worker MCP-enabled session in that worktree.
 5. Worker calls `claim_local_assignment` with the WorkPackage id.
 6. Worker calls `get_current_assignment` and proceeds from ledger context.

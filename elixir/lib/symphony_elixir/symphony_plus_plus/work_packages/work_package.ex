@@ -68,6 +68,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
           policy_template: String.t() | nil,
           acceptance_criteria: [String.t()] | nil,
           worktree_path: String.t() | nil,
+          worktree_target_repo_root: String.t() | nil,
           status: String.t() | nil,
           parent_id: String.t() | nil,
           phase_id: String.t() | nil,
@@ -88,6 +89,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
     field(:policy_template, :string)
     field(:acceptance_criteria, StringList, default: [])
     field(:worktree_path, :string)
+    field(:worktree_target_repo_root, :string)
     field(:status, :string)
     field(:parent_id, :string)
     field(:phase_id, :string)
@@ -137,6 +139,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
       :policy_template,
       :acceptance_criteria,
       :worktree_path,
+      :worktree_target_repo_root,
       :status,
       :parent_id,
       :phase_id,

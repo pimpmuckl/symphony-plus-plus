@@ -961,25 +961,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     refute Map.has_key?(dispatch_properties, "repo_root")
 
     assert get_in(tools_by_name, ["prepare_work_package_worktree", "inputSchema", "required"]) == [
-             "work_package_id",
-             "target_repo_root",
-             "base_branch",
-             "branch"
+             "work_package_id"
            ]
 
     assert get_in(tools_by_name, ["prepare_work_package_worktree", "inputSchema", "properties", "target_repo_root", "description"]) =~
-             "Target product repository root"
+             "target product repository root"
 
-    assert get_in(tools_by_name, ["prepare_work_package_worktree", "inputSchema", "properties", "worktree_parent", "description"]) =~
-             "safe Symphony++ worktree root"
+    assert get_in(tools_by_name, ["prepare_work_package_worktree", "inputSchema", "properties", "branch", "description"]) =~
+             "Optional branch override"
 
     assert get_in(tools_by_name, ["cleanup_work_package_worktree", "inputSchema", "required"]) == [
-             "work_package_id",
-             "target_repo_root"
+             "work_package_id"
            ]
 
     assert get_in(tools_by_name, ["cleanup_work_package_worktree", "inputSchema", "properties", "target_repo_root", "description"]) =~
-             "Target product repository root"
+             "Optional target product repository root"
 
     assert get_in(tools_by_name, ["read_child_status", "inputSchema", "required"]) == ["work_package_id"]
     assert get_in(tools_by_name, ["read_child_status", "inputSchema", "properties", "work_package_id", "type"]) == "string"

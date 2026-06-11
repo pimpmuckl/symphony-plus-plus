@@ -2409,12 +2409,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(
       %{
         "work_package_id" => string_schema(),
-        "target_repo_root" => described_string_schema("Target product repository root used for git ref validation, fetch, and worktree operations."),
-        "base_branch" => described_string_schema("Git base branch to prepare from. Must match the linked WorkPackage delivery base branch."),
-        "branch" => string_schema(),
-        "worktree_parent" => described_string_schema("Optional parent directory for the generated worktree path. It must remain under the safe Symphony++ worktree root.")
+        "target_repo_root" => described_string_schema("Optional target product repository root. Omit when the current MCP repo root or a standard local checkout matches the WorkPackage repo."),
+        "branch" => described_string_schema("Optional branch override, used only when the WorkPackage branch_pattern is a template or absent. Exact branch patterns are derived from the WorkPackage.")
       },
-      ["work_package_id", "target_repo_root", "base_branch", "branch"]
+      ["work_package_id"]
     )
   end
 
@@ -2422,9 +2420,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(
       %{
         "work_package_id" => string_schema(),
-        "target_repo_root" => described_string_schema("Target product repository root that owns the recorded worktree.")
+        "target_repo_root" => described_string_schema("Optional target product repository root override. Prepared worktrees remember the root used during prepare.")
       },
-      ["work_package_id", "target_repo_root"]
+      ["work_package_id"]
     )
   end
 
@@ -5394,23 +5392,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool("prepare_work_package_worktree", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- architect_session(config.repo, session, "dispatch:work_request"),
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
-         {:ok, target_repo_root} <- target_repo_root_argument(arguments),
-         {:ok, base_branch} <- required_argument(arguments, "base_branch"),
-         {:ok, branch} <- required_argument(arguments, "branch"),
-         {:ok, worktree_parent} <- optional_string_argument(arguments, "worktree_parent"),
          {:ok, work_package, scope} <- scoped_worktree_work_package(config.repo, session, work_package_id),
+         {:ok, target_repo_root} <- worktree_target_repo_root_argument(arguments, work_package, config),
+         {:ok, branch_arg} <- optional_string_argument(arguments, "branch"),
+         {:ok, branch} <- worktree_prepare_branch(work_package, branch_arg),
          :ok <- require_target_repo_root_scope(target_repo_root, work_package, config),
-         :ok <- require_worktree_base_branch_scope(base_branch, work_package),
          {:ok, result} <-
            WorkPackageService.prepare_worktree(
              config.repo,
              work_package_id,
              %{
                "target_repo_root" => target_repo_root,
-               "base_branch" => base_branch,
+               "base_branch" => work_package.base_branch,
                "branch" => branch
              }
-             |> optional_put("worktree_parent", worktree_parent)
            ),
          {:ok, audit_event} <- append_worktree_lifecycle_audit(config.repo, session, work_package_id, "prepare_work_package_worktree", result) do
       {:ok, tool_result(worktree_lifecycle_payload(result, scope, audit_event))}
@@ -5424,14 +5419,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool("cleanup_work_package_worktree", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- architect_session(config.repo, session, "dispatch:work_request"),
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
-         {:ok, target_repo_root} <- target_repo_root_argument(arguments),
+         {:ok, target_repo_root} <- optional_string_argument(arguments, "target_repo_root"),
          {:ok, work_package, scope} <- scoped_worktree_work_package(config.repo, session, work_package_id),
-         :ok <- require_cleanup_target_repo_root_scope(target_repo_root, work_package, config),
+         {:ok, cleanup_target_repo_root} <- cleanup_worktree_target_repo_root(target_repo_root, work_package, config),
+         :ok <- require_cleanup_target_repo_root_scope(cleanup_target_repo_root, work_package, config),
          {:ok, result} <-
            WorkPackageService.cleanup_worktree(
              config.repo,
              work_package_id,
-             target_repo_root: target_repo_root
+             cleanup_worktree_opts(cleanup_target_repo_root)
            ),
          {:ok, audit_event} <- maybe_append_cleanup_worktree_audit(config.repo, session, work_package_id, result) do
       {:ok, tool_result(worktree_lifecycle_payload(result, scope, audit_event))}
@@ -5811,7 +5807,117 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp target_repo_root_argument(arguments), do: required_argument(arguments, "target_repo_root")
+  defp cleanup_worktree_opts(nil), do: []
+  defp cleanup_worktree_opts(target_repo_root), do: [target_repo_root: target_repo_root]
+
+  defp cleanup_worktree_target_repo_root(target_repo_root, %WorkPackage{}, %Config{}) when is_binary(target_repo_root),
+    do: {:ok, target_repo_root}
+
+  defp cleanup_worktree_target_repo_root(nil, %WorkPackage{worktree_path: nil}, %Config{}), do: {:ok, nil}
+
+  defp cleanup_worktree_target_repo_root(nil, %WorkPackage{worktree_target_repo_root: target_repo_root}, %Config{})
+       when is_binary(target_repo_root),
+       do: {:ok, nil}
+
+  defp cleanup_worktree_target_repo_root(nil, %WorkPackage{} = work_package, %Config{} = config) do
+    case resolve_worktree_target_repo_root(nil, work_package, config) do
+      {:ok, target_repo_root} -> {:ok, target_repo_root}
+      {:tool_error, _reason} -> {:ok, nil}
+    end
+  end
+
+  defp worktree_target_repo_root_argument(arguments, %WorkPackage{} = work_package, %Config{} = config) do
+    with {:ok, explicit_root} <- optional_string_argument(arguments, "target_repo_root") do
+      resolve_worktree_target_repo_root(explicit_root, work_package, config)
+    end
+  end
+
+  defp resolve_worktree_target_repo_root(target_repo_root, %WorkPackage{}, %Config{}) when is_binary(target_repo_root), do: {:ok, target_repo_root}
+
+  defp resolve_worktree_target_repo_root(nil, %WorkPackage{} = work_package, %Config{} = config) do
+    work_package
+    |> worktree_target_repo_root_candidates(config)
+    |> Enum.find_value(fn target_repo_root ->
+      case require_target_repo_root_scope(target_repo_root, work_package, config) do
+        :ok -> {:ok, target_repo_root}
+        _error -> nil
+      end
+    end)
+    |> case do
+      nil -> {:tool_error, "target_repo_root_required"}
+      result -> result
+    end
+  end
+
+  defp worktree_target_repo_root_candidates(%WorkPackage{repo: repo}, %Config{repo_root: repo_root}) do
+    repo_name = repo_name_segment(repo)
+
+    [
+      repo_root,
+      repo,
+      standard_code_checkout(repo_name),
+      user_code_checkout(repo_name),
+      sibling_checkout(repo_root, repo_name)
+    ]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+  end
+
+  defp repo_name_segment(repo) when is_binary(repo) do
+    repo
+    |> String.trim()
+    |> String.trim_trailing("/")
+    |> String.trim_trailing("\\")
+    |> Path.basename()
+    |> String.replace_suffix(".git", "")
+  end
+
+  defp repo_name_segment(_repo), do: nil
+
+  defp standard_code_checkout(repo_name) when is_binary(repo_name) and repo_name != "" do
+    if match?({:win32, _name}, :os.type()), do: Path.join(["C:/Code", repo_name])
+  end
+
+  defp standard_code_checkout(_repo_name), do: nil
+
+  defp user_code_checkout(repo_name) when is_binary(repo_name) and repo_name != "" do
+    case System.user_home() do
+      home when is_binary(home) -> Path.join([home, "Code", repo_name])
+      _home -> nil
+    end
+  end
+
+  defp user_code_checkout(_repo_name), do: nil
+
+  defp sibling_checkout(repo_root, repo_name) when is_binary(repo_root) and is_binary(repo_name) and repo_name != "" do
+    repo_root
+    |> Path.dirname()
+    |> Path.join(repo_name)
+  end
+
+  defp sibling_checkout(_repo_root, _repo_name), do: nil
+
+  defp worktree_prepare_branch(%WorkPackage{} = work_package, branch) when is_binary(branch) do
+    case require_local_branch_pattern_scope(work_package, branch, prepared_worktree?: true) do
+      :ok -> {:ok, branch}
+      {:error, :branch_scope_mismatch} -> {:tool_error, "branch_scope_mismatch"}
+      {:tool_error, reason} -> {:tool_error, reason}
+    end
+  end
+
+  defp worktree_prepare_branch(%WorkPackage{branch_pattern: branch_pattern}, nil) do
+    case normalize_optional_value(branch_pattern) do
+      nil ->
+        {:tool_error, "branch_required"}
+
+      pattern ->
+        if local_branch_template_pattern?(pattern) do
+          {:tool_error, "branch_required"}
+        else
+          {:ok, pattern}
+        end
+    end
+  end
 
   defp dispatch_handoff_database(nil, repo) do
     with {:ok, live_database} <- live_file_backed_dispatch_database(repo),
@@ -7516,6 +7622,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp require_cleanup_target_repo_root_scope(nil, %WorkPackage{}, %Config{}), do: :ok
   defp require_cleanup_target_repo_root_scope(_target_repo_root, %WorkPackage{worktree_path: nil}, %Config{}), do: :ok
   defp require_cleanup_target_repo_root_scope(target_repo_root, %WorkPackage{} = work_package, %Config{} = config), do: require_target_repo_root_scope(target_repo_root, work_package, config)
 
@@ -7532,6 +7639,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     trusted_remotes = repo_scope_trusted_remotes(config, target_repo_root)
 
     same_existing_path?(origin, expected_repo) or
+      same_owner_bare_repo_origin_match?(expected_repo, origin, config) or
       RepoIdentity.scope_match?(expected_repo, origin, trusted_remotes: trusted_remotes)
   end
 
@@ -7545,6 +7653,69 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> Enum.filter(&is_binary/1)
     |> Enum.uniq()
   end
+
+  defp same_owner_bare_repo_origin_match?(expected_repo, target_origin, %Config{repo_root: repo_root})
+       when is_binary(expected_repo) and is_binary(repo_root) do
+    with true <- bare_repo_name?(expected_repo),
+         %{owner: target_owner, repo: ^expected_repo, host: target_host} <- remote_owner_repo_parts(target_origin),
+         host_origin when is_binary(host_origin) <- RepoIdentity.local_git_origin_remote(repo_root),
+         %{owner: ^target_owner, host: host_host} <- remote_owner_repo_parts(host_origin),
+         true <- same_remote_host?(target_host, host_host) do
+      true
+    else
+      _result -> false
+    end
+  end
+
+  defp same_owner_bare_repo_origin_match?(_expected_repo, _target_origin, _config), do: false
+
+  defp bare_repo_name?(repo) when is_binary(repo) do
+    repo = String.trim(repo)
+    repo != "" and not String.contains?(repo, ["/", "\\", ":"])
+  end
+
+  defp remote_owner_repo_parts(remote) when is_binary(remote) do
+    remote = remote |> String.trim() |> String.replace_suffix(".git", "")
+
+    cond do
+      scp_remote = Regex.run(~r/^[^@]+@([^:]+):([^\/\\]+)[\/\\]([^\/\\]+)$/, remote) ->
+        [_match, host, owner, repo] = scp_remote
+        %{host: normalize_remote_host(host), owner: String.downcase(owner), repo: repo}
+
+      parts = uri_owner_repo_parts(remote) ->
+        parts
+
+      owner_repo = Regex.run(~r/^([^\/\\]+)[\/\\]([^\/\\]+)$/, remote) ->
+        [_match, owner, repo] = owner_repo
+        %{host: nil, owner: String.downcase(owner), repo: repo}
+
+      true ->
+        nil
+    end
+  end
+
+  defp remote_owner_repo_parts(_remote), do: nil
+
+  defp uri_owner_repo_parts(remote) do
+    uri = URI.parse(remote)
+
+    with host when is_binary(host) <- uri.host,
+         path when is_binary(path) <- uri.path,
+         [owner, repo | _rest] <- path |> String.trim_leading("/") |> String.split(~r/[\/\\]/, trim: true) do
+      %{host: normalize_remote_host(host), owner: String.downcase(owner), repo: repo}
+    else
+      _result -> nil
+    end
+  end
+
+  defp normalize_remote_host(host) when is_binary(host), do: String.downcase(host)
+  defp normalize_remote_host(_host), do: nil
+
+  defp same_remote_host?(nil, nil), do: true
+  defp same_remote_host?(nil, host) when is_binary(host), do: true
+  defp same_remote_host?(host, nil) when is_binary(host), do: true
+  defp same_remote_host?(host, host) when is_binary(host), do: true
+  defp same_remote_host?(_target_host, _host_host), do: false
 
   defp same_checkout_origin_remote(repo_root, target_repo_root) when is_binary(repo_root) and is_binary(target_repo_root) do
     if same_existing_path?(repo_root, target_repo_root), do: RepoIdentity.local_git_origin_remote(repo_root)
@@ -7562,9 +7733,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp same_existing_path?(_left, _right), do: false
-
-  defp require_worktree_base_branch_scope(base_branch, %WorkPackage{base_branch: base_branch}), do: :ok
-  defp require_worktree_base_branch_scope(_base_branch, %WorkPackage{}), do: {:tool_error, "base_branch_scope_mismatch"}
 
   defp same_filesystem_path?(left, right), do: comparable_filesystem_path(left) == comparable_filesystem_path(right)
 

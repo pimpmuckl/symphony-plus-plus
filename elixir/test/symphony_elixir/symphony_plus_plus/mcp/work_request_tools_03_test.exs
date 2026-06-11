@@ -198,10 +198,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools03Test do
 
     read_only_prepare_response =
       mcp_tool(repo, read_session, "prepare_work_package_worktree", %{
-        "work_package_id" => "wp-missing",
-        "repo_root" => test_repo_root(),
-        "base_branch" => "main",
-        "branch" => "feat/denied"
+        "work_package_id" => "wp-missing"
       })
 
     assert get_in(read_only_prepare_response, ["error", "code"]) == -32_001

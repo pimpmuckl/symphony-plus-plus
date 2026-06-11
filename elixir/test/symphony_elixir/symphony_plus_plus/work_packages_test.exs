@@ -181,18 +181,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     assert fetched.allowed_file_globs == globs
   end
 
-  test "stores nullable worktree path through SQLite", %{repo: repo} do
-    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-P1-001"))
-    assert package.worktree_path == nil
-
-    worktree_path = Path.join(System.tmp_dir!(), "sympp-worktree-path")
-    assert {:ok, updated} = Repository.update(repo, package.id, %{worktree_path: worktree_path})
-    assert updated.worktree_path == worktree_path
-
-    assert {:ok, cleared} = Repository.update(repo, package.id, %{worktree_path: nil})
-    assert cleared.worktree_path == nil
-  end
-
   test "prepares a package worktree under CODEX_HOME and replays the recorded path", %{repo: repo} do
     fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
     codex_home = Path.join(fixture.root, "codex-home")
@@ -230,6 +218,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
 
     assert {:ok, fetched} = Repository.get(repo, package.id)
     assert fetched.worktree_path == prepared.worktree_path
+    assert fetched.worktree_target_repo_root == prepared.target_repo_root
 
     assert {:ok, replayed} =
              WorktreeLifecycle.prepare(
@@ -351,13 +340,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
 
     File.rm!(dirty_path)
 
-    assert {:ok, cleaned} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home, repo_root: fixture.repo_root)
+    assert {:ok, cleaned} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
     assert cleaned.status == "cleaned"
     assert cleaned.worktree_path == prepared.worktree_path
     refute File.exists?(prepared.worktree_path)
 
     assert {:ok, fetched} = Repository.get(repo, package.id)
     assert fetched.worktree_path == nil
+    assert fetched.worktree_target_repo_root == nil
 
     assert {:ok, replayed} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
     assert replayed.status == "already_clean"
@@ -897,6 +887,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     %{rows: rows} = SQL.query!(repo, "PRAGMA table_info(sympp_work_packages)")
 
     assert [_cid, "id", _type, _not_null, _default, 1] = Enum.find(rows, &(Enum.at(&1, 1) == "id"))
+  end
+
+  test "migration includes worktree target repo root", %{repo: repo} do
+    %{rows: rows} = SQL.query!(repo, "PRAGMA table_info(sympp_work_packages)")
+
+    assert Enum.any?(rows, &(Enum.at(&1, 1) == "worktree_target_repo_root"))
   end
 
   defp errors_on(changeset) do
