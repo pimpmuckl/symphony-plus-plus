@@ -70,13 +70,35 @@ function Get-SymppMarketplaceInstallRevision([string]$RepoRoot) {
   }
 }
 
-function Resolve-SymppSourceRevision([string]$RepoRoot) {
+function Get-SymppPinnedSourceRevision([string]$Root) {
+  if ([string]::IsNullOrWhiteSpace($Root)) {
+    return $null
+  }
+
+  $revisionPath = Join-Path $Root ".sympp-source-revision"
+  if (-not (Test-Path -LiteralPath $revisionPath)) {
+    return $null
+  }
+
+  try {
+    return Normalize-SymppSourceRevision (Get-Content -LiteralPath $revisionPath -Raw)
+  } catch {
+    return $null
+  }
+}
+
+function Resolve-SymppSourceRevision([string]$RepoRoot, [string]$PluginRoot = $null) {
   $gitRevision = Get-SymppGitHeadRevision $RepoRoot
   if ($gitRevision) {
     return $gitRevision
   }
 
-  return Get-SymppMarketplaceInstallRevision $RepoRoot
+  $installRevision = Get-SymppMarketplaceInstallRevision $RepoRoot
+  if ($installRevision) {
+    return $installRevision
+  }
+
+  return Get-SymppPinnedSourceRevision $PluginRoot
 }
 
 function Get-SymppStablePathKey([string]$Value) {

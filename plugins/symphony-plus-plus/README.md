@@ -69,8 +69,11 @@ directory, for example
 `~/.codex/plugins/cache/<marketplace>/symphony-plus-plus/<version>`, and prunes the
 older generated `local` cache root when it carries the script's
 `.sympp-source-root` marker after the versioned cache has been written and, when
-requested, validated. Unmarked `local` directories stop refresh with a manual
-cleanup message instead of being deleted or silently ignored. Because the default package must be
+requested, validated. Local refresh also writes a non-secret
+`.sympp-source-revision` marker so launchers can keep strict source matching
+when a future Codex host shell lacks `git` on `PATH`. Unmarked `local`
+directories stop refresh with a manual cleanup message instead of being deleted
+or silently ignored. Because the default package must be
 MCP-inert even if a host scans cache-root `.mcp.json` files directly, refresh
 also repairs generated default-cache entries in place by removing stale root
 `.mcp.json` files and stripping stale manifest `mcpServers` declarations. It

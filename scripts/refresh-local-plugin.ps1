@@ -27,6 +27,36 @@ function Resolve-StrictPath([string]$Path) {
   return [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Path).Path)
 }
 
+function Normalize-SourceRevision([string]$Revision) {
+  if ([string]::IsNullOrWhiteSpace($Revision)) {
+    return $null
+  }
+
+  $normalized = $Revision.Trim().ToLowerInvariant()
+  if ($normalized -match "^[0-9a-f]{40}$") {
+    return $normalized
+  }
+
+  return $null
+}
+
+function Get-RepoHeadRevision([string]$RepoRoot) {
+  $git = Get-Command git -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $git) {
+    return $null
+  }
+
+  try {
+    $output = @(& $git.Source @("-C", $RepoRoot, "rev-parse", "--verify", "HEAD") 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $output.Count -gt 0) {
+      return Normalize-SourceRevision ([string]$output[0])
+    }
+  } catch {
+  }
+
+  return $null
+}
+
 function Resolve-ConfiguredSourcePath([string]$SourcePath, [string]$MarketplaceFile, [string]$RepoRoot) {
   if ([System.IO.Path]::IsPathRooted($SourcePath)) {
     $rootedPath = [System.IO.Path]::GetFullPath($SourcePath)
@@ -153,6 +183,15 @@ function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [strin
   Assert-NotReparsePoint $sourceRootHintPath
   $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
   [System.IO.File]::WriteAllText($sourceRootHintPath, "$RepoRoot`n", $utf8NoBom)
+
+  $sourceRevisionPath = Join-Path $TargetRoot ".sympp-source-revision"
+  Assert-NotReparsePoint $sourceRevisionPath
+  $sourceRevision = Get-RepoHeadRevision $RepoRoot
+  if ($sourceRevision) {
+    [System.IO.File]::WriteAllText($sourceRevisionPath, "$sourceRevision`n", $utf8NoBom)
+  } elseif (Test-Path -LiteralPath $sourceRevisionPath) {
+    Remove-ManagedCachePath $sourceRevisionPath $TargetRoot "Removed stale Symphony++ source revision cache marker"
+  }
 }
 
 function Remove-GeneratedLocalCacheEntry([string]$PluginCacheRoot) {

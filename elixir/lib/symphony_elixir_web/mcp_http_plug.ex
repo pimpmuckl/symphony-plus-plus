@@ -174,12 +174,10 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
   end
 
   defp handle_stored_server_payload(config, payload, state_key, %Server{} = server, local_daemon_trusted?) do
-    cond do
-      repo_backed_followup?(payload, server) ->
-        handle_with_live_repo(payload, state_key, local_daemon_trusted?)
-
-      true ->
-        HTTPTransport.handle(config, payload, client_key: @client_key, state_key: state_key)
+    if repo_backed_followup?(payload, server) do
+      handle_with_live_repo(payload, state_key, local_daemon_trusted?)
+    else
+      HTTPTransport.handle(config, payload, client_key: @client_key, state_key: state_key)
     end
   end
 
