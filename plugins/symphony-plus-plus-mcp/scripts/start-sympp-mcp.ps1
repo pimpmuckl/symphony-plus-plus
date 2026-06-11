@@ -45,7 +45,7 @@ function Write-Usage {
   Write-Host "  SYMPP_MCP_HTTP_TIMEOUT_SEC           Per-request bridge timeout. Defaults to 300."
   Write-Host "  SYMPP_STARTUP_LOCK_TIMEOUT_SEC       Local startup lock wait. Defaults to the configured startup waits plus 30 seconds, with a 120-second floor."
   Write-Host ""
-  Write-Host "Installed plugins first use marketplace source discovery; local refresh may also write a non-secret .sympp-source-root hint."
+  Write-Host "Installed plugins use a local refresh .sympp-source-root hint when present, otherwise marketplace source discovery."
 }
 
 function Write-Diagnostic([string]$Message) {
@@ -88,6 +88,21 @@ function Resolve-RepoRootFromMarketplaceCache([string]$PluginRoot) {
   return $null
 }
 
+function Resolve-RepoRootFromSourceHint([string]$PluginRoot) {
+  $sourceRootHintPath = Join-Path $PluginRoot ".sympp-source-root"
+  if (-not (Test-Path -LiteralPath $sourceRootHintPath)) {
+    return [pscustomobject]@{ found = $false; valid = $false; root = $null }
+  }
+
+  $hintText = (Get-Content -LiteralPath $sourceRootHintPath -Raw).Trim().TrimStart([char]0xFEFF)
+  $hintedRoot = Resolve-OptionalPath $hintText
+  if ($hintedRoot -and (Test-SymphonySourceRoot $hintedRoot)) {
+    return [pscustomobject]@{ found = $true; valid = $true; root = $hintedRoot }
+  }
+
+  return [pscustomobject]@{ found = $true; valid = $false; root = $null }
+}
+
 function Resolve-RepoRoot {
   $configuredRoot = Resolve-OptionalPath $env:SYMPP_REPO_ROOT
   if ($configuredRoot) {
@@ -104,25 +119,17 @@ function Resolve-RepoRoot {
     return $sourceCandidate
   }
 
+  $sourceRootHint = Resolve-RepoRootFromSourceHint $pluginRoot
+  if ($sourceRootHint.valid) {
+    return $sourceRootHint.root
+  }
+  if ($sourceRootHint.found) {
+    throw "Installed plugin source-root hint is invalid. Refresh the plugin cache or set SYMPP_REPO_ROOT."
+  }
+
   $marketplaceRoot = Resolve-RepoRootFromMarketplaceCache $pluginRoot
   if ($marketplaceRoot) {
     return $marketplaceRoot
-  }
-
-  $invalidSourceRootHint = $false
-  $sourceRootHintPath = Join-Path $pluginRoot ".sympp-source-root"
-  if (Test-Path -LiteralPath $sourceRootHintPath) {
-    $hintText = (Get-Content -LiteralPath $sourceRootHintPath -Raw).Trim().TrimStart([char]0xFEFF)
-    $hintedRoot = Resolve-OptionalPath $hintText
-    if ($hintedRoot -and (Test-SymphonySourceRoot $hintedRoot)) {
-      return $hintedRoot
-    }
-
-    $invalidSourceRootHint = $true
-  }
-
-  if ($invalidSourceRootHint) {
-    throw "Installed plugin source-root hint is invalid. Refresh the plugin cache or set SYMPP_REPO_ROOT."
   }
 
   throw "Cannot infer the Symphony++ runtime source. Reinstall or refresh the Symphony++ marketplace, or set SYMPP_REPO_ROOT to the source checkout root before starting the plugin MCP server."
@@ -1626,6 +1633,78 @@ function New-ReusedDashboardPlan([string]$Status, [string]$Origin, [bool]$Manage
   }
 }
 
+function Resolve-FastAttachRuntimePlan {
+  param(
+    $RuntimeState,
+    [string]$ExpectedSourceRevision,
+    [int]$PreferredBackendPort,
+    [int]$PreferredDashboardPort,
+    [bool]$BackendPortExplicit,
+    [bool]$DashboardPortExplicit,
+    [string]$ConfiguredBackendUrl,
+    [string]$ConfiguredDashboardOrigin,
+    [object]$BackendHealthOverride = $null,
+    [object]$DashboardHealthyOverride = $null
+  )
+
+  if ($BackendPortExplicit -or $DashboardPortExplicit -or
+      -not [string]::IsNullOrWhiteSpace($ConfiguredBackendUrl) -or
+      -not [string]::IsNullOrWhiteSpace($ConfiguredDashboardOrigin)) {
+    return $null
+  }
+
+  if ($null -eq $RuntimeState -or $null -eq $RuntimeState.backend -or $null -eq $RuntimeState.frontend) {
+    return $null
+  }
+
+  if ($RuntimeState.backend.managed -ne $true -or $RuntimeState.frontend.managed -ne $true) {
+    return $null
+  }
+
+  $backendUrl = [string]$RuntimeState.backend.url
+  $dashboardOrigin = [string]$RuntimeState.frontend.origin
+  if ([string]::IsNullOrWhiteSpace($backendUrl) -or [string]::IsNullOrWhiteSpace($dashboardOrigin)) {
+    return $null
+  }
+
+  $backendUrl = $backendUrl.TrimEnd("/")
+  $dashboardOrigin = $dashboardOrigin.TrimEnd("/")
+  try {
+    Assert-LoopbackHttpOrigin $backendUrl "recorded Symphony++ backend"
+    Assert-LoopbackHttpOrigin $dashboardOrigin "recorded Symphony++ dashboard"
+  } catch {
+    return $null
+  }
+
+  if (-not (Test-PortSelectionAllowsReuse $PreferredBackendPort $backendUrl $true) -or
+      -not (Test-PortSelectionAllowsReuse $PreferredDashboardPort $dashboardOrigin $true)) {
+    return $null
+  }
+
+  $backendHealth = if ($null -ne $BackendHealthOverride) { $BackendHealthOverride } else { Get-SymppBackendHealth $backendUrl }
+  if (-not (Test-BackendSourceMatches $backendHealth $ExpectedSourceRevision)) {
+    return $null
+  }
+
+  $dashboardHealthy = if ($null -ne $DashboardHealthyOverride) { [bool]$DashboardHealthyOverride } else { Test-HealthySymppDashboard $dashboardOrigin }
+  if (-not $dashboardHealthy) {
+    return $null
+  }
+
+  $backendPlan = New-ReusedBackendPlan "fast_attach" $backendUrl $backendHealth $true $RuntimeState.backend.pid
+  $dashboardPlan = New-ReusedDashboardPlan "fast_attach" $dashboardOrigin $true $RuntimeState.frontend.pid
+  $runtimeKey = New-RuntimeKey $backendPlan.url $dashboardPlan.origin $backendHealth.source_revision
+  if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals((Get-RuntimeStateKey $RuntimeState), $runtimeKey)) {
+    return $null
+  }
+
+  return [pscustomobject]@{
+    backend_plan = $backendPlan
+    dashboard_plan = $dashboardPlan
+    runtime_key = $runtimeKey
+  }
+}
+
 function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [string]$BackendUrl, $RuntimeState, [bool]$EnforcePreferredPort, [bool]$AllowRecordedRuntimeReuse) {
   if (-not [string]::IsNullOrWhiteSpace($ConfiguredOrigin)) {
     $origin = $ConfiguredOrigin.TrimEnd("/")
@@ -1925,6 +2004,29 @@ function Invoke-SelfTest {
     throw "Test-EnvDisabled should treat missing variables as enabled/default."
   }
 
+  $hintSelfTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) "sympp-plugin-source-hint-$([guid]::NewGuid().ToString('N'))"
+  try {
+    $hintRepoRoot = Join-Path $hintSelfTestRoot "repo"
+    $hintPluginRoot = Join-Path $hintSelfTestRoot "plugin"
+    New-Item -ItemType Directory -Path (Join-Path $hintRepoRoot "elixir") -Force | Out-Null
+    New-Item -ItemType Directory -Path $hintPluginRoot -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $hintRepoRoot "elixir/mix.exs") -Value "# self-test" -NoNewline
+    Set-Content -LiteralPath (Join-Path $hintPluginRoot ".sympp-source-root") -Value "$hintRepoRoot`n" -NoNewline
+
+    $sourceHint = Resolve-RepoRootFromSourceHint $hintPluginRoot
+    if (-not $sourceHint.valid -or $sourceHint.root -ne ([System.IO.Path]::GetFullPath($hintRepoRoot))) {
+      throw "Installed plugin source-root hint should resolve to a valid Symphony++ checkout."
+    }
+
+    Set-Content -LiteralPath (Join-Path $hintPluginRoot ".sympp-source-root") -Value (Join-Path $hintSelfTestRoot "missing") -NoNewline
+    $invalidSourceHint = Resolve-RepoRootFromSourceHint $hintPluginRoot
+    if (-not $invalidSourceHint.found -or $invalidSourceHint.valid) {
+      throw "Installed plugin source-root hint should fail closed when the hinted checkout is invalid."
+    }
+  } finally {
+    Remove-Item -LiteralPath $hintSelfTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
   $old = [Environment]::GetEnvironmentVariable("SYMPP_SELFTEST_FLAG", "Process")
   try {
     [Environment]::SetEnvironmentVariable("SYMPP_SELFTEST_FLAG", "off", "Process")
@@ -2153,6 +2255,28 @@ function Invoke-SelfTest {
       pid = 1235
     }
   }
+  $fastAttachPlan = Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionA 19998 19999 $false $false $null $null $healthyA $true
+  if ($null -eq $fastAttachPlan -or
+      $fastAttachPlan.backend_plan.status -ne "fast_attach" -or
+      $fastAttachPlan.dashboard_plan.status -ne "fast_attach" -or
+      $fastAttachPlan.runtime_key -ne $oldRuntimeKey) {
+    throw "Fast attach should reuse a healthy managed runtime for the same source revision and default endpoints."
+  }
+  if ($null -ne (Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionB 19998 19999 $false $false $null $null $healthyA $true)) {
+    throw "Fast attach should reject stale managed runtime revisions."
+  }
+  if ($null -ne (Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionA 19998 19999 $true $false $null $null $healthyA $true)) {
+    throw "Fast attach should not bypass explicit backend port selection."
+  }
+  $externalRuntimeState = [pscustomobject]@{
+    runtime_key = $oldRuntimeKey
+    backend = [pscustomobject]@{ managed = $false; url = "http://127.0.0.1:19998"; port = 19998; pid = 1234; source_revision = $revisionA }
+    frontend = [pscustomobject]@{ managed = $true; origin = "http://127.0.0.1:19999"; port = 19999; pid = 1235 }
+  }
+  if ($null -ne (Resolve-FastAttachRuntimePlan $externalRuntimeState $revisionA 19998 19999 $false $false $null $null $healthyA $true)) {
+    throw "Fast attach should only reuse launcher-managed runtime entries."
+  }
+
   $newBackendPlan = [pscustomobject]@{ url = "http://127.0.0.1:20000" }
   $newDashboardPlan = [pscustomobject]@{ origin = "http://127.0.0.1:20001" }
   $superseded = New-SupersededRuntimeState $oldRuntimeState $newBackendPlan $newDashboardPlan
@@ -2339,6 +2463,55 @@ $bridgeLeasePath = $null
 $runtimeKey = $null
 $supersededStates = @()
 $expectedSourceRevision = Resolve-SymppSourceRevision $repoRoot
+
+$fastAttachCandidate = Resolve-FastAttachRuntimePlan `
+  (Read-RuntimeState $runtimeFile) `
+  $expectedSourceRevision `
+  $backendPort `
+  $dashboardPort `
+  $backendPortExplicit `
+  $dashboardPortExplicit `
+  $env:SYMPP_BACKEND_URL `
+  $env:SYMPP_DASHBOARD_ORIGIN
+if ($null -ne $fastAttachCandidate) {
+  $fastAttachLock = Enter-FileLock (Resolve-StartupLockFile $runtimeFile) $startupLockTimeout
+  try {
+    $fastAttachState = Read-RuntimeState $runtimeFile
+    $fastAttachPlan = Resolve-FastAttachRuntimePlan `
+      $fastAttachState `
+      $expectedSourceRevision `
+      $backendPort `
+      $dashboardPort `
+      $backendPortExplicit `
+      $dashboardPortExplicit `
+      $env:SYMPP_BACKEND_URL `
+      $env:SYMPP_DASHBOARD_ORIGIN
+    if ($null -ne $fastAttachPlan) {
+      $supersededStates = Stop-SupersededRuntimeStatesIfUnused $runtimeFile (Get-SupersededRuntimeStates $fastAttachState)
+      Set-SupersededRuntimeStates $fastAttachState $supersededStates
+      Write-RuntimeState $runtimeFile $fastAttachState
+
+      $backendPlan = $fastAttachPlan.backend_plan
+      $dashboardPlan = $fastAttachPlan.dashboard_plan
+      $runtimeKey = $fastAttachPlan.runtime_key
+      $bridgeLeasePath = New-BridgeLease $runtimeFile $backendPlan $dashboardPlan $runtimeKey
+    }
+  } finally {
+    Exit-FileLock $fastAttachLock
+  }
+
+  if ($null -ne $bridgeLeasePath) {
+    try {
+      Write-Diagnostic "Symphony++ MCP bridge attached: backend=$($backendPlan.url) dashboard=$($dashboardPlan.url) runtime=$runtimeFile"
+      Invoke-HttpMcpBridge $backendPlan.mcp_url $bridgeTimeout
+    } finally {
+      Remove-BridgeLease $bridgeLeasePath
+      Stop-ManagedServersIfUnused $runtimeFile $runtimeKey
+    }
+    exit 0
+  }
+}
+
 $startupLock = Enter-FileLock (Resolve-StartupLockFile $runtimeFile) $startupLockTimeout
 try {
   $runtimeState = Read-RuntimeState $runtimeFile
