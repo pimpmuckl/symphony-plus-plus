@@ -1670,16 +1670,16 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
         Write-Diagnostic "Ignoring recorded external backend $preferredUrl for implicit reuse. Set SYMPP_BACKEND_URL=$preferredUrl to reuse it explicitly."
       } elseif (Test-BackendSourceMatches $preferredHealth $ExpectedSourceRevision) {
         $managed = $false
-        $pid = $null
+        $entryPid = $null
         $status = "external_loopback"
         if (Test-RuntimeEntryEndpointMatches "backend" $preferredEntry $preferredUrl) {
           $managed = $preferredEntry.managed -eq $true
-          $pid = $preferredEntry.pid
+          $entryPid = $preferredEntry.pid
           if ($managed) {
             $status = "reused"
           }
         }
-        return New-ReusedBackendPlan $status $preferredUrl $preferredHealth $managed $pid
+        return New-ReusedBackendPlan $status $preferredUrl $preferredHealth $managed $entryPid
       } else {
         Write-Diagnostic "Ignoring healthy Symphony++ backend $preferredUrl because source revision $(Format-SourceRevisionForDiagnostic $preferredHealth.source_revision) does not match expected $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision)."
       }
@@ -1859,17 +1859,17 @@ function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [
     if ((Test-HealthySymppDashboard $preferredOrigin) -and (Test-SymppDashboardMcpProxyMatches $preferredOrigin $ExpectedSourceRevision)) {
       $preferredEntry = if ($null -ne $RuntimeState) { $RuntimeState.frontend } else { $null }
       $managed = $false
-      $pid = $null
+      $entryPid = $null
       $status = "external_loopback"
       if (Test-RuntimeEntryEndpointMatches "frontend" $preferredEntry $preferredOrigin) {
         $managed = $preferredEntry.managed -eq $true
-        $pid = $preferredEntry.pid
+        $entryPid = $preferredEntry.pid
         if ($managed) {
           $status = "reused"
         }
       }
 
-      return New-ReusedDashboardPlan $status $preferredOrigin $managed $pid
+      return New-ReusedDashboardPlan $status $preferredOrigin $managed $entryPid
     }
   }
 
