@@ -8,6 +8,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
   @enforce_keys [:assignment]
   defstruct [:assignment, :proof_hash, :claim_lease_id, :claim_actor_kind, :claim_actor_id, :claim_actor_display_name]
 
+  @public_assignment_fields [
+    "grant_id",
+    "work_package_id",
+    "phase_id",
+    "display_key",
+    "grant_role",
+    "capabilities",
+    "claimed_at",
+    "claimed_by"
+  ]
+
   @type t :: %__MODULE__{
           assignment: Assignment.t(),
           proof_hash: String.t() | nil,
@@ -97,6 +108,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
         claim_actor_display_name: lease.actor_display_name
     }
   end
+
+  @spec public_assignment_fields() :: [String.t()]
+  def public_assignment_fields, do: @public_assignment_fields
 
   @spec public_assignment(t()) :: map()
   def public_assignment(%__MODULE__{assignment: %Assignment{} = assignment}) do

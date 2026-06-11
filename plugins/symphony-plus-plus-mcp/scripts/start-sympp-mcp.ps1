@@ -9,6 +9,7 @@ $ErrorActionPreference = "Stop"
 $DefaultBackendPort = 19998
 $DefaultDashboardPort = 19999
 $BoardPath = "/sympp/board"
+$ExpectedMcpContractFingerprint = "c062e275442c9f36c3a398714176c2abd1e3c88389f725b43bd0fae4ba3d5b2d"
 
 . (Join-Path $PSScriptRoot "sympp-launcher-runtime.ps1")
 
@@ -16,8 +17,9 @@ function Write-Usage {
   Write-Host "Starts the Symphony++ Codex plugin MCP bridge and local operator servers."
   Write-Host ""
   Write-Host "Default behavior:"
-  Write-Host "  - Reuse a healthy Symphony++ runtime when its source revision matches this launcher."
-  Write-Host "  - Start a fresh managed backend and dashboard for a new source revision, leaving old leased runtimes to drain."
+  Write-Host "  - Reuse a healthy Symphony++ runtime when its MCP contract fingerprint matches this launcher."
+  Write-Host "  - Keep source revision mismatches visible in diagnostics while allowing compatible runtimes to attach."
+  Write-Host "  - Start a fresh managed backend and dashboard for a new MCP contract, leaving old leased runtimes to drain."
   Write-Host "  - Bridge Codex stdio MCP traffic into the HTTP backend /mcp endpoint."
   Write-Host ""
   Write-Host "Environment:"
@@ -751,10 +753,11 @@ function New-HealthRequest {
   }
 }
 
-function New-SymppBackendHealth([bool]$Healthy, [string]$SourceRevision, [string]$Detail, [bool]$TcpOpen, [bool]$McpReady = $false, [bool]$LedgerReachable = $false, [string]$Status = $null) {
+function New-SymppBackendHealth([bool]$Healthy, [string]$SourceRevision, [string]$Detail, [bool]$TcpOpen, [bool]$McpReady = $false, [bool]$LedgerReachable = $false, [string]$Status = $null, [string]$ContractFingerprint = $null) {
   return [pscustomobject]@{
     healthy = $Healthy
     source_revision = $SourceRevision
+    contract_fingerprint = $ContractFingerprint
     detail = $Detail
     tcp_open = $TcpOpen
     mcp_ready = $McpReady
@@ -896,6 +899,46 @@ function Get-HealthSourceRevision($Payload) {
   return Normalize-SymppSourceRevision ([string]$source.revision)
 }
 
+function Normalize-McpContractFingerprint([string]$Fingerprint) {
+  if ([string]::IsNullOrWhiteSpace($Fingerprint)) {
+    return $null
+  }
+
+  $fingerprint = $Fingerprint.Trim().ToLowerInvariant()
+  if ($fingerprint -match "^[0-9a-f]{64}$") {
+    return $fingerprint
+  }
+
+  return $null
+}
+
+function Get-HealthContractFingerprint($Payload) {
+  if ($null -eq $Payload -or -not $Payload.PSObject.Properties["result"]) {
+    return $null
+  }
+
+  $structuredContent = $Payload.result.structuredContent
+  if ($null -eq $structuredContent) {
+    return $null
+  }
+
+  if ($structuredContent.PSObject.Properties["source"] -and
+      $null -ne $structuredContent.source -and
+      $structuredContent.source.PSObject.Properties["mcp_contract"] -and
+      $null -ne $structuredContent.source.mcp_contract -and
+      $structuredContent.source.mcp_contract.PSObject.Properties["fingerprint"]) {
+    return Normalize-McpContractFingerprint ([string]$structuredContent.source.mcp_contract.fingerprint)
+  }
+
+  if ($structuredContent.PSObject.Properties["mcp_contract"] -and
+      $null -ne $structuredContent.mcp_contract -and
+      $structuredContent.mcp_contract.PSObject.Properties["fingerprint"]) {
+    return Normalize-McpContractFingerprint ([string]$structuredContent.mcp_contract.fingerprint)
+  }
+
+  return $null
+}
+
 function Invoke-McpPost([string]$Url, [string]$Body, [string]$SessionId, [string]$ProtocolVersion, [int]$TimeoutSec) {
   $headers = @{ Accept = "application/json, text/event-stream" }
   if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
@@ -989,7 +1032,7 @@ function Get-SymppBackendHealth([string]$BackendUrl) {
       }
       $healthy = [System.StringComparer]::OrdinalIgnoreCase.Equals($status, "ok") -and $ledgerReachable
       $detail = if ($healthy) { $null } else { "health_degraded" }
-      return New-SymppBackendHealth $healthy (Get-HealthSourceRevision $payload) $detail $true $true $ledgerReachable $status
+      return New-SymppBackendHealth $healthy (Get-HealthSourceRevision $payload) $detail $true $true $ledgerReachable $status (Get-HealthContractFingerprint $payload)
     }
 
     return New-SymppBackendHealth $false $null "health_error" $tcpOpen $true $false $null
@@ -1017,24 +1060,52 @@ function Test-HealthySymppBackend([string]$BackendUrl) {
   return (Get-SymppBackendHealthWithRetry $BackendUrl).healthy
 }
 
-function Test-BackendSourceMatches($Health, [string]$ExpectedSourceRevision) {
+function Test-BackendContractMatches($Health, [string]$ExpectedContractFingerprint) {
   if ($null -eq $Health -or -not $Health.healthy) {
     return $false
   }
 
-  if ([string]::IsNullOrWhiteSpace($ExpectedSourceRevision)) {
+  $expected = Normalize-McpContractFingerprint $ExpectedContractFingerprint
+  if ([string]::IsNullOrWhiteSpace($expected)) {
     return $false
   }
 
-  return -not [string]::IsNullOrWhiteSpace([string]$Health.source_revision) -and
-    [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$Health.source_revision, $ExpectedSourceRevision)
+  $actual = $null
+  if ($Health.PSObject.Properties["contract_fingerprint"]) {
+    $actual = Normalize-McpContractFingerprint ([string]$Health.contract_fingerprint)
+  }
+
+  return -not [string]::IsNullOrWhiteSpace($actual) -and
+    [System.StringComparer]::OrdinalIgnoreCase.Equals($actual, $expected)
 }
 
-function New-RuntimeKey([string]$BackendUrl, [string]$DashboardOrigin, [string]$SourceRevision) {
+function Test-BackendSourceRevisionEquals($Health, [string]$ExpectedSourceRevision) {
+  if ($null -eq $Health -or [string]::IsNullOrWhiteSpace($ExpectedSourceRevision)) {
+    return $false
+  }
+
+  return Test-SourceRevisionEquals ([string]$Health.source_revision) $ExpectedSourceRevision
+}
+
+function Test-SourceRevisionEquals([string]$ActualSourceRevision, [string]$ExpectedSourceRevision) {
+  return -not [string]::IsNullOrWhiteSpace($ActualSourceRevision) -and
+    -not [string]::IsNullOrWhiteSpace($ExpectedSourceRevision) -and
+    [System.StringComparer]::OrdinalIgnoreCase.Equals($ActualSourceRevision, $ExpectedSourceRevision)
+}
+
+function Test-BackendLaunchCompatible($Health, [string]$ExpectedContractFingerprint) {
+  return Test-BackendContractMatches $Health $ExpectedContractFingerprint
+}
+
+function Format-BackendLaunchCompatibilityMismatch($Health, [string]$ExpectedSourceRevision, [string]$ExpectedContractFingerprint) {
+  return "MCP contract fingerprint $(Format-McpContractFingerprintForDiagnostic $Health.contract_fingerprint) does not match expected $(Format-McpContractFingerprintForDiagnostic $ExpectedContractFingerprint). Source revision was $(Format-SourceRevisionForDiagnostic $Health.source_revision), expected $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision)."
+}
+
+function New-RuntimeKey([string]$BackendUrl, [string]$DashboardOrigin, [string]$ContractFingerprint) {
   $backend = if ([string]::IsNullOrWhiteSpace($BackendUrl)) { "none" } else { $BackendUrl.TrimEnd("/").ToLowerInvariant() }
   $dashboard = if ([string]::IsNullOrWhiteSpace($DashboardOrigin)) { "none" } else { $DashboardOrigin.TrimEnd("/").ToLowerInvariant() }
-  $source = if ([string]::IsNullOrWhiteSpace($SourceRevision)) { "unknown" } else { $SourceRevision.Trim().ToLowerInvariant() }
-  return "source=$source;backend=$backend;dashboard=$dashboard"
+  $contract = if ([string]::IsNullOrWhiteSpace($ContractFingerprint)) { "unknown" } else { $ContractFingerprint.Trim().ToLowerInvariant() }
+  return "contract=$contract;backend=$backend;dashboard=$dashboard"
 }
 
 function Get-RuntimeStateKey($State) {
@@ -1046,16 +1117,16 @@ function Get-RuntimeStateKey($State) {
     return [string]$State.runtime_key
   }
 
-  $sourceRevision = $null
-  if ($null -ne $State.backend -and $State.backend.PSObject.Properties["source_revision"]) {
-    $sourceRevision = [string]$State.backend.source_revision
+  $contractFingerprint = $null
+  if ($null -ne $State.backend -and $State.backend.PSObject.Properties["contract_fingerprint"]) {
+    $contractFingerprint = [string]$State.backend.contract_fingerprint
   }
 
   if ($null -eq $State.backend) {
     return $null
   }
 
-  return New-RuntimeKey ([string]$State.backend.url) ([string]$State.frontend.origin) $sourceRevision
+  return New-RuntimeKey ([string]$State.backend.url) ([string]$State.frontend.origin) $contractFingerprint
 }
 
 function Format-SourceRevisionForDiagnostic([string]$Revision) {
@@ -1064,6 +1135,30 @@ function Format-SourceRevisionForDiagnostic([string]$Revision) {
   }
 
   return $Revision
+}
+
+function Format-McpContractFingerprintForDiagnostic([string]$Fingerprint) {
+  $fingerprint = Normalize-McpContractFingerprint $Fingerprint
+  if ([string]::IsNullOrWhiteSpace($fingerprint)) {
+    return "unknown"
+  }
+
+  return $fingerprint
+}
+
+function Write-CompatibleSourceMismatchDiagnostic([string]$Url, $Health, [string]$ExpectedSourceRevision) {
+  if ($null -eq $Health -or [string]::IsNullOrWhiteSpace($ExpectedSourceRevision)) {
+    return
+  }
+
+  if ([string]::IsNullOrWhiteSpace([string]$Health.source_revision)) {
+    Write-Diagnostic "Reusing compatible Symphony++ backend $Url with unknown source revision because MCP contract fingerprint $(Format-McpContractFingerprintForDiagnostic $Health.contract_fingerprint) matches this launcher."
+    return
+  }
+
+  if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$Health.source_revision, $ExpectedSourceRevision)) {
+    Write-Diagnostic "Reusing compatible Symphony++ backend $Url even though source revision $(Format-SourceRevisionForDiagnostic $Health.source_revision) differs from expected $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision); MCP contract fingerprint $(Format-McpContractFingerprintForDiagnostic $Health.contract_fingerprint) matches this launcher."
+  }
 }
 
 function Set-SymppSourceRevisionEnvironment([string]$Revision) {
@@ -1089,13 +1184,13 @@ function Test-HealthySymppDashboard([string]$DashboardOrigin) {
   }
 }
 
-function Test-SymppDashboardMcpProxyMatches([string]$DashboardOrigin, [string]$ExpectedSourceRevision) {
-  if ([string]::IsNullOrWhiteSpace($ExpectedSourceRevision)) {
+function Test-SymppDashboardMcpProxyMatches([string]$DashboardOrigin, [string]$ExpectedContractFingerprint) {
+  if ([string]::IsNullOrWhiteSpace($ExpectedContractFingerprint)) {
     return $false
   }
 
   $proxyHealth = Get-SymppBackendHealthWithRetry $DashboardOrigin 2 250
-  return Test-BackendSourceMatches $proxyHealth $ExpectedSourceRevision
+  return Test-BackendContractMatches $proxyHealth $ExpectedContractFingerprint
 }
 
 function Get-PortFromOrigin([string]$Origin) {
@@ -1753,10 +1848,11 @@ function New-ReusedBackendPlan([string]$Status, [string]$Url, $Health, [bool]$Ma
     managed = $Managed -eq $true
     pid = $ProcessId
     source_revision = $Health.source_revision
+    contract_fingerprint = $Health.contract_fingerprint
   }
 }
 
-function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $RuntimeState, [int]$PortReleaseTimeoutSec, [string]$ExpectedSourceRevision, [bool]$EnforcePreferredPort, [int[]]$AvoidPorts = @()) {
+function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $RuntimeState, [int]$PortReleaseTimeoutSec, [string]$ExpectedSourceRevision, [string]$ExpectedContractFingerprint, [bool]$EnforcePreferredPort, [int[]]$AvoidPorts = @()) {
   if (-not [string]::IsNullOrWhiteSpace($ConfiguredUrl)) {
     $url = $ConfiguredUrl.TrimEnd("/")
     Assert-LoopbackHttpOrigin $url "SYMPP_BACKEND_URL"
@@ -1764,7 +1860,11 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
     if (-not $health.healthy) {
       throw "SYMPP_BACKEND_URL is not a healthy Symphony++ backend: $url"
     }
+    if (-not (Test-BackendLaunchCompatible $health $ExpectedContractFingerprint)) {
+      throw "SYMPP_BACKEND_URL is healthy but not compatible with this launcher: $(Format-BackendLaunchCompatibilityMismatch $health $ExpectedSourceRevision $ExpectedContractFingerprint): $url"
+    }
 
+    Write-CompatibleSourceMismatchDiagnostic $url $health $ExpectedSourceRevision
     return New-ReusedBackendPlan "external_override" $url $health $false $null
   }
 
@@ -1776,7 +1876,7 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
     if ($preferredHealth.healthy) {
       if (Test-RuntimeEntryExternalOverride $preferredEntry $preferredUrl "backend") {
         Write-Diagnostic "Ignoring recorded external backend $preferredUrl for implicit reuse. Set SYMPP_BACKEND_URL=$preferredUrl to reuse it explicitly."
-      } elseif (Test-BackendSourceMatches $preferredHealth $ExpectedSourceRevision) {
+      } elseif (Test-BackendLaunchCompatible $preferredHealth $ExpectedContractFingerprint) {
         $managed = $false
         $entryPid = $null
         $status = "external_loopback"
@@ -1787,9 +1887,10 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
             $status = "reused"
           }
         }
+        Write-CompatibleSourceMismatchDiagnostic $preferredUrl $preferredHealth $ExpectedSourceRevision
         return New-ReusedBackendPlan $status $preferredUrl $preferredHealth $managed $entryPid
       } else {
-        Write-Diagnostic "Ignoring healthy Symphony++ backend $preferredUrl because source revision $(Format-SourceRevisionForDiagnostic $preferredHealth.source_revision) does not match expected $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision)."
+        Write-Diagnostic "Ignoring healthy Symphony++ backend $preferredUrl because $(Format-BackendLaunchCompatibilityMismatch $preferredHealth $ExpectedSourceRevision $ExpectedContractFingerprint)"
       }
       $selectedPort = Select-AvailablePort $PreferredPort (@($PreferredPort) + @($AvoidPorts))
     }
@@ -1802,12 +1903,13 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
       $runtimeHealth = Get-SymppBackendHealthWithRetry $runtimeUrl
       $runtimeManaged = $RuntimeState.backend.managed -eq $true
       $portAllowed = Test-PortSelectionAllowsReuse $PreferredPort $runtimeUrl $EnforcePreferredPort
-      if ($runtimeManaged -and $portAllowed -and $runtimeHealth.healthy -and (Test-BackendSourceMatches $runtimeHealth $ExpectedSourceRevision)) {
+      if ($runtimeManaged -and $portAllowed -and $runtimeHealth.healthy -and (Test-BackendLaunchCompatible $runtimeHealth $ExpectedContractFingerprint)) {
+        Write-CompatibleSourceMismatchDiagnostic $runtimeUrl $runtimeHealth $ExpectedSourceRevision
         return New-ReusedBackendPlan "reused" $runtimeUrl $runtimeHealth ($RuntimeState.backend.managed -eq $true) $RuntimeState.backend.pid
       }
 
-      if ($runtimeHealth.healthy -and -not (Test-BackendSourceMatches $runtimeHealth $ExpectedSourceRevision)) {
-        Write-Diagnostic "Ignoring healthy runtime backend $runtimeUrl because source revision $(Format-SourceRevisionForDiagnostic $runtimeHealth.source_revision) does not match expected $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision)."
+      if ($runtimeHealth.healthy -and -not (Test-BackendLaunchCompatible $runtimeHealth $ExpectedContractFingerprint)) {
+        Write-Diagnostic "Ignoring healthy runtime backend $runtimeUrl because $(Format-BackendLaunchCompatibilityMismatch $runtimeHealth $ExpectedSourceRevision $ExpectedContractFingerprint)"
       } elseif ($runtimeHealth.healthy -and -not $runtimeManaged) {
         Write-Diagnostic "Ignoring recorded external backend $runtimeUrl for implicit reuse. Set SYMPP_BACKEND_URL=$runtimeUrl to reuse it explicitly."
       } elseif ($runtimeHealth.healthy -and -not $portAllowed) {
@@ -1821,11 +1923,12 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
     if (-not $portRelease.released) {
       if (Test-SymppBackendOwners @($portRelease.owners)) {
         $busyHealth = Get-SymppBackendHealthWithRetry "http://127.0.0.1:$PreferredPort" 6 750
-        if ($busyHealth.healthy -and (Test-BackendSourceMatches $busyHealth $ExpectedSourceRevision)) {
+        if ($busyHealth.healthy -and (Test-BackendLaunchCompatible $busyHealth $ExpectedContractFingerprint)) {
+          Write-CompatibleSourceMismatchDiagnostic "http://127.0.0.1:$PreferredPort" $busyHealth $ExpectedSourceRevision
           return New-ReusedBackendPlan "external_loopback" "http://127.0.0.1:$PreferredPort" $busyHealth $false $null
         }
         if ($busyHealth.mcp_ready) {
-          Write-Diagnostic "$(New-BackendPortOccupiedMessage $PreferredPort @($portRelease.owners)) The occupied Symphony++ backend responded to MCP but is not a healthy matching runtime (status=$($busyHealth.status), source=$(Format-SourceRevisionForDiagnostic $busyHealth.source_revision)). Selecting a fallback managed backend port for this Codex session."
+          Write-Diagnostic "$(New-BackendPortOccupiedMessage $PreferredPort @($portRelease.owners)) The occupied Symphony++ backend responded to MCP but is not a healthy compatible runtime (status=$($busyHealth.status), source=$(Format-SourceRevisionForDiagnostic $busyHealth.source_revision), contract=$(Format-McpContractFingerprintForDiagnostic $busyHealth.contract_fingerprint)). Selecting a fallback managed backend port for this Codex session."
           $selectedPort = Select-AvailablePort $PreferredPort (@($PreferredPort) + @($AvoidPorts))
         } elseif (-not $EnforcePreferredPort) {
           Write-Diagnostic "$(New-BackendPortOccupiedMessage $PreferredPort @($portRelease.owners)) The occupied Symphony++ backend did not become MCP-ready after the bounded retry window. Selecting a fallback managed backend port for this Codex session."
@@ -1855,6 +1958,7 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
     managed = $true
     pid = $null
     source_revision = $null
+    contract_fingerprint = $null
   }
 }
 
@@ -1872,10 +1976,25 @@ function New-ReusedDashboardPlan([string]$Status, [string]$Origin, [bool]$Manage
   }
 }
 
+function New-DisabledDashboardPlan([string]$Status, [string]$Error = $null) {
+  return [pscustomobject]@{
+    status = $Status
+    origin = $null
+    url = $null
+    port = $null
+    should_start = $false
+    reused = $false
+    managed = $false
+    pid = $null
+    error = $Error
+  }
+}
+
 function Resolve-FastAttachRuntimePlan {
   param(
     $RuntimeState,
     [string]$ExpectedSourceRevision,
+    [string]$ExpectedContractFingerprint,
     [int]$PreferredBackendPort,
     [int]$PreferredDashboardPort,
     [bool]$BackendPortExplicit,
@@ -1924,9 +2043,10 @@ function Resolve-FastAttachRuntimePlan {
   }
 
   $backendHealth = if ($null -ne $BackendHealthOverride) { $BackendHealthOverride } else { Get-SymppBackendHealthWithRetry $backendUrl }
-  if (-not (Test-BackendSourceMatches $backendHealth $ExpectedSourceRevision)) {
+  if (-not (Test-BackendLaunchCompatible $backendHealth $ExpectedContractFingerprint)) {
     return $null
   }
+  Write-CompatibleSourceMismatchDiagnostic $backendUrl $backendHealth $ExpectedSourceRevision
 
   $dashboardHealthy = if ($null -ne $DashboardHealthyOverride) { [bool]$DashboardHealthyOverride } else { Test-HealthySymppDashboard $dashboardOrigin }
   if (-not $dashboardHealthy) {
@@ -1937,7 +2057,7 @@ function Resolve-FastAttachRuntimePlan {
     if ($null -ne $DashboardProxyMatchesOverride) {
       [bool]$DashboardProxyMatchesOverride
     } else {
-      Test-SymppDashboardMcpProxyMatches $dashboardOrigin $ExpectedSourceRevision
+      Test-SymppDashboardMcpProxyMatches $dashboardOrigin $ExpectedContractFingerprint
     }
   if (-not $dashboardProxyMatches) {
     return $null
@@ -1946,7 +2066,7 @@ function Resolve-FastAttachRuntimePlan {
   $planStatus = if ($managedRuntime) { "fast_attach" } else { "external_loopback" }
   $backendPlan = New-ReusedBackendPlan $planStatus $backendUrl $backendHealth $managedRuntime $RuntimeState.backend.pid
   $dashboardPlan = New-ReusedDashboardPlan $planStatus $dashboardOrigin $managedRuntime $RuntimeState.frontend.pid
-  $runtimeKey = New-RuntimeKey $backendPlan.url $dashboardPlan.origin $backendHealth.source_revision
+  $runtimeKey = New-RuntimeKey $backendPlan.url $dashboardPlan.origin $backendHealth.contract_fingerprint
   if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals((Get-RuntimeStateKey $RuntimeState), $runtimeKey)) {
     return $null
   }
@@ -1958,7 +2078,7 @@ function Resolve-FastAttachRuntimePlan {
   }
 }
 
-function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [string]$BackendUrl, $RuntimeState, [bool]$EnforcePreferredPort, [string]$ExpectedSourceRevision, [bool]$AllowRecordedRuntimeReuse) {
+function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [string]$BackendUrl, [string]$BackendSourceRevision, $RuntimeState, [bool]$EnforcePreferredPort, [string]$ExpectedSourceRevision, [string]$ExpectedContractFingerprint, [bool]$AllowRecordedRuntimeReuse) {
   if (-not [string]::IsNullOrWhiteSpace($ConfiguredOrigin)) {
     $origin = $ConfiguredOrigin.TrimEnd("/")
     return New-ReusedDashboardPlan "external_override" $origin $false $null
@@ -1967,7 +2087,7 @@ function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [
   $backendPort = Get-PortFromOrigin $BackendUrl
   if ($PreferredPort -gt 0 -and $PreferredPort -eq $DefaultDashboardPort -and $backendPort -eq $DefaultBackendPort) {
     $preferredOrigin = "http://127.0.0.1:$PreferredPort"
-    if ((Test-HealthySymppDashboard $preferredOrigin) -and (Test-SymppDashboardMcpProxyMatches $preferredOrigin $ExpectedSourceRevision)) {
+    if ((Test-HealthySymppDashboard $preferredOrigin) -and (Test-SymppDashboardMcpProxyMatches $preferredOrigin $ExpectedContractFingerprint)) {
       $preferredEntry = if ($null -ne $RuntimeState) { $RuntimeState.frontend } else { $null }
       $managed = $false
       $entryPid = $null
@@ -1995,7 +2115,7 @@ function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [
         $runtimeBackendUrl.TrimEnd("/") -eq $BackendUrl.TrimEnd("/")) {
       $runtimeManaged = $RuntimeState.frontend.managed -eq $true
       $portAllowed = Test-PortSelectionAllowsReuse $PreferredPort $runtimeOrigin $EnforcePreferredPort
-      if ($runtimeManaged -and $portAllowed -and -not [string]::IsNullOrWhiteSpace($runtimeOrigin) -and (Test-HealthySymppDashboard $runtimeOrigin) -and (Test-SymppDashboardMcpProxyMatches $runtimeOrigin $ExpectedSourceRevision)) {
+      if ($runtimeManaged -and $portAllowed -and -not [string]::IsNullOrWhiteSpace($runtimeOrigin) -and (Test-HealthySymppDashboard $runtimeOrigin) -and (Test-SymppDashboardMcpProxyMatches $runtimeOrigin $ExpectedContractFingerprint)) {
         return New-ReusedDashboardPlan "reused" $runtimeOrigin ($RuntimeState.frontend.managed -eq $true) $RuntimeState.frontend.pid
       }
       if (-not [string]::IsNullOrWhiteSpace($runtimeOrigin) -and (Test-HealthySymppDashboard $runtimeOrigin)) {
@@ -2003,13 +2123,19 @@ function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [
           Write-Diagnostic "Ignoring recorded external dashboard $($runtimeOrigin.TrimEnd('/')) for implicit reuse. Set SYMPP_DASHBOARD_ORIGIN=$($runtimeOrigin.TrimEnd('/')) to reuse it explicitly."
         } elseif (-not $portAllowed) {
           Write-Diagnostic "Ignoring healthy runtime dashboard $($runtimeOrigin.TrimEnd('/')) because SYMPP_DASHBOARD_PORT requests $PreferredPort. Set SYMPP_DASHBOARD_ORIGIN=$($runtimeOrigin.TrimEnd('/')) to reuse it explicitly."
-        } elseif (-not (Test-SymppDashboardMcpProxyMatches $runtimeOrigin $ExpectedSourceRevision)) {
-          Write-Diagnostic "Ignoring healthy runtime dashboard $($runtimeOrigin.TrimEnd('/')) because its MCP proxy does not match expected source $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision)."
+        } elseif (-not (Test-SymppDashboardMcpProxyMatches $runtimeOrigin $ExpectedContractFingerprint)) {
+          Write-Diagnostic "Ignoring healthy runtime dashboard $($runtimeOrigin.TrimEnd('/')) because its MCP proxy does not match expected MCP contract $(Format-McpContractFingerprintForDiagnostic $ExpectedContractFingerprint). Expected source revision remains $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision)."
         }
       }
     } elseif (-not [string]::IsNullOrWhiteSpace($runtimeOrigin) -and (Test-HealthySymppDashboard $runtimeOrigin)) {
       Write-Diagnostic "Ignoring healthy runtime dashboard $($runtimeOrigin.TrimEnd('/')) because it was recorded for backend $($runtimeBackendUrl.TrimEnd('/')), not $($BackendUrl.TrimEnd('/'))."
     }
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedSourceRevision) -and
+      -not (Test-SourceRevisionEquals $BackendSourceRevision $ExpectedSourceRevision)) {
+    Write-Diagnostic "Not starting Symphony++ dashboard assets from source $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision) against compatible backend source $(Format-SourceRevisionForDiagnostic $BackendSourceRevision). MCP bridge will attach backend-only; restart the singleton or set SYMPP_DASHBOARD_ORIGIN to use an operator-owned dashboard."
+    return New-DisabledDashboardPlan "disabled_source_drift" "backend_source_revision_mismatch"
   }
 
   $avoid = if ($backendPort) { @([int]$backendPort) } else { @() }
@@ -2061,7 +2187,7 @@ function Initialize-ElixirRuntime([string]$ElixirDir, [string]$Launcher, [string
   Invoke-ElixirSetupCommand $ElixirDir $Launcher $MixCommand $MiseCommand @("compile") "elixir-compile" $LogDir $TimeoutSec
 }
 
-function Start-Backend($Plan, [string]$DashboardOrigin, [string]$ElixirDir, [string]$Launcher, [string]$MixCommand, [string]$MiseCommand, [string]$LogDir, [int]$TimeoutSec) {
+function Start-Backend($Plan, [string]$DashboardOrigin, [string]$ElixirDir, [string]$Launcher, [string]$MixCommand, [string]$MiseCommand, [string]$LogDir, [int]$TimeoutSec, [string]$ExpectedContractFingerprint) {
   $args = @("sympp.cockpit", "--host", "127.0.0.1", "--port", [string]$Plan.port)
   if (-not [string]::IsNullOrWhiteSpace($DashboardOrigin)) {
     $args += @("--dashboard-origin", $DashboardOrigin)
@@ -2086,12 +2212,18 @@ function Start-Backend($Plan, [string]$DashboardOrigin, [string]$ElixirDir, [str
   }
 
   $health = Get-SymppBackendHealthWithRetry $Plan.url
+  if (-not (Test-BackendContractMatches $health $ExpectedContractFingerprint)) {
+    Stop-LoggedProcess $launch
+    throw "Symphony++ backend at $($Plan.url) reported MCP contract fingerprint $(Format-McpContractFingerprintForDiagnostic $health.contract_fingerprint), expected $(Format-McpContractFingerprintForDiagnostic $ExpectedContractFingerprint). stderr_log=$($launch.stderr)"
+  }
+
   $listenerPid = Get-ManagedListenerPid "backend" ([int]$Plan.port)
   return [pscustomobject]@{
     pid = if ($listenerPid) { $listenerPid } else { $launch.process.Id }
     stdout = $launch.stdout
     stderr = $launch.stderr
     source_revision = if ($health.healthy) { $health.source_revision } else { $null }
+    contract_fingerprint = if ($health.healthy) { $health.contract_fingerprint } else { $null }
   }
 }
 
@@ -2520,7 +2652,9 @@ function Invoke-SelfTest {
 
   $revisionA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   $revisionB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-  $healthyA = [pscustomobject]@{ healthy = $true; source_revision = $revisionA }
+  $contractA = $ExpectedMcpContractFingerprint
+  $contractB = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  $healthyA = [pscustomobject]@{ healthy = $true; source_revision = $revisionA; contract_fingerprint = $contractA }
   $oldSourceRevisionEnv = [Environment]::GetEnvironmentVariable("SYMPP_SOURCE_REVISION", "Process")
   try {
     Set-SymppSourceRevisionEnvironment $revisionA
@@ -2531,20 +2665,23 @@ function Invoke-SelfTest {
     [Environment]::SetEnvironmentVariable("SYMPP_SOURCE_REVISION", $oldSourceRevisionEnv, "Process")
     $env:SYMPP_SOURCE_REVISION = $oldSourceRevisionEnv
   }
-  if (-not (Test-BackendSourceMatches $healthyA $revisionA)) {
-    throw "Source-matching backend health should be reusable."
+  if (-not (Test-BackendContractMatches $healthyA $contractA)) {
+    throw "Contract-matching backend health should be reusable."
   }
-  if (Test-BackendSourceMatches $healthyA $revisionB) {
-    throw "Stale backend source revision should not be reusable."
+  if (Test-BackendContractMatches $healthyA $contractB) {
+    throw "Incompatible MCP contract fingerprints should not be reusable."
   }
-  if (Test-BackendSourceMatches $healthyA $null) {
-    throw "Backend source matching should fail closed when the expected source revision is unknown."
+  if (Test-BackendContractMatches $healthyA $null) {
+    throw "Backend contract matching should fail closed when the expected fingerprint is unknown."
   }
-  if (Test-BackendSourceMatches ([pscustomobject]@{ healthy = $false; source_revision = $revisionA }) $revisionA) {
-    throw "Unhealthy backend should not be reusable."
+  if (Test-BackendContractMatches ([pscustomobject]@{ healthy = $true; source_revision = $revisionA }) $contractA) {
+    throw "Backends that do not report an MCP contract fingerprint should not be reusable."
   }
-  $degradedA = New-SymppBackendHealth $false $revisionA "health_degraded" $true $true $false "degraded"
-  if (Test-BackendSourceMatches $degradedA $revisionA) {
+  if (Test-BackendContractMatches ([pscustomobject]@{ healthy = $false; source_revision = $revisionA; contract_fingerprint = $contractA }) $contractA) {
+    throw "Unhealthy backend should not be contract-matched."
+  }
+  $degradedA = New-SymppBackendHealth $false $revisionA "health_degraded" $true $true $false "degraded" $contractA
+  if (Test-BackendContractMatches $degradedA $contractA) {
     throw "Degraded backend health should not be treated as reusable."
   }
   if (-not (Test-SymppBackendCommandLine "erl.exe -noshell -s mix sympp.cockpit --host 127.0.0.1 --port 19998")) {
@@ -2558,10 +2695,10 @@ function Invoke-SelfTest {
     throw "Busy Symphony++ backend diagnostic should include the refusal code and health detail."
   }
 
-  $runtimeKeyA = New-RuntimeKey "http://127.0.0.1:45678/" "http://127.0.0.1:45679/" $revisionA
-  $runtimeKeyANormalized = New-RuntimeKey "http://127.0.0.1:45678" "http://127.0.0.1:45679" $revisionA
-  if ($runtimeKeyA -ne $runtimeKeyANormalized -or $runtimeKeyA -notmatch $revisionA) {
-    throw "Runtime keys should normalize endpoint slashes and include the source revision."
+  $runtimeKeyA = New-RuntimeKey "http://127.0.0.1:45678/" "http://127.0.0.1:45679/" $contractA
+  $runtimeKeyANormalized = New-RuntimeKey "http://127.0.0.1:45678" "http://127.0.0.1:45679" $contractA
+  if ($runtimeKeyA -ne $runtimeKeyANormalized -or $runtimeKeyA -notmatch $contractA -or $runtimeKeyA -match $revisionA) {
+    throw "Runtime keys should normalize endpoint slashes and include the MCP contract fingerprint instead of the source revision."
   }
   if (-not (Test-PortSelectionAllowsReuse 19998 "http://127.0.0.1:20000" $false)) {
     throw "Implicit port selection should allow existing managed runtime reuse."
@@ -2585,7 +2722,7 @@ function Invoke-SelfTest {
     throw "Reusable dashboard plan should preserve managed process metadata."
   }
 
-  $oldRuntimeKey = New-RuntimeKey "http://127.0.0.1:19998" "http://127.0.0.1:19999" $revisionA
+  $oldRuntimeKey = New-RuntimeKey "http://127.0.0.1:19998" "http://127.0.0.1:19999" $contractA
   $oldRuntimeState = [pscustomobject]@{
     runtime_key = $oldRuntimeKey
     backend = [pscustomobject]@{
@@ -2594,6 +2731,7 @@ function Invoke-SelfTest {
       port = 19998
       pid = 1234
       source_revision = $revisionA
+      contract_fingerprint = $contractA
     }
     frontend = [pscustomobject]@{
       managed = $true
@@ -2602,46 +2740,50 @@ function Invoke-SelfTest {
       pid = 1235
     }
   }
-  $fastAttachPlan = Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionA 19998 19999 $false $false $null $null $healthyA $true $true
+  $fastAttachPlan = Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionB $contractA 19998 19999 $false $false $null $null $healthyA $true $true
   if ($null -eq $fastAttachPlan -or
       $fastAttachPlan.backend_plan.status -ne "fast_attach" -or
       $fastAttachPlan.dashboard_plan.status -ne "fast_attach" -or
       $fastAttachPlan.runtime_key -ne $oldRuntimeKey) {
-    throw "Fast attach should reuse a healthy managed runtime for the same source revision and default endpoints."
+    throw "MCP-only fast attach should reuse a healthy managed runtime for the same MCP contract fingerprint and default endpoints."
   }
-  if ($null -ne (Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionB 19998 19999 $false $false $null $null $healthyA $true $true)) {
-    throw "Fast attach should reject stale managed runtime revisions."
+  $sourceDriftDashboardPlan = Resolve-DashboardPlan 20001 $null "http://127.0.0.1:20000" $revisionA $null $false $revisionB $contractA $false
+  if ($sourceDriftDashboardPlan.status -ne "disabled_source_drift" -or $sourceDriftDashboardPlan.should_start) {
+    throw "Fresh dashboard autostart should be disabled against a source-drifted but contract-compatible backend."
   }
-  if ($null -ne (Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionA 19998 19999 $true $false $null $null $healthyA $true $true)) {
+  if ($null -ne (Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionB $contractB 19998 19999 $false $false $null $null $healthyA $true $true)) {
+    throw "Fast attach should reject incompatible MCP contract fingerprints."
+  }
+  if ($null -ne (Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionA $contractA 19998 19999 $true $false $null $null $healthyA $true $true)) {
     throw "Fast attach should not bypass explicit backend port selection."
   }
-  if ($null -ne (Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionA 19998 19999 $false $false $null $null $healthyA $true $false)) {
-    throw "Fast attach should reject dashboards whose MCP proxy does not match the backend source."
+  if ($null -ne (Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionA $contractA 19998 19999 $false $false $null $null $healthyA $true $false)) {
+    throw "Fast attach should reject dashboards whose MCP proxy does not match the expected contract."
   }
   $externalRuntimeState = [pscustomobject]@{
     runtime_key = $oldRuntimeKey
-    backend = [pscustomobject]@{ managed = $false; url = "http://127.0.0.1:19998"; port = 19998; pid = 1234; source_revision = $revisionA }
+    backend = [pscustomobject]@{ managed = $false; url = "http://127.0.0.1:19998"; port = 19998; pid = 1234; source_revision = $revisionA; contract_fingerprint = $contractA }
     frontend = [pscustomobject]@{ managed = $true; origin = "http://127.0.0.1:19999"; port = 19999; pid = 1235 }
   }
-  if ($null -ne (Resolve-FastAttachRuntimePlan $externalRuntimeState $revisionA 19998 19999 $false $false $null $null $healthyA $true $true)) {
+  if ($null -ne (Resolve-FastAttachRuntimePlan $externalRuntimeState $revisionA $contractA 19998 19999 $false $false $null $null $healthyA $true $true)) {
     throw "Fast attach should reject mixed managed/external runtime entries."
   }
   $explicitDashboardRuntimeState = [pscustomobject]@{
     runtime_kind = "external_loopback"
     runtime_key = $oldRuntimeKey
-    backend = [pscustomobject]@{ status = "external_loopback"; managed = $false; url = "http://127.0.0.1:19998"; port = 19998; pid = 1234; source_revision = $revisionA }
+    backend = [pscustomobject]@{ status = "external_loopback"; managed = $false; url = "http://127.0.0.1:19998"; port = 19998; pid = 1234; source_revision = $revisionA; contract_fingerprint = $contractA }
     frontend = [pscustomobject]@{ status = "external_override"; managed = $false; origin = "http://127.0.0.1:19999"; port = 19999; pid = 1235 }
   }
-  if ($null -ne (Resolve-FastAttachRuntimePlan $explicitDashboardRuntimeState $revisionA 19998 19999 $false $false $null $null $healthyA $true $true)) {
+  if ($null -ne (Resolve-FastAttachRuntimePlan $explicitDashboardRuntimeState $revisionA $contractA 19998 19999 $false $false $null $null $healthyA $true $true)) {
     throw "Fast attach should not promote explicit external dashboard origins into implicit external_loopback reuse."
   }
   $externalLoopbackRuntimeState = [pscustomobject]@{
     runtime_kind = "external_loopback"
     runtime_key = $oldRuntimeKey
-    backend = [pscustomobject]@{ status = "external_loopback"; managed = $false; url = "http://127.0.0.1:19998"; port = 19998; pid = 1234; source_revision = $revisionA }
+    backend = [pscustomobject]@{ status = "external_loopback"; managed = $false; url = "http://127.0.0.1:19998"; port = 19998; pid = 1234; source_revision = $revisionA; contract_fingerprint = $contractA }
     frontend = [pscustomobject]@{ status = "external_loopback"; managed = $false; origin = "http://127.0.0.1:19999"; port = 19999; pid = 1235 }
   }
-  $externalFastAttachPlan = Resolve-FastAttachRuntimePlan $externalLoopbackRuntimeState $revisionA 19998 19999 $false $false $null $null $healthyA $true $true
+  $externalFastAttachPlan = Resolve-FastAttachRuntimePlan $externalLoopbackRuntimeState $revisionA $contractA 19998 19999 $false $false $null $null $healthyA $true $true
   if ($null -eq $externalFastAttachPlan -or
       $externalFastAttachPlan.backend_plan.status -ne "external_loopback" -or
       $externalFastAttachPlan.backend_plan.managed -or
@@ -2658,7 +2800,7 @@ function Invoke-SelfTest {
   if ($superseded.runtime_key -ne $oldRuntimeKey) {
     throw "Superseded runtime state should retain the old runtime key for key-scoped cleanup."
   }
-  $olderRuntimeKey = New-RuntimeKey "http://127.0.0.1:19996" "http://127.0.0.1:19997" $revisionA
+  $olderRuntimeKey = New-RuntimeKey "http://127.0.0.1:19996" "http://127.0.0.1:19997" $contractA
   $olderSuperseded = [pscustomobject]@{
     runtime_key = $olderRuntimeKey
     backend = [pscustomobject]@{ managed = $true; url = "http://127.0.0.1:19996"; port = 19996; pid = 4321 }
@@ -2697,6 +2839,7 @@ function Invoke-SelfTest {
       managed = $false
       url = "http://127.0.0.1:$DefaultBackendPort"
       source_revision = $revisionA
+      contract_fingerprint = $contractA
     }
     frontend = [pscustomobject]@{ origin = "http://127.0.0.1:$DefaultDashboardPort" }
   }
@@ -2714,7 +2857,7 @@ function Invoke-SelfTest {
   if (-not (Test-ActiveBridgeLeaseForRuntimeKey $activeLeases $oldRuntimeKey)) {
     throw "Bridge lease should be discoverable by runtime key."
   }
-  if (Test-ActiveBridgeLeaseForRuntimeKey $activeLeases (New-RuntimeKey "http://127.0.0.1:20000" "http://127.0.0.1:20001" $revisionB)) {
+  if (Test-ActiveBridgeLeaseForRuntimeKey $activeLeases (New-RuntimeKey "http://127.0.0.1:20000" "http://127.0.0.1:20001" $contractB)) {
     throw "Bridge lease should not match a different runtime key."
   }
   if (-not (Test-ActiveBridgeLeaseForBackend $activeLeases $state.backend.url)) {
@@ -2765,6 +2908,10 @@ $defaultLauncher = Resolve-SymppDefaultLauncher $elixirDir $mise
 $launcher = Get-EnvMode "SYMPP_LAUNCHER" $defaultLauncher @("direct", "mise")
 $pluginRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $expectedSourceRevision = Resolve-SymppSourceRevision $repoRoot $pluginRoot
+$expectedContractFingerprint = Normalize-McpContractFingerprint $ExpectedMcpContractFingerprint
+if ([string]::IsNullOrWhiteSpace($expectedContractFingerprint)) {
+  throw "Symphony++ MCP launcher expected MCP contract fingerprint is invalid."
+}
 Set-SymppSourceRevisionEnvironment $expectedSourceRevision
 Set-SymppWindowsNativeTargetEnvironment
 $defaultMixBuildRoot = Resolve-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp"
@@ -2850,6 +2997,7 @@ $supersededStates = @()
 $fastAttachCandidate = Resolve-FastAttachRuntimePlan `
   (Read-RuntimeState $runtimeFile) `
   $expectedSourceRevision `
+  $expectedContractFingerprint `
   $backendPort `
   $dashboardPort `
   $backendPortExplicit `
@@ -2863,6 +3011,7 @@ if ($null -ne $fastAttachCandidate) {
     $fastAttachPlan = Resolve-FastAttachRuntimePlan `
       $fastAttachState `
       $expectedSourceRevision `
+      $expectedContractFingerprint `
       $backendPort `
       $dashboardPort `
       $backendPortExplicit `
@@ -2903,28 +3052,22 @@ try {
     $runtimeHealth = Get-SymppBackendHealthWithRetry ([string]$runtimeState.backend.url)
     $preserveBackendUrl = if ([string]::IsNullOrWhiteSpace($env:SYMPP_BACKEND_URL)) { $null } else { $env:SYMPP_BACKEND_URL.TrimEnd("/") }
     $preserveDashboardOrigin = if ([string]::IsNullOrWhiteSpace($env:SYMPP_DASHBOARD_ORIGIN)) { $null } else { $env:SYMPP_DASHBOARD_ORIGIN.TrimEnd("/") }
-    if (-not (Test-BackendSourceMatches $runtimeHealth $expectedSourceRevision) -and
+    if (-not (Test-BackendContractMatches $runtimeHealth $expectedContractFingerprint) -and
         (Stop-ManagedRuntimeStateEntries $runtimeState $preserveBackendUrl $preserveDashboardOrigin)) {
       Write-RuntimeState $runtimeFile $runtimeState
     }
   }
 
-  $backendPlan = Resolve-BackendPlan $backendPort $env:SYMPP_BACKEND_URL $runtimeState $backendPortReleaseTimeout $expectedSourceRevision $backendPortExplicit @($dashboardPort)
+  $backendPlan = Resolve-BackendPlan $backendPort $env:SYMPP_BACKEND_URL $runtimeState $backendPortReleaseTimeout $expectedSourceRevision $expectedContractFingerprint $backendPortExplicit @($dashboardPort)
   if ($backendPlan.should_start -and -not $autostartBackend) {
     throw "Backend autostart is disabled and no reusable Symphony++ backend was found at $($backendPlan.url)."
   }
 
   $allowRecordedDashboardReuse = $backendPlan.managed -eq $true -and [string]$backendPlan.status -eq "reused"
-  $dashboardPlan = Resolve-DashboardPlan $dashboardPort $env:SYMPP_DASHBOARD_ORIGIN $backendPlan.url $runtimeState $dashboardPortExplicit $expectedSourceRevision $allowRecordedDashboardReuse
+  $dashboardBackendSourceRevision = if ($backendPlan.should_start) { $expectedSourceRevision } else { [string]$backendPlan.source_revision }
+  $dashboardPlan = Resolve-DashboardPlan $dashboardPort $env:SYMPP_DASHBOARD_ORIGIN $backendPlan.url $dashboardBackendSourceRevision $runtimeState $dashboardPortExplicit $expectedSourceRevision $expectedContractFingerprint $allowRecordedDashboardReuse
   if ($dashboardPlan.should_start -and -not $autostartFrontend) {
-    $dashboardPlan = [pscustomobject]@{
-      status = "disabled"
-      origin = $null
-      url = $null
-      port = $null
-      should_start = $false
-      reused = $false
-    }
+    $dashboardPlan = New-DisabledDashboardPlan "disabled" "frontend_autostart_disabled"
   }
 
   $supersededStates = Merge-SupersededRuntimeStates (Get-SupersededRuntimeStates $runtimeState) (New-SupersededRuntimeState $runtimeState $backendPlan $dashboardPlan)
@@ -2932,10 +3075,11 @@ try {
 
   if ($backendPlan.should_start) {
     [void](Initialize-ElixirRuntime $elixirDir $launcher $mix $mise $logDir $elixirSetupTimeout)
-    $backendLaunch = Start-Backend $backendPlan $dashboardPlan.origin $elixirDir $launcher $mix $mise $logDir $backendTimeout
+    $backendLaunch = Start-Backend $backendPlan $dashboardPlan.origin $elixirDir $launcher $mix $mise $logDir $backendTimeout $expectedContractFingerprint
     $backendPlan.status = "started"
     $backendPlan.pid = $backendLaunch.pid
     $backendPlan.source_revision = $backendLaunch.source_revision
+    $backendPlan.contract_fingerprint = $backendLaunch.contract_fingerprint
   }
 
   if ($dashboardPlan.should_start) {
@@ -2950,9 +3094,13 @@ try {
       Write-Diagnostic "Symphony++ dashboard autostart failed; MCP bridge will continue. detail=$frontendError"
     }
   }
+  if ($null -eq $frontendError -and $null -ne $dashboardPlan.PSObject.Properties["error"]) {
+    $frontendError = $dashboardPlan.error
+  }
 
   $runtimeSourceRevision = if ([string]::IsNullOrWhiteSpace([string]$backendPlan.source_revision)) { $expectedSourceRevision } else { [string]$backendPlan.source_revision }
-  $runtimeKey = New-RuntimeKey $backendPlan.url $dashboardPlan.origin $runtimeSourceRevision
+  $runtimeContractFingerprint = if ([string]::IsNullOrWhiteSpace([string]$backendPlan.contract_fingerprint)) { $expectedContractFingerprint } else { [string]$backendPlan.contract_fingerprint }
+  $runtimeKey = New-RuntimeKey $backendPlan.url $dashboardPlan.origin $runtimeContractFingerprint
   $state = [pscustomobject]@{
     generated_at = (Get-Date).ToString("o")
     repo_root = $repoRoot
@@ -2970,6 +3118,8 @@ try {
       pid = $backendPlan.pid
       expected_source_revision = $expectedSourceRevision
       source_revision = $backendPlan.source_revision
+      expected_contract_fingerprint = $expectedContractFingerprint
+      contract_fingerprint = $backendPlan.contract_fingerprint
       stdout_log = if ($backendLaunch) { $backendLaunch.stdout } else { $null }
       stderr_log = if ($backendLaunch) { $backendLaunch.stderr } else { $null }
     }

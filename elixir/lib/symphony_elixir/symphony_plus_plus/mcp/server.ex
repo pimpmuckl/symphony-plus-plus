@@ -68,6 +68,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   @protocol_version "2025-03-26"
   @health_tool "sympp.health"
+  @mcp_contract_schema_version "sympp-mcp-contract.v1"
+  @mcp_contract_health_fields [
+    "ledger",
+    "mode",
+    "source.mcp_contract.fingerprint",
+    "source.mcp_contract.schema_version",
+    "source.revision",
+    "status",
+    "version"
+  ]
   @agent_text_mime_type "text/vnd.toon"
   @solo_tools SoloTools.tool_names()
   @assignment_release_tool "release_current_assignment"
@@ -284,6 +294,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     payload
     |> handle_response_state(server)
     |> elem(0)
+  end
+
+  @doc false
+  @spec mcp_contract_identity() :: map()
+  def mcp_contract_identity do
+    %{
+      "fingerprint" => mcp_contract_fingerprint(mcp_contract_material()),
+      "schema_version" => @mcp_contract_schema_version
+    }
   end
 
   @doc false
@@ -1044,16 +1063,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp dispatch("resources/list", params, %__MODULE__{config: config, session: session}) when is_map(params) do
-    base_resources = [
-      %{
-        "uri" => @version_resource,
-        "name" => "Symphony++ version",
-        "mimeType" => "application/json"
-      }
-    ]
-
     case assignment_resources(session, config.repo) do
-      {:ok, resources} -> {:ok, %{"resources" => base_resources ++ resources}}
+      {:ok, resources} -> {:ok, %{"resources" => base_resource_specs() ++ resources}}
       {:error, code, message, data} -> {:error, code, message, data}
     end
   end
@@ -1136,10 +1147,77 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp source_identity(%Config{source_revision: revision}) when is_binary(revision) and revision != "" do
-    %{"revision" => String.downcase(revision)}
+    %{"revision" => String.downcase(revision), "mcp_contract" => mcp_contract_identity()}
   end
 
-  defp source_identity(%Config{}), do: %{"revision" => nil}
+  defp source_identity(%Config{}), do: %{"revision" => nil, "mcp_contract" => mcp_contract_identity()}
+
+  defp mcp_contract_material do
+    config = %Config{mode: :http, repo: Repo, version: "contract", source_revision: nil}
+
+    %{
+      "capabilities" => %{
+        "resources" => %{},
+        "tools" => %{}
+      },
+      "health_result_fields" => @mcp_contract_health_fields,
+      "protocol_version" => @protocol_version,
+      "resources" => resource_contract_material(),
+      "schema_version" => @mcp_contract_schema_version,
+      "tool_sets" => %{
+        "architect" => architect_session_tool_specs(),
+        "claimable" => claimable_tool_specs(config),
+        "local_operator" => local_operator_tool_specs(),
+        "unbound" => unbound_tool_specs_for_config(config),
+        "worker" => worker_session_tool_specs()
+      }
+    }
+  end
+
+  defp resource_contract_material do
+    %{
+      "list_sets" => %{
+        "architect" => base_resource_specs() ++ current_assignment_resource_specs(),
+        "unbound" => base_resource_specs(),
+        "worker" => base_resource_specs() ++ current_assignment_resource_specs() ++ work_package_resource_template_specs()
+      },
+      "read_payloads" => %{
+        @assignment_resource => %{
+          "fields" => Session.public_assignment_fields(),
+          "mimeType" => "application/json"
+        },
+        @version_resource => %{
+          "fields" => [
+            "mode",
+            "source.mcp_contract.fingerprint",
+            "source.mcp_contract.schema_version",
+            "source.revision",
+            "version"
+          ],
+          "mimeType" => "application/json"
+        },
+        "sympp://work-packages/{work_package_id}/{file_name}" => %{
+          "file_names" => PlanningRenderer.virtual_files(),
+          "mimeType" => "text/markdown"
+        }
+      }
+    }
+  end
+
+  defp mcp_contract_fingerprint(material) do
+    :sha256
+    |> :crypto.hash(:erlang.term_to_binary(canonical_contract_term(material)))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp canonical_contract_term(value) when is_map(value) do
+    value
+    |> Enum.map(fn {key, nested} -> {to_string(key), canonical_contract_term(nested)} end)
+    |> Enum.sort_by(fn {key, _nested} -> key end)
+  end
+
+  defp canonical_contract_term(value) when is_list(value), do: Enum.map(value, &canonical_contract_term/1)
+  defp canonical_contract_term(value), do: value
 
   defp ledger_health(%Config{repo: repo, database: database}) do
     case normalized_database(database) do
@@ -2556,11 +2634,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "architect"}}}, %Config{}) do
-    {:ok, [health_tool_spec(), assignment_release_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs()]}
+    {:ok, architect_session_tool_specs()}
   end
 
   defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "worker"}}}, %Config{}),
-    do: {:ok, [health_tool_spec(), assignment_release_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
+    do: {:ok, worker_session_tool_specs()}
 
   defp tool_specs_for_session_result({:ok, %Session{}}, %Config{}), do: {:error, {:unauthorized, :unsupported_grant_role}}
 
@@ -2593,6 +2671,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_tool_specs, do: Enum.map(@architect_tools, &architect_tool_spec/1)
 
+  defp architect_session_tool_specs do
+    [health_tool_spec(), assignment_release_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs()]
+  end
+
+  defp worker_session_tool_specs do
+    [health_tool_spec(), assignment_release_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]
+  end
+
   defp unbound_scoped_tool_specs do
     Enum.map(@architect_tools -- @shared_worker_architect_tools, &architect_tool_spec/1) ++
       Enum.map(@worker_tools -- @shared_worker_architect_tools, &worker_tool_spec/1) ++
@@ -2612,8 +2698,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp local_operator_tool_specs(%__MODULE__{} = server) do
-    if local_operator_tools_enabled?(server), do: Enum.map(@local_operator_tools, &local_operator_tool_spec/1), else: []
+    if local_operator_tools_enabled?(server), do: local_operator_tool_specs(), else: []
   end
+
+  defp local_operator_tool_specs, do: Enum.map(@local_operator_tools, &local_operator_tool_spec/1)
 
   defp local_operator_tools_enabled?(%__MODULE__{
          config: %Config{mode: :http, local_daemon_trusted: true} = config,
@@ -2879,20 +2967,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp listed_current_assignment_resource(%Session{}) do
-    {:ok,
-     [
-       %{
-         "uri" => @assignment_resource,
-         "name" => "Current Symphony++ assignment",
-         "mimeType" => "application/json"
-       }
-     ]}
+    {:ok, current_assignment_resource_specs()}
   end
 
   defp work_package_resources(work_package_id) do
     Enum.map(PlanningRenderer.virtual_files(), fn file_name ->
       %{
         "uri" => "sympp://work-packages/#{work_package_id}/#{file_name}",
+        "name" => file_name,
+        "mimeType" => "text/markdown"
+      }
+    end)
+  end
+
+  defp base_resource_specs do
+    [
+      %{
+        "uri" => @version_resource,
+        "name" => "Symphony++ version",
+        "mimeType" => "application/json"
+      }
+    ]
+  end
+
+  defp current_assignment_resource_specs do
+    [
+      %{
+        "uri" => @assignment_resource,
+        "name" => "Current Symphony++ assignment",
+        "mimeType" => "application/json"
+      }
+    ]
+  end
+
+  defp work_package_resource_template_specs do
+    Enum.map(PlanningRenderer.virtual_files(), fn file_name ->
+      %{
+        "uri_template" => "sympp://work-packages/{work_package_id}/#{file_name}",
         "name" => file_name,
         "mimeType" => "text/markdown"
       }

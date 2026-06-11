@@ -2,6 +2,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   use ExUnit.Case, async: true
 
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.Server
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
 
   @repo_root Path.expand("../../../../", __DIR__)
@@ -512,6 +513,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@mcp_plugin_readme_path) =~ "diagnose-mcp-lifecycle.ps1 -MarketplaceName symphony-plus-plus -Doctor"
     assert File.read!(@mcp_plugin_readme_path) =~ "cannot inspect"
     assert File.read!(@mcp_plugin_readme_path) =~ "smoke-sympp-mcp-http.ps1 -RepoRoot ."
+    assert File.read!(@mcp_plugin_readme_path) =~ "agent-facing MCP\ncontract fingerprint"
 
     assert File.read!(@mcp_plugin_start_script_path) =~ "sympp.mcp"
     assert File.read!(@mcp_plugin_start_cmd_path) =~ "start-sympp-mcp.ps1"
@@ -672,6 +674,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       assert status == 0, output
       assert output =~ "PowerShell header normalization, source revision, redaction, and bound argument validation self-test passed."
     end
+  end
+
+  test "MCP launcher pins the server-reported agent-facing contract fingerprint" do
+    launcher = File.read!(@mcp_plugin_start_script_path)
+    fingerprint = Server.mcp_contract_identity()["fingerprint"]
+
+    assert fingerprint =~ ~r/\A[0-9a-f]{64}\z/
+    assert launcher =~ ~s($ExpectedMcpContractFingerprint = "#{fingerprint}")
   end
 
   test "MCP launcher self-test covers reusable runtime plans" do
