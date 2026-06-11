@@ -52,7 +52,6 @@ export function RequestDetailContent({
   const requestOnlyCommentStats = commentStats(requestComments);
   const handoffEligible = !detailFinished && architectHandoffEligibleRequest(request);
   const handoffHasOpenQuestions = (openQuestions.length || request.open_question_count || 0) > 0;
-  const handoffButtonLabel = handoffHasOpenQuestions ? "Copy Resume Architect Handoff" : "Copy Architect Handoff";
   const handoffIdentity = `${handoffHasOpenQuestions}:${request.id}:${request.status || ""}:${request.updated_at || ""}`;
   const canManualArchive = Boolean(request.completed_at && !request.archived_at);
   const canMarkDelivered = !detailFinished;
@@ -64,6 +63,14 @@ export function RequestDetailContent({
     startCopy,
     state: handoffCopyState,
   } = useScopedHandoffCopy(handoffIdentity);
+  const preparedHandoff = cachedHandoff();
+  const handoffButtonLabel = handoffHasOpenQuestions
+    ? preparedHandoff
+      ? "Copy Resume Architect Handoff"
+      : "Prepare & Copy Resume Handoff"
+    : preparedHandoff
+      ? "Copy Architect Handoff"
+      : "Prepare & Copy Handoff";
 
   async function copyHandoff() {
     startCopy();
