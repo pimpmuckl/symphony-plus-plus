@@ -11,6 +11,38 @@ mix sympp.cockpit
 The daemon serves MCP at `http://127.0.0.1:19998/mcp` by default and uses the
 local Symphony++ ledger unless `--database <path>` is supplied.
 
+## Installed MCP Cutover
+
+For production-like local Codex usage, keep the running MCP/dashboard pair on
+the installed marketplace/cache copy, not on a debug checkout hinted by
+`.sympp-source-root`. Use the cutover helper from a current checkout:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\sympp-mcp-cutover.ps1 -ExpectedSourceRevision $(git rev-parse HEAD)
+```
+
+Before running it for real, inspect the candidate process list without mutating
+runtime state:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\sympp-mcp-cutover.ps1 -WhatIf
+```
+
+The helper inventories `19998`, `19999`, and `20000-20120`, shows the exact S++
+launcher/cockpit/Vite PIDs it would stop, leaves unrelated listeners alone,
+runs `codex plugin marketplace upgrade`, validates the installed MCP launcher,
+starts the singleton backend/dashboard from the marketplace cache on
+`19998/19999`, refreshes runtime state, runs the MCP HTTP smoke, checks the
+dashboard route, and prints both stopped and left-running PIDs.
+
+Already-running Codex sessions do not hot-reload their MCP wrapper or cached
+`tools/list`. If only the singleton backend/dashboard restarted and the
+agent-facing MCP contract did not change, new sessions should attach cleanly and
+existing wrapper sessions may recover on their next request. Reboot Codex
+sessions when their MCP transport is already closed, when `tools/list` or tool
+schemas changed, or when the session still reports stale startup/runtime state
+after the singleton cutover.
+
 ## Worker Dispatch Check
 
 1. Architect dispatches a planned slice with `dispatch_work_request_planned_slice`.
