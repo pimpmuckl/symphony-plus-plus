@@ -482,6 +482,33 @@ function New-BackendPortOccupiedMessage([int]$Port, [object[]]$Owners) {
   return "backend_port_occupied: configured Symphony++ backend port http://127.0.0.1:$Port is occupied by $ownerSummary. Wait for stale listeners to exit, stop the owning process, set SYMPP_BACKEND_PORT=0 or another explicit port, or set SYMPP_BACKEND_URL to a healthy backend."
 }
 
+function Test-SymppBackendCommandLine([string]$CommandLine) {
+  if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+    return $false
+  }
+
+  return $CommandLine -match "(?i)\bsympp\.cockpit\b"
+}
+
+function Test-SymppBackendOwners([object[]]$Owners) {
+  foreach ($owner in @($Owners)) {
+    $processId = 0
+    if ($null -ne $owner) {
+      [void][int]::TryParse([string]$owner.pid, [ref]$processId)
+    }
+    if ($processId -gt 0 -and (Test-SymppBackendCommandLine (Get-ProcessCommandLine $processId))) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
+function New-BackendBusySymppMessage([int]$Port, [object[]]$Owners, $Health) {
+  $detail = if ($null -ne $Health -and -not [string]::IsNullOrWhiteSpace([string]$Health.detail)) { [string]$Health.detail } else { "unhealthy" }
+  return "backend_port_busy_sympp_unhealthy: configured Symphony++ backend port http://127.0.0.1:$Port is occupied by $(Format-PortOwners $Owners), but MCP health did not complete (detail=$detail). Refusing to start a fallback runtime; retry after the singleton finishes startup or stop the stale owner."
+}
+
 function Wait-ForTcpPortRelease([int]$Port, [int]$TimeoutSec) {
   if ($Port -eq 0 -or (Test-PortAvailable $Port)) {
     return [pscustomobject]@{
@@ -663,6 +690,54 @@ function New-HealthRequest {
   }
 }
 
+function New-SymppBackendHealth([bool]$Healthy, [string]$SourceRevision, [string]$Detail, [bool]$TcpOpen, [bool]$McpReady = $false, [bool]$LedgerReachable = $false, [string]$Status = $null) {
+  return [pscustomobject]@{
+    healthy = $Healthy
+    source_revision = $SourceRevision
+    detail = $Detail
+    tcp_open = $TcpOpen
+    mcp_ready = $McpReady
+    ledger_reachable = $LedgerReachable
+    status = $Status
+  }
+}
+
+function Test-LoopbackHttpTcpOpen([string]$Origin) {
+  if ([string]::IsNullOrWhiteSpace($Origin)) {
+    return $false
+  }
+
+  $client = $null
+  try {
+    $uri = [System.Uri]::new($Origin.TrimEnd("/"))
+    if ($uri.Scheme -ne "http" -and $uri.Scheme -ne "https") {
+      return $false
+    }
+    if (@("127.0.0.1", "localhost", "::1") -notcontains $uri.Host) {
+      return $false
+    }
+
+    $port = [int]$uri.Port
+    if ($port -le 0) {
+      $port = if ($uri.Scheme -eq "https") { 443 } else { 80 }
+    }
+
+    $client = [System.Net.Sockets.TcpClient]::new()
+    $connect = $client.BeginConnect($uri.Host, $port, $null, $null)
+    if (-not $connect.AsyncWaitHandle.WaitOne(300)) {
+      return $false
+    }
+    $client.EndConnect($connect)
+    return $true
+  } catch {
+    return $false
+  } finally {
+    if ($client) {
+      $client.Close()
+    }
+  }
+}
+
 function Get-HeaderValue($Headers, [string]$Name) {
   return Get-ResponseHeaderValue $Headers $Name
 }
@@ -812,19 +887,20 @@ function Invoke-McpPost([string]$Url, [string]$Body, [string]$SessionId, [string
 
 function Get-SymppBackendHealth([string]$BackendUrl) {
   if ([string]::IsNullOrWhiteSpace($BackendUrl)) {
-    return [pscustomobject]@{ healthy = $false; source_revision = $null; detail = "missing_url" }
+    return New-SymppBackendHealth $false $null "missing_url" $false
   }
 
+  $tcpOpen = Test-LoopbackHttpTcpOpen $BackendUrl
   $mcpUrl = $BackendUrl.TrimEnd("/") + "/mcp"
   $initializeBody = ConvertTo-JsonBody (New-InitializeRequest)
   $init = Invoke-McpPost $mcpUrl $initializeBody $null $null 2
   if (-not $init.ok -or [string]::IsNullOrWhiteSpace($init.content)) {
-    return [pscustomobject]@{ healthy = $false; source_revision = $null; detail = "initialize_failed" }
+    return New-SymppBackendHealth $false $null "initialize_failed" $tcpOpen
   }
 
   $sessionId = Get-ResponseHeaderValue $init.headers "Mcp-Session-Id"
   if ([string]::IsNullOrWhiteSpace($sessionId)) {
-    return [pscustomobject]@{ healthy = $false; source_revision = $null; detail = "missing_session_id" }
+    return New-SymppBackendHealth $false $null "missing_session_id" $tcpOpen
   }
 
   $protocolVersion = Get-ResponseProtocolVersion @($init.content_lines)
@@ -835,27 +911,49 @@ function Get-SymppBackendHealth([string]$BackendUrl) {
   $health = Invoke-McpPost $mcpUrl (ConvertTo-JsonBody (New-HealthRequest)) $sessionId $protocolVersion 2
   $healthLines = @($health.content_lines)
   if (-not $health.ok -or $healthLines.Count -eq 0) {
-    return [pscustomobject]@{ healthy = $false; source_revision = $null; detail = "health_failed" }
+    return New-SymppBackendHealth $false $null "health_failed" $tcpOpen
   }
 
   try {
     $payload = $healthLines[0] | ConvertFrom-Json
     if ($null -ne $payload.result -and $null -eq $payload.error) {
-      return [pscustomobject]@{
-        healthy = $true
-        source_revision = Get-HealthSourceRevision $payload
-        detail = $null
+      $structuredContent = $payload.result.structuredContent
+      $status = if ($null -ne $structuredContent -and $structuredContent.PSObject.Properties["status"]) { [string]$structuredContent.status } else { $null }
+      $ledgerReachable = $false
+      if ($null -ne $structuredContent -and
+          $structuredContent.PSObject.Properties["ledger"] -and
+          $null -ne $structuredContent.ledger -and
+          $structuredContent.ledger.PSObject.Properties["reachable"]) {
+        $ledgerReachable = $structuredContent.ledger.reachable -eq $true
       }
+      $healthy = [System.StringComparer]::OrdinalIgnoreCase.Equals($status, "ok") -and $ledgerReachable
+      $detail = if ($healthy) { $null } else { "health_degraded" }
+      return New-SymppBackendHealth $healthy (Get-HealthSourceRevision $payload) $detail $true $true $ledgerReachable $status
     }
 
-    return [pscustomobject]@{ healthy = $false; source_revision = $null; detail = "health_error" }
+    return New-SymppBackendHealth $false $null "health_error" $tcpOpen $true $false $null
   } catch {
-    return [pscustomobject]@{ healthy = $false; source_revision = $null; detail = "health_parse_failed" }
+    return New-SymppBackendHealth $false $null "health_parse_failed" $tcpOpen
   }
 }
 
+function Get-SymppBackendHealthWithRetry([string]$BackendUrl, [int]$Attempts = 4, [int]$DelayMs = 500) {
+  $last = $null
+  for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+    $last = Get-SymppBackendHealth $BackendUrl
+    if ($last.healthy -or -not $last.tcp_open) {
+      return $last
+    }
+    if ($attempt -lt $Attempts) {
+      Start-Sleep -Milliseconds $DelayMs
+    }
+  }
+
+  return $last
+}
+
 function Test-HealthySymppBackend([string]$BackendUrl) {
-  return (Get-SymppBackendHealth $BackendUrl).healthy
+  return (Get-SymppBackendHealthWithRetry $BackendUrl).healthy
 }
 
 function Test-BackendSourceMatches($Health, [string]$ExpectedSourceRevision) {
@@ -919,6 +1017,15 @@ function Test-HealthySymppDashboard([string]$DashboardOrigin) {
   } catch {
     return $false
   }
+}
+
+function Test-SymppDashboardMcpProxyMatches([string]$DashboardOrigin, [string]$ExpectedSourceRevision) {
+  if ([string]::IsNullOrWhiteSpace($ExpectedSourceRevision)) {
+    return $false
+  }
+
+  $proxyHealth = Get-SymppBackendHealthWithRetry $DashboardOrigin 2 250
+  return Test-BackendSourceMatches $proxyHealth $ExpectedSourceRevision
 }
 
 function Get-PortFromOrigin([string]$Origin) {
@@ -1545,7 +1652,7 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
   if (-not [string]::IsNullOrWhiteSpace($ConfiguredUrl)) {
     $url = $ConfiguredUrl.TrimEnd("/")
     Assert-LoopbackHttpOrigin $url "SYMPP_BACKEND_URL"
-    $health = Get-SymppBackendHealth $url
+    $health = Get-SymppBackendHealthWithRetry $url
     if (-not $health.healthy) {
       throw "SYMPP_BACKEND_URL is not a healthy Symphony++ backend: $url"
     }
@@ -1553,11 +1660,38 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
     return New-ReusedBackendPlan "external_override" $url $health $false $null
   }
 
+  $selectedPort = $null
+  if ($PreferredPort -gt 0) {
+    $preferredUrl = "http://127.0.0.1:$PreferredPort"
+    $preferredHealth = Get-SymppBackendHealthWithRetry $preferredUrl
+    $preferredEntry = if ($null -ne $RuntimeState) { $RuntimeState.backend } else { $null }
+    if ($preferredHealth.healthy) {
+      if (Test-RuntimeEntryExternalOverride $preferredEntry $preferredUrl "backend") {
+        Write-Diagnostic "Ignoring recorded external backend $preferredUrl for implicit reuse. Set SYMPP_BACKEND_URL=$preferredUrl to reuse it explicitly."
+      } elseif (Test-BackendSourceMatches $preferredHealth $ExpectedSourceRevision) {
+        $managed = $false
+        $pid = $null
+        $status = "external_loopback"
+        if (Test-RuntimeEntryEndpointMatches "backend" $preferredEntry $preferredUrl) {
+          $managed = $preferredEntry.managed -eq $true
+          $pid = $preferredEntry.pid
+          if ($managed) {
+            $status = "reused"
+          }
+        }
+        return New-ReusedBackendPlan $status $preferredUrl $preferredHealth $managed $pid
+      } else {
+        Write-Diagnostic "Ignoring healthy Symphony++ backend $preferredUrl because source revision $(Format-SourceRevisionForDiagnostic $preferredHealth.source_revision) does not match expected $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision)."
+      }
+      $selectedPort = Select-AvailablePort $PreferredPort (@($PreferredPort) + @($AvoidPorts))
+    }
+  }
+
   if ($null -ne $RuntimeState -and $null -ne $RuntimeState.backend) {
     $runtimeUrl = [string]$RuntimeState.backend.url
     if (-not [string]::IsNullOrWhiteSpace($runtimeUrl)) {
       $runtimeUrl = $runtimeUrl.TrimEnd("/")
-      $runtimeHealth = Get-SymppBackendHealth $runtimeUrl
+      $runtimeHealth = Get-SymppBackendHealthWithRetry $runtimeUrl
       $runtimeManaged = $RuntimeState.backend.managed -eq $true
       $portAllowed = Test-PortSelectionAllowsReuse $PreferredPort $runtimeUrl $EnforcePreferredPort
       if ($runtimeManaged -and $portAllowed -and $runtimeHealth.healthy -and (Test-BackendSourceMatches $runtimeHealth $ExpectedSourceRevision)) {
@@ -1574,30 +1708,27 @@ function Resolve-BackendPlan([int]$PreferredPort, [string]$ConfiguredUrl, $Runti
     }
   }
 
-  if ($PreferredPort -gt 0) {
-    $preferredUrl = "http://127.0.0.1:$PreferredPort"
-    $preferredHealth = Get-SymppBackendHealth $preferredUrl
-    if ($preferredHealth.healthy) {
-      if (Test-RuntimeEntryExternalOverride $RuntimeState.backend $preferredUrl "backend") {
-        Write-Diagnostic "Ignoring recorded external backend $preferredUrl for implicit reuse. Set SYMPP_BACKEND_URL=$preferredUrl to reuse it explicitly."
-      } elseif (Test-BackendSourceMatches $preferredHealth $ExpectedSourceRevision) {
-        return New-ReusedBackendPlan "external_loopback" $preferredUrl $preferredHealth $false $null
-      } else {
-        Write-Diagnostic "Ignoring healthy Symphony++ backend $preferredUrl because source revision $(Format-SourceRevisionForDiagnostic $preferredHealth.source_revision) does not match expected $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision)."
-      }
-      $selectedPort = Select-AvailablePort $PreferredPort (@($PreferredPort) + @($AvoidPorts))
-    } else {
-      $selectedPort = $null
-    }
-  } else {
-    $selectedPort = $null
-  }
-
   if ($null -eq $selectedPort -and $PreferredPort -gt 0) {
     $portRelease = Wait-ForTcpPortRelease $PreferredPort $PortReleaseTimeoutSec
     if (-not $portRelease.released) {
-      Write-Diagnostic "$(New-BackendPortOccupiedMessage $PreferredPort @($portRelease.owners)) Selecting a fallback managed backend port for this Codex session."
-      $selectedPort = Select-AvailablePort $PreferredPort (@($PreferredPort) + @($AvoidPorts))
+      if (Test-SymppBackendOwners @($portRelease.owners)) {
+        $busyHealth = Get-SymppBackendHealthWithRetry "http://127.0.0.1:$PreferredPort" 6 750
+        if ($busyHealth.healthy -and (Test-BackendSourceMatches $busyHealth $ExpectedSourceRevision)) {
+          return New-ReusedBackendPlan "external_loopback" "http://127.0.0.1:$PreferredPort" $busyHealth $false $null
+        }
+        if ($busyHealth.mcp_ready) {
+          Write-Diagnostic "$(New-BackendPortOccupiedMessage $PreferredPort @($portRelease.owners)) The occupied Symphony++ backend responded to MCP but is not a healthy matching runtime (status=$($busyHealth.status), source=$(Format-SourceRevisionForDiagnostic $busyHealth.source_revision)). Selecting a fallback managed backend port for this Codex session."
+          $selectedPort = Select-AvailablePort $PreferredPort (@($PreferredPort) + @($AvoidPorts))
+        } elseif (-not $EnforcePreferredPort) {
+          Write-Diagnostic "$(New-BackendPortOccupiedMessage $PreferredPort @($portRelease.owners)) The occupied Symphony++ backend did not become MCP-ready after the bounded retry window. Selecting a fallback managed backend port for this Codex session."
+          $selectedPort = Select-AvailablePort $PreferredPort (@($PreferredPort) + @($AvoidPorts))
+        } else {
+          throw (New-BackendBusySymppMessage $PreferredPort @($portRelease.owners) $busyHealth)
+        }
+      } else {
+        Write-Diagnostic "$(New-BackendPortOccupiedMessage $PreferredPort @($portRelease.owners)) Selecting a fallback managed backend port for this Codex session."
+        $selectedPort = Select-AvailablePort $PreferredPort (@($PreferredPort) + @($AvoidPorts))
+      }
     } else {
       $selectedPort = $PreferredPort
     }
@@ -1644,7 +1775,8 @@ function Resolve-FastAttachRuntimePlan {
     [string]$ConfiguredBackendUrl,
     [string]$ConfiguredDashboardOrigin,
     [object]$BackendHealthOverride = $null,
-    [object]$DashboardHealthyOverride = $null
+    [object]$DashboardHealthyOverride = $null,
+    [object]$DashboardProxyMatchesOverride = $null
   )
 
   if ($BackendPortExplicit -or $DashboardPortExplicit -or
@@ -1681,13 +1813,23 @@ function Resolve-FastAttachRuntimePlan {
     return $null
   }
 
-  $backendHealth = if ($null -ne $BackendHealthOverride) { $BackendHealthOverride } else { Get-SymppBackendHealth $backendUrl }
+  $backendHealth = if ($null -ne $BackendHealthOverride) { $BackendHealthOverride } else { Get-SymppBackendHealthWithRetry $backendUrl }
   if (-not (Test-BackendSourceMatches $backendHealth $ExpectedSourceRevision)) {
     return $null
   }
 
   $dashboardHealthy = if ($null -ne $DashboardHealthyOverride) { [bool]$DashboardHealthyOverride } else { Test-HealthySymppDashboard $dashboardOrigin }
   if (-not $dashboardHealthy) {
+    return $null
+  }
+
+  $dashboardProxyMatches =
+    if ($null -ne $DashboardProxyMatchesOverride) {
+      [bool]$DashboardProxyMatchesOverride
+    } else {
+      Test-SymppDashboardMcpProxyMatches $dashboardOrigin $ExpectedSourceRevision
+    }
+  if (-not $dashboardProxyMatches) {
     return $null
   }
 
@@ -1705,10 +1847,30 @@ function Resolve-FastAttachRuntimePlan {
   }
 }
 
-function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [string]$BackendUrl, $RuntimeState, [bool]$EnforcePreferredPort, [bool]$AllowRecordedRuntimeReuse) {
+function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [string]$BackendUrl, $RuntimeState, [bool]$EnforcePreferredPort, [string]$ExpectedSourceRevision, [bool]$AllowRecordedRuntimeReuse) {
   if (-not [string]::IsNullOrWhiteSpace($ConfiguredOrigin)) {
     $origin = $ConfiguredOrigin.TrimEnd("/")
     return New-ReusedDashboardPlan "external_override" $origin $false $null
+  }
+
+  $backendPort = Get-PortFromOrigin $BackendUrl
+  if ($PreferredPort -gt 0 -and $PreferredPort -eq $DefaultDashboardPort -and $backendPort -eq $DefaultBackendPort) {
+    $preferredOrigin = "http://127.0.0.1:$PreferredPort"
+    if ((Test-HealthySymppDashboard $preferredOrigin) -and (Test-SymppDashboardMcpProxyMatches $preferredOrigin $ExpectedSourceRevision)) {
+      $preferredEntry = if ($null -ne $RuntimeState) { $RuntimeState.frontend } else { $null }
+      $managed = $false
+      $pid = $null
+      $status = "external_loopback"
+      if (Test-RuntimeEntryEndpointMatches "frontend" $preferredEntry $preferredOrigin) {
+        $managed = $preferredEntry.managed -eq $true
+        $pid = $preferredEntry.pid
+        if ($managed) {
+          $status = "reused"
+        }
+      }
+
+      return New-ReusedDashboardPlan $status $preferredOrigin $managed $pid
+    }
   }
 
   if ($AllowRecordedRuntimeReuse -and $null -ne $RuntimeState -and $null -ne $RuntimeState.frontend) {
@@ -1718,7 +1880,7 @@ function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [
         $runtimeBackendUrl.TrimEnd("/") -eq $BackendUrl.TrimEnd("/")) {
       $runtimeManaged = $RuntimeState.frontend.managed -eq $true
       $portAllowed = Test-PortSelectionAllowsReuse $PreferredPort $runtimeOrigin $EnforcePreferredPort
-      if ($runtimeManaged -and $portAllowed -and -not [string]::IsNullOrWhiteSpace($runtimeOrigin) -and (Test-HealthySymppDashboard $runtimeOrigin)) {
+      if ($runtimeManaged -and $portAllowed -and -not [string]::IsNullOrWhiteSpace($runtimeOrigin) -and (Test-HealthySymppDashboard $runtimeOrigin) -and (Test-SymppDashboardMcpProxyMatches $runtimeOrigin $ExpectedSourceRevision)) {
         return New-ReusedDashboardPlan "reused" $runtimeOrigin ($RuntimeState.frontend.managed -eq $true) $RuntimeState.frontend.pid
       }
       if (-not [string]::IsNullOrWhiteSpace($runtimeOrigin) -and (Test-HealthySymppDashboard $runtimeOrigin)) {
@@ -1726,6 +1888,8 @@ function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [
           Write-Diagnostic "Ignoring recorded external dashboard $($runtimeOrigin.TrimEnd('/')) for implicit reuse. Set SYMPP_DASHBOARD_ORIGIN=$($runtimeOrigin.TrimEnd('/')) to reuse it explicitly."
         } elseif (-not $portAllowed) {
           Write-Diagnostic "Ignoring healthy runtime dashboard $($runtimeOrigin.TrimEnd('/')) because SYMPP_DASHBOARD_PORT requests $PreferredPort. Set SYMPP_DASHBOARD_ORIGIN=$($runtimeOrigin.TrimEnd('/')) to reuse it explicitly."
+        } elseif (-not (Test-SymppDashboardMcpProxyMatches $runtimeOrigin $ExpectedSourceRevision)) {
+          Write-Diagnostic "Ignoring healthy runtime dashboard $($runtimeOrigin.TrimEnd('/')) because its MCP proxy does not match expected source $(Format-SourceRevisionForDiagnostic $ExpectedSourceRevision)."
         }
       }
     } elseif (-not [string]::IsNullOrWhiteSpace($runtimeOrigin) -and (Test-HealthySymppDashboard $runtimeOrigin)) {
@@ -1733,7 +1897,6 @@ function Resolve-DashboardPlan([int]$PreferredPort, [string]$ConfiguredOrigin, [
     }
   }
 
-  $backendPort = Get-PortFromOrigin $BackendUrl
   $avoid = if ($backendPort) { @([int]$backendPort) } else { @() }
   $selectedPort = Select-AvailablePort $PreferredPort $avoid
   $origin = "http://127.0.0.1:$selectedPort"
@@ -1807,7 +1970,7 @@ function Start-Backend($Plan, [string]$DashboardOrigin, [string]$ElixirDir, [str
     throw "Symphony++ backend did not become healthy at $($Plan.url) within $TimeoutSec seconds. $portDetail stderr_log=$($launch.stderr)"
   }
 
-  $health = Get-SymppBackendHealth $Plan.url
+  $health = Get-SymppBackendHealthWithRetry $Plan.url
   $listenerPid = Get-ManagedListenerPid "backend" ([int]$Plan.port)
   return [pscustomobject]@{
     pid = if ($listenerPid) { $listenerPid } else { $launch.process.Id }
@@ -2210,6 +2373,20 @@ function Invoke-SelfTest {
   if (Test-BackendSourceMatches ([pscustomobject]@{ healthy = $false; source_revision = $revisionA }) $revisionA) {
     throw "Unhealthy backend should not be reusable."
   }
+  $degradedA = New-SymppBackendHealth $false $revisionA "health_degraded" $true $true $false "degraded"
+  if (Test-BackendSourceMatches $degradedA $revisionA) {
+    throw "Degraded backend health should not be treated as reusable."
+  }
+  if (-not (Test-SymppBackendCommandLine "erl.exe -noshell -s mix sympp.cockpit --host 127.0.0.1 --port 19998")) {
+    throw "Symphony++ backend command-line detection should recognize sympp.cockpit."
+  }
+  if (Test-SymppBackendCommandLine "node.exe node_modules/vite/bin/vite.js --host 127.0.0.1") {
+    throw "Symphony++ backend command-line detection should not match dashboard Vite."
+  }
+  $busyMessage = New-BackendBusySymppMessage 19998 @([pscustomobject]@{ pid = 1234; process = "erl"; localAddress = "127.0.0.1" }) (New-SymppBackendHealth $false $null "initialize_failed" $true)
+  if ($busyMessage -notmatch "backend_port_busy_sympp_unhealthy" -or $busyMessage -notmatch "initialize_failed") {
+    throw "Busy Symphony++ backend diagnostic should include the refusal code and health detail."
+  }
 
   $runtimeKeyA = New-RuntimeKey "http://127.0.0.1:45678/" "http://127.0.0.1:45679/" $revisionA
   $runtimeKeyANormalized = New-RuntimeKey "http://127.0.0.1:45678" "http://127.0.0.1:45679" $revisionA
@@ -2255,25 +2432,28 @@ function Invoke-SelfTest {
       pid = 1235
     }
   }
-  $fastAttachPlan = Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionA 19998 19999 $false $false $null $null $healthyA $true
+  $fastAttachPlan = Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionA 19998 19999 $false $false $null $null $healthyA $true $true
   if ($null -eq $fastAttachPlan -or
       $fastAttachPlan.backend_plan.status -ne "fast_attach" -or
       $fastAttachPlan.dashboard_plan.status -ne "fast_attach" -or
       $fastAttachPlan.runtime_key -ne $oldRuntimeKey) {
     throw "Fast attach should reuse a healthy managed runtime for the same source revision and default endpoints."
   }
-  if ($null -ne (Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionB 19998 19999 $false $false $null $null $healthyA $true)) {
+  if ($null -ne (Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionB 19998 19999 $false $false $null $null $healthyA $true $true)) {
     throw "Fast attach should reject stale managed runtime revisions."
   }
-  if ($null -ne (Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionA 19998 19999 $true $false $null $null $healthyA $true)) {
+  if ($null -ne (Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionA 19998 19999 $true $false $null $null $healthyA $true $true)) {
     throw "Fast attach should not bypass explicit backend port selection."
+  }
+  if ($null -ne (Resolve-FastAttachRuntimePlan $oldRuntimeState $revisionA 19998 19999 $false $false $null $null $healthyA $true $false)) {
+    throw "Fast attach should reject dashboards whose MCP proxy does not match the backend source."
   }
   $externalRuntimeState = [pscustomobject]@{
     runtime_key = $oldRuntimeKey
     backend = [pscustomobject]@{ managed = $false; url = "http://127.0.0.1:19998"; port = 19998; pid = 1234; source_revision = $revisionA }
     frontend = [pscustomobject]@{ managed = $true; origin = "http://127.0.0.1:19999"; port = 19999; pid = 1235 }
   }
-  if ($null -ne (Resolve-FastAttachRuntimePlan $externalRuntimeState $revisionA 19998 19999 $false $false $null $null $healthyA $true)) {
+  if ($null -ne (Resolve-FastAttachRuntimePlan $externalRuntimeState $revisionA 19998 19999 $false $false $null $null $healthyA $true $true)) {
     throw "Fast attach should only reuse launcher-managed runtime entries."
   }
 
@@ -2517,7 +2697,7 @@ try {
   $runtimeState = Read-RuntimeState $runtimeFile
   $activeLeasesAtStart = @(Get-ActiveBridgeLeases $runtimeFile)
   if ($activeLeasesAtStart.Count -eq 0 -and $null -ne $runtimeState -and $null -ne $runtimeState.backend) {
-    $runtimeHealth = Get-SymppBackendHealth ([string]$runtimeState.backend.url)
+    $runtimeHealth = Get-SymppBackendHealthWithRetry ([string]$runtimeState.backend.url)
     $preserveBackendUrl = if ([string]::IsNullOrWhiteSpace($env:SYMPP_BACKEND_URL)) { $null } else { $env:SYMPP_BACKEND_URL.TrimEnd("/") }
     $preserveDashboardOrigin = if ([string]::IsNullOrWhiteSpace($env:SYMPP_DASHBOARD_ORIGIN)) { $null } else { $env:SYMPP_DASHBOARD_ORIGIN.TrimEnd("/") }
     if (-not (Test-BackendSourceMatches $runtimeHealth $expectedSourceRevision) -and
@@ -2532,7 +2712,7 @@ try {
   }
 
   $allowRecordedDashboardReuse = $backendPlan.managed -eq $true -and [string]$backendPlan.status -eq "reused"
-  $dashboardPlan = Resolve-DashboardPlan $dashboardPort $env:SYMPP_DASHBOARD_ORIGIN $backendPlan.url $runtimeState $dashboardPortExplicit $allowRecordedDashboardReuse
+  $dashboardPlan = Resolve-DashboardPlan $dashboardPort $env:SYMPP_DASHBOARD_ORIGIN $backendPlan.url $runtimeState $dashboardPortExplicit $expectedSourceRevision $allowRecordedDashboardReuse
   if ($dashboardPlan.should_start -and -not $autostartFrontend) {
     $dashboardPlan = [pscustomobject]@{
       status = "disabled"

@@ -148,9 +148,7 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
   defp require_session_for_followup(_payload, state_key) when is_binary(state_key), do: :ok
 
   defp handle_payload(payload, nil, local_daemon_trusted?) do
-    with_live_repo(payload, fn repo ->
-      HTTPTransport.handle(mcp_config(repo, local_daemon_trusted?), payload, client_key: @client_key)
-    end)
+    HTTPTransport.handle(mcp_config(configured_repo(), local_daemon_trusted?), payload, client_key: @client_key)
   end
 
   defp handle_payload(payload, state_key, local_daemon_trusted?) when is_binary(state_key) do
@@ -177,9 +175,6 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
 
   defp handle_stored_server_payload(config, payload, state_key, %Server{} = server, local_daemon_trusted?) do
     cond do
-      health_followup?(payload) ->
-        handle_with_live_repo_or_config(config, payload, state_key, local_daemon_trusted?)
-
       repo_backed_followup?(payload, server) ->
         handle_with_live_repo(payload, state_key, local_daemon_trusted?)
 
@@ -205,9 +200,6 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
 
   defp repo_backed_followup?(%{"method" => "tools/list"}, %Server{session: %Session{}}), do: true
   defp repo_backed_followup?(payload, %Server{}), do: repo_backed_followup?(payload)
-
-  defp health_followup?(%{"method" => "tools/call", "params" => %{"name" => "sympp.health"}}), do: true
-  defp health_followup?(_payload), do: false
 
   defp repo_backed_followup?(%{"method" => "resources/list"}), do: true
   defp repo_backed_followup?(%{"method" => "resources/read", "params" => %{"uri" => uri}}), do: protected_resource_uri?(uri)
@@ -390,13 +382,16 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
   defp configured_repo, do: endpoint_config(:sympp_repo) || Repo
 
   defp mcp_config(repo, local_daemon_trusted?) do
+    database = configured_database(repo)
+
     Config.default(
       mode: :http,
       repo: repo,
-      database: configured_database(repo),
+      database: database,
       repo_root:
         endpoint_config(:sympp_repo_root) ||
           Application.get_env(:symphony_elixir, :sympp_repo_root),
+      health_ledger_mode: health_ledger_mode(repo, database),
       local_daemon_trusted: local_daemon_trusted?
     )
   end
@@ -409,9 +404,49 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
       custom_repo?(repo) and not is_nil(repo_database) -> repo_database
       not is_nil(sympp_repo_database) -> sympp_repo_database
       not is_nil(repo_database) -> repo_database
+      repo == Repo -> Repo.database_path_without_side_effects()
       true -> nil
     end
   end
+
+  defp health_ledger_mode(repo, database) do
+    cond do
+      remote_repo_config?(repo) -> :live
+      remote_database?(database) -> :live
+      configured_database?(database) -> :configured_identity
+      true -> :live
+    end
+  end
+
+  defp configured_database?(database) when is_binary(database), do: String.trim(database) != ""
+  defp configured_database?(_database), do: false
+
+  defp remote_repo_config?(repo) when is_atom(repo) do
+    config = if Code.ensure_loaded?(repo) and function_exported?(repo, :config, 0), do: repo.config(), else: []
+
+    config
+    |> Keyword.take([:url, :hostname, :host])
+    |> Enum.any?(fn {_key, value} -> configured_database?(value) end)
+  rescue
+    _error -> false
+  end
+
+  defp remote_repo_config?(_repo), do: false
+
+  defp remote_database?(database) when is_binary(database) do
+    database = String.trim(database)
+    lower = String.downcase(database)
+
+    cond do
+      lower == "" -> false
+      String.starts_with?(lower, "file:") -> false
+      String.contains?(lower, "://") -> true
+      Regex.match?(~r/(^|;)\s*(server|host|hostname|data source|addr|address|dbname)\s*=/i, database) -> true
+      true -> false
+    end
+  end
+
+  defp remote_database?(_database), do: false
 
   defp custom_repo?(repo) when is_atom(repo), do: repo != Repo
   defp custom_repo?(_repo), do: false

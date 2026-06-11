@@ -408,7 +408,7 @@ defmodule Mix.Tasks.Sympp.Cockpit do
     database = Repo.database_path()
 
     with :ok <- validate_retention_database_path(database) do
-      case Repo.start_link(database: database, name: Repo.process_name(database), pool_size: 1, log: false) do
+      case Repo.start_link(Repo.child_options(database: database, name: Repo.process_name(database), log: false)) do
         {:ok, pid} ->
           Repo.put_dynamic_repo(pid)
           {:ok, pid}

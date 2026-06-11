@@ -452,6 +452,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     end
   end
 
+  test "Symphony++ Repo child options use burst-friendly queue defaults" do
+    original_pool_size = Application.get_env(:symphony_elixir, :sympp_repo_pool_size)
+    original_queue_target = Application.get_env(:symphony_elixir, :sympp_repo_queue_target)
+    original_queue_interval = Application.get_env(:symphony_elixir, :sympp_repo_queue_interval)
+
+    try do
+      Application.delete_env(:symphony_elixir, :sympp_repo_pool_size)
+      Application.delete_env(:symphony_elixir, :sympp_repo_queue_target)
+      Application.delete_env(:symphony_elixir, :sympp_repo_queue_interval)
+
+      options = Repo.child_options(database: ":memory:", log: false)
+
+      assert Keyword.fetch!(options, :database) == ":memory:"
+      assert Keyword.fetch!(options, :pool_size) == 5
+      assert Keyword.fetch!(options, :queue_target) == 1_000
+      assert Keyword.fetch!(options, :queue_interval) == 5_000
+      assert Keyword.fetch!(options, :log) == false
+
+      Application.put_env(:symphony_elixir, :sympp_repo_pool_size, 8)
+      Application.put_env(:symphony_elixir, :sympp_repo_queue_target, 2_000)
+      Application.put_env(:symphony_elixir, :sympp_repo_queue_interval, 10_000)
+
+      configured = Repo.child_options(database: ":memory:")
+
+      assert Keyword.fetch!(configured, :pool_size) == 8
+      assert Keyword.fetch!(configured, :queue_target) == 2_000
+      assert Keyword.fetch!(configured, :queue_interval) == 10_000
+
+      overridden = Repo.child_options(database: ":memory:", pool_size: 1, queue_target: 250, queue_interval: 500)
+
+      assert Keyword.fetch!(overridden, :pool_size) == 1
+      assert Keyword.fetch!(overridden, :queue_target) == 250
+      assert Keyword.fetch!(overridden, :queue_interval) == 500
+    after
+      restore_app_env(:sympp_repo_pool_size, original_pool_size)
+      restore_app_env(:sympp_repo_queue_target, original_queue_target)
+      restore_app_env(:sympp_repo_queue_interval, original_queue_interval)
+    end
+  end
+
   test "Symphony++ Repo database path preserves SQLite special database names" do
     original_database_path = Application.get_env(:symphony_elixir, :sympp_repo_database)
     original_repo_config = Application.get_env(:symphony_elixir, Repo)

@@ -1109,6 +1109,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_601, "Method not found", %{}}
   end
 
+  defp health(%__MODULE__{config: %Config{health_ledger_mode: :configured_identity} = config}) do
+    ledger = configured_identity_ledger_health(config)
+
+    %{
+      "status" => if(ledger["reachable"], do: "ok", else: "degraded"),
+      "version" => config.version,
+      "source" => source_identity(config),
+      "mode" => Atom.to_string(config.mode),
+      "ledger" => ledger
+    }
+  end
+
   defp health(%__MODULE__{config: %Config{} = config}) do
     ledger = ledger_health(config)
 
@@ -1131,6 +1143,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case normalized_database(database) do
       nil -> default_ledger_health(repo)
       database -> configured_ledger_health(repo, database)
+    end
+  end
+
+  defp configured_identity_ledger_health(%Config{repo: repo, database: database}) do
+    case normalized_database(database) do
+      nil -> configured_identity_default_ledger_health(repo)
+      database -> configured_identity_database_ledger_health(database, "explicit")
+    end
+  end
+
+  defp configured_identity_default_ledger_health(repo) do
+    case repo_configured_database_for_identity(repo) || default_repo_database_for_identity(repo) do
+      database when is_binary(database) -> configured_identity_database_ledger_health(database, "default")
+      _database -> unavailable_ledger_health(unknown_ledger_identity("default"))
+    end
+  end
+
+  defp default_repo_database_for_identity(Repo), do: Repo.database_path_if_present() || Repo.database_path_without_side_effects()
+  defp default_repo_database_for_identity(_repo), do: nil
+
+  defp configured_identity_database_ledger_health(database, source) do
+    case configured_ledger(database, source) do
+      {:sqlite, ":memory:", identity} ->
+        %{"reachable" => true, "identity" => identity}
+
+      {:sqlite, path, identity} when is_binary(path) ->
+        if File.exists?(Path.expand(path)) do
+          %{"reachable" => true, "identity" => identity}
+        else
+          unavailable_ledger_health(identity)
+        end
+
+      {:server, identity} ->
+        unavailable_ledger_health(identity)
     end
   end
 

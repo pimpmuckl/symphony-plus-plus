@@ -37,6 +37,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     def start_link(_opts), do: {:error, :start_failed}
   end
 
+  defmodule RemoteHTTPRepo do
+    @moduledoc false
+
+    def config, do: [hostname: "ledger-http.example.test", port: 15_432, database: "sympp"]
+    def query("PRAGMA database_list", _params, _opts), do: {:error, :unsupported}
+    def query(_sql, _params, _opts), do: {:ok, %{rows: [[1]]}}
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
     endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
@@ -705,7 +713,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
       init = post_json(initialize_request("init"))
       [session_id] = get_resp_header(init, "mcp-session-id")
 
-      health = post_json(tool_call_request("health", "sympp.health", %{}), [{"mcp-session-id", session_id}])
+      pre_attach_health = post_json(tool_call_request("health", "sympp.health", %{}), [{"mcp-session-id", session_id}])
       tool_notification = post_json(tool_call_notification("solo_list", %{}), [{"mcp-session-id", session_id}])
 
       conn =
@@ -719,15 +727,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
           [{"mcp-session-id", session_id}]
         )
 
-      assert get_in(json_response(health, 200), ["result", "structuredContent", "status"]) == "ok"
-      assert get_in(json_response(health, 200), ["result", "structuredContent", "ledger", "reachable"]) == true
+      post_attach_health = post_json(tool_call_request("health-after-attach", "sympp.health", %{}), [{"mcp-session-id", session_id}])
+
+      assert get_in(json_response(pre_attach_health, 200), ["result", "structuredContent", "status"]) == "degraded"
+      assert get_in(json_response(pre_attach_health, 200), ["result", "structuredContent", "ledger", "reachable"]) == false
       assert response(tool_notification, 202) == ""
       assert get_in(json_response(conn, 200), ["result", "structuredContent", "action"]) == "solo_attach"
+      assert get_in(json_response(post_attach_health, 200), ["result", "structuredContent", "status"]) == "ok"
+      assert get_in(json_response(post_attach_health, 200), ["result", "structuredContent", "ledger", "reachable"]) == true
       assert File.exists?(database_path)
     end)
   end
 
-  test "POST /mcp preserves custom repo sessions through the dashboard fallback database" do
+  test "POST /mcp keeps custom repo startup discovery independent from fallback database" do
     fallback_database_path = WorkPackageFactory.database_path()
     original_repo_config = Application.get_env(:symphony_elixir, Repo)
     original_lazy_repo_config = Application.get_env(:symphony_elixir, LazyHTTPRepo)
@@ -751,7 +763,53 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
       tools = post_json(tools_list_request("tools"), [{"mcp-session-id", session_id}])
 
       assert "sympp.health" in tool_names(json_response(tools, 200))
-      assert File.exists?(fallback_database_path)
+      refute File.exists?(fallback_database_path)
+    end)
+  end
+
+  test "POST /mcp keeps default repo startup discovery independent from fallback database" do
+    fallback_database_path = WorkPackageFactory.database_path()
+    original_repo_config = Application.get_env(:symphony_elixir, Repo)
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+
+    Application.delete_env(:symphony_elixir, :sympp_repo_database)
+    Application.put_env(:symphony_elixir, Repo, database: fallback_database_path)
+
+    on_exit(fn ->
+      restore_app_env(Repo, original_repo_config)
+      restore_sympp_repo_database(original_database)
+      File.rm(fallback_database_path)
+    end)
+
+    with_endpoint_repo(Repo, fn ->
+      init = post_json(initialize_request("init"))
+      [session_id] = get_resp_header(init, "mcp-session-id")
+
+      tools = post_json(tools_list_request("tools"), [{"mcp-session-id", session_id}])
+      health = post_json(tool_call_request("health", "sympp.health", %{}), [{"mcp-session-id", session_id}])
+
+      assert "sympp.health" in tool_names(json_response(tools, 200))
+      assert get_in(json_response(health, 200), ["result", "structuredContent", "status"]) == "degraded"
+      refute File.exists?(fallback_database_path)
+    end)
+  end
+
+  test "POST /mcp preserves live health for remote custom repo config" do
+    with_endpoint_repo(RemoteHTTPRepo, fn ->
+      init = post_json(initialize_request("init"))
+      [session_id] = get_resp_header(init, "mcp-session-id")
+
+      health = post_json(tool_call_request("health", "sympp.health", %{}), [{"mcp-session-id", session_id}])
+      structured = get_in(json_response(health, 200), ["result", "structuredContent"])
+
+      assert structured["status"] == "ok"
+      assert structured["ledger"]["reachable"] == true
+
+      assert structured["ledger"]["identity"] == %{
+               "kind" => "server",
+               "source" => "explicit",
+               "endpoint" => "server://ledger-http.example.test:15432"
+             }
     end)
   end
 
@@ -843,7 +901,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     end)
   end
 
-  test "POST /mcp fails closed when dashboard lazy repo startup fails" do
+  test "POST /mcp keeps startup discovery DB-free when dashboard lazy repo startup fails" do
     database_path = WorkPackageFactory.database_path()
     original_repo_config = Application.get_env(:symphony_elixir, FailingLazyHTTPRepo)
 
@@ -855,11 +913,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     end)
 
     with_endpoint_repo(FailingLazyHTTPRepo, fn ->
-      conn = post_json(initialize_request("init"))
+      init = post_json(initialize_request("init"))
+      [session_id] = get_resp_header(init, "mcp-session-id")
 
-      assert json_response(conn, 503) == json_rpc_error("init", -32_000, "Server error", "ledger_unavailable")
-      assert get_resp_header(conn, "mcp-session-id") == []
-      assert :sys.get_state(HTTPStateStore).entries == %{}
+      tools = post_json(tools_list_request("tools"), [{"mcp-session-id", session_id}])
+      health = post_json(tool_call_request("health", "sympp.health", %{}), [{"mcp-session-id", session_id}])
+      repo_backed = post_json(tool_call_request("repo-backed", "solo_list", %{}), [{"mcp-session-id", session_id}])
+
+      assert get_in(json_response(init, 200), ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+      assert "sympp.health" in tool_names(json_response(tools, 200))
+      assert get_in(json_response(health, 200), ["result", "structuredContent", "mode"]) == "http"
+      assert json_response(repo_backed, 503) == json_rpc_error("repo-backed", -32_000, "Server error", "ledger_unavailable")
+
+      assert Enum.any?(Map.keys(:sys.get_state(HTTPStateStore).entries), fn
+               {_namespace, _database_key, @client_key, ^session_id} -> true
+               _entry -> false
+             end)
     end)
   end
 

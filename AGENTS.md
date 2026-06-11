@@ -37,6 +37,12 @@
 - Do not replace `elixir/WORKFLOW.md` with the Symphony++ draft workflow template.
 - Do not wire unfinished Symphony++ config into runtime defaults.
 - Do not create live Linear state unless the assigned package and operator explicitly require it.
+- For production-like Symphony++ MCP cutovers, the running plugin runtime must
+  resolve from the installed plugin/marketplace cache, not from the local source
+  checkout. A `.sympp-source-root` hint pointed at `C:\Code\symphony-plus-plus`
+  is acceptable only for local debug validation; remove or replace it before
+  declaring the runtime ready for agents unless the operator explicitly asks for
+  checkout-backed testing.
 
 ## Security
 
