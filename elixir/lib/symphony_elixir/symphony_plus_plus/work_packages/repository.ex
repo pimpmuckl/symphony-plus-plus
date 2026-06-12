@@ -261,10 +261,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
   end
 
   defp delivery_closeout_update_query(%WorkPackage{} = work_package, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice) do
+    delivery_repo = PlannedSlice.delivery_repo(work_request, planned_slice)
+
     from(package in WorkPackage,
       where: package.id == ^work_package.id,
       where: package.status == ^work_package.status,
-      where: package.repo == ^work_request.repo,
+      where: package.repo == ^delivery_repo,
       where: package.base_branch == ^planned_slice.target_base_branch,
       where: package.kind == ^planned_slice.work_package_kind,
       where: package.title == ^planned_slice.title,
@@ -298,7 +300,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
   end
 
   defp compatible_delivery_package?(%WorkPackage{} = work_package, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice) do
-    work_package.repo == work_request.repo and
+    work_package.repo == PlannedSlice.delivery_repo(work_request, planned_slice) and
       work_package.base_branch == planned_slice.target_base_branch and
       work_package.kind == planned_slice.work_package_kind and
       work_package.title == planned_slice.title and

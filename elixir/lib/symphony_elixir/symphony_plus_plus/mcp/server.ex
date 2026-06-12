@@ -31,7 +31,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, PlannedSliceWorkerRevoke, Repository, Session, SoloTools}
+
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{
+    Auth,
+    ClaimToolText,
+    Config,
+    PlannedSliceWorkerRevoke,
+    Repository,
+    Session,
+    SoloTools
+  }
+
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
@@ -1909,6 +1919,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "human_description" => markdown_string_schema("Deprecated alias for description; human-facing Markdown."),
         "request_kind" => string_enum_schema(WorkRequest.work_types()),
         "workflow_mode" => string_enum_schema(WorkRequest.dispatch_shapes()),
+        "repo_scopes" => %{
+          "type" => "array",
+          "items" => %{"type" => "object", "additionalProperties" => false, "properties" => %{"repo" => string_schema(), "base_branch" => string_schema()}, "required" => ["repo"]}
+        },
         "constraints" => object_schema(),
         "status" => string_enum_schema(WorkRequest.statuses()),
         "claimed_by" => string_schema(),
@@ -2431,6 +2445,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "title" => string_schema(),
         "goal" => string_schema(),
         "work_package_kind" => string_enum_schema(StateMachine.standalone_kinds()),
+        "delivery_repo" => described_string_schema("Optional delivery repo for this planned slice. Defaults to the parent WorkRequest primary repo and must be listed in the WorkRequest repo scopes."),
         "target_base_branch" =>
           described_string_schema(
             "Delivery base branch for the planned slice and created WorkPackage. It may differ from the parent WorkRequest base branch; worktree preparation must use this package base branch."
@@ -3406,8 +3421,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp validate_local_work_request_scope(repo, %WorkPackage{} = work_package, work_request_id) do
     with {:ok, work_request} <- WorkRequestRepository.get(repo, work_request_id),
-         :ok <- require_local_value_match(work_request.repo, work_package.repo, :work_request_repo_scope_mismatch),
          {:ok, planned_slice} <- local_work_request_package_link(repo, work_request_id, work_package.id),
+         :ok <-
+           require_local_value_match(
+             PlannedSlice.delivery_repo(work_request, planned_slice),
+             work_package.repo,
+             :work_request_repo_scope_mismatch
+           ),
          :ok <-
            require_local_value_match(
              planned_slice.target_base_branch,
@@ -4527,6 +4547,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, request_kind} <- required_argument(arguments, "request_kind"),
          {:ok, description} <- create_work_request_description(arguments),
          {:ok, workflow_mode} <- optional_string_argument(arguments, "workflow_mode", "architect_led_feature_branch"),
+         {:ok, repo_scopes} <- optional_list_argument(arguments, "repo_scopes"),
          {:ok, constraints} <- optional_object_argument(arguments, "constraints"),
          {:ok, status} <- optional_string_argument(arguments, "status", "ready_for_clarification"),
          {:ok, creator_kind} <- create_work_request_creator_kind(arguments),
@@ -4540,6 +4561,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          "work_type" => request_kind,
          "human_description" => description,
          "desired_dispatch_shape" => workflow_mode,
+         "repo_scopes" => repo_scopes || [],
          "constraints" => constraints || %{},
          "status" => status,
          "creator_kind" => creator_kind,
@@ -5364,6 +5386,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, title} <- required_argument(arguments, "title"),
          {:ok, goal} <- required_argument(arguments, "goal"),
          {:ok, work_package_kind} <- required_argument(arguments, "work_package_kind"),
+         {:ok, delivery_repo} <- optional_string_argument(arguments, "delivery_repo"),
          {:ok, target_base_branch} <- required_argument(arguments, "target_base_branch"),
          {:ok, owned_file_globs} <- required_string_array(arguments, "owned_file_globs"),
          {:ok, forbidden_file_globs} <- required_string_array(arguments, "forbidden_file_globs"),
@@ -5383,6 +5406,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
                "title" => title,
                "goal" => goal,
                "work_package_kind" => work_package_kind,
+               "delivery_repo" => delivery_repo,
                "target_base_branch" => target_base_branch,
                "owned_file_globs" => owned_file_globs,
                "forbidden_file_globs" => forbidden_file_globs,
@@ -7437,7 +7461,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp authorize_planned_slice_policy(%Session{} = session, action, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, tool) do
     target =
       Target.planned_slice(planned_slice.id, work_request.id,
-        repo: work_request.repo,
+        repo: PlannedSlice.delivery_repo(work_request, planned_slice),
         base_branch: planned_slice.target_base_branch || work_request.base_branch,
         phase_id: ArchitectHandoff.phase_id_for_work_request(work_request),
         work_package_id: planned_slice.work_package_id
@@ -7775,7 +7799,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         {:error, :forbidden}
 
       {%PlannedSlice{} = planned_slice, %WorkRequest{} = work_request} ->
-        with :ok <- require_work_package_repo_scope(work_package, work_request),
+        with :ok <- require_work_package_repo_scope(work_package, work_request, planned_slice),
              :ok <- require_work_package_delivery_base_scope(work_package, planned_slice),
              :ok <- require_work_request_scope(repo, work_request, filters) do
           require_delivery_work_package_filter_scope(repo, work_package, work_request, filters)
@@ -7962,14 +7986,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_work_package_repo_scope(%WorkPackage{repo: repo}, %WorkRequest{repo: repo}), do: :ok
-  defp require_work_package_repo_scope(%WorkPackage{}, _scope), do: {:error, :forbidden}
+  defp require_work_package_repo_scope(%WorkPackage{} = work_package, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice) do
+    if work_package.repo == PlannedSlice.delivery_repo(work_request, planned_slice), do: :ok, else: {:error, :forbidden}
+  end
 
   defp require_work_package_delivery_base_scope(%WorkPackage{base_branch: base_branch}, %PlannedSlice{target_base_branch: base_branch}), do: :ok
   defp require_work_package_delivery_base_scope(%WorkPackage{}, %PlannedSlice{}), do: {:error, :forbidden}
 
   defp require_delivery_work_package_scope(%WorkPackage{} = work_package, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice) do
-    with :ok <- require_work_package_repo_scope(work_package, work_request) do
+    with :ok <- require_work_package_repo_scope(work_package, work_request, planned_slice) do
       require_work_package_delivery_base_scope(work_package, planned_slice)
     end
   end
@@ -14377,6 +14402,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp optional_list_argument(arguments, key) do
+    case Map.fetch(arguments, key) do
+      :error -> {:ok, nil}
+      {:ok, nil} -> {:ok, nil}
+      {:ok, value} when is_list(value) -> {:ok, value}
+      {:ok, _value} -> {:tool_error, "invalid_#{key}"}
+    end
+  end
+
   defp optional_decision_prompt_argument(arguments, key) do
     with {:ok, prompt} <- optional_object_argument(arguments, key) do
       case HumanDecisionPrompt.normalize(prompt) do
@@ -14835,6 +14869,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "title" => Redactor.redact_text(planned_slice.title),
       "goal" => Redactor.redact_text(planned_slice.goal),
       "work_package_kind" => planned_slice.work_package_kind,
+      "delivery_repo" => Redactor.redact_text(planned_slice.delivery_repo),
       "target_base_branch" => Redactor.redact_text(planned_slice.target_base_branch),
       "branch_pattern" => Redactor.redact_text(planned_slice.branch_pattern),
       "owned_file_globs" => Enum.map(planned_slice.owned_file_globs || [], &Redactor.redact_text/1),
@@ -15141,52 +15176,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
-  defp claim_tool_result(payload), do: agent_tool_result(payload, compact_claim_tool_text(payload))
-  defp release_tool_result(payload), do: agent_tool_result(payload, compact_release_tool_text(payload))
-
-  defp compact_claim_tool_text(payload) do
-    assignment = Map.get(payload, "assignment", %{})
-    local_claim = Map.get(payload, "local_claim", %{})
-
-    [
-      {"status", "ok"},
-      {"tool", Map.get(local_claim, "tool")},
-      {"role", Map.get(assignment, "grant_role")},
-      {"work_package_id", Map.get(assignment, "work_package_id") || Map.get(local_claim, "work_package_id")},
-      {"work_request_id", Map.get(local_claim, "work_request_id")},
-      {"lease", Map.get(local_claim, "claim_lease_action")},
-      {"warning", compact_claim_warning(local_claim)}
-    ]
-    |> compact_text_lines()
-  end
-
-  defp compact_claim_warning(%{"claim_lease_action" => "reclaimed"}), do: "stale_claim_reclaimed"
-  defp compact_claim_warning(_local_claim), do: nil
-
-  defp compact_release_tool_text(payload) do
-    release = Map.get(payload, "claim_lease_release", %{})
-    recovery = Map.get(payload, "recovery", %{})
-
-    [
-      {"status", Map.get(payload, "status") || "ok"},
-      {"tool", Map.get(payload, "action")},
-      {"binding_cleared", Map.get(payload, "binding_cleared")},
-      {"solo_tools_available", Map.get(payload, "solo_tools_available")},
-      {"claim_lease_release", Map.get(release, "status")},
-      {"recovery", Map.get(recovery, "next_action")}
-    ]
-    |> compact_text_lines()
-  end
-
-  defp compact_text_lines(lines) do
-    lines
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-    |> Enum.map_join("\n", fn {key, value} -> "#{key}: #{compact_text_value(value)}" end)
-  end
-
-  defp compact_text_value(value) when is_boolean(value), do: to_string(value)
-  defp compact_text_value(value) when is_binary(value), do: value
-  defp compact_text_value(value), do: inspect(value)
+  defp claim_tool_result(payload), do: agent_tool_result(payload, ClaimToolText.claim(payload))
+  defp release_tool_result(payload), do: agent_tool_result(payload, ClaimToolText.release(payload))
 
   defp require_current_session_claim_for_bound_call(%__MODULE__{} = server, method, params) do
     if bound_session_call?(server, method, params) do

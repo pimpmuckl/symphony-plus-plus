@@ -3,6 +3,8 @@ Code.require_file("../../../support/symphony_plus_plus/mcp_case.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
+
   test "create_work_request creates provenance and a claimable redacted architect handoff", %{repo: repo} do
     {response, _server} =
       Server.handle_state(
@@ -18,6 +20,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
               "title" => "Agent-created WorkRequest",
               "description" => "Create a WorkRequest and continue as architect.",
               "request_kind" => "feature",
+              "repo_scopes" => [%{"repo" => "nextide/secondary-service", "base_branch" => "integration"}],
               "claimed_by" => "kraken-beta-arch"
             }
           }
@@ -41,6 +44,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
     assert content_text =~ "launch_prompt:"
     assert content_text =~ "claim_local_architect_assignment"
     assert content_text =~ "Reference identifiers (TOON)"
+
+    assert {:ok, repo_scopes} = WorkRequestRepository.list_repo_scopes(repo, get_in(payload, ["work_request", "id"]))
+
+    assert Enum.any?(repo_scopes, &(&1.repo == "nextide/symphony-plus-plus" and &1.base_branch == "main"))
+    assert Enum.any?(repo_scopes, &(&1.repo == "nextide/secondary-service" and &1.base_branch == "integration"))
 
     local_claim = get_in(payload, ["architect_handoff", "local_architect_claim"])
     assert local_claim["tool"] == "claim_local_architect_assignment"

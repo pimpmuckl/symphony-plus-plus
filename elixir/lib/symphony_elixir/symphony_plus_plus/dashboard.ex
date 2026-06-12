@@ -2558,6 +2558,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       title: redacted_text(planned_slice.title),
       goal: redacted_text(planned_slice.goal),
       work_package_kind: planned_slice.work_package_kind,
+      delivery_repo: redacted_text(planned_slice.delivery_repo),
       target_base_branch: planned_slice.target_base_branch,
       branch_pattern: redacted_text(planned_slice.branch_pattern),
       owned_file_globs: Enum.map(planned_slice.owned_file_globs || [], &redacted_text/1),

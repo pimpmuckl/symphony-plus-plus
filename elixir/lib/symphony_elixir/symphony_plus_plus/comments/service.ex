@@ -119,7 +119,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Comments.Service do
     case repo.one(planned_slice_with_work_request_query(target_id)) do
       {%PlannedSlice{} = planned_slice, %WorkRequest{} = work_request} ->
         opts = [
-          repo: work_request.repo,
+          repo: PlannedSlice.delivery_repo(work_request, planned_slice),
           base_branch: planned_slice.target_base_branch || work_request.base_branch,
           phase_id: ArchitectHandoff.phase_id_for_work_request(work_request)
         ]

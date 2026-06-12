@@ -8,6 +8,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDeliveryScope
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.RepoScope
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
@@ -67,6 +68,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
           | :work_package_not_found
           | :id_already_exists
           | :invalid_status
+          | :planned_slice_delivery_scope_out_of_scope
           | :sequence_conflict
           | :stale_status
           | {:constraint_failed, String.t()}
@@ -254,7 +256,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
       |> Map.put("work_request_id", work_request_id)
 
     changeset_fun = &PlannedSlice.create_changeset/1
-    insert_with_sequence(repo, attrs, &next_planned_slice_sequence/2, changeset_fun, clear_completion?: true)
+
+    with {:ok, attrs} <- PlannedSliceDeliveryScope.normalize_explicit(repo, work_request_id, attrs) do
+      insert_with_sequence(repo, attrs, &next_planned_slice_sequence/2, changeset_fun, clear_completion?: true)
+    end
   end
 
   @spec list_planned_slices(repo(), String.t()) :: {:ok, [PlannedSlice.t()]} | {:error, error()}
@@ -911,7 +916,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
       where: is_nil(planned_slice.work_package_id),
       where: is_nil(planned_slice.dispatched_at),
       where: work_request.status in ["ready_for_slicing", "sliced"],
-      where: work_package.repo == work_request.repo,
+      where: work_package.repo == fragment("COALESCE(NULLIF(?, ''), ?)", planned_slice.delivery_repo, work_request.repo),
       where: work_package.base_branch == planned_slice.target_base_branch,
       where: work_package.kind == planned_slice.work_package_kind,
       where: work_package.title == planned_slice.title,
@@ -1103,7 +1108,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
         join: work_package in WorkPackage,
         on: work_package.id == ^work_package_id,
         where: planned_slice.id == ^id and planned_slice.work_request_id == ^work_request_id,
-        where: work_package.repo == work_request.repo,
+        where: work_package.repo == fragment("COALESCE(NULLIF(?, ''), ?)", planned_slice.delivery_repo, work_request.repo),
         where: work_package.base_branch == planned_slice.target_base_branch,
         where: work_package.kind == planned_slice.work_package_kind,
         where: work_package.title == planned_slice.title,

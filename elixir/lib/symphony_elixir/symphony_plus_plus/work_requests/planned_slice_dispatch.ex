@@ -4,6 +4,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
   alias SymphonyElixir.SymphonyPlusPlus.BranchPattern
   alias SymphonyElixir.SymphonyPlusPlus.CreateWork
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDeliveryScope
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
@@ -39,6 +40,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
              is_list(opts) do
     with {:ok, work_request, planned_slice} <- load_dispatchable_slice(repo, work_request_id, planned_slice_id),
          :ok <- validate_branch_pattern(planned_slice),
+         :ok <- PlannedSliceDeliveryScope.validate(repo, work_request, planned_slice),
          :ok <- validate_slice_scope(work_request, planned_slice),
          request = create_work_request(work_request, planned_slice),
          :ok <- validate_create_work_request(request, planned_slice),
@@ -136,7 +138,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
 
   defp create_work_request(%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice) do
     %{
-      "repo" => work_request.repo,
+      "repo" => PlannedSlice.delivery_repo(work_request, planned_slice),
       "base_branch" => planned_slice.target_base_branch,
       "title" => planned_slice.title,
       "kind" => planned_slice.work_package_kind,
