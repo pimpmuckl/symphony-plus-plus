@@ -13,7 +13,15 @@ defmodule SymphonyElixir.WorkflowStore do
   defmodule State do
     @moduledoc false
 
-    defstruct [:path, :stamp, :workflow, :poll_interval_ms]
+    defstruct [
+      :path,
+      :metadata_stamp,
+      :verified_metadata_stamp,
+      :content_hash,
+      :workflow,
+      :poll_interval_ms,
+      :file_ops
+    ]
   end
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -49,11 +57,12 @@ defmodule SymphonyElixir.WorkflowStore do
   @impl true
   def init(opts) do
     poll_interval_ms = Keyword.get(opts, :poll_interval_ms, @poll_interval_ms)
+    file_ops = Keyword.get(opts, :file_ops, default_file_ops())
 
-    case load_state(Workflow.workflow_file_path()) do
+    case load_state(Workflow.workflow_file_path(), file_ops) do
       {:ok, state} ->
         schedule_poll(poll_interval_ms)
-        {:ok, %{state | poll_interval_ms: poll_interval_ms}}
+        {:ok, %{state | poll_interval_ms: poll_interval_ms, file_ops: file_ops}}
 
       {:error, reason} ->
         {:stop, reason}
@@ -72,13 +81,18 @@ defmodule SymphonyElixir.WorkflowStore do
   end
 
   def handle_call(:force_reload, _from, %State{} = state) do
-    case reload_state(state) do
+    case force_reload_state(state) do
       {:ok, new_state} ->
         {:reply, :ok, new_state}
 
       {:error, reason, new_state} ->
         {:reply, {:error, reason}, new_state}
     end
+  end
+
+  defp force_reload_state(%State{} = state) do
+    Workflow.workflow_file_path()
+    |> reload_path(state)
   end
 
   @impl true
@@ -107,9 +121,9 @@ defmodule SymphonyElixir.WorkflowStore do
   end
 
   defp reload_path(path, state) do
-    case load_state(path) do
+    case load_state(path, state.file_ops) do
       {:ok, new_state} ->
-        {:ok, %{new_state | poll_interval_ms: state.poll_interval_ms}}
+        {:ok, %{new_state | poll_interval_ms: state.poll_interval_ms, file_ops: state.file_ops}}
 
       {:error, reason} ->
         log_reload_error(path, reason)
@@ -118,11 +132,38 @@ defmodule SymphonyElixir.WorkflowStore do
   end
 
   defp reload_current_path(path, state) do
-    case current_stamp(path) do
-      {:ok, stamp} when stamp == state.stamp ->
-        {:ok, state}
+    case current_metadata_stamp(path, state.file_ops) do
+      {:ok, metadata_stamp} when metadata_stamp == state.metadata_stamp ->
+        reload_verified_metadata(path, metadata_stamp, state)
 
-      {:ok, _stamp} ->
+      {:ok, metadata_stamp} ->
+        reload_changed_metadata(path, metadata_stamp, state)
+
+      {:error, reason} ->
+        log_reload_error(path, reason)
+        {:error, reason, state}
+    end
+  end
+
+  defp reload_verified_metadata(path, metadata_stamp, state) do
+    if state.verified_metadata_stamp == metadata_stamp do
+      {:ok, state}
+    else
+      reload_changed_metadata(path, metadata_stamp, state)
+    end
+  end
+
+  defp reload_changed_metadata(path, metadata_stamp, state) do
+    case current_content_hash(path, state.file_ops) do
+      {:ok, content_hash} when content_hash == state.content_hash ->
+        {:ok,
+         %{
+           state
+           | metadata_stamp: metadata_stamp,
+             verified_metadata_stamp: verified_metadata_stamp(metadata_stamp)
+         }}
+
+      {:ok, _content_hash} ->
         reload_path(path, state)
 
       {:error, reason} ->
@@ -131,24 +172,63 @@ defmodule SymphonyElixir.WorkflowStore do
     end
   end
 
-  defp load_state(path) do
-    with {:ok, workflow} <- Workflow.load(path),
-         {:ok, stamp} <- current_stamp(path) do
-      {:ok, %State{path: path, stamp: stamp, workflow: workflow}}
+  defp load_state(path, file_ops) do
+    with {:ok, content} <- read_workflow_content(path, file_ops),
+         {:ok, workflow} <- Workflow.load_content(content),
+         {:ok, metadata_stamp} <- current_metadata_stamp(path, file_ops) do
+      {:ok,
+       %State{
+         path: path,
+         metadata_stamp: metadata_stamp,
+         verified_metadata_stamp: verified_metadata_stamp(metadata_stamp),
+         content_hash: hash_content(content),
+         workflow: workflow
+       }}
     else
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp current_stamp(path) when is_binary(path) do
-    with {:ok, stat} <- File.stat(path, time: :posix),
-         {:ok, content} <- File.read(path) do
-      {:ok, {stat.mtime, stat.size, :erlang.phash2(content)}}
-    else
+  defp current_metadata_stamp(path, file_ops) when is_binary(path) do
+    time_unit = :posix
+
+    case file_stat(file_ops, path, time: time_unit) do
+      {:ok, stat} -> {:ok, {time_unit, stat.mtime, stat.ctime, stat.size}}
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp current_content_hash(path, file_ops) when is_binary(path) do
+    with {:ok, content} <- file_read(file_ops, path) do
+      {:ok, hash_content(content)}
+    end
+  end
+
+  defp read_workflow_content(path, file_ops) do
+    case file_read(file_ops, path) do
+      {:ok, content} -> {:ok, content}
+      {:error, reason} -> {:error, {:missing_workflow_file, path, reason}}
+    end
+  end
+
+  defp hash_content(content), do: :erlang.phash2(content)
+
+  defp verified_metadata_stamp({:posix, mtime, ctime, _size} = metadata_stamp) do
+    current_second = System.system_time(:second)
+
+    if is_integer(mtime) and is_integer(ctime) and mtime < current_second and ctime < current_second do
+      metadata_stamp
+    end
+  end
+
+  defp default_file_ops do
+    %{stat: &File.stat/2, read: &File.read/1}
+  end
+
+  defp file_stat(%{stat: stat}, path, opts) when is_function(stat, 2), do: stat.(path, opts)
+
+  defp file_read(%{read: read}, path) when is_function(read, 1), do: read.(path)
 
   defp log_reload_error(path, reason) do
     Logger.error("Failed to reload workflow path=#{path} reason=#{inspect(reason)}; keeping last known good configuration")

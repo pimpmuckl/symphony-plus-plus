@@ -159,7 +159,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:noreply, returned_state} = WorkflowStore.handle_info(:poll, state)
     assert_receive :poll, 50
     assert returned_state.workflow.prompt == "Manual workflow prompt"
-    refute returned_state.stamp == nil
+    refute returned_state.metadata_stamp == nil
+    refute returned_state.content_hash == nil
 
     Workflow.set_workflow_file_path(missing_path)
     assert {:noreply, path_error_state} = WorkflowStore.handle_info(:poll, returned_state)
