@@ -5,6 +5,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Finding do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.SymphonyPlusPlus.Id
+
   @primary_key {:id, :string, autogenerate: false}
   @foreign_key_type :string
 
@@ -99,6 +101,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Finding do
   end
 
   defp stable_id(prefix) do
-    prefix <> "_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    Id.random(prefix)
   end
 end

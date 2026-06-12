@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.SymphonyPlusPlus.Id
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
 
   @primary_key {:id, :string, autogenerate: false}
@@ -117,7 +118,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession do
   defp normalize_key(key), do: to_string(key)
 
   defp stable_id do
-    "solo_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    Id.random("solo")
   end
 
   defp stable_session_key do

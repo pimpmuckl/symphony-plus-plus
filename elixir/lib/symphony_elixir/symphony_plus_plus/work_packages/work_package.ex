@@ -6,6 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
   import Ecto.Changeset
 
   alias SymphonyElixir.SymphonyPlusPlus.BranchPattern
+  alias SymphonyElixir.SymphonyPlusPlus.Id
   alias SymphonyElixir.SymphonyPlusPlus.Policies.Templates
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.StringList
 
@@ -198,6 +199,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
   end
 
   defp stable_id do
-    "wp_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    Id.random("wp")
   end
 end

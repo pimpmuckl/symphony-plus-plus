@@ -6,6 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
   import Ecto.Changeset
 
   alias SymphonyElixir.SymphonyPlusPlus.BranchPattern
+  alias SymphonyElixir.SymphonyPlusPlus.Id
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.StringList
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
@@ -186,6 +187,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
   defp nonblank_or_nil(_value), do: nil
 
   defp stable_id do
-    "wrs_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    Id.random("wrs")
   end
 end

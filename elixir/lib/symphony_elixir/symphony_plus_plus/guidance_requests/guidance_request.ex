@@ -6,6 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest do
   import Ecto.Changeset
 
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
+  alias SymphonyElixir.SymphonyPlusPlus.Id
 
   @primary_key {:id, :string, autogenerate: false}
   @foreign_key_type :string
@@ -175,6 +176,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest do
   end
 
   defp stable_id do
-    "guidance_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    Id.random("guidance")
   end
 end

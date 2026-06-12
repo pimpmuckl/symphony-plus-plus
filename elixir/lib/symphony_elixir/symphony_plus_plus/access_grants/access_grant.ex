@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.SymphonyPlusPlus.Id
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.StringList
 
   @primary_key {:id, :string, autogenerate: false}
@@ -240,7 +241,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
   end
 
   defp stable_id do
-    "ag_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    Id.random("ag")
   end
 
   defp utc_datetime_usec(%DateTime{} = datetime) do

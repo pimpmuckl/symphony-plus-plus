@@ -29,6 +29,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
+  alias SymphonyElixir.SymphonyPlusPlus.Id
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
 
@@ -9124,7 +9125,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp child_ready_approval_ready_cycle_id(%WorkPackage{}), do: nil
 
   defp child_ready_approval_operation_id do
-    "approval_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    Id.random("approval")
   end
 
   defp child_ready_approval_result(%WorkPackage{} = child, %ProgressEvent{} = event) do

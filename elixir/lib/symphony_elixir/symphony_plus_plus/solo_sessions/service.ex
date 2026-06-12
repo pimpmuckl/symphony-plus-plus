@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service do
   @moduledoc false
 
+  alias SymphonyElixir.SymphonyPlusPlus.Id
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Normalization
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
@@ -319,6 +320,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service do
   end
 
   defp stable_blocker_id do
-    "solo_blocker_" <> Base.url_encode64(:crypto.strong_rand_bytes(10), padding: false)
+    Id.random("solo_blocker")
   end
 end

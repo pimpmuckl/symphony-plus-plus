@@ -1,8 +1,6 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   @moduledoc false
 
-  @worktree_segment_prefix_length 12
-
   alias SymphonyElixir.PathSafety
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository
@@ -155,10 +153,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   end
 
   defp worktree_path(%WorkPackage{} = work_package, repo_root, branch, worktree_parent) do
-    with {:ok, branch_segment} <- WorktreePath.unique_segment(branch, branch, @worktree_segment_prefix_length),
-         {:ok, package_segment} <- WorktreePath.unique_segment(work_package.id, work_package.id, @worktree_segment_prefix_length),
+    with {:ok, branch_segment} <- WorktreePath.unique_segment(branch, branch),
+         {:ok, package_segment} <- WorktreePath.unique_segment(work_package.id, work_package.id),
          {:ok, repo_segment} <- WorktreePath.repo_segment(repo_root),
-         candidate <- Path.join([worktree_parent, repo_segment, "#{package_segment}-#{branch_segment}"]),
+         candidate <- Path.join([worktree_parent, repo_segment, "#{package_segment}_#{branch_segment}"]),
          {:ok, candidate} <- canonicalize(candidate),
          :ok <- require_inside_root(candidate, worktree_parent) do
       {:ok, candidate}
@@ -484,18 +482,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   end
 
   defp replayable_managed_prepare_path?(%WorkPackage{} = work_package, repo_root, branch, recorded_path, worktree_parent) do
-    with true <- inside_root?(recorded_path, worktree_parent),
-         {:ok, legacy_path} <- legacy_worktree_path(work_package, repo_root, branch, worktree_parent) do
-      same_path?(recorded_path, legacy_path)
-    else
-      _result -> false
-    end
+    inside_root?(recorded_path, worktree_parent) and
+      Enum.any?(replayable_legacy_worktree_paths(work_package, repo_root, branch, worktree_parent), &same_path?(recorded_path, &1))
+  end
+
+  defp replayable_legacy_worktree_paths(%WorkPackage{} = work_package, repo_root, branch, worktree_parent) do
+    [
+      legacy_worktree_path(work_package, repo_root, branch, worktree_parent),
+      previous_worktree_path(work_package, repo_root, branch, worktree_parent)
+    ]
+    |> Enum.flat_map(fn
+      {:ok, path} -> [path]
+      {:error, _reason} -> []
+    end)
   end
 
   defp legacy_worktree_path(%WorkPackage{} = work_package, repo_root, branch, worktree_parent) do
-    with {:ok, branch_segment} <- WorktreePath.unique_segment(branch, branch),
+    with {:ok, branch_segment} <- WorktreePath.legacy_unique_segment(branch, branch),
          {:ok, package_segment} <- WorktreePath.safe_segment(work_package.id),
-         {:ok, repo_segment} <- WorktreePath.unique_segment(Path.basename(repo_root), repo_root),
+         {:ok, repo_segment} <- WorktreePath.legacy_unique_segment(Path.basename(repo_root), repo_root),
+         candidate <- Path.join([worktree_parent, repo_segment, "#{package_segment}-#{branch_segment}"]),
+         {:ok, candidate} <- canonicalize(candidate),
+         :ok <- require_inside_root(candidate, worktree_parent) do
+      {:ok, candidate}
+    end
+  end
+
+  defp previous_worktree_path(%WorkPackage{} = work_package, repo_root, branch, worktree_parent) do
+    with {:ok, branch_segment} <- WorktreePath.previous_unique_segment(branch, branch),
+         {:ok, package_segment} <- WorktreePath.previous_unique_segment(work_package.id, work_package.id),
+         {:ok, repo_segment} <- WorktreePath.previous_unique_segment(Path.basename(repo_root), repo_root),
          candidate <- Path.join([worktree_parent, repo_segment, "#{package_segment}-#{branch_segment}"]),
          {:ok, candidate} <- canonicalize(candidate),
          :ok <- require_inside_root(candidate, worktree_parent) do

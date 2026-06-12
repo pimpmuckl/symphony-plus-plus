@@ -5,6 +5,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.SymphonyPlusPlus.Id
+
   @primary_key {:id, :string, autogenerate: false}
   @foreign_key_type :string
 
@@ -101,6 +103,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry do
   end
 
   defp stable_id do
-    "wrd_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    Id.random("wrd")
   end
 end
