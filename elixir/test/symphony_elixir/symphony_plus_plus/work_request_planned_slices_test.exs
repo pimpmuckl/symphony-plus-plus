@@ -453,6 +453,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
     linkage = payload.planned_slice_linkage
     serialized_payload = Jason.encode!(payload)
 
+    assert PlannedSlice.delivery_repo(work_request, approved) == work_request.repo
     assert create_work.work_package.repo == work_request.repo
     assert create_work.work_package.base_branch == approved.target_base_branch
     assert create_work.work_package.title == approved.title
@@ -522,6 +523,86 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
     assert {:ok, persisted} = Repository.get_planned_slice(repo, work_request.id, approved.id)
     assert persisted.status == "dispatched"
     assert persisted.work_package_id == create_work.work_package.id
+  end
+
+  test "dispatch orchestration creates packages from secondary WorkRequest repo scopes", %{repo: repo, database_path: database_path} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-DISPATCH-SECONDARY-REPO",
+        repo: "service-a",
+        base_branch: "main",
+        status: "ready_for_slicing",
+        repo_scopes: [%{repo: "service-b", base_branch: "release"}]
+      )
+
+    assert {:ok, planned} =
+             Repository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(
+                 id: "WRS-DISPATCH-SECONDARY-REPO",
+                 delivery_repo: "service-b",
+                 target_base_branch: "release"
+               )
+             )
+
+    assert planned.delivery_repo == "service-b"
+    assert PlannedSlice.delivery_repo(work_request, planned) == "service-b"
+    assert {:ok, approved} = Repository.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+
+    handoff_opts = dispatch_handoff_opts(database_path, "worker-dispatch-secondary-repo")
+    assert {:ok, dispatch} = PlannedSliceDispatch.dispatch(repo, work_request.id, approved.id, handoff_opts)
+
+    assert dispatch.creation.work_package.repo == "service-b"
+    assert dispatch.creation.work_package.base_branch == "release"
+    assert dispatch.planned_slice.work_package_id == dispatch.creation.work_package.id
+  end
+
+  test "planned slice delivery repo accepts repo-only secondary scopes", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-SLICE-REPO-ONLY-SCOPE",
+        repo: "service-a",
+        base_branch: "main",
+        repo_scopes: [%{repo: "service-b"}]
+      )
+
+    assert {:ok, planned_slice} =
+             Repository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(
+                 id: "WRS-SLICE-REPO-ONLY-SCOPE",
+                 delivery_repo: "service-b",
+                 target_base_branch: "feature/any"
+               )
+             )
+
+    assert planned_slice.delivery_repo == "service-b"
+    assert planned_slice.target_base_branch == "feature/any"
+  end
+
+  test "planned slice delivery repo rejects scopes outside the WorkRequest repo scopes", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-SLICE-OUT-OF-SCOPE-REPO",
+        repo: "service-a",
+        base_branch: "main",
+        repo_scopes: [%{repo: "service-b", base_branch: "release"}]
+      )
+
+    assert {:error, :planned_slice_delivery_scope_out_of_scope} =
+             Repository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(
+                 id: "WRS-SLICE-OUT-OF-SCOPE-REPO",
+                 delivery_repo: "service-b",
+                 target_base_branch: "other"
+               )
+             )
+
+    assert {:ok, []} = Repository.list_planned_slices(repo, work_request.id)
   end
 
   test "dispatch orchestration creates and links standalone docs planned slices", %{repo: repo, database_path: database_path} do
@@ -827,6 +908,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
           "title",
           "goal",
           "work_package_kind",
+          "delivery_repo",
           "target_base_branch",
           "branch_pattern",
           "owned_file_globs",
@@ -877,7 +959,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
       [
         kind: planned_slice.work_package_kind,
         title: planned_slice.title,
-        repo: work_request.repo,
+        repo: PlannedSlice.delivery_repo(work_request, planned_slice),
         base_branch: planned_slice.target_base_branch,
         branch_pattern: planned_slice.branch_pattern,
         product_description: work_request.human_description,

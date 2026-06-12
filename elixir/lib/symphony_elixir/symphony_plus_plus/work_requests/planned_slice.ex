@@ -9,6 +9,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.StringList
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
   @primary_key {:id, :string, autogenerate: false}
   @foreign_key_type :string
@@ -31,6 +32,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
           title: String.t() | nil,
           goal: String.t() | nil,
           work_package_kind: String.t() | nil,
+          delivery_repo: String.t() | nil,
           target_base_branch: String.t() | nil,
           branch_pattern: String.t() | nil,
           owned_file_globs: [String.t()] | nil,
@@ -52,6 +54,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
     field(:title, :string)
     field(:goal, :string)
     field(:work_package_kind, :string)
+    field(:delivery_repo, :string)
     field(:target_base_branch, :string)
     field(:branch_pattern, :string)
     field(:owned_file_globs, StringList, default: [])
@@ -73,6 +76,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
   @spec skipped_scratch?(t(), PlannedSliceDelivery.t() | nil) :: boolean()
   def skipped_scratch?(%__MODULE__{status: "skipped", work_package_id: nil, dispatched_at: nil}, nil), do: true
   def skipped_scratch?(%__MODULE__{}, _delivery), do: false
+
+  @spec delivery_repo(WorkRequest.t(), t()) :: String.t() | nil
+  def delivery_repo(%WorkRequest{repo: repo}, %__MODULE__{delivery_repo: delivery_repo}) do
+    nonblank_or_nil(delivery_repo) || repo
+  end
 
   @spec create_changeset(map()) :: Ecto.Changeset.t()
   def create_changeset(attrs) do
@@ -99,6 +107,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
       :title,
       :goal,
       :work_package_kind,
+      :delivery_repo,
       :target_base_branch,
       :branch_pattern,
       :owned_file_globs,
@@ -168,6 +177,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
       attrs
     end
   end
+
+  defp nonblank_or_nil(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp nonblank_or_nil(_value), do: nil
 
   defp stable_id do
     "wrs_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
