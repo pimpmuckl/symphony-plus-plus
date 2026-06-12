@@ -210,7 +210,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
   defp recover_claim_lease(_repo, %SessionBinding{}), do: {:error, :missing_work_package_id}
 
   defp renew_or_reclaim_lease(repo, %ClaimLease{status: "active"} = lease, %SessionBinding{} = binding) do
-    if ClaimLease.stale?(lease, now()) do
+    if ClaimLease.stale?(lease, now(), @lease_stale_after_ms) do
       reclaim_lease(repo, lease.work_package_id, binding, "mcp_session_rehydrate_stale")
     else
       case ClaimLeaseService.heartbeat(repo, lease.id, stale_after_ms: @lease_stale_after_ms) do
@@ -226,6 +226,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
   defp reclaim_lease(repo, work_package_id, %SessionBinding{} = binding, reason) do
     ClaimLeaseService.reclaim_stale(repo, work_package_id, actor(binding),
       reason: reason,
+      current_stale_after_ms: @lease_stale_after_ms,
       stale_after_ms: @lease_stale_after_ms
     )
   end

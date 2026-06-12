@@ -440,7 +440,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
     assert Enum.any?(progress_events, &(&1.status == "claim_lease_reclaimed" and &1.payload["previous_claim_id"] == stale_lease.id))
   end
 
-  test "claim_local_assignment reclaims default no-heartbeat residue after the short stale window", %{repo: repo} do
+  test "claim_local_assignment reclaims old no-heartbeat residue after the local recovery window", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-SHORT-STALE-RECLAIM")
     assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -6, :minute)
@@ -451,8 +451,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
                package.id,
                %{"actor_kind" => "agent", "actor_id" => "local:stale-worker", "actor_display_name" => "stale-worker"},
                now: stale_seen_at,
-               stale_after_ms: :timer.minutes(5)
+               stale_after_ms: :timer.hours(24)
              )
+
+    refute ClaimLease.stale?(stale_lease, DateTime.utc_now(:microsecond))
 
     {response, _server} =
       Server.handle_state(
@@ -468,6 +470,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
     assert get_in(response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "reclaimed"
     assert {:ok, reclaimed_lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
     assert reclaimed_lease.previous_claim_id == stale_lease.id
+    assert reclaimed_lease.stale_after_ms == :timer.minutes(5)
   end
 
   test "claim_local_assignment rolls back reclaimed leases when audit append fails", %{repo: repo} do

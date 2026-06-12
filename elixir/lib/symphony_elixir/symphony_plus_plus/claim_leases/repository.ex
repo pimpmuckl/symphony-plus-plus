@@ -208,18 +208,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
 
   defp reclaim_stale_transaction(repo, work_package_id, attrs, opts) do
     now = now(opts)
+    current_stale_after_ms = Keyword.get(opts, :current_stale_after_ms)
     replacement_opts = opts |> Keyword.put(:now, now) |> Keyword.put(:lineage, :replacement)
 
     with {:ok, current} <- current_for_work_package(repo, work_package_id),
-         :ok <- require_stale(current, now),
+         :ok <- require_stale(current, now, current_stale_after_ms),
          replacement_attrs = replacement_attrs(current, attrs, now),
          {:ok, replacement_changeset} <- claim_changeset(repo, replacement_attrs, replacement_opts),
-         {:ok, _reclaimed} <- reclaim_current(repo, current, attrs, now) do
+         {:ok, _reclaimed} <- reclaim_current(repo, current, attrs, now, current_stale_after_ms) do
       insert_claim(repo, replacement_changeset)
     end
   end
 
-  defp reclaim_current(repo, %ClaimLease{} = current, attrs, now) do
+  defp reclaim_current(repo, %ClaimLease{} = current, attrs, now, current_stale_after_ms) do
     actor_id = Map.get(attrs, :actor_id) || Map.get(attrs, "actor_id")
     reason = Map.get(attrs, :reclaim_reason) || Map.get(attrs, "reclaim_reason")
 
@@ -240,7 +241,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
 
       case repo.update_all(query, set: update_changes(changeset)) do
         {1, _rows} -> get(repo, current.id)
-        {0, _rows} -> reclaim_conflict_error(repo, current.work_package_id, now)
+        {0, _rows} -> reclaim_conflict_error(repo, current.work_package_id, now, current_stale_after_ms)
       end
     else
       {:error, changeset}
@@ -269,8 +270,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
   defp status_error(["active"]), do: {:error, :not_active}
   defp status_error(_statuses), do: {:error, :claim_not_current}
 
-  defp require_stale(%ClaimLease{} = claim_lease, now) do
-    if ClaimLease.stale?(claim_lease, now), do: :ok, else: {:error, :claim_not_stale}
+  defp require_stale(%ClaimLease{} = claim_lease, now, current_stale_after_ms) do
+    if ClaimLease.stale?(claim_lease, now, current_stale_after_ms), do: :ok, else: {:error, :claim_not_stale}
   end
 
   defp require_not_stale(%ClaimLease{} = claim_lease, now) do
@@ -325,10 +326,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
   defp where_observed(query, field_name, nil), do: from(stored in query, where: is_nil(field(stored, ^field_name)))
   defp where_observed(query, field_name, value), do: from(stored in query, where: field(stored, ^field_name) == ^value)
 
-  defp reclaim_conflict_error(repo, work_package_id, now) do
+  defp reclaim_conflict_error(repo, work_package_id, now, current_stale_after_ms) do
     case current_for_work_package(repo, work_package_id) do
       {:ok, %ClaimLease{} = current} ->
-        if ClaimLease.stale?(current, now), do: {:error, :claim_not_current}, else: {:error, :claim_not_stale}
+        if ClaimLease.stale?(current, now, current_stale_after_ms),
+          do: {:error, :claim_not_current},
+          else: {:error, :claim_not_stale}
 
       {:error, :not_found} ->
         {:error, :claim_not_current}

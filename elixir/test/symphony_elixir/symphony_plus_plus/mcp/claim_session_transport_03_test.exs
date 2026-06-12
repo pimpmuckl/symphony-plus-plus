@@ -169,7 +169,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
     assert get_in(repo_mismatch_response, ["error", "data", "reason"]) == "repo_scope_mismatch"
   end
 
-  test "claim_local_architect_assignment reclaims stale other-actor handoff lease without widening WorkRequest scope", %{repo: repo} do
+  test "claim_local_architect_assignment reclaims old other-actor handoff lease after local recovery window", %{repo: repo} do
     work_request =
       create_work_request!(repo,
         id: "WR-MCP-LOCAL-ARCHITECT-STALE-OTHER",
@@ -190,8 +190,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
                handoff.anchor_package.id,
                %{"actor_kind" => "agent", "actor_id" => "local:previous-architect", "actor_display_name" => "previous-architect"},
                now: stale_seen_at,
-               stale_after_ms: :timer.minutes(5)
+               stale_after_ms: :timer.hours(24)
              )
+
+    refute ClaimLease.stale?(stale_lease, DateTime.utc_now(:microsecond))
 
     {response, claimed_server} =
       Server.handle_state(
@@ -215,6 +217,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
 
     assert {:ok, current_lease} = ClaimLeaseService.current_for_work_package(repo, handoff.anchor_package.id)
     assert current_lease.previous_claim_id == stale_lease.id
+    assert current_lease.stale_after_ms == :timer.minutes(5)
 
     other_work_request =
       create_work_request!(repo,

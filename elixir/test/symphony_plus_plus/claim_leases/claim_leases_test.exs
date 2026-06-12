@@ -208,6 +208,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
     assert DateTime.compare(still_stale.last_seen_at, reclaim_at) == :eq
   end
 
+  test "stale reclaim can use a shorter current-lease recovery window without changing defaults", %{repo: repo} do
+    now = ~U[2026-05-26 13:10:00Z]
+    reclaim_at = DateTime.add(now, 6, :minute)
+
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-CLAIM-STALE-OVERRIDE"))
+
+    assert {:ok, claim} =
+             Service.claim(repo, work_package.id, %{actor_kind: "agent", actor_id: "agent-1"},
+               now: now,
+               stale_after_ms: :timer.hours(24)
+             )
+
+    refute ClaimLease.stale?(claim, reclaim_at)
+    assert ClaimLease.stale?(claim, reclaim_at, :timer.minutes(5))
+
+    assert {:error, :claim_not_stale} =
+             Service.reclaim_stale(
+               repo,
+               work_package.id,
+               %{actor_kind: "agent", actor_id: "agent-2"},
+               now: reclaim_at,
+               reason: "fast local recovery",
+               stale_after_ms: :timer.minutes(5)
+             )
+
+    assert {:ok, replacement} =
+             Service.reclaim_stale(
+               repo,
+               work_package.id,
+               %{actor_kind: "agent", actor_id: "agent-2"},
+               now: reclaim_at,
+               reason: "fast local recovery",
+               current_stale_after_ms: :timer.minutes(5),
+               stale_after_ms: :timer.minutes(5)
+             )
+
+    assert replacement.actor_id == "agent-2"
+    assert replacement.previous_claim_id == claim.id
+    assert replacement.stale_after_ms == :timer.minutes(5)
+
+    assert {:ok, reclaimed} = Repository.get(repo, claim.id)
+    assert reclaimed.status == "reclaimed"
+    assert reclaimed.reclaim_reason == "fast local recovery"
+  end
+
   test "only one current claim exists per package and release frees the package", %{repo: repo} do
     now = ~U[2026-05-26 11:00:00Z]
     assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-CLAIM-UNIQUE"))

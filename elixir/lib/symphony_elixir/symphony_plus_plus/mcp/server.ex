@@ -3456,7 +3456,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       lease.status == "paused" ->
         {:error, :claim_lease_paused}
 
-      ClaimLease.stale?(lease, now) ->
+      ClaimLease.stale?(lease, now, @local_assignment_claim_stale_after_ms) ->
         reclaim_local_assignment_claim_lease(repo, work_package_id, actor, "local_assignment_claim_stale")
 
       local_claim_same_owner?(lease, actor) and lease.status == "active" ->
@@ -3506,10 +3506,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp reclaim_local_assignment_claim_lease(repo, work_package_id, actor, reason) do
-    case ClaimLeaseService.reclaim_stale(repo, work_package_id, actor,
-           reason: reason,
-           stale_after_ms: @local_assignment_claim_stale_after_ms
-         ) do
+    case ClaimLeaseService.reclaim_stale(repo, work_package_id, actor, local_assignment_claim_reclaim_opts(reason)) do
       {:ok, %ClaimLease{} = lease} -> {:ok, lease, :reclaimed}
       {:error, reason} -> {:error, reason}
     end
@@ -3577,6 +3574,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     lease.actor_kind == Map.get(actor, "actor_kind") and
       lease.actor_display_name == Map.get(actor, "actor_display_name") and
       local_claim_actor_id_match?(lease.actor_id, Map.get(actor, "actor_id"))
+  end
+
+  defp local_assignment_claim_reclaim_opts(reason) do
+    [
+      reason: reason,
+      current_stale_after_ms: @local_assignment_claim_stale_after_ms,
+      stale_after_ms: @local_assignment_claim_stale_after_ms
+    ]
   end
 
   defp local_claim_actor_id_match?(actor_id, actor_id) when is_binary(actor_id), do: true
@@ -3865,7 +3870,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       lease.status == "paused" ->
         {:error, :claim_lease_paused}
 
-      ClaimLease.stale?(lease, now) ->
+      ClaimLease.stale?(lease, now, @local_assignment_claim_stale_after_ms) ->
         reclaim_local_architect_assignment_claim_lease(repo, anchor.id, actor, "local_architect_assignment_claim_stale")
 
       local_claim_same_owner?(lease, actor) and lease.status == "active" ->
@@ -3915,10 +3920,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp reclaim_local_architect_assignment_claim_lease(repo, anchor_id, actor, reason) do
-    case ClaimLeaseService.reclaim_stale(repo, anchor_id, actor,
-           reason: reason,
-           stale_after_ms: @local_assignment_claim_stale_after_ms
-         ) do
+    case ClaimLeaseService.reclaim_stale(repo, anchor_id, actor, local_assignment_claim_reclaim_opts(reason)) do
       {:ok, %ClaimLease{} = lease} -> {:ok, lease, :reclaimed}
       {:error, reason} -> {:error, reason}
     end
@@ -15238,10 +15240,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "actor_display_name" => session.claim_actor_display_name
     }
 
-    case ClaimLeaseService.reclaim_stale(repo, lease.work_package_id, actor,
-           reason: "mcp_session_tool_heartbeat_stale",
-           stale_after_ms: @local_assignment_claim_stale_after_ms
-         ) do
+    case ClaimLeaseService.reclaim_stale(repo, lease.work_package_id, actor, local_assignment_claim_reclaim_opts("mcp_session_tool_heartbeat_stale")) do
       {:ok, %ClaimLease{} = replacement} -> {:ok, %{server | session: Session.with_claim_lease(session, replacement)}}
       {:error, reason} -> lost_current_session_claim(server, reason)
     end
