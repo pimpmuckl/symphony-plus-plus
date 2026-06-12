@@ -690,6 +690,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools07Test do
     assert get_in(invalid_response, ["error", "data", "reason"]) == "invalid_payload"
   end
 
+  test "report_blocker derives a resolvable blocker id when idempotency is omitted", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-GENERATED-BLOCKER", kind: "mcp"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    blocker_response = attach_tool(repo, session, "report_blocker", %{"summary" => "Blocked"})
+    blocker_id = get_in(blocker_response, ["result", "structuredContent", "progress_event", "payload", "blocker_id"])
+
+    assert is_binary(blocker_id)
+    assert String.starts_with?(blocker_id, "generated:report_blocker:")
+
+    resolved_response =
+      attach_tool(repo, session, "resolve_blocker", %{
+        "blocker_id" => blocker_id,
+        "resolution" => "Unblocked.",
+        "summary" => "Unblocked"
+      })
+
+    assert get_in(resolved_response, ["result", "structuredContent", "progress_event", "payload", "blocker_id"]) == blocker_id
+    assert get_in(resolved_response, ["result", "structuredContent", "progress_event", "payload", "active"]) == false
+  end
+
   test "mark_ready uses lifecycle capability checks", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-READY-CAP", kind: "mcp", status: "ci_waiting"))
     append_done_plan(repo, package.id)

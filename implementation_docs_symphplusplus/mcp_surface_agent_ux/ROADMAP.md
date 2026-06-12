@@ -200,6 +200,22 @@ Operator-decision behavior changes:
   the recorded worktree path and should fail closed when the path is absent,
   dirty in a relevant way, or outside the expected repo.
 
+2026-06-12 implementation update:
+
+- Worker progress, finding, blocker, scope-expansion, and guidance-request
+  writes now accept omitted idempotency keys and generate server-side keys for
+  the append-only case. Explicit keys still preserve replay behavior.
+- Worker `add_comment` and `list_comments` default to the current WorkPackage
+  when the caller omits `target_kind` and `target_id`.
+- PR/review metadata writes infer `head_sha` from the latest recorded
+  `attach_branch`; `sync_pr` can also infer PR identity from the latest
+  recorded `attach_pr`.
+- Missing recorded branch or PR context fails closed with compact recovery
+  guidance instead of accepting ambiguous evidence.
+- Deliberately deferred: reading live git worktrees for head inference, hiding
+  `work_package_id` from every schema, changing architect defaults, or changing
+  Review Suite round resolution semantics.
+
 ### P1 - Error Payloads Are Not Normalized Around Recovery
 
 Classification: normalize error/output.

@@ -75,6 +75,23 @@ mark_ready
 Workers are scoped to exactly one WorkPackage. Worker tools never mint grants,
 approve scope, merge PRs, advance phases, or close WorkRequest delivery.
 
+Current-package defaults keep normal worker calls short:
+
+- Progress, finding, blocker, scope-expansion, and guidance-request writes
+  generate an idempotency key when the caller omits one. Explicit keys still
+  preserve replay behavior.
+- `add_comment` and `list_comments` default to the current WorkPackage when
+  `target_kind` and `target_id` are omitted. Architects still name their
+  targets explicitly.
+- Metadata/evidence tools infer the current `head_sha` from the latest
+  recorded `attach_branch`. `attach_pr` still names the PR with `url` or
+  `number`, using the package repo when it is unambiguous; `sync_pr` can infer
+  PR identity from a matching current-head `attach_pr` when the caller supplies
+  only refreshed metadata.
+- Missing recorded context fails closed with compact recovery guidance such as
+  `missing_current_head_sha` -> `attach_branch` or `missing_attached_pr` ->
+  `attach_pr`.
+
 ## Health, Solo, And Local Operator Tools
 
 Unbound sessions expose `sympp.health`, `release_current_assignment`, Solo

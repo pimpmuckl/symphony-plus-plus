@@ -223,7 +223,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
         session: session
       )
 
-    assert get_in(missing_head_response, ["error", "data", "reason"]) == "missing_head_sha"
+    assert %{"reason" => "missing_current_head_sha", "recovery" => %{"next_action" => "attach_branch"}} = get_in(missing_head_response, ["error", "data"])
 
     wrong_package_response =
       MCPHarness.request(

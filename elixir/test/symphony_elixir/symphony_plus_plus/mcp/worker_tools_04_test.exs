@@ -219,6 +219,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
            |> length() == 2
   end
 
+  test "attach_pr rejects embedded metadata head when no branch is recorded", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PR-METADATA-HEAD", kind: "mcp", status: "ci_waiting"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "metadata-head-no-branch",
+          "method" => "tools/call",
+          "params" => %{"name" => "attach_pr", "arguments" => %{"url" => "https://github.com/example/repo/pull/790", "metadata" => %{"head" => %{"sha" => "head-a"}}}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "missing_current_head_sha"
+  end
+
   test "sync_pr stores dry GitHub metadata and deterministic artifact", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(
@@ -235,6 +256,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
 
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-SYNC/worker", "head_sha" => "sync-head"})
     attach_tool(repo, session, "attach_pr", %{"number" => 42, "head_sha" => "sync-head"})
 
     sync_request = %{
@@ -564,6 +586,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
 
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-SYNC-BOUNDARY/worker", "head_sha" => "abc123"})
+
     missing_attach =
       MCPHarness.request(
         %{
@@ -640,6 +664,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
 
+    assert {:ok, _current_branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: package.id,
+               summary: "Current branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/SYMPP-PR-SYNC-CHRONOLOGY/worker", head_sha: "head-a"},
+               created_at: ~U[2026-05-05 00:00:03Z]
+             })
+
     assert {:ok, _current_attach} =
              PlanningRepository.append_progress_event(repo, %{
                work_package_id: package.id,
@@ -678,6 +711,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
 
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-SYNC-SHORT-REPO/worker", "head_sha" => "head-a"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/nextide/symphony-plus-plus/pull/43", "head_sha" => "head-a"})
 
     response =

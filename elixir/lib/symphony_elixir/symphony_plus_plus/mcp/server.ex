@@ -47,6 +47,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.RepoIdentity
   alias SymphonyElixir.SymphonyPlusPlus.ReviewProfiles
   alias SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.CurrentScopeDefaults
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Service, as: WorkPackageService
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -2061,23 +2062,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "severity" => string_schema(),
         "title" => string_schema()
       }),
-      ["title", "body", "idempotency_key"]
+      ["title", "body"]
     )
   end
 
   defp worker_tool_input_schema(name) when name in ["append_progress", "request_scope_expansion"] do
-    schema(progress_properties(), ["summary", "idempotency_key"])
+    schema(progress_properties(), ["summary"])
   end
 
   defp worker_tool_input_schema("report_blocker") do
-    schema(Map.put(progress_properties(), "blocker_id", string_schema()), ["summary", "idempotency_key"])
+    schema(Map.put(progress_properties(), "blocker_id", string_schema()), ["summary"])
   end
 
   defp worker_tool_input_schema("resolve_blocker") do
     schema(
       progress_properties()
       |> Map.merge(%{"blocker_id" => string_schema(), "resolution" => string_schema()}),
-      ["blocker_id", "resolution", "summary", "idempotency_key"]
+      ["blocker_id", "resolution", "summary"]
     )
   end
 
@@ -2088,7 +2089,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "target_id" => string_schema(),
         "body" => markdown_string_schema("Human-facing Markdown comment body.") |> Map.put("maxLength", Comment.max_body_length())
       }),
-      ["target_kind", "target_id", "body"]
+      ["body"]
     )
   end
 
@@ -2098,7 +2099,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "target_kind" => string_enum_schema(Comment.target_kinds()),
         "target_id" => string_schema()
       }),
-      ["target_kind", "target_id"]
+      []
     )
   end
 
@@ -2120,7 +2121,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "context" => markdown_string_schema("Human-facing guidance context in Markdown."),
         "idempotency_key" => string_schema()
       }),
-      ["summary", "question", "context", "idempotency_key"]
+      ["summary", "question", "context"]
     )
   end
 
@@ -2147,7 +2148,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       }),
       []
     )
-    |> require_pr_identity_and_head()
+    |> always_validate(%{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]})
   end
 
   defp worker_tool_input_schema("sync_pr") do
@@ -2161,7 +2162,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       }),
       ["metadata"]
     )
-    |> require_pr_identity_and_head()
   end
 
   defp worker_tool_input_schema("submit_review_package") do
@@ -2174,7 +2174,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "head_sha" => string_schema(),
         "acceptance_criteria_met" => boolean_schema()
       }),
-      ["summary", "tests", "artifacts", "head_sha"]
+      ["summary", "tests", "artifacts"]
     )
   end
 
@@ -2198,7 +2198,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> always_validate(%{
       "anyOf" => [
         %{"required" => ["round_id"]},
-        %{"required" => ["head_sha", "status", "verdict", "suite", "anchor", "summary"]}
+        %{"required" => ["status", "verdict", "suite", "anchor", "summary"]}
       ]
     })
   end
@@ -2252,7 +2252,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
   end
 
-  defp architect_tool_input_schema("list_comments"), do: worker_tool_input_schema("list_comments")
+  defp architect_tool_input_schema("list_comments"), do: worker_tool_input_schema("list_comments") |> Map.put("required", ["target_kind", "target_id"])
 
   defp architect_tool_input_schema("read_work_request_delivery_board") do
     schema(
@@ -2313,7 +2313,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_input_schema("add_comment") do
-    worker_tool_input_schema("add_comment")
+    worker_tool_input_schema("add_comment") |> Map.put("required", ["target_kind", "target_id", "body"])
   end
 
   defp architect_tool_input_schema("resolve_comment") do
@@ -2321,7 +2321,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_input_schema("resolve_blocker") do
-    worker_tool_input_schema("resolve_blocker")
+    worker_tool_input_schema("resolve_blocker") |> Map.put("required", ["blocker_id", "resolution", "summary", "idempotency_key"])
   end
 
   defp architect_tool_input_schema("list_guidance_requests") do
@@ -2706,7 +2706,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       Enum.map(@shared_worker_architect_tools, &shared_worker_architect_tool_spec/1)
   end
 
-  defp shared_worker_architect_tool_spec(name), do: worker_tool_spec(name)
+  defp shared_worker_architect_tool_spec(name), do: architect_tool_spec(name)
 
   defp tool_specs_for_server(%__MODULE__{session_refresh_required: true, config: config} = server) do
     {:ok, claimable_tool_specs(config) ++ local_operator_tool_specs(server)}
@@ -2742,20 +2742,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp always_validate(schema, constraint), do: Map.merge(schema, %{"if" => %{}, "then" => constraint})
-
-  defp require_pr_identity_and_head(schema) do
-    always_validate(schema, %{
-      "allOf" => [
-        %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
-        %{
-          "anyOf" => [
-            %{"required" => ["head_sha"]},
-            %{"required" => ["metadata"], "properties" => %{"metadata" => metadata_head_schema()}}
-          ]
-        }
-      ]
-    })
-  end
 
   defp scoped_properties(properties) do
     Map.put(
@@ -2865,23 +2851,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp string_array_schema, do: %{"type" => "array", "items" => nonblank_string_schema()}
   defp described_string_array_schema(description), do: Map.put(string_array_schema(), "description", description)
   defp nonempty_object_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => object_schema()}
-
-  defp metadata_head_schema do
-    %{
-      "type" => "object",
-      "additionalProperties" => true,
-      "properties" => %{
-        "head_sha" => string_schema(),
-        "head" => %{
-          "type" => "object",
-          "additionalProperties" => true,
-          "properties" => %{"sha" => string_schema()},
-          "required" => ["sha"]
-        }
-      },
-      "anyOf" => [%{"required" => ["head_sha"]}, %{"required" => ["head"]}]
-    }
-  end
 
   defp merge_artifact_schema do
     %{
@@ -10301,7 +10270,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- authorize_current_package_policy(config.repo, session, :finding_append, :finding, "append_finding"),
          {:ok, title} <- required_argument(arguments, "title"),
          {:ok, body} <- required_argument(arguments, "body"),
-         {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
+         {:ok, idempotency_key} <- CurrentScopeDefaults.idempotency_key(arguments, "append_finding", Session.work_package_id(session)),
          idempotency_key = String.trim(idempotency_key),
          {:ok, finding_id} <- optional_finding_id(arguments, session, idempotency_key),
          attrs = %{
@@ -10343,17 +10312,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool("report_blocker", arguments, %__MODULE__{config: config, session: session}) do
-    case optional_blocker_id(arguments) do
-      {:ok, blocker_id} ->
-        append_scoped_progress(config.repo, session, arguments, "report_blocker", %{
-          "type" => "blocker",
-          "source_tool" => "report_blocker",
-          "blocker_id" => blocker_id,
-          "active" => true
-        })
-
-      {:error, reason} ->
-        worker_error(reason, "report_blocker")
+    with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         {:ok, idempotency_key} <- CurrentScopeDefaults.idempotency_key(arguments, "report_blocker", Session.work_package_id(session)),
+         {:ok, blocker_id} <- optional_blocker_id(arguments, idempotency_key) do
+      append_scoped_progress(config.repo, session, arguments, "report_blocker", %{
+        "type" => "blocker",
+        "source_tool" => "report_blocker",
+        "blocker_id" => blocker_id,
+        "active" => true
+      })
+    else
+      {:tool_error, reason} -> invalid_params_error("report_blocker", reason)
+      {:error, reason} -> worker_error(reason, "report_blocker")
     end
   end
 
@@ -10389,7 +10359,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, summary} <- required_argument(arguments, "summary"),
          {:ok, question} <- required_argument(arguments, "question"),
          {:ok, context} <- required_argument(arguments, "context"),
-         {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
+         {:ok, idempotency_key} <- CurrentScopeDefaults.idempotency_key(arguments, "create_guidance_request", Session.work_package_id(session)),
          {:ok, guidance_request} <-
            GuidanceRequestService.create_for_assignment(config.repo, session.assignment, %{
              "summary" => summary,
@@ -10436,7 +10406,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       append_pr_metadata(config.repo, session, arguments, "attach_pr", "pr_attached", payload)
       |> metadata_tool_response("attach_pr")
     else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "attach_pr", "reason" => reason}}
+      {:tool_error, reason} -> invalid_params_error("attach_pr", reason)
       {:error, reason} -> worker_error(reason, "attach_pr")
     end
   end
@@ -10448,7 +10418,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       append_pr_metadata(config.repo, session, arguments, "sync_pr", "pr_synced", payload)
       |> metadata_tool_response("sync_pr")
     else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "sync_pr", "reason" => reason}}
+      {:tool_error, reason} -> invalid_params_error("sync_pr", reason)
       {:error, reason} -> worker_error(reason, "sync_pr")
     end
   end
@@ -10473,7 +10443,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            }) do
       {:ok, result}
     else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "submit_review_package", "reason" => reason}}
+      {:tool_error, reason} -> invalid_params_error("submit_review_package", reason)
       {:error, _code, _message, _data} = error -> error
       {:error, reason} -> worker_error(reason, "submit_review_package")
     end
@@ -10482,7 +10452,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_tool("attach_review_suite_result", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
          :ok <- authorize_current_package_policy(config.repo, session, :review_evidence_append, :review_evidence, "attach_review_suite_result"),
-         {:ok, arguments, payload} <- review_suite_result_arguments(arguments, session),
+         {:ok, arguments, payload} <- review_suite_result_arguments(config.repo, arguments, session),
          status = Map.get(payload, "status"),
          verdict = Map.get(payload, "verdict"),
          :ok <- require_passing_review_suite_result(status, verdict),
@@ -10575,16 +10545,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_guidance_request_work_package(%GuidanceRequest{}, _work_package_id), do: {:error, :not_found}
 
   defp pr_metadata_payload(repo, %Session{} = session, arguments, source_tool) do
-    case legacy_attach_pr_payload(arguments, source_tool) do
+    case legacy_attach_pr_payload(repo, session, arguments, source_tool) do
       {:ok, payload} -> {:ok, payload}
+      {:tool_error, reason} -> {:tool_error, reason}
       :error -> github_pr_metadata_payload(repo, session, arguments, source_tool)
     end
   end
 
   defp github_pr_metadata_payload(repo, %Session{} = session, arguments, source_tool) do
-    with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, Session.work_package_id(session)),
-         {:ok, metadata_input} <- pr_metadata_input(arguments, source_tool),
-         {:ok, arguments} <- pr_reference_arguments(repo, session, arguments, source_tool),
+    work_package_id = Session.work_package_id(session)
+
+    with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, work_package_id),
+         {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, work_package_id),
+         {:ok, metadata_input} <- pr_metadata_input(arguments, source_tool, progress_events),
+         {:ok, arguments} <- pr_reference_arguments(progress_events, arguments, source_tool),
          {:ok, ref} <- PullRequest.parse(arguments, work_package.repo),
          {:ok, metadata} <- Client.fetch_pull_request(DryClient, ref, metadata: metadata_input),
          {:ok, payload} <- PullRequest.metadata(metadata, ref, pr_fallback_head_sha(arguments, source_tool)) do
@@ -10607,22 +10581,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp legacy_attach_pr_payload(arguments, "attach_pr") do
+  defp legacy_attach_pr_payload(repo, %Session{} = session, arguments, "attach_pr") do
     with url when is_binary(url) <- Map.get(arguments, "url"),
-         trimmed_url = String.trim(url),
-         true <- trimmed_url != "",
-         true <- non_github_url?(trimmed_url) do
-      payload =
-        %{"type" => "pr", "source_tool" => "attach_pr", "url" => trimmed_url}
-        |> maybe_put_filled_string("head_sha", Map.get(arguments, "head_sha"))
-
-      {:ok, payload}
+         url = String.trim(url),
+         true <- url != "" and non_github_url?(url),
+         {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, Session.work_package_id(session)),
+         {:ok, head_sha} <- CurrentScopeDefaults.head_sha_argument(arguments, latest_current_head_sha(progress_events)) do
+      {:ok, %{"type" => "pr", "source_tool" => "attach_pr", "url" => url, "head_sha" => head_sha}}
     else
-      _value -> :error
+      missing when missing in [false, nil] -> :error
+      {tag, reason} when tag in [:tool_error, :error] -> {tag, reason}
     end
   end
 
-  defp legacy_attach_pr_payload(_arguments, _source_tool), do: :error
+  defp legacy_attach_pr_payload(_repo, %Session{}, _arguments, _source_tool), do: :error
 
   defp non_github_url?(url) do
     case URI.parse(url) do
@@ -10652,18 +10624,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp pr_fallback_head_sha(arguments, tool) when tool in ["attach_pr", "sync_pr"], do: Map.get(arguments, "head_sha")
 
-  defp pr_reference_arguments(repo, %Session{} = session, arguments, "sync_pr") do
-    if Map.has_key?(arguments, "number") and not filled_string?(Map.get(arguments, "repository")) and not filled_string?(Map.get(arguments, "url")) do
-      with {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, Session.work_package_id(session)),
-           {:ok, {repository, _number}} <- latest_attached_pr_ref(progress_events) do
-        {:ok, Map.put(arguments, "repository", repository)}
-      end
-    else
-      {:ok, arguments}
+  defp pr_reference_arguments(progress_events, arguments, "sync_pr") do
+    cond do
+      filled_string?(Map.get(arguments, "url")) -> {:ok, arguments}
+      Map.has_key?(arguments, "number") and filled_string?(Map.get(arguments, "repository")) -> {:ok, arguments}
+      Map.has_key?(arguments, "number") -> put_latest_attached_pr_repository(progress_events, arguments)
+      true -> put_latest_attached_pr_identity(progress_events, arguments)
     end
   end
 
-  defp pr_reference_arguments(_repo, %Session{}, arguments, _source_tool), do: {:ok, arguments}
+  defp pr_reference_arguments(_progress_events, arguments, _source_tool), do: {:ok, arguments}
+
+  defp put_latest_attached_pr_repository(progress_events, arguments) do
+    case latest_attached_pr_ref_for_current_head(progress_events) do
+      {:ok, {repository, _number}} when is_binary(repository) -> {:ok, Map.put(arguments, "repository", repository)}
+      {:ok, {:url, _url}} -> {:tool_error, "missing_repository_use_url_or_owner_repo"}
+      {:tool_error, reason} -> {:tool_error, reason}
+    end
+  end
+
+  defp put_latest_attached_pr_identity(progress_events, arguments) do
+    case latest_attached_pr_ref_for_current_head(progress_events) do
+      {:ok, {:url, url}} -> {:ok, Map.put(arguments, "url", url)}
+      {:ok, {repository, number}} when is_binary(repository) -> {:ok, arguments |> Map.put("repository", repository) |> Map.put("number", number)}
+      {:tool_error, reason} -> {:tool_error, reason}
+    end
+  end
 
   defp pr_missing_repository_reason(arguments, "attach_pr") do
     if Map.has_key?(arguments, "number") and not filled_string?(Map.get(arguments, "url")) do
@@ -10679,17 +10665,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp validate_pr_sync_target(repo, %Session{} = session, ref, "sync_pr") do
     with {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, Session.work_package_id(session)),
-         {:ok, attached_ref} <- latest_attached_pr_ref(progress_events) do
+         {:ok, attached_ref} <- latest_attached_pr_ref_for_current_head(progress_events) do
       if attached_ref == normalized_pr_ref(ref.repository, ref.number), do: :ok, else: {:tool_error, "pr_mismatch"}
     end
   end
 
-  defp latest_attached_pr_ref(progress_events) do
-    case latest_attached_pr_ref_with_sequence(progress_events) do
-      {:ok, ref, _sequence} -> {:ok, ref}
-      {:tool_error, reason} -> {:tool_error, reason}
+  defp latest_attached_pr_ref_for_current_head(progress_events) do
+    head_sha = latest_current_head_sha(progress_events)
+
+    cond do
+      not is_binary(head_sha) -> {:tool_error, "missing_current_head_sha"}
+      ref = progress_events |> chronological_progress_events() |> Enum.reverse() |> Enum.find_value(&attached_pr_ref_for_head(&1, head_sha)) -> {:ok, ref}
+      true -> {:tool_error, "missing_attached_pr"}
     end
   end
+
+  defp latest_attached_pr_ref(progress_events), do: with({:ok, ref, _sequence} <- latest_attached_pr_ref_with_sequence(progress_events), do: {:ok, ref})
 
   defp latest_attached_pr_ref_with_sequence(progress_events) do
     progress_events
@@ -10730,6 +10721,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp attached_pr_ref_with_sequence(_event), do: nil
 
+  defp attached_pr_ref_for_head(%ProgressEvent{payload: payload} = event, head_sha) when is_map(payload),
+    do: if(payload_type?(event, "pr", "attach_pr") and head_sha_matches?(Map.get(payload, "head_sha"), head_sha), do: pr_payload_ref(payload))
+
+  defp attached_pr_ref_for_head(_event, _head_sha), do: nil
+
   defp pr_payload_ref_with_sequence(payload, sequence) do
     case pr_payload_ref(payload) do
       nil -> nil
@@ -10769,17 +10765,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end)
   end
 
-  defp pr_metadata_input(arguments, "attach_pr") do
+  defp pr_metadata_input(arguments, "attach_pr", progress_events) do
     case Map.get(arguments, "metadata") do
-      metadata when is_map(metadata) -> {:ok, metadata}
-      nil -> {:ok, %{"head_sha" => Map.get(arguments, "head_sha")}}
+      metadata when is_map(metadata) -> CurrentScopeDefaults.metadata_with_head(arguments, metadata, latest_current_head_sha(progress_events))
+      nil -> CurrentScopeDefaults.metadata_with_head(arguments, %{}, latest_current_head_sha(progress_events))
       _metadata -> {:tool_error, "invalid_metadata"}
     end
   end
 
-  defp pr_metadata_input(arguments, "sync_pr") do
+  defp pr_metadata_input(arguments, "sync_pr", progress_events) do
     case Map.get(arguments, "metadata") do
-      metadata when is_map(metadata) -> {:ok, metadata}
+      metadata when is_map(metadata) -> CurrentScopeDefaults.metadata_with_head(arguments, metadata, latest_current_head_sha(progress_events))
       _metadata -> {:tool_error, "missing_metadata"}
     end
   end
@@ -11900,7 +11896,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {action, resource_type} <- progress_tool_policy(tool),
          :ok <- authorize_current_package_policy(repo, session, action, resource_type, tool),
          {:ok, summary} <- required_argument(arguments, "summary"),
-         {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
+         {:ok, idempotency_key} <- CurrentScopeDefaults.idempotency_key(arguments, tool, Session.work_package_id(session)),
          {:ok, caller_payload} <- optional_payload(arguments) do
       idempotency_key = scoped_progress_idempotency_key(tool, String.trim(idempotency_key), session)
 
@@ -12321,9 +12317,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp review_package_requested_head_sha(arguments) do
+  defp review_package_requested_head_sha(arguments, progress_events) do
     case optional_head_sha(arguments) do
-      {:ok, nil} -> {:tool_error, "missing_head_sha"}
+      {:ok, nil} -> CurrentScopeDefaults.head_sha_argument(arguments, latest_current_head_sha(progress_events))
       result -> result
     end
   end
@@ -12381,7 +12377,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
          :ok <- lock_work_package(repo, work_package_id),
          {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
-         {:ok, requested_head_sha} <- review_package_requested_head_sha(arguments) do
+         {:ok, requested_head_sha} <- review_package_requested_head_sha(arguments, state.progress_events) do
       payload = Map.put(payload, "head_sha", requested_head_sha)
 
       submit_or_replay_review_package(
@@ -12396,7 +12392,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       )
     else
       {:tool_error, reason} ->
-        repo.rollback({:mcp_error, -32_602, "Invalid params", %{"tool" => "submit_review_package", "reason" => reason}})
+        rollback_invalid_params(repo, "submit_review_package", reason)
 
       {:error, reason} ->
         repo.rollback(reason)
@@ -12446,7 +12442,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         end
 
       {:tool_error, reason} ->
-        repo.rollback({:mcp_error, -32_602, "Invalid params", %{"tool" => "submit_review_package", "reason" => reason}})
+        rollback_invalid_params(repo, "submit_review_package", reason)
     end
   end
 
@@ -12554,11 +12550,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if String.contains?(artifact, "://"), do: artifact, else: nil
   end
 
-  defp review_suite_result_arguments(arguments, %Session{} = session) do
+  defp review_suite_result_arguments(repo, arguments, %Session{} = session) do
     if review_suite_round_id_argument?(arguments) do
       resolved_review_suite_result_arguments(arguments, session)
     else
-      explicit_review_suite_result_arguments(arguments, session)
+      explicit_review_suite_result_arguments(repo, arguments, session)
     end
   end
 
@@ -12569,9 +12565,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp explicit_review_suite_result_arguments(arguments, %Session{} = session) do
+  defp explicit_review_suite_result_arguments(repo, arguments, %Session{} = session) do
     with {:ok, work_package_id} <- optional_string_argument(arguments, "work_package_id", Session.work_package_id(session)),
-         {:ok, requested_head_sha} <- required_argument(arguments, "head_sha"),
+         {:ok, requested_head_sha} <- review_suite_head_sha_argument(repo, session, arguments),
          {:ok, suite} <- required_argument(arguments, "suite"),
          {:ok, anchor} <- required_argument(arguments, "anchor"),
          {:ok, summary} <- required_argument(arguments, "summary"),
@@ -12589,6 +12585,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          "status" => normalized_review_suite_status(status),
          "verdict" => normalized_review_suite_verdict(verdict)
        }}
+    end
+  end
+
+  defp review_suite_head_sha_argument(repo, %Session{} = session, arguments) do
+    case optional_head_sha(arguments) do
+      {:ok, nil} ->
+        with {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, Session.work_package_id(session)) do
+          CurrentScopeDefaults.head_sha_argument(arguments, latest_current_head_sha(progress_events))
+        end
+
+      result ->
+        result
     end
   end
 
@@ -12724,7 +12732,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         repo.rollback({:mcp_error, code, message, data})
 
       {:tool_error, reason} ->
-        repo.rollback({:mcp_error, -32_602, "Invalid params", %{"tool" => "attach_review_suite_result", "reason" => reason}})
+        rollback_invalid_params(repo, "attach_review_suite_result", reason)
 
       {:error, code, message, data} ->
         repo.rollback({:mcp_error, code, message, data})
@@ -13981,8 +13989,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
      }}
   end
 
-  defp invalid_params_error(tool, reason) do
-    {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason_text(reason)}}
+  defp invalid_params_error(tool, reason), do: {:error, -32_602, "Invalid params", invalid_params_data(tool, reason_text(reason))}
+
+  defp invalid_params_data(tool, "missing_current_head_sha" = reason), do: current_scope_invalid_params_data(tool, reason, "attach_branch")
+  defp invalid_params_data(tool, "missing_attached_pr" = reason), do: current_scope_invalid_params_data(tool, reason, "attach_pr")
+  defp invalid_params_data(tool, reason), do: %{"tool" => tool, "reason" => reason}
+
+  defp current_scope_invalid_params_data(tool, reason, next_action) do
+    %{"tool" => tool, "reason" => reason, "recovery" => RecoveryPayload.compact(reason, "current_scope", "recoverable_with_recorded_context", next_action)}
+  end
+
+  defp rollback_invalid_params(repo, tool, reason) do
+    {:error, code, message, data} = invalid_params_error(tool, reason)
+    repo.rollback({:mcp_error, code, message, data})
   end
 
   defp scope_validation_details(errors) when is_list(errors), do: Enum.map(errors, &scope_validation_detail/1)
@@ -14051,9 +14070,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp comment_tool_result("add_comment", repo, %Session{} = session, arguments, source_type, author_name) do
-    with {:ok, target_kind} <- required_argument(arguments, "target_kind"),
+    with {:ok, target_kind, target_id} <- CurrentScopeDefaults.comment_target(arguments, Session.work_package_id(session), source_type == :worker),
          :ok <- require_comment_target_kind(target_kind),
-         {:ok, target_id} <- required_argument(arguments, "target_id"),
          {:ok, body} <- required_argument(arguments, "body"),
          {:ok, comment} <-
            CommentService.create_for_assignment(
@@ -14072,10 +14090,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp comment_tool_result("list_comments", repo, %Session{} = session, arguments, _source_type, _author_name) do
-    with {:ok, target_kind} <- required_argument(arguments, "target_kind"),
+  defp comment_tool_result("list_comments", repo, %Session{} = session, arguments, source_type, _author_name) do
+    with {:ok, target_kind, target_id} <- CurrentScopeDefaults.comment_target(arguments, Session.work_package_id(session), source_type == :worker),
          :ok <- require_comment_target_kind(target_kind),
-         {:ok, target_id} <- required_argument(arguments, "target_id"),
          {:ok, comments} <- CommentService.list_for_assignment(repo, session.assignment, target_kind, target_id) do
       {:ok,
        tool_result(%{
@@ -14573,9 +14590,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp optional_blocker_id(arguments) do
-    default = Map.get(arguments, "idempotency_key")
-
+  defp optional_blocker_id(arguments, default) do
     case Map.get(arguments, "blocker_id") do
       value when is_binary(value) -> {:ok, if(String.trim(value) == "", do: normalize_blocker_id(default), else: String.trim(value))}
       nil -> {:ok, normalize_blocker_id(default)}
