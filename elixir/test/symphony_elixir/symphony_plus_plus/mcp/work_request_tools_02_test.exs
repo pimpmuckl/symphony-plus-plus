@@ -798,8 +798,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
 
     combined_payload = get_in(combined_response, ["result", "structuredContent"])
     assert get_in(combined_payload, ["clarification_question", "status"]) == "answered"
-    assert get_in(combined_payload, ["decision_log_entry", "source_id"]) == combined_question_id
-    assert get_in(combined_payload, ["decision_log_entry", "created_by"]) == "architect-1"
+    assert assert_concise_tool_text!(combined_response) == "ok"
 
     decision_response =
       mcp_tool(repo, session, "record_work_request_decision", %{

@@ -199,6 +199,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile01Test do
 
     payload = get_in(response, ["result", "structuredContent"])
     serialized_response = inspect(response)
+    dispatch_text = assert_concise_tool_text!(response)
+    assert dispatch_text == "ok\nnext: launch worker from handoff"
     assert payload["scope"] == %{"repo" => anchor.repo, "base_branch" => anchor.base_branch}
     assert payload["work_request"] == %{"id" => work_request.id}
     assert payload["planned_slice"]["id"] == approved_slice.id

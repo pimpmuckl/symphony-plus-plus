@@ -301,8 +301,8 @@ Keep rationale:
 
 High-confidence simplifications:
 
-- Make the first line of agent text a short action summary and a source pointer
-  such as `source_of_truth=structuredContent`.
+- Make routine successful write-tool text `ok` by default, with at most one
+  compact next-action or value line when the agent needs it immediately.
 - Trim repeated repo/base/branch fields from text when they are unchanged from
   current assignment; leave them in `structuredContent`.
 - Add per-tool text summaries for common worker metadata writes:
@@ -310,6 +310,30 @@ High-confidence simplifications:
   marked" rather than full object dumps.
 
 Compatibility impact: low if `structuredContent` remains unchanged.
+
+2026-06-12 implementation update:
+
+- Pruned agent-visible success text for high-noise MCP mutations while leaving
+  `structuredContent` unchanged as the machine and audit source of truth.
+- Covered worktree lifecycle, local assignment claim/release, worker progress
+  and finding writes, Solo Session writes, planned-slice dispatch, and
+  planned-slice delivery closeout with terse `ok` receipts and no visible
+  `audit_event`, `claim_lease`, `grant_id`, `idempotency_key`, `payload`,
+  `source_tool`, `source_of_truth`, `state_key`, `target_repo_root`, or
+  `worker_grant` fields.
+- Prepared worktree receipts deliberately keep only `workspace_path` and
+  `branch`, because launching a worker needs those exact values. Dispatch and
+  claim/release receipts may include one compact `next:` line; routine cleanup,
+  progress, comment, decision, delivery, and Solo writes default to plain `ok`.
+  Read-oriented `get_current_assignment`, `solo_show`, and `solo_list` keep
+  compact summaries so agents can recover the current binding and Solo history
+  from visible text without exposing claim leases, session keys, or entry
+  payloads. `solo_show` preserves returned/truncated counts.
+- Deliberately deferred read-heavy WorkRequest/product-tree/delivery-board
+  views and MCP resources. Those surfaces still need compact context, not a
+  one-line mutation receipt. Error payloads also remain structurally detailed
+  until a separate error-output pass defines which recovery fields can be
+  hidden from text.
 
 ### P3 - Lifecycle Vocabulary Leaks Internal Implementation
 

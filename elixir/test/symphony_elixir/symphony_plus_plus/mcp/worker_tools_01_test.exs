@@ -441,8 +441,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools01Test do
         session: session
       )
 
-    assignment_text = get_in(assignment_response, ["result", "content", Access.at(0), "text"])
-    assert assignment_text =~ "assignment:"
+    assignment_text = assert_concise_tool_text!(assignment_response)
+    assert assignment_text =~ "current_assignment:"
+    assert assignment_text =~ "role: worker"
+    assert assignment_text =~ "work_package_id: #{package.id}"
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
     refute assignment_text =~ minted.work_key.secret
 
@@ -529,7 +531,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools01Test do
         session: session
       )
 
-    assert get_in(finding_response, ["result", "content", Access.at(0), "text"]) =~ "finding:"
+    finding_text = assert_concise_tool_text!(finding_response)
+    assert finding_text == "ok"
     assert get_in(finding_response, ["result", "structuredContent", "finding", "title"]) == "TOON visible"
 
     findings_resource =
@@ -577,11 +580,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools01Test do
         session: session
       )
 
-    progress_text = get_in(progress_response, ["result", "content", Access.at(0), "text"])
-    assert progress_text =~ "progress_event:"
-    assert progress_text =~ "[REDACTED]"
-    assert progress_text =~ "key_count: 5"
-    assert progress_text =~ "sensitive_key_count: 4"
+    progress_text = assert_concise_tool_text!(progress_response)
+    assert progress_text == "ok"
     assert get_in(progress_response, ["result", "structuredContent", "progress_event", "payload", "safe"]) == "visible"
     refute progress_text =~ access_key
     refute progress_text =~ api_key

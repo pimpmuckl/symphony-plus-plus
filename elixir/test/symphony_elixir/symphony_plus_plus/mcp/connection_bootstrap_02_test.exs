@@ -241,9 +241,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
       )
 
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-UNBOUND-CLAIM-CALL"
-    claim_text = assert_toon_tool_text!(claim_response)
-    assert claim_text =~ "assignment:"
-    assert claim_text =~ "work_package_id: SYMPP-UNBOUND-CLAIM-CALL"
+    claim_text = assert_concise_tool_text!(claim_response)
+    assert claim_text == "ok\nnext: read context and task plan"
     refute claim_text =~ ~s("assignment")
 
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-TOOLS-LIST", kind: "mcp"))

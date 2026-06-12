@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.WorkerContext do
   @moduledoc false
 
+  alias SymphonyElixir.SymphonyPlusPlus.AgentFormat.ToolReceipt
   alias SymphonyElixir.SymphonyPlusPlus.AgentFormat.Toon
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
@@ -254,11 +255,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.WorkerContext do
     }
   end
 
-  defp tool_agent_payload(%{"progress_event" => %{} = event} = payload) do
-    Map.put(payload, "progress_event", Map.update(event, "payload", payload_overview(%{}), &payload_overview/1))
-  end
-
-  defp tool_agent_payload(payload), do: payload
+  defp tool_agent_payload(payload), do: ToolReceipt.payload(payload)
 
   defp payload_overview(%{} = payload) do
     key_count = map_size(payload)
@@ -276,7 +273,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.WorkerContext do
     %{"type" => "list", "item_count" => length(values)}
   end
 
-  defp payload_overview(nil), do: %{"type" => "null"}
   defp payload_overview(value) when is_boolean(value), do: %{"type" => "boolean"}
   defp payload_overview(value) when is_number(value), do: %{"type" => "number"}
   defp payload_overview(value) when is_binary(value), do: %{"type" => "string"}
@@ -310,6 +306,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.WorkerContext do
     MapSet.member?(@sensitive_agent_keys, normalized) or
       Enum.any?(@sensitive_agent_suffixes, &String.ends_with?(normalized, &1))
   end
+
+  defp encode_agent_payload(payload) when is_binary(payload), do: payload
 
   defp encode_agent_payload(payload) do
     Toon.encode(payload)
