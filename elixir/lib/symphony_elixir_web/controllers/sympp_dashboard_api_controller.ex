@@ -1285,19 +1285,12 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp operator_work_request_details(repo, work_request_cards, repo_identity_catalog) when is_list(work_request_cards) do
-    work_request_cards
-    |> Enum.map(&Map.get(&1, :id))
-    |> Enum.reject(&is_nil/1)
-    |> Enum.reduce_while({:ok, []}, fn work_request_id, {:ok, details} ->
-      case Dashboard.work_request_detail(repo, work_request_id, repo_identity_catalog: repo_identity_catalog) do
-        {:ok, detail} -> {:cont, {:ok, [detail | details]}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, details} -> {:ok, Enum.reverse(details)}
-      {:error, reason} -> {:error, reason}
-    end
+    work_request_ids =
+      work_request_cards
+      |> Enum.map(&Map.get(&1, :id))
+      |> Enum.reject(&is_nil/1)
+
+    Dashboard.work_request_details(repo, work_request_ids, repo_identity_catalog: repo_identity_catalog)
   end
 
   defp work_request_attrs(params) do
