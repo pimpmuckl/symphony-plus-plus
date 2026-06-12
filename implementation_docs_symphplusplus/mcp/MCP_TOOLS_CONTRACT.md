@@ -35,10 +35,14 @@ Normal bootstrap prompts and generated handoffs should not copy repo, base,
 phase, branch, worktree, local correlation, or linked WorkRequest hints into claim
 arguments. Generated architect handoff prompts also omit optional `claimed_by`
 and use `work_request_id` only. Those fields remain accepted for compatibility
-and explicit operator/debug validation. When a stale optional hint mismatches a
-valid durable id, the claim error includes
-`classification: optional_scope_hint_mismatch`, `can_retry_with_id_only: true`,
-and the same claim tool as `safe_next_tool`.
+and explicit operator/debug visibility. When a stale caller-supplied optional
+hint mismatches a valid durable id, the claim succeeds and returns
+`recovery.reason: optional_scope_hints_ignored` with
+`ignored_optional_scope_hints` plus an id-only retry payload. Server-recorded
+authority boundaries still fail closed: recorded WorkPackage worktree branch/git
+metadata, WorkRequest package linkage, slice delivery-base scope, persisted
+architect handoff anchor/phase drift, active ownership, paused leases, and
+terminal package state are not downgraded to warnings.
 
 ## Worker Tools
 

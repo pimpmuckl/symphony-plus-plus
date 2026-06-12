@@ -26,7 +26,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport04Test do
     assert get_in(worker_claim, ["inputSchema", "properties", "claimed_by", "description"]) =~ "Optional stable audit owner"
 
     for hint <- ["repo", "base_branch", "work_request_id", "branch", "worktree_path", "caller_id"] do
-      assert get_in(worker_claim, ["inputSchema", "properties", hint, "description"]) =~ "Advanced/debug validation hint"
+      description = get_in(worker_claim, ["inputSchema", "properties", hint, "description"])
+      assert description =~ "Advanced/debug hint"
+      assert description =~ "ignored-hint recovery metadata"
+      assert description =~ "Server-recorded authority boundaries still fail closed"
     end
 
     assert architect_claim["description"] =~ "Normal calls pass only work_request_id"
@@ -34,7 +37,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport04Test do
     assert get_in(architect_claim, ["inputSchema", "properties", "work_request_id", "description"]) =~ "normal architect claim coordinate"
 
     for hint <- ["repo", "base_branch", "architect_anchor_work_package_id", "phase_id", "caller_id"] do
-      assert get_in(architect_claim, ["inputSchema", "properties", hint, "description"]) =~ "Advanced/debug validation hint"
+      description = get_in(architect_claim, ["inputSchema", "properties", hint, "description"])
+      assert description =~ "Advanced/debug hint"
+      assert description =~ "ignored-hint recovery metadata"
+      assert description =~ "Server-recorded authority boundaries still fail closed"
     end
   end
 

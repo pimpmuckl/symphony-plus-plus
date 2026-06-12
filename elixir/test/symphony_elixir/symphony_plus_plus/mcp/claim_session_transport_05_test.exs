@@ -30,6 +30,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport05Test do
     assert get_in(first_response, ["result", "structuredContent", "assignment", "work_package_id"]) == first_package.id
     assert get_in(same_response, ["result", "structuredContent", "assignment", "work_package_id"]) == first_package.id
     assert get_in(rebind_response, ["error", "data", "reason"]) == "session_already_bound"
+    assert get_in(rebind_response, ["error", "data", "recovery", "category"]) == "session_binding"
+    assert get_in(rebind_response, ["error", "data", "recovery", "next_action"]) == "use_fresh_mcp_session_or_release_current_assignment"
+    assert get_in(rebind_response, ["error", "data", "recovery", "retry", "tool"]) == "release_current_assignment"
   end
 
   test "stdio local claim binds by WorkPackage id only", %{repo: repo} do

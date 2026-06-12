@@ -389,6 +389,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools03Test do
     assert get_in(anonymous_response, ["error", "code"]) == -32_001
     assert get_in(anonymous_response, ["error", "data", "reason"]) == "claim_required"
     assert get_in(anonymous_response, ["error", "data", "action"]) == "claim_local_architect_assignment"
+    assert get_in(anonymous_response, ["error", "data", "recovery", "next_action"]) == "claim_local_architect_assignment"
+    assert get_in(anonymous_response, ["error", "data", "recovery", "retry", "tool"]) == "claim_local_architect_assignment"
 
     anonymous_slice_response =
       mcp_tool(repo, nil, "mark_work_request_sliced", %{
@@ -399,6 +401,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools03Test do
     assert get_in(anonymous_slice_response, ["error", "code"]) == -32_001
     assert get_in(anonymous_slice_response, ["error", "data", "reason"]) == "claim_required"
     assert get_in(anonymous_slice_response, ["error", "data", "action"]) == "claim_local_architect_assignment"
+    assert get_in(anonymous_slice_response, ["error", "data", "recovery", "recoverability"]) == "recoverable_with_claim"
 
     anonymous_dispatch_response =
       mcp_tool(repo, nil, "dispatch_work_request_planned_slice", %{

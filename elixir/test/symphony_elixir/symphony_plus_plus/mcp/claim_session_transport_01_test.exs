@@ -171,6 +171,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
 
     assert get_in(assignment_response, ["error", "code"]) == -32_001
     assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(assignment_response, ["error", "data", "recovery", "next_action"]) == "claim_local_assignment"
+    assert get_in(assignment_response, ["error", "data", "recovery", "retry", "tool"]) == "claim_local_assignment"
+    assert get_in(assignment_response, ["error", "data", "recovery", "fallback", "tool"]) == "claim_local_architect_assignment"
 
     package_response =
       MCPHarness.request(

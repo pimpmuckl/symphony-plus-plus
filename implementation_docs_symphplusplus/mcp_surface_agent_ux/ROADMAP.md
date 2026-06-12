@@ -110,12 +110,24 @@ Operator-decision behavior changes:
   longer copied into the prompt reference block.
 - Planned-slice dispatch launch prompts show the minimal JSON claim arguments
   returned in `worker_bootstrap.claim.arguments`.
-- Optional hint mismatches remain hard failures for authority safety, but now
-  include `classification: optional_scope_hint_mismatch`,
+- Optional hint mismatches initially remained hard failures for authority
+  safety, but included `classification: optional_scope_hint_mismatch`,
   `can_retry_with_id_only: true`, and `safe_next_tool` recovery fields.
-- Deliberately deferred: silently ignoring mismatched optional hints, omitting
-  status guards, inferring git/PR metadata, or removing compatible parser
-  support for existing optional fields.
+- Deliberately deferred in that pass: silently ignoring mismatched optional
+  hints, omitting status guards, inferring git/PR metadata, or removing
+  compatible parser support for existing optional fields.
+
+2026-06-12 recovery guardrails update:
+
+- Caller-supplied optional scope hints are now warning-only when the durable
+  `work_package_id` or `work_request_id` resolves to a valid live assignment.
+  Successful claims include `recovery.reason: optional_scope_hints_ignored`,
+  `ignored_optional_scope_hints`, and an id-only retry payload.
+- The relaxation does not apply to server-recorded authority boundaries.
+  Recorded WorkPackage worktree branch/git metadata, WorkRequest package
+  linkage, slice delivery-base scope, persisted architect handoff anchor/phase
+  drift, active ownership, paused leases, and terminal package state continue to
+  fail closed.
 
 ### P1 - Tool Descriptions Are Too Generic For Agents
 

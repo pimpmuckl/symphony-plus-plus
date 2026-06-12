@@ -35,7 +35,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
     end
   end
 
-  test "claim_local_assignment rejects unrelated prepared branch for templated package branch", %{repo: repo} do
+  test "claim_local_assignment rejects unrelated live branch for templated package branch", %{repo: repo} do
     package =
       create_local_claim_package!(repo, "SYMPP-LOCAL-TEMPLATE-BRANCH-SCOPE", branch_pattern: "agent/{{work_package_id}}/{{slug}}")
 
@@ -45,7 +45,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
     File.write!(Path.join([package.worktree_path, ".git", "HEAD"]), "ref: refs/heads/#{unrelated_branch}\n")
 
     try do
-      {response, _server} =
+      {response, rejected_server} =
         Server.handle_state(
           %{
             "jsonrpc" => "2.0",
@@ -59,7 +59,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
           local_mcp_server(local_mcp_config(repo), "local-template-branch-scope-state")
         )
 
-      assert get_in(response, ["error", "data", "reason"]) == "branch_scope_mismatch"
+      assert get_in(response, ["error", "data", "reason"]) == "recorded_worktree_branch_scope_mismatch"
+      assert get_in(response, ["error", "data", "recovery", "next_action"]) == "inspect_or_reprepare_recorded_worktree"
+      assert rejected_server.session == nil
       assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
       assert unclaimed_grant.claimed_at == nil
     after
@@ -67,7 +69,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
     end
   end
 
-  test "claim_local_assignment diagnoses legacy wildcard branch patterns before claiming", %{repo: repo} do
+  test "claim_local_assignment rejects legacy wildcard branch pattern on recorded worktree", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-WILDCARD-BRANCH")
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
 
@@ -82,7 +84,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
     File.write!(Path.join([wildcard_package.worktree_path, ".git", "HEAD"]), "ref: refs/heads/#{prepared_branch}\n")
 
     try do
-      {response, _server} =
+      {response, rejected_server} =
         Server.handle_state(
           %{
             "jsonrpc" => "2.0",
@@ -96,23 +98,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
           local_mcp_server(local_mcp_config(repo), "local-wildcard-branch-pattern-state")
         )
 
-      assert get_in(response, ["error", "code"]) == -32_602
       assert get_in(response, ["error", "data", "reason"]) == "unsupported_branch_pattern_wildcard"
+      assert get_in(response, ["error", "data", "recovery", "next_action"]) == "inspect_or_reprepare_recorded_worktree"
+      assert rejected_server.session == nil
       assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
       assert unclaimed_grant.claimed_at == nil
-      refute repo.one(from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id))
     after
       File.rm_rf!(wildcard_package.worktree_path)
     end
   end
 
-  test "claim_local_assignment rejects literal templated branch without prepared git metadata", %{repo: repo} do
+  test "claim_local_assignment ignores literal templated branch hint without prepared git metadata", %{repo: repo} do
     package =
       create_local_claim_package!(repo, "SYMPP-LOCAL-TEMPLATE-UNPREPARED", branch_pattern: "agent/{{work_package_id}}/{{slug}}")
 
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
 
-    {response, _server} =
+    {response, claimed_server} =
       Server.handle_state(
         %{
           "jsonrpc" => "2.0",
@@ -126,13 +128,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
         local_mcp_server(local_mcp_config(repo), "local-template-unprepared-state")
       )
 
-    assert get_in(response, ["error", "data", "reason"]) == "branch_scope_mismatch"
-    assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
-    assert unclaimed_grant.claimed_at == nil
-    refute repo.one(from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id))
+    assert get_in(response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert ignored_optional_hint?(response, "branch", "branch_scope_mismatch")
+    assert claimed_server.session.assignment.work_package_id == package.id
+    assert {:ok, claimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert claimed_grant.claimed_at != nil
   end
 
-  test "claim_local_assignment rejects retargeted branch for concrete package branch", %{repo: repo} do
+  test "claim_local_assignment rejects retargeted live branch for concrete package branch", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-RETARGETED-BRANCH")
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     retargeted_branch = "agent/SYMPP-LOCAL-RETARGETED-BRANCH/retargeted"
@@ -140,7 +143,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
     File.write!(Path.join([package.worktree_path, ".git", "HEAD"]), "ref: refs/heads/#{retargeted_branch}\n")
 
     try do
-      {response, _server} =
+      {response, rejected_server} =
         Server.handle_state(
           %{
             "jsonrpc" => "2.0",
@@ -154,10 +157,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
           local_mcp_server(local_mcp_config(repo), "local-retargeted-branch-state")
         )
 
-      assert get_in(response, ["error", "data", "reason"]) == "branch_scope_mismatch"
+      assert get_in(response, ["error", "data", "reason"]) == "recorded_worktree_branch_scope_mismatch"
+      assert get_in(response, ["error", "data", "recovery", "protected_boundary"]) =~ "recorded WorkPackage worktree"
+      assert rejected_server.session == nil
       assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
       assert unclaimed_grant.claimed_at == nil
-      refute repo.one(from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id))
+    after
+      File.rm_rf!(package.worktree_path)
+    end
+  end
+
+  test "claim_local_assignment rejects recorded worktree directory without git metadata", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-WORKTREE-NO-GIT")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    File.mkdir_p!(package.worktree_path)
+
+    try do
+      {response, rejected_server} =
+        Server.handle_state(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "local-worktree-no-git",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "claim_local_assignment",
+              "arguments" => local_assignment_claim_args(package)
+            }
+          },
+          local_mcp_server(local_mcp_config(repo), "local-worktree-no-git-state")
+        )
+
+      assert get_in(response, ["error", "data", "reason"]) == "recorded_worktree_git_metadata_missing"
+      assert get_in(response, ["error", "data", "recovery", "recoverability"]) == "operator_repair_required"
+      assert rejected_server.session == nil
+      assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+      assert unclaimed_grant.claimed_at == nil
     after
       File.rm_rf!(package.worktree_path)
     end
@@ -229,11 +263,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
     assert unclaimed_grant.claimed_at == nil
   end
 
-  test "claim_local_assignment rejects wrong local scope without claiming the grant", %{repo: repo} do
+  test "claim_local_assignment ignores wrong optional local scope hints", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-WRONG-SCOPE")
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
 
-    {response, _server} =
+    {response, claimed_server} =
       Server.handle_state(
         %{
           "jsonrpc" => "2.0",
@@ -241,61 +275,62 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
           "method" => "tools/call",
           "params" => %{
             "name" => "claim_local_assignment",
-            "arguments" => local_assignment_claim_args(package, %{"base_branch" => "main"})
+            "arguments" => local_assignment_claim_args(package, %{"base_branch" => "main", "work_request_id" => "WR-MCP-STALE-HINT"})
           }
         },
         local_mcp_server(local_mcp_config(repo), "local-wrong-scope-state")
       )
 
-    assert get_in(response, ["error", "data", "reason"]) == "base_branch_scope_mismatch"
-    assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
-    assert unclaimed_grant.claimed_at == nil
-    assert unclaimed_grant.claimed_by == nil
+    assert get_in(response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert get_in(response, ["result", "structuredContent", "local_claim", "recovery", "recoverability"]) == "recovered"
+    assert ignored_optional_hint?(response, "base_branch", "base_branch_scope_mismatch")
+    assert ignored_optional_hint?(response, "work_request_id", "work_request_scope_mismatch")
+    assert claimed_server.session.assignment.work_package_id == package.id
+    assert {:ok, claimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert claimed_grant.claimed_at != nil
   end
 
-  test "claim_local_assignment stale optional hints can be retried with durable id only", %{repo: repo} do
+  test "claim_local_assignment stale optional hints recover with durable id authority", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-STALE-HINT")
     assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
 
-    {stale_hint_response, _server} =
-      Server.handle_state(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => "local-stale-hint",
-          "method" => "tools/call",
-          "params" => %{
-            "name" => "claim_local_assignment",
-            "arguments" => local_assignment_claim_args(package, %{"base_branch" => "main"})
-          }
-        },
-        local_mcp_server(local_mcp_config(repo), "local-stale-hint-state")
+    {stale_hint_response, stale_hint_server} =
+      call_local_assignment(
+        repo,
+        "local-stale-hint",
+        "local-stale-hint-state",
+        local_assignment_claim_args(package, %{"base_branch" => "main", "work_request_id" => "WR-MCP-STALE-HINT"})
       )
 
-    assert get_in(stale_hint_response, ["error", "data", "reason"]) == "base_branch_scope_mismatch"
-    assert get_in(stale_hint_response, ["error", "data", "classification"]) == "optional_scope_hint_mismatch"
-    assert get_in(stale_hint_response, ["error", "data", "can_retry_with_id_only"]) == true
-    assert get_in(stale_hint_response, ["error", "data", "safe_next_tool"]) == "claim_local_assignment"
+    assert get_in(stale_hint_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert get_in(stale_hint_response, ["result", "structuredContent", "local_claim", "recovery", "next_action"]) == "continue_with_current_assignment"
+
+    assert get_in(stale_hint_response, ["result", "structuredContent", "local_claim", "recovery", "retry", "arguments"]) == %{
+             "work_package_id" => package.id,
+             "claimed_by" => "local-worker-1"
+           }
+
+    assert ignored_optional_hint?(stale_hint_response, "base_branch", "base_branch_scope_mismatch")
+    assert ignored_optional_hint?(stale_hint_response, "work_request_id", "work_request_scope_mismatch")
+    assert stale_hint_server.session.assignment.work_package_id == package.id
 
     {id_only_response, claimed_server} =
-      Server.handle_state(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => "local-id-only-after-stale-hint",
-          "method" => "tools/call",
-          "params" => %{"name" => "claim_local_assignment", "arguments" => %{"work_package_id" => package.id}}
-        },
-        local_mcp_server(local_mcp_config(repo), "local-id-only-after-stale-hint-state")
+      call_local_assignment(
+        repo,
+        "local-id-only-after-stale-hint",
+        "local-id-only-after-stale-hint-state",
+        get_in(stale_hint_response, ["result", "structuredContent", "local_claim", "recovery", "retry", "arguments"])
       )
 
     assert get_in(id_only_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
     assert claimed_server.session.assignment.work_package_id == package.id
   end
 
-  test "claim_local_assignment rejects packages without recorded local worktree scope", %{repo: repo} do
+  test "claim_local_assignment ignores missing recorded local worktree scope hint", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-MISSING-WORKTREE", worktree_path: nil)
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
 
-    {response, _server} =
+    {response, claimed_server} =
       Server.handle_state(
         %{
           "jsonrpc" => "2.0",
@@ -309,9 +344,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
         local_mcp_server(local_mcp_config(repo), "local-missing-worktree-state")
       )
 
-    assert get_in(response, ["error", "data", "reason"]) == "worktree_scope_required"
-    assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
-    assert unclaimed_grant.claimed_at == nil
+    assert get_in(response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert ignored_optional_hint?(response, "worktree_path", "worktree_scope_required")
+    assert claimed_server.session.assignment.work_package_id == package.id
+    assert {:ok, claimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert claimed_grant.claimed_at != nil
   end
 
   test "claim_local_assignment rejects terminal work packages before claiming", %{repo: repo} do
@@ -845,5 +882,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
     assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, package.id)
     assert Enum.count(progress_events, &(&1.status == "pr_synced")) == 1
     assert Enum.count(progress_events, &(&1.status == "review_package_submitted")) == 1
+  end
+
+  defp ignored_optional_hint?(response, field, reason) do
+    response
+    |> get_in(["result", "structuredContent", "local_claim", "recovery", "ignored_optional_scope_hints"])
+    |> Enum.any?(&(&1["field"] == field and &1["reason"] == reason))
+  end
+
+  defp call_local_assignment(repo, id, state_id, arguments) do
+    params = %{"name" => "claim_local_assignment", "arguments" => arguments}
+    payload = %{"jsonrpc" => "2.0", "id" => id, "method" => "tools/call", "params" => params}
+    Server.handle_state(payload, local_mcp_server(local_mcp_config(repo), state_id))
   end
 end

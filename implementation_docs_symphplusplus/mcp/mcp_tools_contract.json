@@ -198,7 +198,7 @@
       "advanced_hint_arguments": ["architect_anchor_work_package_id", "repo", "base_branch", "phase_id", "caller_id"],
       "normal_call": {"work_request_id": "<WR id>"}
     },
-  "optional_hint_policy": "Repo, base, WorkRequest, branch, worktree, local-correlation, phase, and handoff-scope fields remain accepted for compatibility and explicit operator/debug validation. Normal bootstrap prompts and generated handoffs omit them. Stale optional hint mismatches return optional_scope_hint_mismatch with can_retry_with_id_only=true.",
+    "optional_hint_policy": "Repo, base, WorkRequest, branch, worktree, local-correlation, phase, and handoff-scope fields remain accepted for compatibility and explicit operator/debug visibility. Normal bootstrap prompts and generated handoffs omit them. Caller-supplied stale optional hint mismatches on a valid durable id succeed with recovery.reason=optional_scope_hints_ignored, ignored_optional_scope_hints, and an id-only retry payload. Server-recorded worktree branch/git metadata, WorkRequest linkage, delivery-base scope, persisted architect handoff drift, active ownership, paused leases, and terminal package state still fail closed.",
     "reclaim_policy": "Replaying the same id heartbeats the current lease. Stale leases may be reclaimed with audit evidence; paused leases and another active owner are rejected.",
     "secret_policy": "Agent-facing tools, prompts, launch payloads, and docs do not require raw grant secrets, private handoff metadata, secret stores, work keys, or helper scripts."
   },
