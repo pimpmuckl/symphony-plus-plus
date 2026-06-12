@@ -124,6 +124,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorktreeToolsLifecycleTest do
         )
 
       prepare_payload = get_in(prepare_response, ["result", "structuredContent"])
+      prepare_text = assert_concise_tool_text!(prepare_response)
+      assert String.starts_with?(prepare_text, "ok\nworkspace_path:")
+      assert prepare_text =~ "workspace_path:"
+      assert prepare_text =~ "branch:"
       assert prepare_payload["worktree"]["status"] == "prepared"
       assert prepare_payload["work_package"]["worktree_path"] == prepare_payload["worktree"]["path"]
       assert comparable_path(prepare_payload["worktree"]["target_repo_root"]) == comparable_path(fixture.repo_root)
@@ -179,6 +183,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorktreeToolsLifecycleTest do
         )
 
       cleanup_payload = get_in(cleanup_response, ["result", "structuredContent"])
+      cleanup_text = assert_concise_tool_text!(cleanup_response)
+      assert cleanup_text == "ok"
       assert cleanup_payload["worktree"]["status"] == "cleaned"
       assert cleanup_payload["audit_event"]["summary"] == "Success removing worktree. Subagent can be closed now."
       assert cleanup_payload["work_package"]["worktree_path"] == nil

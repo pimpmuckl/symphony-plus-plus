@@ -149,6 +149,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase.CommonHelpers do
     text
   end
 
+  def assert_concise_tool_text!(response) do
+    text = assert_toon_tool_text!(response)
+
+    for fragment <- [
+          "audit_event:",
+          "claim_lease",
+          "grant_id",
+          "idempotency_key",
+          "next_action:",
+          "payload:",
+          "source_tool",
+          "source_of_truth",
+          "state_key",
+          "summary:",
+          "target_repo_root",
+          "worker_grant"
+        ] do
+      refute text =~ fragment
+    end
+
+    text
+  end
+
   def append_child_merge_progress_event(repo, %Session{} = session, child_id, merge_artifact) do
     payload = child_merge_payload(child_id, merge_artifact)
 

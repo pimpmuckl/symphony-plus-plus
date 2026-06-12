@@ -165,9 +165,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
       })
 
     assert get_in(attach_response, ["result", "structuredContent", "action"]) == "solo_attach"
-    attach_text = assert_toon_tool_text!(attach_response)
-    assert attach_text =~ "action: solo_attach"
-    assert attach_text =~ "solo_session:"
+    attach_text = assert_concise_tool_text!(attach_response)
+    assert attach_text == "ok"
     refute attach_text =~ ~s("solo_session")
 
     session = get_in(attach_response, ["result", "structuredContent", "solo_session"])
@@ -186,9 +185,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
 
     progress_response = mcp_tool(repo, nil, "solo_append_progress", progress_args)
     entry = get_in(progress_response, ["result", "structuredContent", "entry"])
-    progress_text = assert_toon_tool_text!(progress_response)
-    assert progress_text =~ "action: solo_append_progress"
-    assert progress_text =~ "[REDACTED]"
+    progress_text = assert_concise_tool_text!(progress_response)
+    assert progress_text == "ok"
     refute progress_text =~ "ghp_abcdefgh"
 
     assert entry["entry_kind"] == "progress"
@@ -204,9 +202,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     assert replay_entry["title"] == entry["title"]
 
     show_response = mcp_tool(repo, nil, "solo_show", %{"session_id" => session["id"]})
-    show_text = assert_toon_tool_text!(show_response)
-    assert show_text =~ "action: solo_show"
+    show_text = assert_concise_tool_text!(show_response)
+    assert show_text =~ "entries[1]{entry_kind,status,title}:"
+    assert show_text =~ "progress,in_progress"
+    assert show_text =~ "entry_count: 1"
     assert show_text =~ "entries_returned: 1"
+    assert show_text =~ "entries_truncated: false"
+    refute show_text =~ "session_key"
     assert get_in(show_response, ["result", "structuredContent", "solo_session", "id"]) == session["id"]
     assert [shown_entry] = get_in(show_response, ["result", "structuredContent", "entries"])
     assert shown_entry["id"] == entry["id"]
@@ -221,9 +223,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
       })
 
     assert get_in(list_response, ["result", "structuredContent", "solo_sessions"]) |> Enum.map(& &1["id"]) == [session["id"]]
-    list_text = assert_toon_tool_text!(list_response)
-    assert list_text =~ "action: solo_list"
-    assert list_text =~ "solo_sessions[1]"
+    list_text = assert_concise_tool_text!(list_response)
+    assert list_text =~ "solo_sessions[1]{session_id,status,title}:"
+    assert list_text =~ session["id"]
+    refute list_text =~ "session_key"
   end
 
   test "Solo MCP lifecycle updates follow the Solo Session service contract", %{repo: repo} do
@@ -304,10 +307,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
 
     show_response = mcp_tool(repo, nil, "solo_show", %{"session_id" => session_id})
     show = get_in(show_response, ["result", "structuredContent"])
+    show_text = assert_concise_tool_text!(show_response)
 
     assert show["entry_count"] == 55
     assert show["entries_returned"] == 50
     assert show["entries_truncated"] == true
+    assert show_text =~ "entry_count: 55"
+    assert show_text =~ "entries_returned: 50"
+    assert show_text =~ "entries_truncated: true"
     assert Enum.map(show["entries"], & &1["sequence"]) == Enum.to_list(6..55)
   end
 
