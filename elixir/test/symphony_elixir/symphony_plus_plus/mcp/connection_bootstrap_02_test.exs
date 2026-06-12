@@ -157,7 +157,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     assert get_in(unbound_tools_by_name, ["create_work_request", "inputSchema", "properties", "description", "description"]) =~ "Markdown"
     assert get_in(unbound_tools_by_name, ["create_work_request", "inputSchema", "properties", "human_description", "description"]) =~ "Markdown"
     assert get_in(unbound_tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
-    assert get_in(unbound_tools_by_name, ["append_progress", "inputSchema", "required"]) == ["summary", "idempotency_key"]
+    assert get_in(unbound_tools_by_name, ["append_progress", "inputSchema", "required"]) == ["summary"]
 
     assert get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node", "inputSchema", "required"]) == [
              "work_request_id",
@@ -178,6 +178,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
              "summary",
              "idempotency_key"
            ]
+
+    assert get_in(unbound_tools_by_name, ["add_comment", "inputSchema", "required"]) == ["target_kind", "target_id", "body"]
+    assert get_in(unbound_tools_by_name, ["list_comments", "inputSchema", "required"]) == ["target_kind", "target_id"]
 
     assert get_in(unbound_tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "required"]) == [
              "work_request_id",
@@ -214,6 +217,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     assert get_in(unclaimed_progress_response, ["error", "data", "resource"]) == "append_progress"
     assert get_in(unclaimed_progress_response, ["error", "data", "reason"]) == "claim_required"
     assert get_in(unclaimed_progress_response, ["error", "data", "action"]) == "claim_local_assignment"
+
+    unclaimed_blocker_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "unclaimed-report-blocker",
+          "method" => "tools/call",
+          "params" => %{"name" => "report_blocker", "arguments" => %{"summary" => "Blocked"}}
+        },
+        unbound_server
+      )
+
+    assert get_in(unclaimed_blocker_response, ["error", "data", "resource"]) == "report_blocker"
+    assert get_in(unclaimed_blocker_response, ["error", "data", "reason"]) == "claim_required"
 
     health_response =
       Server.handle(
@@ -262,9 +279,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     assert get_in(tools_by_name, ["get_current_assignment", "inputSchema", "required"]) == []
     assert get_in(tools_by_name, ["release_current_assignment", "inputSchema", "required"]) == []
     assert get_in(tools_by_name, ["release_current_assignment", "inputSchema", "properties", "reason", "type"]) == "string"
-    assert get_in(tools_by_name, ["append_progress", "inputSchema", "required"]) == ["summary", "idempotency_key"]
+    assert get_in(tools_by_name, ["append_progress", "inputSchema", "required"]) == ["summary"]
     assert get_in(tools_by_name, ["append_progress", "inputSchema", "properties", "body", "description"]) =~ "Markdown"
-    assert get_in(tools_by_name, ["append_finding", "inputSchema", "required"]) == ["title", "body", "idempotency_key"]
+    assert get_in(tools_by_name, ["append_finding", "inputSchema", "required"]) == ["title", "body"]
     assert get_in(tools_by_name, ["append_finding", "inputSchema", "properties", "body", "description"]) =~ "Markdown"
     assert get_in(tools_by_name, ["read_guidance_request", "inputSchema", "required"]) == ["guidance_request_id"]
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "required"]) == ["expected_version"]
@@ -281,12 +298,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
 
     assert get_in(tools_by_name, ["set_status", "inputSchema", "required"]) == ["status", "expected_status"]
     assert get_in(tools_by_name, ["report_blocker", "inputSchema", "properties", "blocker_id", "type"]) == "string"
-    assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
-    assert get_in(tools_by_name, ["add_comment", "inputSchema", "required"]) == ["target_kind", "target_id", "body"]
+    assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary"]
+    assert get_in(tools_by_name, ["add_comment", "inputSchema", "required"]) == ["body"]
     assert get_in(tools_by_name, ["add_comment", "inputSchema", "properties", "target_kind", "enum"]) == ["work_request", "planned_slice", "work_package"]
     assert get_in(tools_by_name, ["add_comment", "inputSchema", "properties", "body", "maxLength"]) == Comment.max_body_length()
     assert get_in(tools_by_name, ["add_comment", "inputSchema", "properties", "body", "description"]) =~ "Markdown"
-    assert get_in(tools_by_name, ["list_comments", "inputSchema", "required"]) == ["target_kind", "target_id"]
+    assert get_in(tools_by_name, ["list_comments", "inputSchema", "required"]) == []
     assert get_in(tools_by_name, ["resolve_comment", "inputSchema", "required"]) == ["comment_id"]
     assert get_in(tools_by_name, ["resolve_comment", "inputSchema", "properties", "resolution_note", "maxLength"]) == Comment.max_resolution_note_length()
     assert get_in(tools_by_name, ["resolve_comment", "inputSchema", "properties", "resolution_note", "description"]) =~ "Markdown"
@@ -294,7 +311,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     assert get_in(tools_by_name, ["attach_branch", "inputSchema", "properties", "head_sha", "type"]) == "string"
 
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
-    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "then", "allOf"]) != nil
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "then", "anyOf"]) == [%{"required" => ["url"]}, %{"required" => ["number"]}]
 
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "number", "anyOf"]) == [
              %{"type" => "integer", "minimum" => 1},
@@ -305,14 +322,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "required"]) == ["metadata"]
 
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
-    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "then", "allOf"]) != nil
+    refute get_in(tools_by_name, ["sync_pr", "inputSchema", "then", "allOf"])
 
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "number", "anyOf"]) == [
              %{"type" => "integer", "minimum" => 1},
              %{"type" => "string", "pattern" => "^[1-9][0-9]*$"}
            ]
 
-    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts", "head_sha"]
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "minItems"]) == 1
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "items", "type"]) == "string"

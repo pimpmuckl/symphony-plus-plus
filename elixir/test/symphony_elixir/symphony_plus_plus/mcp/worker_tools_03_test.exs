@@ -50,7 +50,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
         session: session
       )
 
-    assert get_in(missing_head_response, ["error", "data", "reason"]) == "missing_head_sha"
+    assert get_in(missing_head_response, ["error", "data", "reason"]) == "missing_current_head_sha"
+    assert get_in(missing_head_response, ["error", "data", "recovery", "next_action"]) == "attach_branch"
 
     pre_metadata_review_response =
       MCPHarness.request(
@@ -72,7 +73,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
         session: session
       )
 
-    assert get_in(pre_metadata_review_response, ["error", "data", "reason"]) == "missing_head_sha"
+    assert get_in(pre_metadata_review_response, ["error", "data", "reason"]) == "missing_current_head_sha"
+    assert get_in(pre_metadata_review_response, ["error", "data", "recovery", "next_action"]) == "attach_branch"
 
     pre_branch_review_response =
       MCPHarness.request(
@@ -121,7 +123,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
         session: session
       )
 
-    assert get_in(headless_review_response, ["error", "data", "reason"]) == "missing_head_sha"
+    assert get_in(headless_review_response, ["result", "structuredContent", "progress_event", "payload", "head_sha"]) == "abc123"
 
     missing_acceptance_response =
       MCPHarness.request(
@@ -489,9 +491,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
 
     assert "review_lanes_complete" in get_in(latest_findings_response, ["error", "data", "missing"])
 
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker", "head_sha" => "def456"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => "def456"})
     sync_pr_state(repo, session, "https://github.com/example/repo/pull/123", "def456")
-    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker", "head_sha" => "def456"})
 
     stale_submit_response =
       MCPHarness.request(

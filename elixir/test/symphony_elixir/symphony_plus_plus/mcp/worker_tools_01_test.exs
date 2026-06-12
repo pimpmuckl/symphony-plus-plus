@@ -252,6 +252,61 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools01Test do
     assert get_in(whitespace_progress_replay_response, ["result", "structuredContent", "progress_event", "id"]) ==
              get_in(progress_response, ["result", "structuredContent", "progress_event", "id"])
 
+    generated_progress_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "progress-generated-key", "method" => "tools/call", "params" => %{"name" => "append_progress", "arguments" => %{"summary" => "Generated progress key"}}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(generated_progress_response, ["result", "structuredContent", "progress_event", "idempotency_key"]) =~ "append_progress:generated:append_progress:"
+
+    second_generated_progress_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "progress-generated-key-second", "method" => "tools/call", "params" => %{"name" => "append_progress", "arguments" => %{"summary" => "Generated progress key"}}},
+        repo: repo,
+        session: session
+      )
+
+    refute get_in(second_generated_progress_response, ["result", "structuredContent", "progress_event", "id"]) ==
+             get_in(generated_progress_response, ["result", "structuredContent", "progress_event", "id"])
+
+    generated_finding_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "finding-generated-key",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_finding", "arguments" => %{"title" => "Generated", "body" => "Generated finding key"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(generated_finding_response, ["result", "structuredContent", "finding", "title"]) == "Generated"
+    assert {:ok, findings} = PlanningRepository.list_findings(repo, own_package.id)
+    assert Enum.any?(findings, &String.starts_with?(&1.idempotency_key, "generated:append_finding:"))
+
+    comment_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "comment-default-target", "method" => "tools/call", "params" => %{"name" => "add_comment", "arguments" => %{"body" => "Default to current package"}}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(comment_response, ["result", "structuredContent", "comment", "target_kind"]) == "work_package"
+    assert get_in(comment_response, ["result", "structuredContent", "comment", "target_id"]) == own_package.id
+
+    comments_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "comments-default-target", "method" => "tools/call", "params" => %{"name" => "list_comments", "arguments" => %{}}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(comments_response, ["result", "structuredContent", "target"]) == %{"kind" => "work_package", "id" => own_package.id}
+    assert Enum.any?(get_in(comments_response, ["result", "structuredContent", "comments"]), &(&1["body"] == "Default to current package"))
+
     redacted_progress_args = %{
       "summary" => "Redacted progress",
       "idempotency_key" => "worker-progress-redacted",

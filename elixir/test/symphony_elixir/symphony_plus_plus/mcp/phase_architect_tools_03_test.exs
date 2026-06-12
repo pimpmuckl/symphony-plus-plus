@@ -479,8 +479,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PhaseArchitectTools03Test do
 
     worker_attach_pr_mutation_response =
       mcp_tool(repo, worker_session, "attach_pr", %{
-        "url" => "https://github.com/nextide/symphony-plus-plus/pull/7003",
-        "head_sha" => "late-worker-head"
+        "url" => "https://github.com/nextide/symphony-plus-plus/pull/7004",
+        "head_sha" => "p7-003-flow-head"
       })
 
     assert get_in(worker_attach_pr_mutation_response, ["error", "data", "reason"]) == "child_under_architect_control"

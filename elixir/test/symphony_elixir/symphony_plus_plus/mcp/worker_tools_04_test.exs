@@ -21,6 +21,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
       "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PRE-PR-REVIEW/worker", "head_sha" => "later-head"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/456", "head_sha" => "later-head"})
 
     ready_response =
@@ -31,9 +32,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
       )
 
     missing = get_in(ready_response, ["error", "data", "missing"])
-    assert "pr_attached" in missing
-    refute "review_lanes_complete" in missing
-    refute "review_artifacts_attached" in missing
+    refute "pr_attached" in missing
+    assert "review_lanes_complete" in missing
+    assert "review_artifacts_attached" in missing
   end
 
   test "branch-only readiness rejects review evidence from an older branch head", %{repo: repo} do
@@ -219,6 +220,69 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
            |> length() == 2
   end
 
+  test "attach_pr rejects explicit or embedded PR head when no branch is recorded", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PR-METADATA-HEAD", kind: "mcp", status: "ci_waiting"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "metadata-head-no-branch",
+          "method" => "tools/call",
+          "params" => %{"name" => "attach_pr", "arguments" => %{"url" => "https://github.com/example/repo/pull/790", "metadata" => %{"head" => %{"sha" => "head-a"}}}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "missing_current_head_sha"
+
+    explicit_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "explicit-head-no-branch",
+          "method" => "tools/call",
+          "params" => %{"name" => "attach_pr", "arguments" => %{"url" => "https://github.com/example/repo/pull/790", "head_sha" => "head-a"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(explicit_response, ["error", "data", "reason"]) == "missing_current_head_sha"
+  end
+
+  test "overly short branch head rejects full PR head evidence", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-PR-TINY-HEAD-READY", kind: "mcp", status: "ci_waiting")
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-TINY-HEAD-READY/worker", "head_sha" => "abc"})
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "attach-pr-tiny-current-head",
+          "method" => "tools/call",
+          "params" => %{"name" => "attach_pr", "arguments" => %{"url" => "https://github.com/example/repo/pull/790", "head_sha" => "abcdef1234567890abcdef1234567890abcdef12"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "head_sha_mismatch"
+  end
+
   test "sync_pr stores dry GitHub metadata and deterministic artifact", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(
@@ -235,6 +299,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
 
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-SYNC/worker", "head_sha" => "sync-head"})
     attach_tool(repo, session, "attach_pr", %{"number" => 42, "head_sha" => "sync-head"})
 
     sync_request = %{
@@ -412,6 +477,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
 
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-NUMBER-SHORT-REPO/worker", "head_sha" => "head-a"})
+
     missing_context =
       MCPHarness.request(
         %{
@@ -445,6 +512,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert {:ok, url_assignment} = AccessGrantService.claim(repo, url_minted.work_key.secret, claimed_by: "worker-1")
     url_session = MCPHarness.session(url_assignment, proof_hash: url_minted.grant.secret_hash)
 
+    attach_tool(repo, url_session, "attach_branch", %{"branch" => "agent/SYMPP-PR-URL-SHORT-REPO/worker", "head_sha" => "head-a"})
+
     url_response =
       attach_tool(repo, url_session, "attach_pr", %{"url" => "https://github.com/nextide/symphony-plus-plus/pull/43", "head_sha" => "head-a"})
 
@@ -462,6 +531,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
     idempotency_key = "attach_pr:#{package.id}:legacy-pr-key"
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-LEGACY-REPLAY/worker", "head_sha" => "legacy-head"})
 
     assert {:ok, legacy_event} =
              PlanningRepository.append_progress_event(repo, %{
@@ -518,7 +589,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert get_in(response, ["error", "data", "reason"]) == "missing_metadata"
   end
 
-  test "sync_pr preserves service error shape for PR metadata lookup failures" do
+  test "PR metadata tools preserve service error shape for lookup failures" do
     session =
       Session.new(
         %Assignment{
@@ -551,6 +622,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert get_in(response, ["error", "code"]) == -32_000
     assert get_in(response, ["error", "data", "resource"]) == "sync_pr"
     assert get_in(response, ["error", "data", "reason"]) == "ledger_unavailable"
+
+    legacy_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "legacy-attach-pr-service-error",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "attach_pr",
+            "arguments" => %{"url" => "https://git.example.com/org/repo/pulls/42", "head_sha" => "head-a"}
+          }
+        },
+        repo: BusyPrSyncRepo,
+        session: session
+      )
+
+    assert get_in(legacy_response, ["error", "code"]) == -32_000
+    assert get_in(legacy_response, ["error", "data", "resource"]) == "attach_pr"
+    assert get_in(legacy_response, ["error", "data", "reason"]) == "ledger_unavailable"
   end
 
   test "sync_pr requires an attached matching PR and metadata head", %{repo: repo} do
@@ -563,6 +653,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-SYNC-BOUNDARY/worker", "head_sha" => "abc123"})
 
     missing_attach =
       MCPHarness.request(
@@ -640,6 +732,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
 
+    assert {:ok, _current_branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: package.id,
+               summary: "Current branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/SYMPP-PR-SYNC-CHRONOLOGY/worker", head_sha: "head-a"},
+               created_at: ~U[2026-05-05 00:00:03Z]
+             })
+
     assert {:ok, _current_attach} =
              PlanningRepository.append_progress_event(repo, %{
                work_package_id: package.id,
@@ -678,6 +779,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
 
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-SYNC-SHORT-REPO/worker", "head_sha" => "head-a"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/nextide/symphony-plus-plus/pull/43", "head_sha" => "head-a"})
 
     response =
@@ -721,7 +823,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-BRANCH-HEAD/worker", "head_sha" => "head-a"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/789", "head_sha" => "head-a"})
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-BRANCH-HEAD/worker", "head_sha" => "head-b"})
-    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/789", "head_sha" => "head-a"})
 
     stale_response =
       MCPHarness.request(
