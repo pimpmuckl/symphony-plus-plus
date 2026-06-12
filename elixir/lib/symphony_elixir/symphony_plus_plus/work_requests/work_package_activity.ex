@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
   @moduledoc false
 
+  alias SymphonyElixir.SymphonyPlusPlus.AgentFormat.LifecycleVocabulary
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
@@ -73,6 +74,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
         active_agent_run_ids: [],
         stale_agent_run_ids: [],
         lifecycle_state: "idle",
+        presentation_lifecycle_state: "ready",
+        lifecycle_label: "Ready",
+        source_lifecycle_state: "idle",
         latest_gate_at: nil,
         reason_codes: []
       }
@@ -197,6 +201,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
         terminal?
       )
 
+    source_lifecycle_state = runtime_lifecycle_state(active?, paused?, stale?, recycled?, terminal?)
+    presentation = LifecycleVocabulary.present(source_lifecycle_state)
+
     %{
       active?: active?,
       paused?: paused?,
@@ -205,7 +212,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
       terminal?: terminal?,
       active_agent_run_ids: runtime_ids(active_agent_runs),
       stale_agent_run_ids: runtime_ids(stale_agent_runs),
-      lifecycle_state: runtime_lifecycle_state(active?, paused?, stale?, recycled?, terminal?),
+      lifecycle_state: source_lifecycle_state,
+      presentation_lifecycle_state: presentation.key,
+      lifecycle_label: presentation.label,
+      source_lifecycle_state: source_lifecycle_state,
       latest_gate_at: latest_runtime_gate_at(grants, agent_runs, claim_leases, progress_events, work_package, now),
       reason_codes: reason_codes
     }

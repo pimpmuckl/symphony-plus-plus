@@ -87,7 +87,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     assert closeout_payload["planned_slice_delivery"]["no_pr_evidence"] =~ "[REDACTED]"
     refute closeout_payload["planned_slice_delivery"]["no_pr_evidence"] =~ evidence_query_value
     assert get_in(closeout_payload, ["delivery_board", "counts", "completed_no_pr"]) == 1
+    assert get_in(closeout_payload, ["delivery_board", "presentation_counts", "delivered"]) == 1
+    assert get_in(closeout_payload, ["delivery_board", "source_counts", "completed_no_pr"]) == 1
     assert get_in(closeout_payload, ["delivery_board", "slices", Access.at(0), "operational_state", "key"]) == "completed_no_pr"
+    assert get_in(closeout_payload, ["delivery_board", "slices", Access.at(0), "operational_state", "presentation_key"]) == "delivered"
+    assert get_in(closeout_payload, ["delivery_board", "slices", Access.at(0), "operational_state", "source_key"]) == "completed_no_pr"
     delivery_evidence_path = ["delivery_board", "slices", Access.at(0), "delivery", "no_pr_evidence"]
     assert get_in(closeout_payload, delivery_evidence_path) =~ "[REDACTED]"
     refute get_in(closeout_payload, delivery_evidence_path) =~ evidence_query_value
@@ -143,6 +147,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     closeout_payload = get_in(closeout_response, ["result", "structuredContent"])
     assert closeout_payload["planned_slice_delivery"]["outcome"] == "completed_no_pr"
     assert get_in(closeout_payload, ["delivery_board", "counts", "completed_no_pr"]) == 1
+    assert get_in(closeout_payload, ["delivery_board", "presentation_counts", "delivered"]) == 1
+    assert get_in(closeout_payload, ["delivery_board", "source_counts", "completed_no_pr"]) == 1
     assert get_in(closeout_payload, ["delivery_board", "slices", Access.at(0), "work_package", "base_branch"]) == delivery_base
 
     closed_package = repo.get!(WorkPackage, linked_package.id)
@@ -278,6 +284,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     assert get_in(apply_payload, ["reconciliation", "mode"]) == "apply"
     assert get_in(apply_payload, ["reconciliation", "applied_count"]) == 1
     assert get_in(apply_payload, ["delivery_board", "counts", "delivered"]) == 1
+    assert get_in(apply_payload, ["delivery_board", "presentation_counts", "delivered"]) == 1
+    assert get_in(apply_payload, ["delivery_board", "source_counts", "pr_merged"]) == 1
     assert repo.get!(WorkPackage, linked_package.id).status == "merged"
     assert repo.get!(AccessGrant, minted.grant.id).revoked_at
   end

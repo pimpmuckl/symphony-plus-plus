@@ -108,8 +108,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert event.payload["retired_worker_grant_ids"] == [minted.grant.id]
     assert "worker_grant_active" in event.payload["runtime_reason_codes_before_closeout"]
 
-    assert {:ok, %{counts: %{"delivered" => 1}, slices: [slice]}} = DeliveryBoard.project(repo, work_request.id)
-    assert slice.operational_state.key == "delivered"
+    assert {:ok, %{counts: %{"delivered" => 1}, source_counts: %{"pr_merged" => 1}, slices: [slice]}} = DeliveryBoard.project(repo, work_request.id)
+    assert slice.operational_state.presentation_key == "delivered"
     assert slice.work_package.raw_status == "merged"
   end
 
@@ -146,8 +146,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert event.payload["retired_claim_lease_ids"] == [claim_lease.id]
     assert "claim_lease_active" in event.payload["runtime_reason_codes_before_closeout"]
 
-    assert {:ok, %{counts: %{"delivered" => 1}, slices: [slice]}} = DeliveryBoard.project(repo, work_request.id)
-    assert slice.operational_state.key == "delivered"
+    assert {:ok, %{counts: %{"delivered" => 1}, source_counts: %{"pr_merged" => 1}, slices: [slice]}} = DeliveryBoard.project(repo, work_request.id)
+    assert slice.operational_state.presentation_key == "delivered"
     assert slice.work_package.raw_status == "merged"
   end
 
@@ -188,7 +188,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
              })
 
     assert {:ok, %{slices: [before_closeout]}} = DeliveryBoard.project(repo, work_request.id)
-    assert before_closeout.operational_state.key == "merge_ready"
+    assert before_closeout.operational_state.presentation_key == "needs_review"
+    assert before_closeout.operational_state.source_key == "merge_ready"
     assert before_closeout.work_package.runtime_state.active? == false
     assert before_closeout.work_package.runtime_state.stale? == true
     assert before_closeout.work_package.runtime_state.stale_agent_run_ids == [agent_run.id]
@@ -213,8 +214,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert "agent_run_stale" in event.payload["runtime_reason_codes_before_closeout"]
     assert event.payload["ignored_stale_agent_run_ids"] == [agent_run.id]
 
-    assert {:ok, %{counts: %{"delivered" => 1}, slices: [after_closeout]}} = DeliveryBoard.project(repo, work_request.id)
-    assert after_closeout.operational_state.key == "delivered"
+    assert {:ok, %{counts: %{"delivered" => 1}, source_counts: %{"pr_merged" => 1}, slices: [after_closeout]}} = DeliveryBoard.project(repo, work_request.id)
+    assert after_closeout.operational_state.presentation_key == "delivered"
     refute "linked_package_active_after_delivery" in after_closeout.attention_reason_codes
   end
 
@@ -780,8 +781,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert closeout_event.payload["active_blocker_ids"] == ["spec-md-review-scope"]
     assert closeout_event.payload["blocker_reason_codes"] == ["active_blocker"]
 
-    assert {:ok, %{counts: %{"superseded" => 1}, slices: [slice, _successor]}} = DeliveryBoard.project(repo, work_request.id)
-    assert slice.operational_state.key == "superseded"
+    assert {:ok, %{counts: counts, presentation_counts: presentation_counts, source_counts: source_counts, slices: [slice, _successor]}} =
+             DeliveryBoard.project(repo, work_request.id)
+
+    assert counts["superseded"] == 1
+    assert presentation_counts["delivered"] == 1
+    assert source_counts["superseded"] == 1
+    assert slice.operational_state.presentation_key == "delivered"
+    assert slice.operational_state.source_key == "superseded"
     assert slice.work_package.raw_status == "closed"
     assert "linked_package_blocked_after_delivery" in slice.attention_reason_codes
   end
@@ -890,8 +897,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert closeout_event.payload["retired_claim_lease_ids"] == [claim_lease.id]
     assert "claim_lease_stale" in closeout_event.payload["runtime_reason_codes_before_closeout"]
 
-    assert {:ok, %{counts: %{"superseded" => 1}, slices: [slice, _successor]}} = DeliveryBoard.project(repo, work_request.id)
-    assert slice.operational_state.key == "superseded"
+    assert {:ok, %{counts: counts, presentation_counts: presentation_counts, source_counts: source_counts, slices: [slice, _successor]}} =
+             DeliveryBoard.project(repo, work_request.id)
+
+    assert counts["superseded"] == 1
+    assert presentation_counts["delivered"] == 1
+    assert source_counts["superseded"] == 1
+    assert slice.operational_state.presentation_key == "delivered"
+    assert slice.operational_state.source_key == "superseded"
     refute "linked_package_active_after_delivery" in slice.attention_reason_codes
   end
 

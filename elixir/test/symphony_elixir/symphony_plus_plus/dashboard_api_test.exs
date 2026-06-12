@@ -262,7 +262,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-OP-READY", status: "ready_for_worker"))
 
     assert {:ok, card} = Dashboard.card(repo, ready)
-    assert card.operational_state.key == "ready_for_worker"
+    assert card.operational_state.presentation_key == "ready"
+    assert card.operational_state.source_key == "ready_for_worker"
     assert card.operational_state.attention_items == []
     assert card.operational_state.has_started == false
     assert card.operational_state.has_active_worker == false
@@ -273,8 +274,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     create_claimed_worker_grant(repo, started.id, "worker-started")
 
     assert {:ok, started_card} = Dashboard.card(repo, started)
-    assert started_card.operational_state.key == "active"
-    assert started_card.operational_state.label == "Active"
+    assert started_card.operational_state.presentation_key == "working"
+    assert started_card.operational_state.label == "Working"
+    assert started_card.operational_state.source_key == "active"
     assert started_card.operational_state.raw_status == "ready_for_worker"
     assert started_card.operational_state.has_started == true
     assert started_card.operational_state.has_active_worker == true
@@ -299,8 +301,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              })
 
     assert {:ok, prepared_card} = Dashboard.card(repo, prepared)
-    assert prepared_card.operational_state.key == "prepared"
-    assert prepared_card.operational_state.label == "Prepared"
+    assert prepared_card.operational_state.presentation_key == "ready"
+    assert prepared_card.operational_state.label == "Ready"
+    assert prepared_card.operational_state.source_key == "prepared"
     assert prepared_card.operational_state.attention_items == []
     assert prepared_card.operational_state.has_started == false
     assert prepared_card.operational_state.has_active_worker == false
@@ -326,7 +329,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              })
 
     assert {:ok, failed_prepare_card} = Dashboard.card(repo, failed_prepare)
-    assert failed_prepare_card.operational_state.key == "needs_attention"
+    assert failed_prepare_card.operational_state.presentation_key == "operator_action"
+    assert failed_prepare_card.operational_state.source_key == "needs_attention"
     assert failed_prepare_card.operational_state.has_started == true
     assert failed_prepare_card.operational_state.has_prepared_worktree == false
 
@@ -342,7 +346,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              })
 
     assert {:ok, ready_history_card} = Dashboard.card(repo, ready_with_history)
-    assert ready_history_card.operational_state.key == "needs_attention"
+    assert ready_history_card.operational_state.presentation_key == "operator_action"
+    assert ready_history_card.operational_state.source_key == "needs_attention"
     assert ready_history_card.operational_state.has_started == true
     assert ready_history_card.operational_state.has_active_worker == false
     assert ready_history_card.operational_state.is_stale == true
@@ -361,7 +366,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert {:ok, _completed_ready_history_run} = AgentRunRepository.mark_completed(repo, ready_history_run.id, "done earlier")
 
     assert {:ok, ready_run_history_card} = Dashboard.card(repo, ready_with_run_history)
-    assert ready_run_history_card.operational_state.key == "needs_attention"
+    assert ready_run_history_card.operational_state.presentation_key == "operator_action"
+    assert ready_run_history_card.operational_state.source_key == "needs_attention"
     assert ready_run_history_card.operational_state.has_started == true
     assert ready_run_history_card.operational_state.has_active_worker == false
     assert ready_run_history_card.operational_state.is_stale == true
@@ -380,7 +386,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert {:ok, _completed_run} = AgentRunRepository.mark_completed(repo, run.id, "done earlier")
 
     assert {:ok, historical_card} = Dashboard.card(repo, historical)
-    assert historical_card.operational_state.key == "started_paused"
+    assert historical_card.operational_state.presentation_key == "stale_recoverable"
+    assert historical_card.operational_state.source_key == "started_paused"
     assert historical_card.operational_state.raw_status == "implementing"
     assert historical_card.operational_state.has_started == true
     assert historical_card.operational_state.has_active_worker == false
@@ -399,8 +406,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              })
 
     assert {:ok, active_card} = Dashboard.card(repo, active)
-    assert active_card.operational_state.key == "active"
-    assert active_card.operational_state.label == "Active"
+    assert active_card.operational_state.presentation_key == "working"
+    assert active_card.operational_state.label == "Working"
+    assert active_card.operational_state.source_key == "active"
     assert active_card.operational_state.has_started == true
     assert active_card.operational_state.has_active_worker == true
 
@@ -420,7 +428,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     assert {:ok, stale_active_card} = Dashboard.card(repo, stale_active)
     assert stale_active_card.active_agent_run == nil
-    assert stale_active_card.operational_state.key == "started_paused"
+    assert stale_active_card.operational_state.presentation_key == "stale_recoverable"
+    assert stale_active_card.operational_state.source_key == "started_paused"
     assert stale_active_card.operational_state.has_started == true
     assert stale_active_card.operational_state.has_active_worker == false
     assert stale_active_card.operational_state.is_stale == true
@@ -438,7 +447,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              })
 
     assert {:ok, ci_card} = Dashboard.card(repo, ci_waiting)
-    assert ci_card.operational_state.key == "ci_waiting"
+    assert ci_card.operational_state.presentation_key == "needs_review"
+    assert ci_card.operational_state.source_key == "ci_waiting"
   end
 
   test "package operational state projects merged PRs while surfacing missing readiness contradictions", %{repo: repo} do
@@ -491,7 +501,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              })
 
     assert {:ok, card} = Dashboard.card(repo, work_package)
-    assert card.operational_state.key == "merged"
+    assert card.operational_state.presentation_key == "delivered"
+    assert card.operational_state.source_key == "merged"
     assert card.operational_state.raw_status == "ready_for_human_merge"
 
     attention_by_key = Map.new(card.operational_state.attention_items, &{&1.key, &1})
@@ -508,7 +519,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              })
 
     assert {:ok, stale_card} = Dashboard.card(repo, work_package)
-    assert stale_card.operational_state.key == "merge_ready"
+    assert stale_card.operational_state.presentation_key == "needs_review"
+    assert stale_card.operational_state.source_key == "merge_ready"
     refute Enum.any?(stale_card.operational_state.attention_items, &(&1.key == "pr_merged_raw_status_open"))
   end
 
@@ -1557,13 +1569,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert {:ok, payload} = Dashboard.work_request_detail(repo, work_request.id)
     slices_by_id = Map.new(payload.planned_slices, &{&1.id, &1})
 
-    assert get_in(slices_by_id, ["WRS-OP-READY", :operational_state, :key]) == "ready_for_worker"
+    assert get_in(slices_by_id, ["WRS-OP-READY", :operational_state, :presentation_key]) == "ready"
+    assert get_in(slices_by_id, ["WRS-OP-READY", :operational_state, :source_key]) == "ready_for_worker"
     assert get_in(slices_by_id, ["WRS-OP-READY", :operational_state, :raw_status]) == "approved"
-    assert get_in(slices_by_id, ["WRS-OP-IDLE-LINKED", :operational_state, :key]) == "ready_for_worker"
+    assert get_in(slices_by_id, ["WRS-OP-IDLE-LINKED", :operational_state, :presentation_key]) == "ready"
+    assert get_in(slices_by_id, ["WRS-OP-IDLE-LINKED", :operational_state, :source_key]) == "ready_for_worker"
 
     prepared_linked_slice = Map.fetch!(slices_by_id, "WRS-OP-PREPARED-LINKED")
     assert prepared_linked_slice.work_package_status == "ready_for_worker"
-    assert prepared_linked_slice.operational_state.key == "prepared"
+    assert prepared_linked_slice.operational_state.presentation_key == "ready"
+    assert prepared_linked_slice.operational_state.source_key == "prepared"
     assert prepared_linked_slice.operational_state.raw_status == "approved"
     assert prepared_linked_slice.operational_state.has_started == false
     assert prepared_linked_slice.operational_state.has_prepared_worktree == true
@@ -1572,7 +1587,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     linked_slice = Map.fetch!(slices_by_id, "WRS-OP-LINKED")
     assert linked_slice.work_package_id == linked_package.id
     assert linked_slice.work_package_status == "implementing"
-    assert linked_slice.operational_state.key == "started_paused"
+    assert linked_slice.operational_state.presentation_key == "stale_recoverable"
+    assert linked_slice.operational_state.source_key == "started_paused"
     assert linked_slice.operational_state.raw_status == "approved"
 
     assert Enum.any?(
@@ -1582,7 +1598,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     terminal_slice = Map.fetch!(slices_by_id, "WRS-OP-TERMINAL")
     assert terminal_slice.work_package_status == "abandoned"
-    assert terminal_slice.operational_state.key == "needs_closeout"
+    assert terminal_slice.operational_state.presentation_key == "operator_action"
+    assert terminal_slice.operational_state.source_key == "needs_closeout"
     assert terminal_slice.attention_reason_codes == ["terminal_package_without_delivery_outcome"]
   end
 
@@ -1630,8 +1647,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     assert request_card.status == "ready_for_slicing"
     assert request_card.dispatched_slice_count == 2
-    assert request_card.operational_state.key == "active"
-    assert request_card.operational_state.label == "Active"
+    assert request_card.operational_state.presentation_key == "working"
+    assert request_card.operational_state.label == "Working"
+    assert request_card.operational_state.source_key == "active"
     assert request_card.operational_state.raw_status == "ready_for_slicing"
     assert request_card.operational_state.has_started == true
     assert request_card.operational_state.has_active_worker == true
@@ -1670,8 +1688,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert {:ok, prepared_payload} = Dashboard.work_requests(repo)
     prepared_request_card = Enum.find(prepared_payload.work_requests, &(&1.id == prepared_request.id))
 
-    assert prepared_request_card.operational_state.key == "prepared"
-    assert prepared_request_card.operational_state.label == "Prepared"
+    assert prepared_request_card.operational_state.presentation_key == "ready"
+    assert prepared_request_card.operational_state.label == "Ready"
+    assert prepared_request_card.operational_state.source_key == "prepared"
     assert prepared_request_card.operational_state.raw_status == "ready_for_slicing"
     assert prepared_request_card.operational_state.has_prepared_worktree == true
   end
@@ -1699,8 +1718,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert payload.work_request.status == "ready_for_slicing"
     assert payload.work_request.completed_at != nil
     assert payload.work_request.archived_at == nil
-    assert payload.work_request.operational_state.key == "needs_closeout"
-    assert payload.work_request.operational_state.label == "Needs Closeout"
+    assert payload.work_request.operational_state.presentation_key == "operator_action"
+    assert payload.work_request.operational_state.label == "Operator Action"
+    assert payload.work_request.operational_state.source_key == "needs_closeout"
     assert payload.work_request.operational_state.raw_status == "ready_for_slicing"
 
     assert {:ok, read_request} = WorkRequestRepository.get(repo, work_request.id)
@@ -1709,7 +1729,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     [slice] = payload.planned_slices
     assert slice.status == "dispatched"
     assert slice.work_package_status == "merged"
-    assert slice.operational_state.key == "needs_closeout"
+    assert slice.operational_state.presentation_key == "operator_action"
+    assert slice.operational_state.source_key == "needs_closeout"
     assert slice.operational_state.raw_status == "dispatched"
     assert slice.attention_reason_codes == ["terminal_package_without_delivery_outcome"]
   end
@@ -1752,15 +1773,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert {:ok, payload} = Dashboard.work_requests(repo)
     card = Enum.find(payload.work_requests, &(&1.id == work_request.id))
 
-    assert card.operational_state.key == "delivered"
+    assert card.operational_state.presentation_key == "delivered"
     assert card.operational_state.raw_status == "human_info_needed"
 
     assert {:ok, detail} = Dashboard.work_request_detail(repo, work_request.id)
-    assert detail.work_request.operational_state.key == "delivered"
+    assert detail.work_request.operational_state.presentation_key == "delivered"
     assert detail.work_request.operational_state.raw_status == "human_info_needed"
 
     [slice] = detail.planned_slices
-    assert slice.operational_state.key == "delivered"
+    assert slice.operational_state.presentation_key == "delivered"
   end
 
   test "operator-completed WorkRequest stays completed over lifecycle gates", %{repo: repo} do
@@ -1774,11 +1795,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert {:ok, payload} = Dashboard.work_requests(repo)
     card = Enum.find(payload.work_requests, &(&1.id == work_request.id))
 
-    assert card.operational_state.key == "completed"
+    assert card.operational_state.presentation_key == "delivered"
+    assert card.operational_state.source_key == "completed"
     assert card.operational_state.raw_status == "human_info_needed"
 
     assert {:ok, detail} = Dashboard.work_request_detail(repo, work_request.id)
-    assert detail.work_request.operational_state.key == "completed"
+    assert detail.work_request.operational_state.presentation_key == "delivered"
+    assert detail.work_request.operational_state.source_key == "completed"
     assert detail.work_request.operational_state.raw_status == "human_info_needed"
   end
 
@@ -1798,11 +1821,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert {:ok, payload} = Dashboard.work_requests(repo)
     card = Enum.find(payload.work_requests, &(&1.id == work_request.id))
 
-    assert card.operational_state.key == "completed"
+    assert card.operational_state.presentation_key == "delivered"
+    assert card.operational_state.source_key == "completed"
     assert card.operational_state.raw_status == "clarifying"
 
     assert {:ok, detail} = Dashboard.work_request_detail(repo, work_request.id)
-    assert detail.work_request.operational_state.key == "completed"
+    assert detail.work_request.operational_state.presentation_key == "delivered"
+    assert detail.work_request.operational_state.source_key == "completed"
     assert detail.work_request.operational_state.raw_status == "clarifying"
   end
 
@@ -1844,10 +1869,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     |> repo.update!()
 
     assert {:ok, detail} = Dashboard.work_request_detail(repo, work_request.id)
-    assert detail.work_request.operational_state.key == "completed"
+    assert detail.work_request.operational_state.presentation_key == "delivered"
+    assert detail.work_request.operational_state.source_key == "completed"
 
     [slice] = detail.planned_slices
-    assert slice.operational_state.key == "delivered"
+    assert slice.operational_state.presentation_key == "delivered"
   end
 
   test "grant WorkRequest list and detail promote scoped linked packages consistently", %{repo: repo} do
@@ -1932,7 +1958,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert card["completed_at"] != nil
     assert card["archived_at"] == nil
     assert card["operational_state"]["key"] == "needs_closeout"
-    assert card["operational_state"]["label"] == "Needs Closeout"
+    assert card["operational_state"]["presentation_key"] == "operator_action"
+    assert card["operational_state"]["label"] == "Operator Action"
+    assert card["operational_state"]["source_key"] == "needs_closeout"
     assert card["operational_state"]["raw_status"] == "ready_for_slicing"
     refute Map.has_key?(card["operational_state"], "reason")
     refute Map.has_key?(card["operational_state"], "work_package_status")
@@ -1955,7 +1983,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     grant_slices = Map.new(detail_payload["planned_slices"], &{&1["id"], &1})
 
     assert %{"status" => "dispatched"} = grant_slice = Map.fetch!(grant_slices, approved_slice.id)
-    assert get_in(grant_slice, ["operational_state", "key"]) == "delivered"
+    assert get_in(grant_slice, ["operational_state", "presentation_key"]) == "delivered"
     refute Map.has_key?(grant_slice, "delivery")
     refute Map.has_key?(grant_slice, "successor")
     refute Map.has_key?(grant_slice, "work_package_status")
@@ -1964,7 +1992,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute Enum.any?(grant_slice["operational_state"]["attention_items"] || [], &Map.has_key?(&1, "reason"))
 
     assert %{"status" => "dispatched"} = terminal_grant_slice = Map.fetch!(grant_slices, terminal_slice.id)
-    assert get_in(terminal_grant_slice, ["operational_state", "key"]) == "needs_closeout"
+    assert get_in(terminal_grant_slice, ["operational_state", "presentation_key"]) == "operator_action"
+    assert get_in(terminal_grant_slice, ["operational_state", "source_key"]) == "needs_closeout"
     assert terminal_grant_slice["attention_reason_codes"] == ["terminal_package_without_delivery_outcome"]
     refute Map.has_key?(terminal_grant_slice, "delivery")
     refute Map.has_key?(terminal_grant_slice, "successor")
@@ -2219,11 +2248,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     slices_by_id = Map.new(payload.delivery_board["slices"], &{&1["id"], &1})
 
     assert get_in(slices_by_id, ["WRS-DASH-NEEDS-CLOSEOUT", "operational_state", "key"]) == "needs_closeout"
+    assert get_in(slices_by_id, ["WRS-DASH-NEEDS-CLOSEOUT", "operational_state", "presentation_key"]) == "operator_action"
+    assert get_in(slices_by_id, ["WRS-DASH-NEEDS-CLOSEOUT", "operational_state", "source_key"]) == "needs_closeout"
     assert get_in(slices_by_id, ["WRS-DASH-NEEDS-CLOSEOUT", "attention_reason_codes"]) == ["pr_merged_without_delivery_outcome"]
     assert get_in(slices_by_id, ["WRS-DASH-NO-PR", "delivery", "outcome"]) == "completed_no_pr"
     assert get_in(slices_by_id, ["WRS-DASH-NO-PR", "operational_state", "key"]) == "completed_no_pr"
+    assert get_in(slices_by_id, ["WRS-DASH-NO-PR", "operational_state", "presentation_key"]) == "delivered"
+    assert get_in(slices_by_id, ["WRS-DASH-NO-PR", "operational_state", "source_key"]) == "completed_no_pr"
     assert get_in(slices_by_id, ["WRS-DASH-RECORDED-MERGED", "delivery", "outcome"]) == "pr_merged"
     assert get_in(slices_by_id, ["WRS-DASH-RECORDED-MERGED", "operational_state", "key"]) == "delivered"
+    assert get_in(slices_by_id, ["WRS-DASH-RECORDED-MERGED", "operational_state", "presentation_key"]) == "delivered"
+    assert get_in(slices_by_id, ["WRS-DASH-RECORDED-MERGED", "operational_state", "source_key"]) == "pr_merged"
     assert get_in(slices_by_id, ["WRS-DASH-SUPERSEDED", "successor", "work_package", "id"]) == successor_package.id
     assert get_in(slices_by_id, ["WRS-DASH-SUPERSEDED", "successor", "work_package_id"]) == successor_package.id
     assert get_in(slices_by_id, ["WRS-DASH-FILTERED-SUCCESSOR", "successor", "work_package"]) == nil
@@ -2232,20 +2267,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     planned_slices_by_id = Map.new(payload.planned_slices, &{&1.id, &1})
 
     needs_closeout_slice = Map.fetch!(planned_slices_by_id, "WRS-DASH-NEEDS-CLOSEOUT")
-    assert needs_closeout_slice.operational_state.key == "needs_closeout"
+    assert needs_closeout_slice.operational_state.presentation_key == "operator_action"
+    assert needs_closeout_slice.operational_state.source_key == "needs_closeout"
     assert needs_closeout_slice.attention_reason_codes == ["pr_merged_without_delivery_outcome"]
     assert needs_closeout_slice.operational_state.raw_status == "dispatched"
 
     no_pr_slice = Map.fetch!(planned_slices_by_id, "WRS-DASH-NO-PR")
     assert get_in(no_pr_slice, [:delivery, "outcome"]) == "completed_no_pr"
-    assert no_pr_slice.operational_state.key == "completed_no_pr"
-    assert no_pr_slice.operational_state.label == "Completed Without PR"
+    assert no_pr_slice.operational_state.presentation_key == "delivered"
+    assert no_pr_slice.operational_state.label == "Delivered"
+    assert no_pr_slice.operational_state.source_key == "completed_no_pr"
     assert no_pr_slice.operational_state.raw_status == "dispatched"
 
     merged_slice = Map.fetch!(planned_slices_by_id, "WRS-DASH-RECORDED-MERGED")
     assert get_in(merged_slice, [:delivery, "outcome"]) == "pr_merged"
-    assert merged_slice.operational_state.key == "delivered"
+    assert merged_slice.operational_state.presentation_key == "delivered"
     assert merged_slice.operational_state.label == "Delivered"
+    assert merged_slice.operational_state.source_key == "pr_merged"
     assert merged_slice.operational_state.raw_status == "dispatched"
     assert merged_slice.operational_state.work_package_status == "ready_for_worker"
     assert merged_slice.operational_state.has_started == true
@@ -2255,7 +2293,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     superseded_payload = Map.fetch!(planned_slices_by_id, "WRS-DASH-SUPERSEDED")
     assert get_in(superseded_payload, [:delivery, "outcome"]) == "superseded"
-    assert superseded_payload.operational_state.key == "superseded"
+    assert superseded_payload.operational_state.presentation_key == "delivered"
+    assert superseded_payload.operational_state.source_key == "superseded"
     assert get_in(superseded_payload, [:successor, "work_package", "id"]) == successor_package.id
     assert payload.work_request.completed_at == nil
   end
@@ -4311,21 +4350,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       [slice] = detail["planned_slices"]
       [card] = Enum.filter(payload["work_requests"]["work_requests"], &(&1["id"] == work_request.id))
 
-      assert card["operational_state"]["key"] == "delivered"
+      assert card["operational_state"]["presentation_key"] == "delivered"
       assert card["operational_state"]["has_started"] == true
       assert card["operational_state"]["has_active_worker"] == false
       assert card["operational_state"]["is_stale"] == true
-      assert get_in(detail, ["work_request", "operational_state", "key"]) == "delivered"
+      assert get_in(detail, ["work_request", "operational_state", "presentation_key"]) == "delivered"
       assert get_in(detail, ["work_request", "operational_state", "has_started"]) == true
       assert get_in(detail, ["work_request", "operational_state", "has_active_worker"]) == false
       assert get_in(detail, ["work_request", "operational_state", "is_stale"]) == true
-      assert get_in(slice, ["operational_state", "key"]) == "delivered"
+      assert get_in(slice, ["operational_state", "presentation_key"]) == "delivered"
       assert get_in(slice, ["operational_state", "label"]) == "Delivered"
       assert get_in(slice, ["operational_state", "raw_status"]) == "dispatched"
       assert get_in(slice, ["operational_state", "work_package_status"]) == "ready_for_worker"
       assert get_in(slice, ["delivery", "outcome"]) == "pr_merged"
       assert "linked_package_status_stale_after_delivery" in slice["attention_reason_codes"]
       assert get_in(detail, ["delivery_board", "slices", Access.at(0), "operational_state", "key"]) == "delivered"
+      assert get_in(detail, ["delivery_board", "slices", Access.at(0), "operational_state", "source_key"]) == "pr_merged"
     end)
   end
 
@@ -5599,7 +5639,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       assert {:ok, persisted_package} = WorkPackageRepository.get(repo, work_package.id)
       assert persisted_package.status == "merged"
 
-      assert get_in(work_request_detail(payload["dashboard"], work_request.id), ["work_request", "operational_state", "key"]) ==
+      assert get_in(work_request_detail(payload["dashboard"], work_request.id), ["work_request", "operational_state", "presentation_key"]) ==
+               "operator_action"
+
+      assert get_in(work_request_detail(payload["dashboard"], work_request.id), ["work_request", "operational_state", "source_key"]) ==
                "needs_closeout"
     end)
   end
@@ -5851,7 +5894,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         |> post("/api/v1/sympp/operator/work-requests/#{work_request.id}/state", %{"state" => "completed"})
         |> json_response(200)
 
-      assert get_in(payload, ["work_request", "work_request", "operational_state", "key"]) == "completed"
+      assert get_in(payload, ["work_request", "work_request", "operational_state", "presentation_key"]) == "delivered"
+      assert get_in(payload, ["work_request", "work_request", "operational_state", "source_key"]) == "completed"
       assert get_in(payload, ["work_request", "work_request", "completion_source"]) == "operator"
 
       assert {:ok, persisted_request} = WorkRequestRepository.get(repo, work_request.id)

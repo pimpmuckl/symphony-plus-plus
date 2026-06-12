@@ -128,7 +128,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert planned_slice_id == planned_slice.id
     assert work_package_id == linked_package.id
     assert applied.delivery_board.counts["delivered"] == 1
-    assert Map.get(applied.delivery_board.counts, "needs_closeout", 0) == 0
+    assert applied.delivery_board.presentation_counts["delivered"] == 1
+    assert applied.delivery_board.source_counts["pr_merged"] == 1
+    assert Map.get(applied.delivery_board.presentation_counts, "operator_action", 0) == 0
+    assert Map.get(applied.delivery_board.source_counts, "needs_closeout", 0) == 0
 
     assert [delivery] = repo.all(PlannedSliceDelivery)
     assert delivery.outcome == "pr_merged"
@@ -167,6 +170,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert planned_slice_id == planned_slice.id
     assert work_package_id == linked_package.id
     assert applied.delivery_board.counts["delivered"] == 1
+    assert applied.delivery_board.presentation_counts["delivered"] == 1
+    assert applied.delivery_board.source_counts["pr_merged"] == 1
 
     assert [delivery] = repo.all(PlannedSliceDelivery)
     assert delivery.outcome == "pr_merged"
@@ -197,6 +202,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert result["reason"] == "github_pr_merged"
     assert result["planned_slice_id"] == planned_slice.id
     assert get_in(response, ["result", "structuredContent", "delivery_board", "counts", "needs_closeout"]) == 1
+    assert get_in(response, ["result", "structuredContent", "delivery_board", "presentation_counts", "operator_action"]) == 1
+    assert get_in(response, ["result", "structuredContent", "delivery_board", "source_counts", "needs_closeout"]) == 1
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
     assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_human_merge"
   end
@@ -218,7 +225,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
 
     assert payload["applied_count"] == 1
     counts = get_in(response, ["result", "structuredContent", "delivery_board", "counts"])
+    presentation_counts = get_in(response, ["result", "structuredContent", "delivery_board", "presentation_counts"])
+    source_counts = get_in(response, ["result", "structuredContent", "delivery_board", "source_counts"])
     assert Map.get(counts, "needs_closeout", 0) == 0
+    assert Map.get(presentation_counts, "operator_action", 0) == 0
+    assert Map.get(source_counts, "needs_closeout", 0) == 0
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 1
     assert repo.get!(WorkPackage, linked_package.id).status == "merged"
   end

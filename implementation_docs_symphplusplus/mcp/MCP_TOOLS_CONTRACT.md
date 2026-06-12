@@ -15,8 +15,8 @@ Agents claim existing ledger records by id:
 
 | Tool | Required | Optional | Purpose |
 |---|---|---|---|
-| `claim_local_assignment` | `work_package_id` | `claimed_by`; advanced/debug validation hints: `work_request_id`, `repo`, `base_branch`, `branch`, `worktree_path`, `caller_id` | Bind the current session to one WorkPackage. The WorkPackage id is the normal claim coordinate; scope hints are inferred from the ledger unless an operator asks for an explicit check. |
-| `claim_local_architect_assignment` | `work_request_id` | `claimed_by`; advanced/debug validation hints: `architect_anchor_work_package_id`, `repo`, `base_branch`, `phase_id`, `caller_id` | Bind the current session to the architect grant for one WorkRequest. The WorkRequest id is the normal claim coordinate; anchor, repo, base, and phase are inferred from the ledger. |
+| `claim_local_assignment` | `work_package_id` | `claimed_by`; advanced/debug validation hints: `work_request_id`, `repo`, `base_branch`, `branch`, `worktree_path`, `caller_id` | Activate one WorkPackage assignment. The WorkPackage id is the normal claim coordinate; scope hints are inferred from the ledger unless an operator asks for an explicit check. |
+| `claim_local_architect_assignment` | `work_request_id` | `claimed_by`; advanced/debug validation hints: `architect_anchor_work_package_id`, `repo`, `base_branch`, `phase_id`, `caller_id` | Activate one architect assignment for a WorkRequest. The WorkRequest id is the normal claim coordinate; scope details are inferred from the ledger. |
 | `create_work_request` | `repo`, `base_branch`, `title`, `request_kind`, plus `description` or `human_description` | status/workflow/creator fields | Create a WorkRequest and return a ledger claim bootstrap for the architect. |
 
 Dispatch and mint responses return non-secret `worker_bootstrap` metadata:
@@ -32,7 +32,7 @@ the active local claim owner is the ledger id plus `claimed_by`. Id-only
 architect claims default to the standard architect handoff owner.
 
 Normal bootstrap prompts and generated handoffs should not copy repo, base,
-phase, anchor, branch, worktree, caller, or linked WorkRequest hints into claim
+phase, branch, worktree, local correlation, or linked WorkRequest hints into claim
 arguments. Generated architect handoff prompts also omit optional `claimed_by`
 and use `work_request_id` only. Those fields remain accepted for compatibility
 and explicit operator/debug validation. When a stale optional hint mismatches a
@@ -108,8 +108,8 @@ solo_archive
 
 Bound architect sessions expose WorkRequest, product-tree, planned-slice,
 phase-child, guidance, closeout, and delivery tools listed in the JSON contract.
-Architect claims are WorkRequest-centric; WorkPackage anchor, repo, base branch,
-and phase fields are derived from the ledger when omitted.
+Architect claims are WorkRequest-centric; scope fields are derived from the
+ledger when omitted.
 
 Some names are shared across worker and architect sessions. For example,
 `resolve_blocker` is worker-scoped for workers and descendant-package-scoped
@@ -118,17 +118,16 @@ target-scope checks.
 
 `dispatch_work_request_planned_slice` requires only `work_request_id` and
 `planned_slice_id`; `claimed_by` is optional. It creates the linked WorkPackage,
-mints a worker grant, and returns the same simple `claim_local_assignment`
+creates worker assignment authority, and returns the same simple `claim_local_assignment`
 bootstrap shape.
 
 `cleanup_work_request_planned_slice_runtime` is the WR architect cleanup path
-for linked planned-slice runtime that has been superseded or abandoned by
+for linked planned-slice assignments that have been superseded or abandoned by
 delivery truth. It requires `outcome` plus the same superseded or abandoned
-evidence that will be used for closeout. It revokes linked worker grants,
-releases non-paused local claim leases, clears recoverable worker MCP session
-bindings for the linked WorkPackage, and records audit progress. Paused leases
-and fresh active AgentRun evidence fail closed; after cleanup, record the
-delivery outcome with
+evidence that will be used for closeout. It moves stale or recoverable
+assignment authority out of the way and records audit progress. Paused
+assignments and fresh active AgentRun evidence fail closed; after cleanup,
+record the delivery outcome with
 `record_planned_slice_delivery`.
 
 `mint_child_worker_key` accepts an optional `template` object. The template may

@@ -1699,7 +1699,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     %{
       "name" => @assignment_release_tool,
       "title" => @assignment_release_tool,
-      "description" => "Release only the current MCP session assignment binding and its matching current claim lease when available, without exposing secrets.",
+      "description" => "Release the current active assignment handle when available, without exposing secrets.",
       "inputSchema" => assignment_release_tool_input_schema()
     }
   end
@@ -1740,11 +1740,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp local_architect_assignment_claim_tool_description do
-    "Claim or reconnect a ledger-backed local WorkRequest architect assignment. Normal calls pass only work_request_id and optional claimed_by; repo/base/phase/anchor/caller fields are advanced validation hints."
+    "Claim or reconnect a ledger-backed local WorkRequest architect assignment. Normal calls pass only work_request_id and optional claimed_by; other fields are advanced scope validation hints."
   end
 
   defp worker_tool_description(@local_assignment_claim_tool) do
-    "Claim or reconnect a ledger-backed local WorkPackage assignment. Normal calls pass only work_package_id and optional claimed_by; repo/base/WorkRequest/branch/worktree/caller fields are advanced validation hints."
+    "Claim or reconnect a ledger-backed local WorkPackage assignment. Normal calls pass only work_package_id and optional claimed_by; other fields are advanced scope validation hints."
   end
 
   defp worker_tool_description(name), do: "Symphony++ worker tool #{name}."
@@ -1767,23 +1767,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_description("read_child_status") do
-    "Read the architect grant's scoped child work-package status without Phase 7 delegation."
+    "Read the architect assignment's scoped child work-package status without Phase 7 delegation."
   end
 
   defp architect_tool_description("create_child_work_package") do
-    "Create a phase-child work package inside the architect grant's current phase."
+    "Create a phase-child work package inside the current architect phase."
   end
 
   defp architect_tool_description("mint_child_worker_key") do
-    "Mint a narrower worker grant for a phase-child work package in the architect grant's current phase."
+    "Create a narrower worker assignment for a phase-child work package in the architect's current phase."
   end
 
   defp architect_tool_description("revoke_child_worker_key") do
-    "Revoke one live child-worker grant for a same-phase child package in the architect grant's current phase."
+    "Return one same-phase child package to ready state for operator-approved recovery."
   end
 
   defp architect_tool_description("list_work_requests") do
-    "List WorkRequests scoped to the architect grant's repo and base branch."
+    "List WorkRequests scoped to the architect assignment's repo and base branch."
   end
 
   defp architect_tool_description("read_work_request") do
@@ -1826,11 +1826,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     do: delivery_runtime_tool_description(tool)
 
   defp architect_tool_description("list_guidance_requests") do
-    "List package-scoped guidance requests visible to the architect grant's phase, repo, and base branch."
+    "List package-scoped guidance requests visible to the architect assignment's phase, repo, and base branch."
   end
 
   defp architect_tool_description("read_guidance_request") do
-    "Read one package-scoped guidance request visible to the architect grant."
+    "Read one package-scoped guidance request visible to the architect assignment."
   end
 
   defp architect_tool_description("answer_guidance_request") do
@@ -1906,7 +1906,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_description("read_phase_board") do
-    "Read the architect grant's scoped phase board."
+    "Read the architect assignment's scoped phase board."
   end
 
   defp architect_tool_description("approve_child_ready_state") do
@@ -1990,11 +1990,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(
       %{
         "work_request_id" => described_string_schema("Durable WorkRequest id. This is the normal architect claim coordinate."),
-        "architect_anchor_work_package_id" => advanced_claim_hint_schema("Expected architect handoff anchor package id inferred from the WorkRequest."),
+        "architect_anchor_work_package_id" => advanced_claim_hint_schema("Expected handoff package id inferred from the WorkRequest."),
         "repo" => advanced_claim_hint_schema("Expected WorkRequest repository inferred from the ledger."),
         "base_branch" => advanced_claim_hint_schema("Expected WorkRequest base branch inferred from the ledger."),
         "phase_id" => advanced_claim_hint_schema("Expected architect handoff phase id inferred from the WorkRequest."),
-        "caller_id" => advanced_claim_hint_schema("Local caller correlation id. It does not grant authority."),
+        "caller_id" => advanced_claim_hint_schema("Local correlation id. It does not grant authority."),
         "claimed_by" => described_string_schema("Optional stable audit owner. Omit when no stable architect identity was provided.")
       },
       ["work_request_id"]
@@ -2015,7 +2015,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "base_branch" => advanced_claim_hint_schema("Expected WorkPackage delivery base inferred from the ledger."),
         "branch" => advanced_claim_hint_schema("Prepared git branch name inferred from the recorded worktree when available."),
         "worktree_path" => advanced_claim_hint_schema("Prepared local worktree path recorded on the WorkPackage."),
-        "caller_id" => advanced_claim_hint_schema("Local caller correlation id. It does not grant authority.")
+        "caller_id" => advanced_claim_hint_schema("Local correlation id. It does not grant authority.")
       },
       ["work_package_id"]
     )
@@ -2634,9 +2634,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(
       %{
         "work_request_id" => described_string_schema("Scoped WorkRequest id that owns the planned slice."),
-        "planned_slice_id" => described_string_schema("Dispatched planned slice whose linked WorkPackage owns the worker grant."),
-        "grant_id" => described_string_schema("Live worker grant id for the linked WorkPackage. Raw worker secrets are never accepted or returned."),
-        "reason" => described_string_schema("Redacted audit reason for revoking the worker grant during recut, recycle, or delivery closeout cleanup.")
+        "planned_slice_id" => described_string_schema("Dispatched planned slice whose linked WorkPackage owns the active assignment authority."),
+        "grant_id" => described_string_schema("Audit id for the linked WorkPackage active assignment authority. Raw worker secrets are never accepted or returned."),
+        "reason" => described_string_schema("Redacted audit reason for returning the package to ready during recovery or delivery closeout cleanup.")
       },
       ["work_request_id", "planned_slice_id", "grant_id", "reason"]
     )
@@ -4265,7 +4265,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_001, "Unauthorized",
      claim_lease_active_for_other_actor_data(
        @local_assignment_claim_tool,
-       "Reuse the same work_package_id and claimed_by. If the live claim belongs to another owner or is stale, ask the architect or operator to recycle it."
+       "Reuse the same work_package_id and claimed_by. If the active assignment belongs to another owner or is stale, ask the architect or operator for recovery."
      )}
   end
 
@@ -4296,7 +4296,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_001, "Unauthorized",
      claim_lease_active_for_other_actor_data(
        @local_architect_assignment_claim_tool,
-       "Reuse the same work_request_id and claimed_by. If the live claim belongs to another owner or is stale, ask the operator to recycle it."
+       "Reuse the same work_request_id and claimed_by. If the active assignment belongs to another owner or is stale, ask the operator for recovery."
      )}
   end
 
@@ -6938,11 +6938,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp delivery_runtime_tool_description("cleanup_work_request_planned_slice_runtime") do
-    "Recycle stale or superseded runtime authority for the WorkPackage linked to a scoped WorkRequest planned slice after superseded or abandoned delivery evidence is supplied. Revokes linked worker grants, releases non-paused local claim leases, clears recoverable worker MCP session bindings, and records audit evidence before delivery closeout."
+    "Prepare a stale or superseded linked WorkPackage for operator-approved closeout after superseded or abandoned delivery evidence is supplied. Records audit evidence before delivery closeout."
   end
 
   defp delivery_runtime_tool_description("revoke_planned_slice_worker_key") do
-    "Revoke one live worker grant for the WorkPackage linked to a scoped WorkRequest planned slice during in-progress recycle or delivery closeout cleanup."
+    "Return the WorkPackage linked to a scoped WorkRequest planned slice to ready state during in-progress recovery or delivery closeout cleanup."
   end
 
   defp runtime_cleanup_delivery_evidence_attrs(arguments, outcome, work_request_id, planned_slice_id) do
@@ -8696,8 +8696,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     payload = child_worker_revoke_payload(reset_child.id, grant, reason, previous_child.status, reset_child.status)
 
     PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, reset_child.id, %{
-      "summary" => "Child worker grant revoked for recycle",
-      "body" => "Recycle reason: #{redacted_child_worker_revoke_reason(reason)}; child status: #{previous_child.status} -> #{reset_child.status}",
+      "summary" => "Child worker assignment returned to ready for recovery",
+      "body" => "Recovery reason: #{redacted_child_worker_revoke_reason(reason)}; child status: #{previous_child.status} -> #{reset_child.status}",
       "status" => "child_worker_key_revoked",
       "idempotency_key" => metadata_idempotency_key(payload),
       "payload" => payload
@@ -8762,8 +8762,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       )
 
     PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, work_package.id, %{
-      "summary" => "WorkRequest planned-slice worker grant revoked for cleanup",
-      "body" => "Cleanup reason: #{redacted_child_worker_revoke_reason(reason)}; WorkRequest: #{work_request.id}; planned slice: #{planned_slice.id}",
+      "summary" => "WorkRequest planned-slice assignment returned to ready for closeout",
+      "body" => "Closeout reason: #{redacted_child_worker_revoke_reason(reason)}; WorkRequest: #{work_request.id}; planned slice: #{planned_slice.id}",
       "status" => "planned_slice_worker_key_revoked",
       "idempotency_key" => metadata_idempotency_key(payload),
       "payload" => payload

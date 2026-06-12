@@ -693,7 +693,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     paused_context = WorkPackageActivity.context(repo, linked_package.id)
     assert get_in(paused_context, [:runtime_state, :active?]) == true
     assert get_in(paused_context, [:runtime_state, :paused?]) == true
-    assert get_in(paused_context, [:runtime_state, :lifecycle_state]) == "paused"
+    assert get_in(paused_context, [:runtime_state, :presentation_lifecycle_state]) == "operator_action"
+    assert get_in(paused_context, [:runtime_state, :source_lifecycle_state]) == "paused"
     assert "claim_lease_paused" in get_in(paused_context, [:runtime_state, :reason_codes])
 
     assert {:ok, with_paused_lease} = Service.refresh_completion(repo, request.id)
@@ -705,7 +706,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     released_context = WorkPackageActivity.context(repo, linked_package.id)
     assert get_in(released_context, [:runtime_state, :active?]) == false
     assert get_in(released_context, [:runtime_state, :paused?]) == false
-    assert get_in(released_context, [:runtime_state, :lifecycle_state]) == "terminal"
+    assert get_in(released_context, [:runtime_state, :presentation_lifecycle_state]) == "delivered"
+    assert get_in(released_context, [:runtime_state, :source_lifecycle_state]) == "terminal"
 
     assert {:ok, completed} = Service.refresh_completion(repo, request.id)
     assert %DateTime{} = completed.completed_at
@@ -929,19 +931,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
         agent_package.id
       ])
 
-    assert get_in(contexts, [active_package.id, :runtime_state, :lifecycle_state]) == "active"
+    assert get_in(contexts, [active_package.id, :runtime_state, :presentation_lifecycle_state]) == "working"
+    assert get_in(contexts, [active_package.id, :runtime_state, :source_lifecycle_state]) == "active"
     assert get_in(contexts, [active_package.id, :runtime_state, :reason_codes]) == ["claim_lease_active", "architect_grant_active"]
 
     stale_runtime = get_in(contexts, [stale_package.id, :runtime_state])
     assert stale_runtime.active? == true
     assert stale_runtime.stale? == true
+    assert stale_runtime.presentation_lifecycle_state == "stale_recoverable"
+    assert stale_runtime.source_lifecycle_state == "stale"
     assert "claim_lease_stale" in stale_runtime.reason_codes
     assert DateTime.compare(stale_runtime.latest_gate_at, DateTime.add(stale_seen_at, 1, :millisecond)) == :eq
 
     mixed_runtime = get_in(contexts, [mixed_package.id, :runtime_state])
     assert mixed_runtime.active? == true
     assert mixed_runtime.stale? == true
-    assert mixed_runtime.lifecycle_state == "stale"
+    assert mixed_runtime.presentation_lifecycle_state == "stale_recoverable"
+    assert mixed_runtime.source_lifecycle_state == "stale"
     assert "claim_lease_stale" in mixed_runtime.reason_codes
     assert "architect_grant_active" in mixed_runtime.reason_codes
 
@@ -949,13 +955,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert paused_runtime.active? == true
     assert paused_runtime.paused? == true
     assert paused_runtime.stale? == false
-    assert paused_runtime.lifecycle_state == "paused"
+    assert paused_runtime.presentation_lifecycle_state == "operator_action"
+    assert paused_runtime.source_lifecycle_state == "paused"
     assert paused_runtime.reason_codes == ["claim_lease_paused", "architect_grant_active"]
 
     recycled_runtime = get_in(contexts, [recycled_package.id, :runtime_state])
     assert recycled_runtime.active? == true
     assert recycled_runtime.recycled? == true
-    assert recycled_runtime.lifecycle_state == "active"
+    assert recycled_runtime.presentation_lifecycle_state == "working"
+    assert recycled_runtime.source_lifecycle_state == "active"
     assert "worker_recycled" in recycled_runtime.reason_codes
     assert DateTime.compare(recycled_runtime.latest_gate_at, DateTime.add(stale_seen_at, 1, :millisecond)) == :gt
 
@@ -963,7 +971,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert terminal_runtime.active? == true
     assert terminal_runtime.stale? == true
     assert terminal_runtime.terminal? == true
-    assert terminal_runtime.lifecycle_state == "stale"
+    assert terminal_runtime.presentation_lifecycle_state == "stale_recoverable"
+    assert terminal_runtime.source_lifecycle_state == "stale"
     assert "claim_lease_stale" in terminal_runtime.reason_codes
     assert "agent_run_stale" in terminal_runtime.reason_codes
     assert "architect_grant_active" in terminal_runtime.reason_codes
@@ -972,7 +981,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     agent_runtime = get_in(contexts, [agent_package.id, :runtime_state])
     assert agent_runtime.active? == false
     assert agent_runtime.stale? == true
-    assert agent_runtime.lifecycle_state == "stale"
+    assert agent_runtime.presentation_lifecycle_state == "stale_recoverable"
+    assert agent_runtime.source_lifecycle_state == "stale"
     assert "agent_run_stale" in agent_runtime.reason_codes
     assert agent_runtime.active_agent_run_ids == []
     assert agent_runtime.stale_agent_run_ids == [agent_run.id]
