@@ -442,7 +442,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
 
   test "claim_local_assignment reclaims old no-heartbeat residue after the local recovery window", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-SHORT-STALE-RECLAIM")
-    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, old_minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -6, :minute)
 
     assert {:ok, stale_lease} =
@@ -451,12 +451,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
                package.id,
                %{"actor_kind" => "agent", "actor_id" => "local:stale-worker", "actor_display_name" => "stale-worker"},
                now: stale_seen_at,
+               access_grant_id: old_minted.grant.id,
                stale_after_ms: :timer.hours(24)
              )
 
     refute ClaimLease.stale?(stale_lease, DateTime.utc_now(:microsecond))
+    assert {:ok, _revoked} = AccessGrantService.revoke(repo, old_minted.grant.id)
+    assert {:ok, _replacement_minted} = AccessGrantService.mint_worker_grant(repo, package.id)
 
-    {response, _server} =
+    {response, claimed_server} =
       Server.handle_state(
         %{
           "jsonrpc" => "2.0",
@@ -470,7 +473,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
     assert get_in(response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "reclaimed"
     assert {:ok, reclaimed_lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
     assert reclaimed_lease.previous_claim_id == stale_lease.id
+    assert reclaimed_lease.access_grant_id == nil
     assert reclaimed_lease.stale_after_ms == :timer.minutes(5)
+
+    {assignment_response, _server} =
+      Server.handle_state(
+        %{"jsonrpc" => "2.0", "id" => "assignment-after-old-grant-reclaim", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        claimed_server
+      )
+
+    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
   end
 
   test "claim_local_assignment rolls back reclaimed leases when audit append fails", %{repo: repo} do

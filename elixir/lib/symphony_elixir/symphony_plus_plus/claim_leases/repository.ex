@@ -213,7 +213,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
 
     with {:ok, current} <- current_for_work_package(repo, work_package_id),
          :ok <- require_stale(current, now, current_stale_after_ms),
-         replacement_attrs = replacement_attrs(current, attrs, now),
+         replacement_attrs = replacement_attrs(current, attrs, now, opts),
          {:ok, replacement_changeset} <- claim_changeset(repo, replacement_attrs, replacement_opts),
          {:ok, _reclaimed} <- reclaim_current(repo, current, attrs, now, current_stale_after_ms) do
       insert_claim(repo, replacement_changeset)
@@ -248,10 +248,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
     end
   end
 
-  defp replacement_attrs(%ClaimLease{} = current, attrs, now) do
+  defp replacement_attrs(%ClaimLease{} = current, attrs, now, opts) do
     attrs
     |> normalize_keys()
-    |> put_inherited_value("access_grant_id", current.access_grant_id)
+    |> maybe_inherit_access_grant(current, opts)
     |> put_inherited_value("stale_after_ms", current.stale_after_ms)
     |> put_inherited_value("lease_expires_at", replacement_lease_expires_at(current, now))
     |> Map.put("work_package_id", current.work_package_id)
@@ -359,6 +359,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
   defp put_inherited_value(attrs, key, value) do
     if blank?(Map.get(attrs, key)) and not is_nil(value) do
       Map.put(attrs, key, value)
+    else
+      attrs
+    end
+  end
+
+  defp maybe_inherit_access_grant(attrs, %ClaimLease{} = current, opts) do
+    if Keyword.get(opts, :inherit_access_grant?, true) do
+      put_inherited_value(attrs, "access_grant_id", current.access_grant_id)
     else
       attrs
     end

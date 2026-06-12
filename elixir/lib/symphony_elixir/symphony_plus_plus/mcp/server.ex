@@ -3580,6 +3580,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     [
       reason: reason,
       current_stale_after_ms: @local_assignment_claim_stale_after_ms,
+      inherit_access_grant?: false,
       stale_after_ms: @local_assignment_claim_stale_after_ms
     ]
   end
