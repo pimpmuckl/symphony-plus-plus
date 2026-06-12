@@ -202,6 +202,232 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport04Test do
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
   end
 
+  test "bound notification tool calls refresh the current claim lease", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-STATE-NOTIFICATION-HEARTBEAT")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {_claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-notification-heartbeat",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(repo), "claim-notification-heartbeat-state")
+      )
+
+    assert {:ok, lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    old_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -4, :minute)
+    lease |> ClaimLease.update_changeset(%{last_seen_at: old_seen_at}) |> repo.update!()
+
+    {nil, notified_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "method" => "tools/call",
+          "params" => %{"name" => "get_current_assignment", "arguments" => %{}}
+        },
+        claimed_server
+      )
+
+    assert notified_server.session.assignment.work_package_id == package.id
+    assert {:ok, refreshed_lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    assert DateTime.compare(refreshed_lease.last_seen_at, old_seen_at) == :gt
+  end
+
+  test "batched bound tool calls preserve refreshed claim lease state", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-STATE-BATCH-HEARTBEAT")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {_claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-batch-heartbeat",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(repo), "claim-batch-heartbeat-state")
+      )
+
+    assert {:ok, lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    old_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -6, :minute)
+    lease |> ClaimLease.update_changeset(%{last_seen_at: old_seen_at}) |> repo.update!()
+
+    {responses, updated_server} =
+      Server.handle_state(
+        [
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "batch-assignment-heartbeat",
+            "method" => "tools/call",
+            "params" => %{"name" => "get_current_assignment", "arguments" => %{}}
+          },
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "batch-assignment-after-heartbeat",
+            "method" => "tools/call",
+            "params" => %{"name" => "get_current_assignment", "arguments" => %{}}
+          }
+        ],
+        claimed_server
+      )
+
+    assert [assignment_response, second_assignment_response] = responses
+    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert get_in(second_assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert {:ok, refreshed_lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    assert updated_server.session.claim_lease_id == refreshed_lease.id
+    assert DateTime.compare(refreshed_lease.last_seen_at, old_seen_at) == :gt
+  end
+
+  test "bound worker tools refresh stale current claim leases before mutation", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-STATE-STALE-PREFLIGHT")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {_claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-stale-preflight",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(repo), "claim-stale-preflight-state")
+      )
+
+    assert {:ok, original_lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    original_lease |> ClaimLease.update_changeset(%{last_seen_at: DateTime.add(DateTime.utc_now(:microsecond), -6, :minute)}) |> repo.update!()
+
+    {progress_response, updated_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "append-after-stale-preflight",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_progress",
+            "arguments" => %{
+              "summary" => "Recorded after preflight reclaim",
+              "status" => "in_progress",
+              "idempotency_key" => "stale-preflight-progress"
+            }
+          }
+        },
+        claimed_server
+      )
+
+    assert get_in(progress_response, ["result", "structuredContent", "progress_event", "summary"]) == "Recorded after preflight reclaim"
+    assert {:ok, refreshed_lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    assert refreshed_lease.id != original_lease.id
+    assert updated_server.session.claim_lease_id == refreshed_lease.id
+    assert {:ok, [event]} = PlanningRepository.list_progress_events(repo, package.id)
+    assert event.summary == "Recorded after preflight reclaim"
+  end
+
+  test "discovery-only requests do not refresh revoked session claim leases", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-STATE-DISCOVERY-NO-HEARTBEAT")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {_claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-discovery-no-heartbeat",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(repo), "claim-discovery-no-heartbeat-state")
+      )
+
+    assert {:ok, lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    old_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -4, :minute)
+    lease |> ClaimLease.update_changeset(%{last_seen_at: old_seen_at}) |> repo.update!()
+    assert {:ok, _revoked} = AccessGrantService.revoke(repo, minted.grant.id)
+
+    {tools_response, _tools_server} =
+      Server.handle_state(
+        %{"jsonrpc" => "2.0", "id" => "tools-after-revoke", "method" => "tools/list", "params" => %{}},
+        claimed_server
+      )
+
+    assert is_list(get_in(tools_response, ["result", "tools"]))
+    assert {:ok, unchanged_lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    assert DateTime.compare(unchanged_lease.last_seen_at, old_seen_at) == :eq
+  end
+
+  test "bound worker tools stop before mutation when the current claim lease is paused", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-STATE-PAUSED-PREFLIGHT")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {_claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-paused-preflight",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(repo), "claim-paused-preflight-state")
+      )
+
+    assert {:ok, lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    assert {:ok, _paused_lease} = ClaimLeaseService.pause(repo, lease.id, %{"actor_id" => "operator"}, reason: "operator pause")
+
+    {blocked_response, updated_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "append-after-pause",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_progress", "arguments" => %{"summary" => "This should not be recorded", "status" => "in_progress"}}
+        },
+        claimed_server
+      )
+
+    assert get_in(blocked_response, ["error", "data", "reason"]) == "claim_lease_lost"
+    assert get_in(blocked_response, ["error", "data", "claim_lease_reason"]) == "claim_lease_paused"
+    assert updated_server.session == nil
+    assert updated_server.session_refresh_required == true
+    assert {:ok, []} = PlanningRepository.list_progress_events(repo, package.id)
+  end
+
+  test "bound worker tools fail closed when current claim lease lookup fails", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-STATE-PREFLIGHT-LEDGER-FAIL")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {_claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-preflight-ledger-fail",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(repo), "claim-preflight-ledger-fail-state")
+      )
+
+    failed_server = %{claimed_server | config: local_mcp_config(FailingAuthRepo)}
+
+    {blocked_response, updated_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "append-after-lease-lookup-failure",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_progress", "arguments" => %{"summary" => "This should not be recorded", "status" => "in_progress"}}
+        },
+        failed_server
+      )
+
+    assert get_in(blocked_response, ["error", "data", "reason"]) == "claim_lease_lost"
+    assert get_in(blocked_response, ["error", "data", "claim_lease_reason"]) == "claim_lease_check_failed"
+    assert updated_server.session == nil
+    assert updated_server.session_refresh_required == true
+    assert {:ok, []} = PlanningRepository.list_progress_events(repo, package.id)
+  end
+
   test "HTTP local assignment release clears the current claim lease", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-HTTP-LOCAL-RELEASE")
     assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -242,7 +468,187 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport04Test do
 
     assert get_in(release_result.response, ["result", "structuredContent", "binding_cleared"]) == true
     assert get_in(release_result.response, ["result", "structuredContent", "claim_lease_release", "claim_lease_id"]) == lease_id
+    release_text = assert_toon_tool_text!(release_result.response)
+    assert release_text =~ "status: ok"
+    assert release_text =~ "binding_cleared: true"
+    refute release_text =~ "claim_lease_id"
+    refute release_text =~ "grant_id"
+    refute release_text =~ "caller_id"
     assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    {:ok, second_release_result} =
+      HTTPTransport.handle(
+        config,
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "release-already-clear-local",
+          "method" => "tools/call",
+          "params" => %{"name" => "release_current_assignment", "arguments" => %{"reason" => "already done"}}
+        },
+        client_key: client_key,
+        state_key: init_result.state_key
+      )
+
+    assert get_in(second_release_result.response, ["result", "structuredContent", "status"]) == "ok"
+    assert get_in(second_release_result.response, ["result", "structuredContent", "binding_cleared"]) == true
+    assert get_in(second_release_result.response, ["result", "structuredContent", "claim_lease_release", "reason"]) == "not_bound"
+  end
+
+  test "release_current_assignment clears stale or mismatched claim bindings idempotently", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-HTTP-LOCAL-RELEASE-MISMATCH")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    arguments = local_assignment_claim_args(package)
+
+    {_claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-release-mismatch",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "claim-release-mismatch-state")
+      )
+
+    assert {:ok, original_lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    original_lease
+    |> ClaimLease.update_changeset(%{last_seen_at: DateTime.add(DateTime.utc_now(:microsecond), -6, :minute)})
+    |> repo.update!()
+
+    assert {:ok, replacement_lease} =
+             ClaimLeaseService.reclaim_stale(
+               repo,
+               package.id,
+               %{"actor_kind" => "agent", "actor_id" => "local:replacement", "actor_display_name" => "replacement"},
+               reason: "test replacement",
+               stale_after_ms: :timer.minutes(5)
+             )
+
+    assert replacement_lease.previous_claim_id == original_lease.id
+
+    {release_response, released_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "release-mismatched-binding",
+          "method" => "tools/call",
+          "params" => %{"name" => "release_current_assignment", "arguments" => %{"reason" => "stale local session"}}
+        },
+        claimed_server
+      )
+
+    assert get_in(release_response, ["result", "structuredContent", "status"]) == "ok"
+    assert get_in(release_response, ["result", "structuredContent", "binding_cleared"]) == true
+    assert get_in(release_response, ["result", "structuredContent", "claim_lease_release", "reason"]) == "claim_lease_mismatch"
+    assert released_server.session == nil
+    assert_toon_tool_text!(release_response)
+  end
+
+  test "bound worker tools stop before mutation after another actor reclaims the lease", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-RECLAIMED-BLOCKS-OLD-SESSION")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {_claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-reclaimed-blocks-old-session",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(repo), "claim-reclaimed-blocks-old-session-state")
+      )
+
+    assert {:ok, original_lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    original_lease |> ClaimLease.update_changeset(%{last_seen_at: DateTime.add(DateTime.utc_now(:microsecond), -6, :minute)}) |> repo.update!()
+
+    assert {:ok, replacement_lease} =
+             ClaimLeaseService.reclaim_stale(
+               repo,
+               package.id,
+               %{"actor_kind" => "agent", "actor_id" => "local:replacement", "actor_display_name" => "replacement"},
+               reason: "test replacement",
+               stale_after_ms: :timer.minutes(5)
+             )
+
+    assert replacement_lease.previous_claim_id == original_lease.id
+
+    {blocked_response, blocked_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "append-after-reclaim",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_progress",
+            "arguments" => %{"summary" => "This should not be recorded", "status" => "in_progress"}
+          }
+        },
+        claimed_server
+      )
+
+    assert get_in(blocked_response, ["error", "data", "reason"]) == "claim_lease_lost"
+    assert get_in(blocked_response, ["error", "data", "claim_lease_reason"]) == "claim_lease_mismatch"
+    assert blocked_server.session == nil
+    assert {:ok, []} = PlanningRepository.list_progress_events(repo, package.id)
+  end
+
+  test "batched bound worker tools preserve lost-lease cleanup state", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-BATCH-RECLAIMED-BLOCKS")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {_claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-batch-reclaimed-blocks",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(repo), "claim-batch-reclaimed-blocks-state")
+      )
+
+    assert {:ok, original_lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    original_lease |> ClaimLease.update_changeset(%{last_seen_at: DateTime.add(DateTime.utc_now(:microsecond), -6, :minute)}) |> repo.update!()
+
+    assert {:ok, _replacement_lease} =
+             ClaimLeaseService.reclaim_stale(
+               repo,
+               package.id,
+               %{"actor_kind" => "agent", "actor_id" => "local:replacement", "actor_display_name" => "replacement"},
+               reason: "test replacement",
+               stale_after_ms: :timer.minutes(5)
+             )
+
+    {responses, updated_server} =
+      Server.handle_state(
+        [
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "batch-append-after-reclaim",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "append_progress",
+              "arguments" => %{"summary" => "This should not be recorded", "status" => "in_progress"}
+            }
+          },
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "batch-tools-after-reclaim",
+            "method" => "tools/list",
+            "params" => %{}
+          }
+        ],
+        claimed_server
+      )
+
+    assert [blocked_response, tools_response] = responses
+    assert get_in(blocked_response, ["error", "data", "reason"]) == "claim_lease_lost"
+    assert is_list(get_in(tools_response, ["result", "tools"]))
+    assert updated_server.session == nil
+    assert updated_server.session_refresh_required == true
+    assert {:ok, []} = PlanningRepository.list_progress_events(repo, package.id)
   end
 
   test "HTTP local assignment recovery rehydrates a worker session", %{repo: repo} do

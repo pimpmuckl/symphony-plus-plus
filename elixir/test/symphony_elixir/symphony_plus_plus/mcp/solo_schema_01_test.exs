@@ -107,8 +107,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
         unbound_server
       )
 
-    assert get_in(unbound_release_response, ["error", "code"]) == -32_001
-    assert get_in(unbound_release_response, ["error", "data", "reason"]) == "assignment_release_requires_bound_session"
+    assert get_in(unbound_release_response, ["result", "structuredContent", "status"]) == "ok"
+    assert get_in(unbound_release_response, ["result", "structuredContent", "binding_cleared"]) == true
+    assert get_in(unbound_release_response, ["result", "structuredContent", "claim_lease_release", "reason"]) == "not_bound"
 
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SOLO-WORKER-TOOLS", kind: "mcp"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -702,15 +703,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
 
     payload = get_in(release_response, ["result", "structuredContent"])
 
-    assert payload["binding_cleared"] == false
-    assert payload["solo_tools_available"] == false
-    assert payload["fresh_mcp_session_required"] == true
-    assert get_in(payload, ["claim_lease_release", "status"]) == "not_released"
+    assert payload["binding_cleared"] == true
+    assert payload["solo_tools_available"] == true
+    assert payload["fresh_mcp_session_required"] == false
+    assert get_in(payload, ["claim_lease_release", "status"]) == "skipped"
     assert get_in(payload, ["claim_lease_release", "reason"]) == "claim_lease_identity_unavailable"
-    assert get_in(payload, ["recovery", "next_action"]) == "start_fresh_mcp_session"
-    assert get_in(payload, ["recovery", "fresh_mcp_session_required"]) == true
-    assert still_bound_server.session.assignment.work_package_id == package.id
-    assert still_bound_server.session_refresh_required == true
+    assert get_in(payload, ["recovery", "next_action"]) == "retry_solo_tool"
+    assert get_in(payload, ["recovery", "fresh_mcp_session_required"]) == false
+    assert still_bound_server.session == nil
+    assert still_bound_server.session_refresh_required == false
     assert {:ok, %ClaimLease{status: "active"}} = ClaimLeaseService.current_for_work_package(repo, package.id)
     refute inspect(release_response) =~ minted.work_key.secret
   end
@@ -740,14 +741,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
 
     payload = get_in(release_response, ["result", "structuredContent"])
 
-    assert payload["binding_cleared"] == false
-    assert payload["solo_tools_available"] == false
-    assert get_in(payload, ["claim_lease_release", "status"]) == "not_released"
+    assert payload["binding_cleared"] == true
+    assert payload["solo_tools_available"] == true
+    assert get_in(payload, ["claim_lease_release", "status"]) == "skipped"
     assert get_in(payload, ["claim_lease_release", "reason"]) == "claim_stale"
-    assert get_in(payload, ["recovery", "next_action"]) == "start_fresh_mcp_session"
-    assert get_in(payload, ["recovery", "fresh_mcp_session_required"]) == true
-    assert still_bound_server.session != nil
-    assert still_bound_server.session_refresh_required == true
+    assert get_in(payload, ["recovery", "next_action"]) == "retry_solo_tool"
+    assert get_in(payload, ["recovery", "fresh_mcp_session_required"]) == false
+    assert still_bound_server.session == nil
+    assert still_bound_server.session_refresh_required == false
     assert {:ok, %ClaimLease{id: ^lease_id, status: "active"}} = ClaimLeaseService.current_for_work_package(repo, package.id)
   end
 
@@ -783,14 +784,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
 
     payload = get_in(release_response, ["result", "structuredContent"])
 
-    assert payload["binding_cleared"] == false
-    assert payload["solo_tools_available"] == false
-    assert payload["fresh_mcp_session_required"] == true
-    assert get_in(payload, ["claim_lease_release", "status"]) == "not_released"
+    assert payload["binding_cleared"] == true
+    assert payload["solo_tools_available"] == true
+    assert payload["fresh_mcp_session_required"] == false
+    assert get_in(payload, ["claim_lease_release", "status"]) == "skipped"
     assert get_in(payload, ["claim_lease_release", "reason"]) == "claim_lease_mismatch"
-    assert get_in(payload, ["recovery", "next_action"]) == "start_fresh_mcp_session"
-    assert still_bound_server.session.assignment.work_package_id == package.id
-    assert still_bound_server.session_refresh_required == true
+    assert get_in(payload, ["recovery", "next_action"]) == "retry_solo_tool"
+    assert still_bound_server.session == nil
+    assert still_bound_server.session_refresh_required == false
     assert {:ok, %ClaimLease{id: ^newer_lease_id, status: "active"}} = ClaimLeaseService.current_for_work_package(repo, package.id)
   end
 

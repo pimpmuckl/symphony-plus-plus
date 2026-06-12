@@ -427,12 +427,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
     assert get_in(response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "reclaimed"
     assert get_in(response, ["result", "structuredContent", "local_claim", "reason_codes"]) == ["claim_lease_reclaimed", "worker_recycled"]
     assert get_in(response, ["result", "structuredContent", "local_claim", "claim_event", "status"]) == "claim_lease_reclaimed"
+    text = assert_toon_tool_text!(response)
+    assert text =~ "lease: reclaimed"
+    assert text =~ "warning: stale_claim_reclaimed"
+    refute text =~ "claim_lease_id"
+    refute text =~ "caller_id"
 
     assert {:ok, reclaimed_lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
     assert reclaimed_lease.previous_claim_id == stale_lease.id
 
     assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, package.id)
     assert Enum.any?(progress_events, &(&1.status == "claim_lease_reclaimed" and &1.payload["previous_claim_id"] == stale_lease.id))
+  end
+
+  test "claim_local_assignment reclaims default no-heartbeat residue after the short stale window", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-SHORT-STALE-RECLAIM")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -6, :minute)
+
+    assert {:ok, stale_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               package.id,
+               %{"actor_kind" => "agent", "actor_id" => "local:stale-worker", "actor_display_name" => "stale-worker"},
+               now: stale_seen_at,
+               stale_after_ms: :timer.minutes(5)
+             )
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-short-stale-reclaim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-short-stale-reclaim-state")
+      )
+
+    assert get_in(response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "reclaimed"
+    assert {:ok, reclaimed_lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    assert reclaimed_lease.previous_claim_id == stale_lease.id
   end
 
   test "claim_local_assignment rolls back reclaimed leases when audit append fails", %{repo: repo} do

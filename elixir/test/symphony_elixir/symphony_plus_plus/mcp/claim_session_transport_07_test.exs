@@ -63,12 +63,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport07Test do
     release_text = assert_toon_tool_text!(release_response)
     assert release_text =~ "binding_cleared: true"
     assert release_text =~ "claim_lease_release:"
+    refute release_text =~ "claim_lease_id"
     refute release_text =~ ~s("binding_cleared")
 
     assert get_in(reclaim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
     reclaim_text = assert_toon_tool_text!(reclaim_response)
-    assert reclaim_text =~ "assignment:"
+    assert reclaim_text =~ "status: ok"
     assert reclaim_text =~ "work_package_id: #{package.id}"
+    refute reclaim_text =~ "grant_id"
+    refute reclaim_text =~ "claim_lease_id"
+    refute reclaim_text =~ "caller_id"
     assert {:ok, %ClaimLease{status: "active"}} = ClaimLeaseService.current_for_work_package(repo, package.id)
 
     HTTPStateStore.reset!()

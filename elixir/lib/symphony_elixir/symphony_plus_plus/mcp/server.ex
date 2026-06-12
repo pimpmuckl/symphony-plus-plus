@@ -225,7 +225,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @finding_replay_retry_attempts 50
   @handle_state_ttl_ms 86_400_000
   @explicit_handle_state_ttl_ms 604_800_000
-  @local_assignment_claim_stale_after_ms 86_400_000
+  @local_assignment_claim_stale_after_ms :timer.minutes(5)
   @handle_state_agent Module.concat(__MODULE__, HandleState)
   @scope_guard_gate "scope_guard"
   @plan_append_argument_keys ["body", "expected_version", "id", "status", "title", "work_package_id"]
@@ -343,16 +343,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         %__MODULE__{initialized: true} = server
       )
       when valid_request_id(id) do
-    case request_params(payload) do
-      {:ok, %{"name" => name} = params} when name in @session_claim_tools ->
-        handle_session_claim_tool(name, params, id, server)
-
-      {:ok, %{"name" => @assignment_release_tool} = params} ->
-        handle_assignment_release_tool(params, id, server)
-
-      _params ->
-        {do_handle(payload, server), server}
-    end
+    payload
+    |> request_params()
+    |> handle_tool_call_request(id, server)
   end
 
   def handle_state(%{"jsonrpc" => "2.0", "id" => id, "method" => "tools/call"} = payload, %__MODULE__{initialized: true} = server)
@@ -361,17 +354,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   def handle_state(%{"jsonrpc" => "2.0", "method" => "tools/call"} = payload, %__MODULE__{initialized: true} = server) do
-    case request_params(payload) do
-      {:ok, %{"name" => name} = params} when name in @session_claim_tools ->
-        handle_session_claim_tool_notification(name, params, server)
-
-      {:ok, %{"name" => @assignment_release_tool} = params} ->
-        handle_assignment_release_tool_notification(params, server)
-
-      params_result ->
-        dispatch_notification(params_result, "tools/call", server)
-        {nil, server}
-    end
+    payload
+    |> request_params()
+    |> handle_tool_call_notification(server)
   end
 
   def handle_state(%{"jsonrpc" => "2.0", "id" => id, "method" => method} = payload, %__MODULE__{initialized: true} = server)
@@ -382,6 +367,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   def handle_state(payload, %__MODULE__{} = server), do: {do_handle(payload, server), server}
+
+  defp handle_tool_call_request({:ok, %{"name" => name} = params}, id, %__MODULE__{} = server) when name in @session_claim_tools,
+    do: handle_session_claim_tool(name, params, id, server)
+
+  defp handle_tool_call_request({:ok, %{"name" => @assignment_release_tool} = params}, id, %__MODULE__{} = server),
+    do: handle_assignment_release_tool(params, id, server)
+
+  defp handle_tool_call_request(params_result, id, %__MODULE__{} = server),
+    do: dispatch_request_state(params_result, "tools/call", id, server)
+
+  defp handle_tool_call_notification({:ok, %{"name" => name} = params}, %__MODULE__{} = server) when name in @session_claim_tools,
+    do: handle_session_claim_tool_notification(name, params, server)
+
+  defp handle_tool_call_notification({:ok, %{"name" => @assignment_release_tool} = params}, %__MODULE__{} = server),
+    do: handle_assignment_release_tool_notification(params, server)
+
+  defp handle_tool_call_notification(params_result, %__MODULE__{} = server),
+    do: {nil, dispatch_notification(params_result, "tools/call", server)}
 
   defp restore_handle_state(payload, %__MODULE__{initialized: false, session: nil, state_key_explicit: true} = server) do
     if initialize_request?(payload) do
@@ -496,6 +499,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     timestamp_ms =
       cond do
         updated_server.session_refresh_required ->
+          put_handle_state(updated_server)
+
+        server.session_refresh_required != updated_server.session_refresh_required ->
           put_handle_state(updated_server)
 
         server.initialized != updated_server.initialized or server.session != updated_server.session ->
@@ -768,56 +774,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp handle_batch(payloads, %__MODULE__{} = server) do
-    {items, _claim_state} =
-      Enum.map_reduce(payloads, {false, nil}, &handle_batch_claim_state(&1, &2, server))
+    {items, {_claimed?, updated_server, claimed_server}} =
+      Enum.map_reduce(payloads, {false, server, nil}, &handle_batch_claim_state/2)
 
     responses =
       items
       |> Enum.map(fn {_payload, {response, _server}} -> response end)
       |> Enum.reject(&is_nil/1)
 
-    updated_server = batch_updated_server(items, server)
-
-    {if(responses == [], do: nil, else: responses), updated_server}
+    {if(responses == [], do: nil, else: responses), claimed_server || updated_server}
   end
 
-  defp handle_batch_claim_state(payload, {true, claimed_server} = claim_state, %__MODULE__{} = server) do
-    if batch_session_claim_request?(payload, server) do
-      {{payload, batch_session_claim_rebind_item(payload, claimed_server || server)}, claim_state}
+  defp handle_batch_claim_state(payload, {true, %__MODULE__{} = current_server, claimed_server} = claim_state) do
+    if batch_session_claim_request?(payload, current_server) do
+      {{payload, batch_session_claim_rebind_item(payload, claimed_server || current_server)}, claim_state}
     else
-      handle_unblocked_batch_item(payload, claim_state, server)
+      handle_unblocked_batch_item(payload, claim_state)
     end
   end
 
-  defp handle_batch_claim_state(payload, claim_state, %__MODULE__{} = server) do
-    handle_unblocked_batch_item(payload, claim_state, server)
+  defp handle_batch_claim_state(payload, claim_state) do
+    handle_unblocked_batch_item(payload, claim_state)
   end
 
-  defp handle_unblocked_batch_item(payload, {claimed?, claimed_server}, %__MODULE__{} = server) do
-    item = handle_batch_item(payload, server)
-    claim_succeeded? = batch_session_claim_request?(payload, server) and batch_session_claim_success?(item, server)
-    claimed_server = batch_claimed_server(claim_succeeded?, item, claimed_server)
+  defp handle_unblocked_batch_item(payload, {claimed?, %__MODULE__{} = current_server, claimed_server}) do
+    item = handle_batch_item(payload, current_server)
+    {_response, %__MODULE__{} = item_server} = item
 
-    {{payload, item}, {claimed? or claim_succeeded?, claimed_server}}
+    claim_succeeded? =
+      batch_session_claim_request?(payload, current_server) and batch_session_claim_success?(item, current_server)
+
+    updated_server =
+      if claim_succeeded? do
+        current_server
+      else
+        if batch_server_state_changed?(current_server, item_server), do: item_server, else: current_server
+      end
+
+    claimed_server = if claim_succeeded?, do: item_server, else: claimed_server
+
+    {{payload, item}, {claimed? or claim_succeeded?, updated_server, claimed_server}}
   end
 
-  defp batch_claimed_server(true, item, claimed_server), do: batch_session_claim_server(item) || claimed_server
-  defp batch_claimed_server(false, _item, claimed_server), do: claimed_server
-
-  defp batch_updated_server(items, %__MODULE__{} = server) do
-    Enum.reduce(items, server, fn
-      {_payload, {%{"error" => _error}, %__MODULE__{} = _updated_server}}, server ->
-        server
-
-      {payload, {response, %__MODULE__{session: nil} = updated_server}}, %__MODULE__{session: %Session{}} = server ->
-        if batch_assignment_release_success?(payload, response, server), do: updated_server, else: server
-
-      {payload, {_response, %__MODULE__{session: %Session{}} = updated_server}}, server ->
-        if batch_session_claim_request?(payload, server), do: updated_server, else: server
-
-      _item, server ->
-        server
-    end)
+  defp batch_server_state_changed?(%__MODULE__{} = server, %__MODULE__{} = updated_server) do
+    server.initialized != updated_server.initialized or
+      server.session != updated_server.session or
+      server.session_refresh_required != updated_server.session_refresh_required
   end
 
   defp batch_session_claim_success?(
@@ -831,9 +833,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp batch_session_claim_success?(_item, %__MODULE__{}), do: false
-
-  defp batch_session_claim_server({_response, %__MODULE__{session: %Session{}} = updated_server}), do: updated_server
-  defp batch_session_claim_server(_item), do: nil
 
   defp batch_session_claim_request?(
          %{"jsonrpc" => "2.0", "id" => id, "method" => "tools/call", "params" => %{"name" => name}},
@@ -860,23 +859,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp batch_session_claim_rebind_item(_payload, %__MODULE__{} = server), do: {nil, server}
-
-  defp batch_assignment_release_success?(
-         %{"jsonrpc" => "2.0", "id" => id, "method" => "tools/call", "params" => %{"name" => @assignment_release_tool}},
-         %{"result" => %{"structuredContent" => %{"action" => @assignment_release_tool, "binding_cleared" => true}}},
-         %__MODULE__{initialized: true}
-       )
-       when valid_request_id(id),
-       do: true
-
-  defp batch_assignment_release_success?(
-         %{"jsonrpc" => "2.0", "method" => "tools/call", "params" => %{"name" => @assignment_release_tool}},
-         nil,
-         %__MODULE__{initialized: true}
-       ),
-       do: true
-
-  defp batch_assignment_release_success?(_payload, _response, %__MODULE__{}), do: false
 
   defp dispatch(
          "initialize",
@@ -954,7 +936,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp dispatch("tools/call", %{"name" => @local_assignment_claim_tool} = params, %__MODULE__{} = server) do
     case claim_local_assignment(params, server) do
       {:ok, result, session} ->
-        {:ok, tool_result(result), %{server | session: session, session_refresh_required: false}}
+        {:ok, claim_tool_result(result), %{server | session: session, session_refresh_required: false}}
 
       {:error, code, message, data} ->
         {:error, code, message, data}
@@ -964,7 +946,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp dispatch("tools/call", %{"name" => @local_architect_assignment_claim_tool} = params, %__MODULE__{} = server) do
     case claim_local_architect_assignment(params, server) do
       {:ok, result, session} ->
-        {:ok, tool_result(result), %{server | session: session, session_refresh_required: false}}
+        {:ok, claim_tool_result(result), %{server | session: session, session_refresh_required: false}}
 
       {:error, code, message, data} ->
         {:error, code, message, data}
@@ -974,7 +956,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp dispatch("tools/call", %{"name" => @assignment_release_tool} = params, %__MODULE__{} = server) do
     with {:ok, arguments} <- prepare_assignment_release_tool_call(server, params),
          {:ok, result, updated_server} <- release_current_assignment(arguments, server) do
-      {:ok, tool_result(result), updated_server}
+      {:ok, release_tool_result(result), updated_server}
     else
       {:error, code, message, data} -> {:error, code, message, data}
       {:tool_error, reason} -> invalid_params_error(@assignment_release_tool, reason)
@@ -3069,7 +3051,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, arguments} ->
         case release_current_assignment(arguments, server) do
           {:ok, result, updated_server} ->
-            {response(id, tool_result(result)), updated_server}
+            {response(id, release_tool_result(result)), updated_server}
 
           {:tool_error, reason} ->
             {:error, code, message, data} = invalid_params_error(@assignment_release_tool, reason)
@@ -3084,7 +3066,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp handle_session_claim_tool(@local_assignment_claim_tool, params, id, %__MODULE__{} = server) do
     case claim_local_assignment(params, server) do
       {:ok, result, session} ->
-        {response(id, tool_result(result)), %{server | session: session, session_refresh_required: false}}
+        {response(id, claim_tool_result(result)), %{server | session: session, session_refresh_required: false}}
 
       {:error, code, message, data} ->
         {error_response(id, code, message, data), server}
@@ -3094,7 +3076,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp handle_session_claim_tool(@local_architect_assignment_claim_tool, params, id, %__MODULE__{} = server) do
     case claim_local_architect_assignment(params, server) do
       {:ok, result, session} ->
-        {response(id, tool_result(result)), %{server | session: session, session_refresh_required: false}}
+        {response(id, claim_tool_result(result)), %{server | session: session, session_refresh_required: false}}
 
       {:error, code, message, data} ->
         {error_response(id, code, message, data), server}
@@ -4368,7 +4350,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp prepare_assignment_release_tool_call(%__MODULE__{} = server, params) do
     with :ok <- require_tool_arguments_object(params, @assignment_release_tool),
-         :ok <- authorize_assignment_release_tool_call(server),
          :ok <- prepare_mcp_repository_for_tool(server.config.repo, @assignment_release_tool) do
       assignment_release_tool_arguments(params)
     end
@@ -4443,27 +4424,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp authorize_bootstrap_tool_call(%__MODULE__{}, tool) do
     {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "bootstrap_tools_require_unbound_session"}}
-  end
-
-  defp authorize_assignment_release_tool_call(%__MODULE__{session: %Session{}}), do: :ok
-
-  defp authorize_assignment_release_tool_call(%__MODULE__{session_refresh_required: true}) do
-    {:error, -32_001, "Unauthorized",
-     %{
-       "tool" => @assignment_release_tool,
-       "reason" => "claim_required",
-       "action" => @local_assignment_claim_tool,
-       "hint" => "This MCP state no longer has a live current assignment. Reclaim the assignment or start a fresh MCP session before using Solo tools."
-     }}
-  end
-
-  defp authorize_assignment_release_tool_call(%__MODULE__{}) do
-    {:error, -32_001, "Unauthorized",
-     %{
-       "tool" => @assignment_release_tool,
-       "reason" => "assignment_release_requires_bound_session",
-       "action" => @local_assignment_claim_tool
-     }}
   end
 
   defp authorize_local_trusted_work_request_read_tool_call(%__MODULE__{} = server, tool) do
@@ -9863,6 +9823,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       else: {:tool_error, "invalid_expires_at"}
   end
 
+  defp release_current_assignment(arguments, %__MODULE__{session: nil} = server) do
+    with {:ok, reason} <- optional_string_argument(arguments, "reason", @assignment_release_tool) do
+      reason = Redactor.redact_text(reason)
+
+      result = %{
+        "action" => @assignment_release_tool,
+        "status" => "ok",
+        "binding_cleared" => true,
+        "solo_tools_available" => true,
+        "fresh_mcp_session_required" => false,
+        "released_assignment" => nil,
+        "claim_lease_release" => %{"status" => "skipped", "reason" => "not_bound"},
+        "recovery" => %{
+          "next_action" => "retry_solo_tool",
+          "fresh_mcp_session_required" => false,
+          "release_reason" => reason
+        }
+      }
+
+      {:ok, result, %{server | session_refresh_required: false}}
+    end
+  end
+
   defp release_current_assignment(arguments, %__MODULE__{config: config, session: %Session{} = session} = server) do
     with {:ok, reason} <- optional_string_argument(arguments, "reason", @assignment_release_tool) do
       reason = Redactor.redact_text(reason)
@@ -9872,6 +9855,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
       result = %{
         "action" => @assignment_release_tool,
+        "status" => if(binding_cleared?, do: "ok", else: "blocked"),
         "binding_cleared" => binding_cleared?,
         "solo_tools_available" => binding_cleared?,
         "fresh_mcp_session_required" => fresh_mcp_session_required?,
@@ -9895,34 +9879,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp release_current_assignment_lease(repo, %Session{} = session, reason, context) do
     case current_matching_claim_lease(repo, session) do
       {:ok, %ClaimLease{} = lease} ->
-        case ClaimLeaseService.release(repo, lease.id, reason: reason) do
-          {:ok, %ClaimLease{} = released} ->
-            release = %{
-              "status" => "released",
-              "claim_lease_id" => released.id,
-              "claim_lease_status" => released.status
-            }
-
-            {release, context_with_claim_lease(context, released), true}
-
-          {:error, :not_found} ->
-            release = %{
-              "status" => "not_released",
-              "reason" => "not_found",
-              "claim_lease_id" => lease.id
-            }
-
-            {release, context_with_claim_lease_status(context, lease.id, "not_found"), true}
-
-          {:error, reason} ->
-            {%{"status" => "not_released", "reason" => reason_text(reason)}, context, false}
-        end
+        release_matching_claim_lease(repo, lease, reason, context)
 
       {:error, reason} ->
-        {%{"status" => "not_released", "reason" => reason_text(reason)}, context, claim_lease_error_allows_binding_clear?(reason)}
+        binding_cleared? = claim_lease_error_allows_binding_clear?(reason)
+        status = if binding_cleared?, do: "skipped", else: "not_released"
+        {%{"status" => status, "reason" => reason_text(reason)}, context, binding_cleared?}
     end
   rescue
     _error -> {%{"status" => "not_released", "reason" => "ledger_unavailable"}, context, false}
+  end
+
+  defp release_matching_claim_lease(repo, %ClaimLease{} = lease, reason, context) do
+    case ClaimLeaseService.release(repo, lease.id, reason: reason) do
+      {:ok, %ClaimLease{} = released} ->
+        release = %{
+          "status" => "released",
+          "claim_lease_id" => released.id,
+          "claim_lease_status" => released.status
+        }
+
+        {release, context_with_claim_lease(context, released), true}
+
+      {:error, :not_found} ->
+        release = %{
+          "status" => "skipped",
+          "reason" => "not_found",
+          "claim_lease_id" => lease.id
+        }
+
+        {release, context_with_claim_lease_status(context, lease.id, "not_found"), true}
+
+      {:error, reason} ->
+        binding_cleared? = claim_lease_error_allows_binding_clear?(reason)
+        status = if binding_cleared?, do: "skipped", else: "not_released"
+
+        {%{"status" => status, "reason" => reason_text(reason)}, context, binding_cleared?}
+    end
   end
 
   defp release_requires_fresh_session?(%{"reason" => reason}, false)
@@ -9936,7 +9929,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp release_recovery_next_action(false, false), do: "retry_release_current_assignment"
 
   defp claim_lease_error_allows_binding_clear?(reason) do
-    reason in [:not_applicable, :not_found]
+    reason in [:not_applicable, :not_found, :claim_stale, :claim_lease_mismatch, :claim_lease_identity_unavailable]
   end
 
   defp current_assignment_context(%__MODULE__{config: %Config{repo: repo}, session: %Session{} = session}) do
@@ -15145,6 +15138,133 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
+  defp claim_tool_result(payload), do: agent_tool_result(payload, compact_claim_tool_text(payload))
+  defp release_tool_result(payload), do: agent_tool_result(payload, compact_release_tool_text(payload))
+
+  defp compact_claim_tool_text(payload) do
+    assignment = Map.get(payload, "assignment", %{})
+    local_claim = Map.get(payload, "local_claim", %{})
+
+    [
+      {"status", "ok"},
+      {"tool", Map.get(local_claim, "tool")},
+      {"role", Map.get(assignment, "grant_role")},
+      {"work_package_id", Map.get(assignment, "work_package_id") || Map.get(local_claim, "work_package_id")},
+      {"work_request_id", Map.get(local_claim, "work_request_id")},
+      {"lease", Map.get(local_claim, "claim_lease_action")},
+      {"warning", compact_claim_warning(local_claim)}
+    ]
+    |> compact_text_lines()
+  end
+
+  defp compact_claim_warning(%{"claim_lease_action" => "reclaimed"}), do: "stale_claim_reclaimed"
+  defp compact_claim_warning(_local_claim), do: nil
+
+  defp compact_release_tool_text(payload) do
+    release = Map.get(payload, "claim_lease_release", %{})
+    recovery = Map.get(payload, "recovery", %{})
+
+    [
+      {"status", Map.get(payload, "status") || "ok"},
+      {"tool", Map.get(payload, "action")},
+      {"binding_cleared", Map.get(payload, "binding_cleared")},
+      {"solo_tools_available", Map.get(payload, "solo_tools_available")},
+      {"claim_lease_release", Map.get(release, "status")},
+      {"recovery", Map.get(recovery, "next_action")}
+    ]
+    |> compact_text_lines()
+  end
+
+  defp compact_text_lines(lines) do
+    lines
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Enum.map_join("\n", fn {key, value} -> "#{key}: #{compact_text_value(value)}" end)
+  end
+
+  defp compact_text_value(value) when is_boolean(value), do: to_string(value)
+  defp compact_text_value(value) when is_binary(value), do: value
+  defp compact_text_value(value), do: inspect(value)
+
+  defp require_current_session_claim_for_bound_call(%__MODULE__{} = server, method, params) do
+    if bound_session_call?(server, method, params) do
+      require_current_session_claim(server)
+    else
+      {:ok, server}
+    end
+  end
+
+  defp bound_session_call?(%__MODULE__{session: %Session{claim_lease_id: claim_lease_id}}, "tools/call", %{"name" => name})
+       when name in @worker_tools or name in @architect_tools,
+       do: is_binary(claim_lease_id)
+
+  defp bound_session_call?(%__MODULE__{session: %Session{claim_lease_id: claim_lease_id}}, "resources/read", %{"uri" => "sympp://assignment/current"}),
+    do: is_binary(claim_lease_id)
+
+  defp bound_session_call?(%__MODULE__{session: %Session{claim_lease_id: claim_lease_id}}, "resources/read", %{"uri" => "sympp://work-packages/" <> _path}),
+    do: is_binary(claim_lease_id)
+
+  defp bound_session_call?(%__MODULE__{}, _method, _params), do: false
+
+  defp require_current_session_claim(%__MODULE__{config: %Config{repo: repo}, session: %Session{} = session} = server) do
+    case current_matching_claim_lease(repo, session) do
+      {:ok, %ClaimLease{status: "active"} = lease} -> refresh_current_session_claim_lease(repo, server, lease)
+      {:ok, %ClaimLease{status: "paused"}} -> lost_current_session_claim(server, :claim_lease_paused)
+      {:ok, %ClaimLease{}} -> lost_current_session_claim(server, :claim_lease_not_active)
+      {:error, reason} -> lost_current_session_claim(server, reason)
+    end
+  rescue
+    _error -> lost_current_session_claim(server, :claim_lease_check_failed)
+  end
+
+  defp require_current_session_claim(%__MODULE__{} = server), do: {:ok, server}
+
+  defp refresh_current_session_claim_lease(repo, %__MODULE__{session: %Session{} = session} = server, %ClaimLease{} = lease) do
+    case ClaimLeaseService.heartbeat(repo, lease.id, stale_after_ms: @local_assignment_claim_stale_after_ms) do
+      {:ok, %ClaimLease{} = renewed} ->
+        {:ok, %{server | session: Session.with_claim_lease(session, renewed)}}
+
+      {:error, :claim_stale} ->
+        reclaim_current_session_claim_lease(repo, server, session, lease)
+
+      {:error, reason} ->
+        lost_current_session_claim(server, reason)
+    end
+  end
+
+  defp reclaim_current_session_claim_lease(repo, %__MODULE__{} = server, %Session{} = session, %ClaimLease{} = lease) do
+    actor = %{
+      "actor_kind" => session.claim_actor_kind,
+      "actor_id" => session.claim_actor_id,
+      "actor_display_name" => session.claim_actor_display_name
+    }
+
+    case ClaimLeaseService.reclaim_stale(repo, lease.work_package_id, actor,
+           reason: "mcp_session_tool_heartbeat_stale",
+           stale_after_ms: @local_assignment_claim_stale_after_ms
+         ) do
+      {:ok, %ClaimLease{} = replacement} -> {:ok, %{server | session: Session.with_claim_lease(session, replacement)}}
+      {:error, reason} -> lost_current_session_claim(server, reason)
+    end
+  end
+
+  defp lost_current_session_claim(%__MODULE__{session: %Session{} = session} = server, reason) do
+    action =
+      case session.assignment.grant_role do
+        "architect" -> @local_architect_assignment_claim_tool
+        _role -> @local_assignment_claim_tool
+      end
+
+    updated_server = %{server | session: nil, session_refresh_required: true}
+
+    {:error, -32_001, "Unauthorized",
+     %{
+       "reason" => "claim_lease_lost",
+       "claim_lease_reason" => reason_text(reason),
+       "action" => action,
+       "hint" => "Replay the local claim for this assignment before using bound tools."
+     }, updated_server}
+  end
+
   defp agent_tool_result(payload) do
     agent_tool_result(payload, WorkerContext.encode_tool_payload(payload))
   end
@@ -15357,10 +15477,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp dispatch_request_state({:ok, params}, method, id, %__MODULE__{} = server) do
-    case dispatch(method, params, server) do
-      {:ok, result} -> {response(id, result), server}
-      {:ok, result, %__MODULE__{} = updated_server} -> {response(id, result), updated_server}
-      {:error, code, message, data} -> {error_response(id, code, message, data), server}
+    case require_current_session_claim_for_bound_call(server, method, params) do
+      {:ok, server} ->
+        case dispatch(method, params, server) do
+          {:ok, result} ->
+            {response(id, result), server}
+
+          {:ok, result, %__MODULE__{} = updated_server} ->
+            {response(id, result), updated_server}
+
+          {:error, code, message, data} ->
+            {error_response(id, code, message, data), server}
+        end
+
+      {:error, code, message, data, %__MODULE__{} = updated_server} ->
+        {error_response(id, code, message, data), updated_server}
     end
   end
 
@@ -15369,11 +15500,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp dispatch_notification({:ok, params}, method, %__MODULE__{} = server) do
-    _result = dispatch(method, params, server)
-    nil
+    case require_current_session_claim_for_bound_call(server, method, params) do
+      {:ok, server} ->
+        case dispatch(method, params, server) do
+          {:ok, _result} ->
+            server
+
+          {:ok, _result, %__MODULE__{} = updated_server} ->
+            updated_server
+
+          {:error, _code, _message, _data} ->
+            server
+        end
+
+      {:error, _code, _message, _data, %__MODULE__{} = updated_server} ->
+        updated_server
+    end
   end
 
-  defp dispatch_notification({:error, _code, _message, _data}, _method, %__MODULE__{}), do: nil
+  defp dispatch_notification({:error, _code, _message, _data}, _method, %__MODULE__{} = server), do: server
 
   defp initialize_request?(%{"jsonrpc" => "2.0", "method" => "initialize"}), do: true
   defp initialize_request?(_payload), do: false

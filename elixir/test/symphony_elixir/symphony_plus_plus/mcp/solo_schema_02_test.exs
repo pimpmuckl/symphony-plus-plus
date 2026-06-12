@@ -26,21 +26,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema02Test do
   end
 
   test "direct calls fail closed for tools outside the session surface before argument validation", %{repo: repo} do
-    release_response =
-      Server.handle(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => "unbound-release-current-assignment",
-          "method" => "tools/call",
-          "params" => %{"name" => "release_current_assignment", "arguments" => %{"unexpected" => "value"}}
-        },
-        Server.new(Config.default(repo: repo), initialized: true)
-      )
-
-    assert get_in(release_response, ["error", "code"]) == -32_001
-    assert get_in(release_response, ["error", "data", "tool"]) == "release_current_assignment"
-    assert get_in(release_response, ["error", "data", "reason"]) == "assignment_release_requires_bound_session"
-
     unbound_response =
       Server.handle(
         %{

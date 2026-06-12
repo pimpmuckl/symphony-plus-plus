@@ -11,7 +11,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SessionRecovery do
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Repository, Server, Session, SessionBinding}
 
   @ttl_ms 86_400_000
-  @lease_stale_after_ms 86_400_000
+  @lease_stale_after_ms :timer.minutes(5)
   @release_current_assignment_tool "release_current_assignment"
   @local_claim_tools ["claim_local_assignment", "claim_local_architect_assignment"]
   @session_claim_tools @local_claim_tools
