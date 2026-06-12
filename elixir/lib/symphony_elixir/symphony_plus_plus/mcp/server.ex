@@ -10548,6 +10548,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case legacy_attach_pr_payload(repo, session, arguments, source_tool) do
       {:ok, payload} -> {:ok, payload}
       {:tool_error, reason} -> {:tool_error, reason}
+      {:error, reason} -> {:error, reason}
       :error -> github_pr_metadata_payload(repo, session, arguments, source_tool)
     end
   end

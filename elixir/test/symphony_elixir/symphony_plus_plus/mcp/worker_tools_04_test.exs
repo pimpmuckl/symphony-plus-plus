@@ -589,7 +589,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert get_in(response, ["error", "data", "reason"]) == "missing_metadata"
   end
 
-  test "sync_pr preserves service error shape for PR metadata lookup failures" do
+  test "PR metadata tools preserve service error shape for lookup failures" do
     session =
       Session.new(
         %Assignment{
@@ -622,6 +622,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert get_in(response, ["error", "code"]) == -32_000
     assert get_in(response, ["error", "data", "resource"]) == "sync_pr"
     assert get_in(response, ["error", "data", "reason"]) == "ledger_unavailable"
+
+    legacy_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "legacy-attach-pr-service-error",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "attach_pr",
+            "arguments" => %{"url" => "https://git.example.com/org/repo/pulls/42", "head_sha" => "head-a"}
+          }
+        },
+        repo: BusyPrSyncRepo,
+        session: session
+      )
+
+    assert get_in(legacy_response, ["error", "code"]) == -32_000
+    assert get_in(legacy_response, ["error", "data", "resource"]) == "attach_pr"
+    assert get_in(legacy_response, ["error", "data", "reason"]) == "ledger_unavailable"
   end
 
   test "sync_pr requires an attached matching PR and metadata head", %{repo: repo} do
