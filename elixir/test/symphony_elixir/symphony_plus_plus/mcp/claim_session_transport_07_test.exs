@@ -60,6 +60,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport07Test do
     assert [release_response, reclaim_response] = batch_result.response
     assert get_in(release_response, ["result", "structuredContent", "binding_cleared"]) == true
     assert get_in(release_response, ["result", "structuredContent", "claim_lease_release", "claim_lease_id"]) == lease_id
+    assert get_in(release_response, ["result", "structuredContent", "recovery", "reason"]) == "assignment_released"
+    assert get_in(release_response, ["result", "structuredContent", "recovery", "category"]) == "session_binding"
+    assert get_in(release_response, ["result", "structuredContent", "recovery", "recoverability"]) == "recovered"
     release_text = assert_concise_tool_text!(release_response)
     assert release_text == "ok\nnext: use Solo tools or claim another assignment"
     refute release_text =~ ~s("binding_cleared")

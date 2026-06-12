@@ -31,7 +31,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, PlannedSliceWorkerRevoke, Repository, Session, SoloTools}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, PlannedSliceWorkerRevoke, RecoveryPayload, Repository, Session, SoloTools}
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
@@ -856,7 +856,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp batch_session_claim_rebind_item(%{"id" => id, "params" => %{"name" => name}}, %__MODULE__{} = server)
        when valid_request_id(id) and name in @session_claim_tools do
-    {error_response(id, -32_001, "Unauthorized", session_already_bound_data(name, server)), server}
+    {error_response(id, -32_001, "Unauthorized", RecoveryPayload.session_already_bound_data(name, current_assignment_summary(server))), server}
   end
 
   defp batch_session_claim_rebind_item(_payload, %__MODULE__{} = server), do: {nil, server}
@@ -2791,7 +2791,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp described_string_schema(description), do: Map.put(string_schema(), "description", description)
 
   defp advanced_claim_hint_schema(description),
-    do: described_string_schema("Advanced/debug validation hint; omit for normal claims. #{description} If supplied and mismatched, the claim fails to protect authority.")
+    do:
+      described_string_schema(
+        "Advanced/debug hint; omit for normal claims. #{description} If supplied and mismatched while the durable id is valid, the claim succeeds with ignored-hint recovery metadata. Server-recorded authority boundaries still fail closed."
+      )
 
   defp markdown_string_schema(description), do: described_string_schema(description)
   defp string_enum_schema(values) when is_list(values), do: %{"type" => "string", "enum" => values}
@@ -3196,17 +3199,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp hydrate_local_assignment_claim(repo, %WorkPackage{} = work_package, claim) do
-    worktree_path = claim.worktree_path || normalize_optional_local_assignment_path(work_package.worktree_path)
-    branch = claim.branch || local_assignment_worktree_branch_or_nil(worktree_path)
+    worktree_path = normalize_optional_local_assignment_path(work_package.worktree_path)
+    branch = local_assignment_worktree_branch_or_nil(worktree_path) || local_assignment_exact_branch_pattern(work_package)
+    work_request_id = local_assignment_work_request_id(repo, work_package.id)
 
-    %{
-      claim
-      | repo: claim.repo || work_package.repo,
-        base_branch: claim.base_branch || work_package.base_branch,
-        work_request_id: claim.work_request_id || local_assignment_work_request_id(repo, work_package.id),
-        branch: branch,
-        worktree_path: worktree_path
-    }
+    Map.merge(claim, %{
+      repo: work_package.repo,
+      base_branch: work_package.base_branch,
+      work_request_id: work_request_id,
+      branch: branch,
+      worktree_path: worktree_path,
+      optional_scope_hint_warnings: local_assignment_optional_scope_hint_warnings(repo, work_package, claim)
+    })
   end
 
   defp require_local_assignment_claim_mode(%__MODULE__{initialized: false}), do: {:error, :local_mcp_session_required}
@@ -3244,13 +3248,53 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp validate_local_assignment_scope(repo, %WorkPackage{} = work_package, claim) do
-    with :ok <- require_local_value_match(work_package.repo, claim.repo, :repo_scope_mismatch),
-         :ok <- require_local_value_match(work_package.base_branch, claim.base_branch, :base_branch_scope_mismatch),
-         :ok <- require_optional_local_worktree_scope(work_package, claim.worktree_path),
-         :ok <- require_optional_local_branch_scope(work_package, claim.branch, claim.worktree_path),
-         :ok <- require_live_local_work_package(work_package) do
-      validate_local_work_request_scope(repo, work_package, claim.work_request_id)
+    with :ok <- require_live_local_work_package(work_package),
+         :ok <- require_recorded_local_worktree_scope(work_package),
+         do: validate_local_work_request_scope(repo, work_package, claim.work_request_id)
+  end
+
+  defp require_recorded_local_worktree_scope(%WorkPackage{worktree_path: worktree_path} = work_package) do
+    case normalize_optional_value(worktree_path) do
+      path when is_binary(path) ->
+        require_existing_recorded_local_worktree_scope(work_package, path)
+
+      _missing ->
+        :ok
     end
+  end
+
+  defp require_existing_recorded_local_worktree_scope(%WorkPackage{} = work_package, worktree_path) do
+    if File.dir?(worktree_path) do
+      case local_assignment_worktree_branch(worktree_path) do
+        {:ok, branch} ->
+          case require_local_branch_pattern_scope(work_package, branch, prepared_worktree?: true) do
+            :ok -> :ok
+            {:tool_error, {:branch_pattern, _pattern, :unsupported_branch_pattern_wildcard}} -> {:error, :unsupported_branch_pattern_wildcard}
+            {:error, _reason} -> {:error, :recorded_worktree_branch_scope_mismatch}
+          end
+
+        {:error, :git_metadata_missing} ->
+          {:error, :recorded_worktree_git_metadata_missing}
+
+        {:error, _reason} ->
+          {:error, :recorded_worktree_branch_scope_mismatch}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp local_assignment_optional_scope_hint_warnings(repo, %WorkPackage{} = work_package, claim) do
+    [
+      optional_scope_hint_warning("repo", claim.repo, fn -> require_local_value_match(work_package.repo, claim.repo, :repo_scope_mismatch) end),
+      optional_scope_hint_warning("base_branch", claim.base_branch, fn ->
+        require_local_value_match(work_package.base_branch, claim.base_branch, :base_branch_scope_mismatch)
+      end),
+      optional_scope_hint_warning("worktree_path", claim.worktree_path, fn -> require_optional_local_worktree_scope(work_package, claim.worktree_path) end),
+      optional_scope_hint_warning("branch", claim.branch, fn -> require_optional_local_branch_scope(work_package, claim.branch, claim.worktree_path) end),
+      optional_scope_hint_warning("work_request_id", claim.work_request_id, fn -> validate_local_work_request_scope(repo, work_package, claim.work_request_id) end)
+    ]
+    |> List.flatten()
   end
 
   defp require_local_value_match(value, value, _reason) when is_binary(value), do: :ok
@@ -3258,6 +3302,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_optional_local_branch_scope(%WorkPackage{}, nil, _worktree_path), do: :ok
   defp require_optional_local_branch_scope(%WorkPackage{} = work_package, branch, worktree_path), do: require_local_branch_scope(work_package, branch, worktree_path)
+
+  defp local_assignment_exact_branch_pattern(%WorkPackage{branch_pattern: branch_pattern}) do
+    case normalize_optional_value(branch_pattern) do
+      nil -> nil
+      pattern -> if local_branch_template_pattern?(pattern), do: nil, else: pattern
+    end
+  end
 
   defp require_local_branch_scope(%WorkPackage{} = work_package, branch, worktree_path) do
     case local_assignment_worktree_branch(worktree_path) do
@@ -3670,6 +3721,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "reason_codes" => local_assignment_claim_reason_codes(lease_action, lease)
     }
     |> drop_nil_values()
+    |> maybe_put_optional_scope_hint_recovery(claim, @local_assignment_claim_tool)
     |> maybe_put_claim_event(claim_event)
   end
 
@@ -3786,15 +3838,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp hydrate_local_architect_assignment_claim(%WorkRequest{} = work_request, claim) do
-    anchor_id = claim.architect_anchor_work_package_id || ArchitectHandoff.anchor_id_for_work_request(work_request)
+    anchor_id = ArchitectHandoff.anchor_id_for_work_request(work_request)
+    phase_id = ArchitectHandoff.phase_id_for_work_request(work_request)
 
-    %{
-      claim
-      | architect_anchor_work_package_id: anchor_id,
-        repo: claim.repo || work_request.repo,
-        base_branch: claim.base_branch || work_request.base_branch,
-        phase_id: claim.phase_id || ArchitectHandoff.phase_id_for_work_request(work_request)
-    }
+    Map.merge(claim, %{
+      architect_anchor_work_package_id: anchor_id,
+      repo: work_request.repo,
+      base_branch: work_request.base_branch,
+      phase_id: phase_id,
+      optional_scope_hint_warnings: local_architect_assignment_optional_scope_hint_warnings(work_request, claim, anchor_id, phase_id)
+    })
   end
 
   defp require_local_architect_assignment_claim_mode(%__MODULE__{config: config} = server) do
@@ -3852,6 +3905,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- require_architect_handoff_anchor_kind(anchor) do
       require_live_local_work_package(anchor)
     end
+  end
+
+  defp local_architect_assignment_optional_scope_hint_warnings(%WorkRequest{} = work_request, claim, anchor_id, phase_id) do
+    [
+      optional_scope_hint_warning("repo", claim.repo, fn -> require_local_value_match(work_request.repo, claim.repo, :repo_scope_mismatch) end),
+      optional_scope_hint_warning("base_branch", claim.base_branch, fn ->
+        require_local_value_match(work_request.base_branch, claim.base_branch, :base_branch_scope_mismatch)
+      end),
+      optional_scope_hint_warning("architect_anchor_work_package_id", claim.architect_anchor_work_package_id, fn ->
+        require_local_value_match(anchor_id, claim.architect_anchor_work_package_id, :architect_anchor_scope_mismatch)
+      end),
+      optional_scope_hint_warning("phase_id", claim.phase_id, fn -> require_optional_phase_scope(claim.phase_id, phase_id) end)
+    ]
+    |> List.flatten()
   end
 
   defp require_local_architect_handoff_anchor(repo, %WorkRequest{} = work_request, claim) do
@@ -4089,6 +4156,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "reason_codes" => local_architect_assignment_claim_reason_codes(lease_action, lease)
     }
     |> drop_nil_values()
+    |> maybe_put_optional_scope_hint_recovery(claim, @local_architect_assignment_claim_tool)
     |> maybe_put_claim_event(claim_event)
   end
 
@@ -4241,7 +4309,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_architect_capability(_assignment, _capability), do: {:error, :insufficient_capability}
 
   defp authorize_architect_tool_call(%__MODULE__{session: nil}, name) do
-    {:error, -32_001, "Unauthorized", %{"resource" => name, "reason" => "claim_required", "action" => @local_architect_assignment_claim_tool}}
+    {:error, -32_001, "Unauthorized",
+     RecoveryPayload.claim_required_data(name, @local_architect_assignment_claim_tool, %{
+       "work_request_id" => "<work_request_id>"
+     })}
   end
 
   defp authorize_architect_tool_call(%__MODULE__{config: config, session: session}, name) do
@@ -4258,12 +4329,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp local_assignment_claim_error({:migration_failed, _reason} = reason), do: service_error(reason, @local_assignment_claim_tool)
 
   defp local_assignment_claim_error({:session_already_bound, current_assignment}) do
-    {:error, -32_001, "Unauthorized", session_already_bound_data(@local_assignment_claim_tool, current_assignment)}
+    {:error, -32_001, "Unauthorized", RecoveryPayload.session_already_bound_data(@local_assignment_claim_tool, current_assignment)}
   end
 
   defp local_assignment_claim_error(:claim_lease_active_for_other_actor) do
     {:error, -32_001, "Unauthorized",
-     claim_lease_active_for_other_actor_data(
+     RecoveryPayload.claim_lease_active_for_other_actor_data(
        @local_assignment_claim_tool,
        "Reuse the same work_package_id and claimed_by. If the active assignment belongs to another owner or is stale, ask the architect or operator for recovery."
      )}
@@ -4271,7 +4342,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp local_assignment_claim_error(reason) do
     reason = reason_text(reason)
-    data = maybe_claim_hint_mismatch_data(@local_assignment_claim_tool, reason, "work_package_id")
+
+    data =
+      @local_assignment_claim_tool
+      |> RecoveryPayload.maybe_claim_hint_mismatch_data(reason, "work_package_id")
+      |> RecoveryPayload.maybe_put_claim_failure_recovery()
 
     {:error, -32_001, "Unauthorized", data}
   end
@@ -4285,16 +4360,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     do: service_error(reason, @local_architect_assignment_claim_tool)
 
   defp local_architect_assignment_claim_error({:architect_handoff_not_prepared, %WorkRequest{} = work_request}) do
-    {:error, -32_001, "Unauthorized", architect_handoff_not_prepared_data(work_request)}
+    {:error, -32_001, "Unauthorized",
+     RecoveryPayload.architect_handoff_not_prepared_data(
+       work_request.id,
+       ArchitectHandoff.anchor_id_for_work_request(work_request),
+       ArchitectHandoff.phase_id_for_work_request(work_request)
+     )}
   end
 
   defp local_architect_assignment_claim_error({:session_already_bound, current_assignment}) do
-    {:error, -32_001, "Unauthorized", session_already_bound_data(@local_architect_assignment_claim_tool, current_assignment)}
+    {:error, -32_001, "Unauthorized", RecoveryPayload.session_already_bound_data(@local_architect_assignment_claim_tool, current_assignment)}
   end
 
   defp local_architect_assignment_claim_error(:claim_lease_active_for_other_actor) do
     {:error, -32_001, "Unauthorized",
-     claim_lease_active_for_other_actor_data(
+     RecoveryPayload.claim_lease_active_for_other_actor_data(
        @local_architect_assignment_claim_tool,
        "Reuse the same work_request_id and claimed_by. If the active assignment belongs to another owner or is stale, ask the operator for recovery."
      )}
@@ -4304,104 +4384,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     reason = reason_text(reason)
 
     {:error, -32_001, "Unauthorized",
-     Map.merge(architect_handoff_state_mismatch_data(reason), %{
+     Map.merge(RecoveryPayload.architect_handoff_state_mismatch_data(reason), %{
        "tool" => @local_architect_assignment_claim_tool
      })}
   end
 
   defp local_architect_assignment_claim_error(reason) do
     reason = reason_text(reason)
-    data = maybe_claim_hint_mismatch_data(@local_architect_assignment_claim_tool, reason, "work_request_id")
+
+    data =
+      @local_architect_assignment_claim_tool
+      |> RecoveryPayload.maybe_claim_hint_mismatch_data(reason, "work_request_id")
+      |> RecoveryPayload.maybe_put_claim_failure_recovery()
 
     {:error, -32_001, "Unauthorized", data}
   end
 
-  defp maybe_claim_hint_mismatch_data(tool, reason, durable_id_field) do
-    base = %{"tool" => tool, "reason" => reason}
+  defp optional_scope_hint_warning(_field, nil, _validate), do: []
 
-    if optional_claim_hint_mismatch?(reason) do
-      Map.merge(base, %{
-        "classification" => "optional_scope_hint_mismatch",
-        "can_retry_with_id_only" => true,
-        "safe_next_tool" => tool,
-        "hint" => "Normal claims use #{durable_id_field} plus optional claimed_by. Omit repo/base/phase/branch/worktree/caller hints unless an operator asks for an explicit scope check.",
-        "operator_action" => "If id-only retry still fails, inspect the ledger assignment scope before weakening authority checks."
-      })
-    else
-      base
+  defp optional_scope_hint_warning(field, _value, validate) when is_function(validate, 0) do
+    case validate.() do
+      :ok -> []
+      {:tool_error, {:branch_pattern, _value, reason}} -> [%{"field" => field, "reason" => reason_text(reason)}]
+      {:tool_error, reason} -> [%{"field" => field, "reason" => reason_text(reason)}]
+      {:error, reason} -> [%{"field" => field, "reason" => reason_text(reason)}]
     end
   end
 
-  defp optional_claim_hint_mismatch?(reason)
-       when reason in [
-              "repo_scope_mismatch",
-              "base_branch_scope_mismatch",
-              "work_request_scope_mismatch",
-              "work_request_repo_scope_mismatch",
-              "work_request_package_link_mismatch",
-              "branch_scope_mismatch",
-              "worktree_scope_mismatch",
-              "phase_scope_mismatch",
-              "architect_anchor_scope_mismatch"
-            ],
-       do: true
-
-  defp optional_claim_hint_mismatch?(_reason), do: false
-
-  defp architect_handoff_state_mismatch_data(reason) do
-    %{
-      "reason" => reason,
-      "classification" => "architect_handoff_state_mismatch",
-      "can_retry_with_id_only" => false,
-      "hint" =>
-        "The durable work_request_id resolved, but the persisted architect handoff anchor no longer matches the WorkRequest or phase. This protects WorkRequest authority and data integrity; id-only retry cannot repair ledger drift.",
-      "operator_action" => "Ask the operator to inspect or recreate the WorkRequest architect handoff before retrying."
-    }
+  defp maybe_put_optional_scope_hint_recovery(payload, claim, tool) do
+    RecoveryPayload.maybe_put_optional_scope_hint_recovery(
+      payload,
+      Map.get(claim, :optional_scope_hint_warnings, []),
+      tool,
+      durable_id_retry_arguments(tool, claim)
+    )
   end
 
-  defp claim_lease_active_for_other_actor_data(tool, hint) do
-    %{
-      "tool" => tool,
-      "reason" => "claim_lease_active_for_other_actor",
-      "action" => "reuse_claim_identity_or_recycle_stale_claim",
-      "hint" => hint
-    }
+  defp durable_id_retry_arguments(@local_assignment_claim_tool, claim) do
+    %{"work_package_id" => claim.work_package_id}
+    |> optional_put("claimed_by", claim.claimed_by)
   end
 
-  defp architect_handoff_not_prepared_data(%WorkRequest{} = work_request) do
-    %{
-      "tool" => @local_architect_assignment_claim_tool,
-      "reason" => "architect_handoff_not_prepared",
-      "action" => "prepare_architect_handoff",
-      "work_request_id" => work_request.id,
-      "expected_architect_anchor_work_package_id" => ArchitectHandoff.anchor_id_for_work_request(work_request),
-      "expected_phase_id" => ArchitectHandoff.phase_id_for_work_request(work_request),
-      "message" => "This WorkRequest exists, but its local architect handoff anchor has not been prepared.",
-      "hint" => "Ask the local operator to prepare the architect handoff, then retry claim_local_architect_assignment."
-    }
-  end
-
-  defp session_already_bound_data(tool, %__MODULE__{session: %Session{}} = server) do
-    session_already_bound_data(tool, current_assignment_summary(server))
-  end
-
-  defp session_already_bound_data(tool, %__MODULE__{}) do
-    session_already_bound_data(tool, nil)
-  end
-
-  defp session_already_bound_data(tool, current_assignment) when is_map(current_assignment) do
-    tool
-    |> session_already_bound_data(nil)
-    |> Map.put("current_assignment", current_assignment)
-  end
-
-  defp session_already_bound_data(tool, _current_assignment) do
-    %{
-      "tool" => tool,
-      "reason" => "session_already_bound",
-      "action" => "use_fresh_mcp_session_or_release_current_assignment",
-      "hint" => "This MCP session is already bound. Start a fresh MCP session for a different assignment, or call release_current_assignment only if abandoning the current binding."
-    }
+  defp durable_id_retry_arguments(@local_architect_assignment_claim_tool, claim) do
+    %{"work_request_id" => claim.work_request_id}
+    |> optional_put("claimed_by", claim.claimed_by)
   end
 
   defp prepare_worker_tool_call(%__MODULE__{} = server, params, name) do
@@ -4476,7 +4502,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp preauthorize_worker_tool_call(%__MODULE__{session: nil} = server, name) do
-    {:error, -32_001, "Unauthorized", %{"resource" => name, "reason" => "claim_required", "action" => worker_claim_action(server)}}
+    {:error, -32_001, "Unauthorized",
+     RecoveryPayload.claim_required_data(name, worker_claim_action(server), %{
+       "work_package_id" => "<work_package_id>"
+     })}
   end
 
   defp preauthorize_worker_tool_call(%__MODULE__{session: session}, "get_current_assignment") do
@@ -9963,10 +9992,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "fresh_mcp_session_required" => fresh_mcp_session_required?,
         "released_assignment" => released_context,
         "claim_lease_release" => lease_release,
-        "recovery" => %{
-          "next_action" => release_recovery_next_action(binding_cleared?, fresh_mcp_session_required?),
-          "fresh_mcp_session_required" => fresh_mcp_session_required?
-        }
+        "recovery" =>
+          RecoveryPayload.compact(
+            release_recovery_reason(binding_cleared?, fresh_mcp_session_required?),
+            "session_binding",
+            release_recoverability(binding_cleared?, fresh_mcp_session_required?),
+            release_recovery_next_action(binding_cleared?, fresh_mcp_session_required?),
+            fresh_mcp_session_required: fresh_mcp_session_required?
+          )
       }
 
       updated_server =
@@ -10021,6 +10054,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp release_recovery_next_action(false, true), do: "start_fresh_mcp_session"
   defp release_recovery_next_action(false, false), do: "retry_release_current_assignment"
 
+  defp release_recovery_reason(true, _fresh_mcp_session_required?), do: "assignment_released"
+  defp release_recovery_reason(false, true), do: "stale_assignment_requires_fresh_session"
+  defp release_recovery_reason(false, false), do: "assignment_release_not_completed"
+
+  defp release_recoverability(true, _fresh_mcp_session_required?), do: "recovered"
+  defp release_recoverability(false, true), do: "recoverable_with_fresh_session"
+  defp release_recoverability(false, false), do: "retryable"
+
   defp claim_lease_error_allows_binding_clear?(reason) do
     reason in [:not_applicable, :not_found]
   end
@@ -10032,6 +10073,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp current_assignment_summary(%__MODULE__{config: %Config{repo: repo}, session: %Session{} = session}) do
     current_assignment_summary(repo, session)
   end
+
+  defp current_assignment_summary(%__MODULE__{}), do: nil
 
   defp current_assignment_context(repo, %Session{assignment: assignment} = session) do
     package_context = assignment_work_package_context(repo, assignment.work_package_id)
@@ -14078,22 +14121,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp authorize_solo_tool_call(%__MODULE__{session: nil}, _tool), do: :ok
 
   defp authorize_solo_tool_call(%__MODULE__{} = server, tool) do
-    {:error, -32_001, "Unauthorized", bound_solo_tool_denial(tool, server)}
-  end
-
-  defp bound_solo_tool_denial(tool, %__MODULE__{} = server) do
-    %{
-      "tool" => tool,
-      "reason" => "solo_tools_require_unbound_session",
-      "action" => @assignment_release_tool,
-      "current_assignment" => current_assignment_context(server),
-      "recovery" => %{
-        "tool" => @assignment_release_tool,
-        "next_action" => "call_release_current_assignment_then_retry_solo_tool",
-        "fresh_mcp_session_required" => false,
-        "fallback" => "If release_current_assignment is unavailable or returns fresh_mcp_session_required=true, start a fresh MCP session before using Solo tools."
-      }
-    }
+    {:error, -32_001, "Unauthorized", RecoveryPayload.solo_tools_require_unbound_session_data(tool, current_assignment_context(server))}
   end
 
   defp authorize_worker_tool_call(%__MODULE__{config: config, session: session}, "get_current_assignment") do
@@ -15403,17 +15431,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp auth_error(:unauthorized, resource) do
-    {:error, -32_001, "Unauthorized", %{"resource" => resource, "reason" => "missing_session"}}
+    {:error, -32_001, "Unauthorized",
+     %{
+       "resource" => resource,
+       "reason" => "missing_session",
+       "recovery" => RecoveryPayload.claim_session_recovery("missing_session")
+     }}
   end
 
   defp auth_error({:unauthorized, reason}, resource) do
-    {:error, -32_001, "Unauthorized", %{"resource" => resource, "reason" => reason_text(reason)}}
+    reason = reason_text(reason)
+    {:error, -32_001, "Unauthorized", %{"resource" => resource, "reason" => reason, "recovery" => RecoveryPayload.auth_recovery(reason)}}
   end
 
   defp auth_error({:service_unavailable, reason}, resource), do: service_error(reason, resource)
 
   defp auth_error(:forbidden, resource) do
-    {:error, -32_003, "Forbidden", %{"resource" => resource, "reason" => "outside_session_scope"}}
+    {:error, -32_003, "Forbidden",
+     %{
+       "resource" => resource,
+       "reason" => "outside_session_scope",
+       "recovery" =>
+         RecoveryPayload.compact("outside_session_scope", "authority_boundary", "not_recoverable_in_current_assignment", "use_scoped_assignment_or_request_scope_change",
+           protected_boundary: "This session cannot read or write outside its claimed assignment scope."
+         )
+     }}
   end
 
   defp service_error(_reason, resource) do

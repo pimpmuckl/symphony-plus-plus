@@ -150,7 +150,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
         local_mcp_server(local_mcp_config(repo), "local-architect-missing-handoff-phase-mismatch-state")
       )
 
-    assert get_in(phase_mismatch_response, ["error", "data", "reason"]) == "phase_scope_mismatch"
+    assert get_in(phase_mismatch_response, ["error", "data", "reason"]) == "architect_handoff_not_prepared"
+    assert get_in(phase_mismatch_response, ["error", "data", "recovery", "next_action"]) == "prepare_architect_handoff"
 
     {repo_mismatch_response, _server} =
       Server.handle_state(
@@ -166,7 +167,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
         local_mcp_server(local_mcp_config(repo), "local-architect-missing-handoff-repo-mismatch-state")
       )
 
-    assert get_in(repo_mismatch_response, ["error", "data", "reason"]) == "repo_scope_mismatch"
+    assert get_in(repo_mismatch_response, ["error", "data", "reason"]) == "architect_handoff_not_prepared"
+    assert get_in(repo_mismatch_response, ["error", "data", "recovery", "recoverability"]) == "operator_repair_required"
   end
 
   test "claim_local_architect_assignment reports the current binding before rebinding", %{repo: repo} do
@@ -321,7 +323,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
     assert get_in(same_repo_write, ["error", "data", "reason"]) == "not_found"
   end
 
-  test "claim_local_architect_assignment rejects mismatched optional scope hints", %{repo: repo} do
+  test "claim_local_architect_assignment ignores mismatched optional scope hints", %{repo: repo} do
     work_request =
       create_work_request!(repo,
         id: "WR-MCP-LOCAL-ARCHITECT-MISMATCH",
@@ -334,7 +336,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
                handoff_opts: handoff_opts(repo)
              )
 
-    {response, _server} =
+    {response, claimed_server} =
       Server.handle_state(
         %{
           "jsonrpc" => "2.0",
@@ -352,10 +354,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
         local_mcp_server(local_mcp_config(repo), "local-architect-mismatch-state")
       )
 
-    assert get_in(response, ["error", "data", "reason"]) == "repo_scope_mismatch"
+    assert get_in(response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert get_in(response, ["result", "structuredContent", "local_claim", "recovery", "reason"]) == "optional_scope_hints_ignored"
+    assert ignored_optional_hint?(response, "repo", "repo_scope_mismatch")
+    assert claimed_server.session.assignment.work_package_id == ArchitectHandoff.anchor_id_for_work_request(work_request)
   end
 
-  test "claim_local_architect_assignment rejects stale explicit anchor hints as scope mismatches", %{repo: repo} do
+  test "claim_local_architect_assignment ignores stale explicit anchor hints", %{repo: repo} do
     work_request =
       create_work_request!(repo,
         id: "WR-MCP-LOCAL-ARCHITECT-STALE-ANCHOR",
@@ -368,7 +373,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
                handoff_opts: handoff_opts(repo)
              )
 
-    {response, _server} =
+    {response, claimed_server} =
       Server.handle_state(
         %{
           "jsonrpc" => "2.0",
@@ -385,9 +390,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
         local_mcp_server(local_mcp_config(repo), "local-architect-stale-anchor-state")
       )
 
-    assert get_in(response, ["error", "data", "reason"]) == "architect_anchor_scope_mismatch"
-    assert get_in(response, ["error", "data", "classification"]) == "optional_scope_hint_mismatch"
-    assert get_in(response, ["error", "data", "can_retry_with_id_only"]) == true
+    assert get_in(response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+
+    retry_arguments = get_in(response, ["result", "structuredContent", "local_claim", "recovery", "retry", "arguments"])
+    assert retry_arguments["work_request_id"] == work_request.id
+    assert is_binary(retry_arguments["claimed_by"])
+
+    assert ignored_optional_hint?(response, "architect_anchor_work_package_id", "architect_anchor_scope_mismatch")
+    assert claimed_server.session.assignment.work_package_id == ArchitectHandoff.anchor_id_for_work_request(work_request)
   end
 
   test "claim_local_architect_assignment reports persisted anchor drift as non-retryable", %{repo: repo} do
@@ -428,5 +438,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
 
   defp handoff_opts(repo) do
     [claimed_by: ArchitectHandoff.claimed_by(), database: repo.database_path(), local_architect_claim?: true]
+  end
+
+  defp ignored_optional_hint?(response, field, reason) do
+    response
+    |> get_in(["result", "structuredContent", "local_claim", "recovery", "ignored_optional_scope_hints"])
+    |> Enum.any?(&(&1["field"] == field and &1["reason"] == reason))
   end
 end
