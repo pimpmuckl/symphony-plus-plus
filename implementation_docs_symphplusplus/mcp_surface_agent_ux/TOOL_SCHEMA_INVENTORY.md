@@ -6,6 +6,10 @@ Contract version: 3. Tool schemas: 79.
 
 2026-06-12 cleanup note: claim schemas still accept compatible optional hint fields, but `mcp_tools_contract.json` separates them as `advanced_hint_arguments`. Normal prompts and generated architect handoffs use durable ids by default; optional `claimed_by` stays accepted for explicit audit ownership but is not copied into architect handoff prompt claim arguments.
 
+When a shared tool has different worker and architect requirements, the
+`Required argument sets` column lists the role-specific contract from
+`mcp_tools_contract.json`.
+
 | Tool | Discovery groups | Required args | Required argument sets | Optional args | Scout classification |
 |---|---|---|---|---|---|
 | `sympp.health` | unbound_tools, bound_worker_tools, bound_architect_tools | none | none | none | keep |
@@ -37,9 +41,9 @@ Contract version: 3. Tool schemas: 79.
 | `append_progress` | bound_worker_tools, worker_tools | summary | none | body, idempotency_key, payload, status, work_package_id | infer/default |
 | `set_status` | bound_worker_tools, worker_tools | expected_status, status | none | reason, work_package_id | infer/default |
 | `report_blocker` | bound_worker_tools, worker_tools | summary | none | blocker_id, body, idempotency_key, payload, status, work_package_id | infer/default |
-| `resolve_blocker` | shared_worker_architect_tools, bound_worker_tools, bound_architect_tools, architect_tools, worker_tools | blocker_id, resolution, summary | none | body, idempotency_key, payload, status, work_package_id | infer/default |
-| `add_comment` | shared_worker_architect_tools, bound_worker_tools, bound_architect_tools, architect_tools, worker_tools | body | none | target_id, target_kind, work_package_id | infer/default |
-| `list_comments` | shared_worker_architect_tools, bound_worker_tools, bound_architect_tools, architect_tools, worker_tools | none | none | target_id, target_kind, work_package_id | infer/default |
+| `resolve_blocker` | shared_worker_architect_tools, bound_worker_tools, bound_architect_tools, architect_tools, worker_tools | blocker_id, resolution, summary | worker: blocker_id, resolution, summary; architect: blocker_id, idempotency_key, resolution, summary | body, idempotency_key, payload, status, work_package_id | infer/default |
+| `add_comment` | shared_worker_architect_tools, bound_worker_tools, bound_architect_tools, architect_tools, worker_tools | body | worker: body; architect: body, target_id, target_kind | target_id, target_kind, work_package_id | infer/default |
+| `list_comments` | shared_worker_architect_tools, bound_worker_tools, bound_architect_tools, architect_tools, worker_tools | none | worker: none; architect: target_id, target_kind | target_id, target_kind, work_package_id | infer/default |
 | `resolve_comment` | shared_worker_architect_tools, bound_worker_tools, bound_architect_tools, architect_tools, worker_tools | comment_id | none | resolution_note, work_package_id | infer/default |
 | `create_guidance_request` | bound_worker_tools, worker_tools | context, question, summary | none | idempotency_key, work_package_id | infer/default |
 | `read_guidance_request` | shared_worker_architect_tools, bound_worker_tools, bound_architect_tools, architect_tools, worker_tools | guidance_request_id | none | work_package_id | infer/default |
