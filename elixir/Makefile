@@ -1,4 +1,4 @@
-.PHONY: help all setup deps build fmt fmt-check lint assets-check test coverage ci dialyzer e2e
+.PHONY: help all setup deps build static fmt fmt-check lint assets-check test coverage ci dialyzer e2e
 
 MIX ?= mix
 QUIET ?= 1
@@ -43,7 +43,7 @@ endef
 endif
 
 help:
-	@echo Targets: setup, deps, build, fmt, fmt-check, lint, assets-check, test, coverage, dialyzer, e2e, ci
+	@echo Targets: setup, deps, build, static, fmt, fmt-check, lint, assets-check, test, coverage, dialyzer, e2e, ci
 	@echo make all is quiet by default. Logs are written under $(GATE_LOG_ROOT). Use VERBOSE=1 for streamed output.
 	@echo Frontend assets use the separate assets-check target until CI pins a Node toolchain.
 
@@ -55,6 +55,9 @@ deps:
 
 build:
 	@$(MIX) build
+
+static:
+	@$(MIX) static
 
 fmt:
 	@$(MIX) format
@@ -84,9 +87,7 @@ e2e:
 ci:
 	$(call run_ci_step,setup,$(MIX) setup)
 	$(call run_ci_step,build,$(MIX) build)
-	$(call run_ci_step,fmt-check,$(MIX) format --check-formatted)
-	$(call run_ci_step,lint,$(MIX) lint)
+	$(call run_ci_step,static,$(MIX) static)
 	$(call run_ci_step,coverage,$(MIX) test --cover)
-	$(call run_ci_step,dialyzer,$(MIX) deps.get && $(MIX) dialyzer --format short)
 
 all: ci
