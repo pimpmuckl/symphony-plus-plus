@@ -15209,17 +15209,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp bound_session_call?(%__MODULE__{}, _method, _params), do: false
 
   defp require_current_session_claim(%__MODULE__{config: %Config{repo: repo}, session: %Session{} = session} = server) do
-    case current_matching_claim_lease(repo, session) do
-      {:ok, %ClaimLease{status: "active"} = lease} -> refresh_current_session_claim_lease(repo, server, lease)
-      {:ok, %ClaimLease{status: "paused"}} -> lost_current_session_claim(server, :claim_lease_paused)
-      {:ok, %ClaimLease{}} -> lost_current_session_claim(server, :claim_lease_not_active)
-      {:error, reason} -> lost_current_session_claim(server, reason)
+    case {Auth.require_live_session_grant(session, repo), current_matching_claim_lease(repo, session)} do
+      {:ok, {:ok, %ClaimLease{status: "active"} = lease}} -> refresh_current_session_claim_lease(repo, server, lease)
+      {:ok, {:ok, %ClaimLease{status: "paused"}}} -> lost_current_session_claim(server, :claim_lease_paused)
+      {:ok, {:ok, %ClaimLease{}}} -> lost_current_session_claim(server, :claim_lease_not_active)
+      {:ok, {:error, reason}} -> lost_current_session_claim(server, reason)
+      {{:error, reason}, _claim_lease} -> lost_current_session_claim(server, reason)
     end
   rescue
     _error -> lost_current_session_claim(server, :claim_lease_check_failed)
   end
-
-  defp require_current_session_claim(%__MODULE__{} = server), do: {:ok, server}
 
   defp refresh_current_session_claim_lease(repo, %__MODULE__{session: %Session{} = session} = server, %ClaimLease{} = lease) do
     case ClaimLeaseService.heartbeat(repo, lease.id, stale_after_ms: @local_assignment_claim_stale_after_ms) do
@@ -15258,10 +15257,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     {:error, -32_001, "Unauthorized",
      %{
-       "reason" => "claim_lease_lost",
+       "reason" => if(Auth.live_grant_loss_reason?(reason), do: reason_text(reason), else: "claim_lease_lost"),
        "claim_lease_reason" => reason_text(reason),
-       "action" => action,
-       "hint" => "Replay the local claim for this assignment before using bound tools."
+       "action" => action
      }, updated_server}
   end
 
