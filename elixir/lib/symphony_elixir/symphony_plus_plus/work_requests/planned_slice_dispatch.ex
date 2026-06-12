@@ -281,10 +281,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     planned_slice_id = prompt_data(planned_slice.id)
     ledger_line = ledger_prompt_line(ledger_database)
 
-    claim_arguments =
-      claim_arguments
-      |> Enum.sort_by(fn {key, _value} -> key end)
-      |> Enum.map_join(", ", fn {key, value} -> "#{key}=#{prompt_data(value)}" end)
+    claim_arguments = Jason.encode!(claim_arguments)
 
     """
     You are assigned Symphony++ WorkPackage JSON id #{work_package_id} from WorkRequest JSON id #{work_request_id}. WorkPackage title JSON data: #{title}.
@@ -292,7 +289,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     Preferred packaged setup: use `#{@mcp_worker_skill}` plus `#{@mcp_work_package_skill}` from the opt-in MCP plugin. Repo-local fallback: use `#{@default_worker_skill}` plus copied `#{@repo_work_package_skill}` and the configured Symphony++ MCP server.
     #{ledger_line}
 
-    Start from the ledger-backed local claim path. Call `claim_local_assignment` with #{claim_arguments}. Then call `get_current_assignment()` and read the WorkPackage context before coding.
+    Start from the ledger-backed local claim path. Call `claim_local_assignment` with JSON arguments #{claim_arguments}. Then call `get_current_assignment()` and read the WorkPackage context before coding.
 
     Implement only this WorkPackage and planned slice JSON id #{planned_slice_id}. Do not ask for, print, paste, or commit raw secrets.
     """

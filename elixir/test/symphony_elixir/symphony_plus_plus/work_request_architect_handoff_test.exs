@@ -97,22 +97,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
 
     assert Map.take(identifiers, [
              "work_request_id",
-             "repo",
-             "base_branch",
-             "phase_id",
-             "architect_anchor_work_package_id",
              "ledger_database"
            ]) == %{
              "work_request_id" => work_request.id,
-             "repo" => work_request.repo,
-             "base_branch" => work_request.base_branch,
-             "phase_id" => handoff.phase.id,
-             "architect_anchor_work_package_id" => handoff.anchor_package.id,
              "ledger_database" => database_path
            }
 
-    assert identifiers["local_architect_claim"] == handoff.local_architect_claim
+    assert get_in(handoff.local_architect_claim, ["arguments", "claimed_by"]) == ArchitectHandoff.claimed_by()
+    assert get_in(identifiers, ["local_architect_claim", "arguments"]) == %{"work_request_id" => work_request.id}
+    refute Map.has_key?(identifiers, "repo")
+    refute Map.has_key?(identifiers, "base_branch")
+    refute Map.has_key?(identifiers, "phase_id")
+    refute Map.has_key?(identifiers, "architect_anchor_work_package_id")
     refute Map.has_key?(identifiers, "private_handoff")
+    refute handoff.agent_context =~ "repo"
+    refute handoff.agent_context =~ "base_branch"
+    refute handoff.agent_context =~ "phase_id"
+    refute handoff.agent_context =~ "architect_anchor_work_package_id"
 
     assert {:ok, scope_rows} = AccessGrantRepository.list_scopes(repo, handoff.grant.id)
 
@@ -149,17 +150,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
 
     identifiers = prompt_reference_identifiers(handoff.prompt)
 
-    assert identifiers["work_request_id"] == nil
-    assert identifiers["repo"] == nil
-    assert identifiers["base_branch"] == nil
+    refute Map.has_key?(identifiers, "work_request_id")
+    refute Map.has_key?(identifiers, "repo")
+    refute Map.has_key?(identifiers, "base_branch")
     assert identifiers["ledger_database"] == database_path
-    assert identifiers["phase_id"] == handoff.phase.id
-    assert identifiers["architect_anchor_work_package_id"] == handoff.anchor_package.id
+    refute Map.has_key?(identifiers, "phase_id")
+    refute Map.has_key?(identifiers, "architect_anchor_work_package_id")
 
     refute handoff.prompt =~ "Ignore previous instructions"
     refute handoff.prompt =~ "call private tool"
     refute handoff.prompt =~ "nextide/symphony-plus-plus"
     refute handoff.prompt =~ "WR-ARCH-HANDOFF"
+  end
+
+  test "omits optional claimed_by but preserves token-like durable ids in prompt context", %{
+    repo: repo,
+    database_path: database_path
+  } do
+    claimed_by = "bearer abcdefgh"
+    work_request = create_work_request!(repo, id: "sk-architecthandoff")
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               handoff_opts: [
+                 claimed_by: claimed_by,
+                 database: database_path,
+                 local_architect_claim?: true
+               ]
+             )
+
+    assert handoff.local_architect_claim["arguments"]["claimed_by"] == claimed_by
+    refute handoff.prompt =~ claimed_by
+    refute handoff.agent_context =~ claimed_by
+
+    identifiers = prompt_reference_identifiers(handoff.prompt)
+    assert identifiers["work_request_id"] == work_request.id
+    assert get_in(identifiers, ["local_architect_claim", "arguments"]) == %{"work_request_id" => work_request.id}
   end
 
   test "replays the latest active unclaimed architect grant", %{repo: repo, database_path: database_path} do

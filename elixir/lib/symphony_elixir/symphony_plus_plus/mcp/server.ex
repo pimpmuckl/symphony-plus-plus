@@ -1690,7 +1690,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     %{
       "name" => name,
       "title" => name,
-      "description" => "Symphony++ worker tool #{name}.",
+      "description" => worker_tool_description(name),
       "inputSchema" => worker_tool_input_schema(name)
     }
   end
@@ -1740,8 +1740,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp local_architect_assignment_claim_tool_description do
-    "Claim or reconnect a ledger-backed local WorkRequest architect assignment without private handoff files."
+    "Claim or reconnect a ledger-backed local WorkRequest architect assignment. Normal calls pass only work_request_id and optional claimed_by; repo/base/phase/anchor/caller fields are advanced validation hints."
   end
+
+  defp worker_tool_description(@local_assignment_claim_tool) do
+    "Claim or reconnect a ledger-backed local WorkPackage assignment. Normal calls pass only work_package_id and optional claimed_by; repo/base/WorkRequest/branch/worktree/caller fields are advanced validation hints."
+  end
+
+  defp worker_tool_description(name), do: "Symphony++ worker tool #{name}."
 
   defp local_operator_tool_description("add_work_request_comment") do
     "Append a redacted local-operator comment to a WorkRequest by id. Requires an unbound trusted local HTTP MCP session with an explicit state key and a file-backed local ledger; grants no dispatch or lifecycle authority."
@@ -1983,13 +1989,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp local_architect_assignment_claim_tool_input_schema do
     schema(
       %{
-        "work_request_id" => string_schema(),
-        "architect_anchor_work_package_id" => string_schema(),
-        "repo" => string_schema(),
-        "base_branch" => string_schema(),
-        "phase_id" => string_schema(),
-        "caller_id" => string_schema(),
-        "claimed_by" => string_schema()
+        "work_request_id" => described_string_schema("Durable WorkRequest id. This is the normal architect claim coordinate."),
+        "architect_anchor_work_package_id" => advanced_claim_hint_schema("Expected architect handoff anchor package id inferred from the WorkRequest."),
+        "repo" => advanced_claim_hint_schema("Expected WorkRequest repository inferred from the ledger."),
+        "base_branch" => advanced_claim_hint_schema("Expected WorkRequest base branch inferred from the ledger."),
+        "phase_id" => advanced_claim_hint_schema("Expected architect handoff phase id inferred from the WorkRequest."),
+        "caller_id" => advanced_claim_hint_schema("Local caller correlation id. It does not grant authority."),
+        "claimed_by" => described_string_schema("Optional stable audit owner. Omit when no stable architect identity was provided.")
       },
       ["work_request_id"]
     )
@@ -2002,14 +2008,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_tool_input_schema(@local_assignment_claim_tool) do
     schema(
       %{
-        "repo" => string_schema(),
-        "base_branch" => string_schema(),
-        "work_package_id" => string_schema(),
-        "work_request_id" => string_schema(),
-        "branch" => string_schema(),
-        "worktree_path" => string_schema(),
-        "caller_id" => string_schema(),
-        "claimed_by" => string_schema()
+        "work_package_id" => described_string_schema("Durable WorkPackage id. This is the normal worker claim coordinate."),
+        "claimed_by" => described_string_schema("Optional stable audit owner. Omit when no stable worker identity was provided."),
+        "work_request_id" => advanced_claim_hint_schema("Expected linked WorkRequest id inferred from the dispatched planned slice."),
+        "repo" => advanced_claim_hint_schema("Expected WorkPackage repository inferred from the ledger."),
+        "base_branch" => advanced_claim_hint_schema("Expected WorkPackage delivery base inferred from the ledger."),
+        "branch" => advanced_claim_hint_schema("Prepared git branch name inferred from the recorded worktree when available."),
+        "worktree_path" => advanced_claim_hint_schema("Prepared local worktree path recorded on the WorkPackage."),
+        "caller_id" => advanced_claim_hint_schema("Local caller correlation id. It does not grant authority.")
       },
       ["work_package_id"]
     )
@@ -2751,7 +2757,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     })
   end
 
-  defp scoped_properties(properties), do: Map.put(properties, "work_package_id", string_schema())
+  defp scoped_properties(properties) do
+    Map.put(
+      properties,
+      "work_package_id",
+      described_string_schema("Advanced/debug scope override. Bound sessions infer the current WorkPackage; omit unless an operator asks for explicit package validation.")
+    )
+  end
 
   defp progress_properties do
     scoped_properties(%{
@@ -2777,6 +2789,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp string_schema, do: %{"type" => "string"}
   defp described_string_schema(description), do: Map.put(string_schema(), "description", description)
+
+  defp advanced_claim_hint_schema(description),
+    do: described_string_schema("Advanced/debug validation hint; omit for normal claims. #{description} If supplied and mismatched, the claim fails to protect authority.")
+
   defp markdown_string_schema(description), do: described_string_schema(description)
   defp string_enum_schema(values) when is_list(values), do: %{"type" => "string", "enum" => values}
   defp nonblank_string_schema, do: %{"type" => "string", "minLength" => 1, "pattern" => "\\S"}
@@ -3808,20 +3824,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     with :ok <- require_local_value_match(work_request.repo, claim.repo, :repo_scope_mismatch),
          :ok <- require_local_value_match(work_request.base_branch, claim.base_branch, :base_branch_scope_mismatch),
-         :ok <- require_local_value_match(anchor.repo, work_request.repo, :architect_anchor_scope_mismatch),
+         :ok <-
+           require_local_value_match(
+             anchor.repo,
+             work_request.repo,
+             architect_handoff_state_mismatch(:architect_anchor_scope_mismatch)
+           ),
          :ok <-
            require_local_value_match(
              anchor.base_branch,
              work_request.base_branch,
-             :architect_anchor_scope_mismatch
+             architect_handoff_state_mismatch(:architect_anchor_scope_mismatch)
            ),
          :ok <-
            require_local_value_match(
              anchor.id,
              ArchitectHandoff.anchor_id_for_work_request(work_request),
-             :architect_anchor_scope_mismatch
+             architect_handoff_state_mismatch(:architect_anchor_scope_mismatch)
            ),
-         :ok <- require_local_value_match(anchor.phase_id, expected_phase_id, :phase_scope_mismatch),
+         :ok <-
+           require_local_value_match(
+             anchor.phase_id,
+             expected_phase_id,
+             architect_handoff_state_mismatch(:phase_scope_mismatch)
+           ),
          :ok <- require_optional_phase_scope(claim.phase_id, expected_phase_id),
          :ok <- require_architect_handoff_anchor_kind(anchor) do
       require_live_local_work_package(anchor)
@@ -3859,7 +3885,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_optional_phase_scope(_phase_id, _expected_phase_id), do: {:error, :phase_scope_mismatch}
 
   defp require_architect_handoff_anchor_kind(%WorkPackage{kind: "delegation"}), do: :ok
-  defp require_architect_handoff_anchor_kind(%WorkPackage{}), do: {:error, :architect_anchor_scope_mismatch}
+  defp require_architect_handoff_anchor_kind(%WorkPackage{}), do: {:error, architect_handoff_state_mismatch(:architect_anchor_scope_mismatch)}
+
+  defp architect_handoff_state_mismatch(reason), do: {:architect_handoff_state_mismatch, reason}
 
   defp ensure_local_architect_assignment_claim_lease(repo, %WorkPackage{} = anchor, claim) do
     actor = local_architect_assignment_actor(claim)
@@ -4242,7 +4270,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp local_assignment_claim_error(reason) do
-    {:error, -32_001, "Unauthorized", %{"tool" => @local_assignment_claim_tool, "reason" => reason_text(reason)}}
+    reason = reason_text(reason)
+    data = maybe_claim_hint_mismatch_data(@local_assignment_claim_tool, reason, "work_package_id")
+
+    {:error, -32_001, "Unauthorized", data}
   end
 
   defp local_architect_assignment_claim_error(:database_busy), do: service_error(:database_busy, @local_architect_assignment_claim_tool)
@@ -4269,8 +4300,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
      )}
   end
 
+  defp local_architect_assignment_claim_error({:architect_handoff_state_mismatch, reason}) do
+    reason = reason_text(reason)
+
+    {:error, -32_001, "Unauthorized",
+     Map.merge(architect_handoff_state_mismatch_data(reason), %{
+       "tool" => @local_architect_assignment_claim_tool
+     })}
+  end
+
   defp local_architect_assignment_claim_error(reason) do
-    {:error, -32_001, "Unauthorized", %{"tool" => @local_architect_assignment_claim_tool, "reason" => reason_text(reason)}}
+    reason = reason_text(reason)
+    data = maybe_claim_hint_mismatch_data(@local_architect_assignment_claim_tool, reason, "work_request_id")
+
+    {:error, -32_001, "Unauthorized", data}
+  end
+
+  defp maybe_claim_hint_mismatch_data(tool, reason, durable_id_field) do
+    base = %{"tool" => tool, "reason" => reason}
+
+    if optional_claim_hint_mismatch?(reason) do
+      Map.merge(base, %{
+        "classification" => "optional_scope_hint_mismatch",
+        "can_retry_with_id_only" => true,
+        "safe_next_tool" => tool,
+        "hint" => "Normal claims use #{durable_id_field} plus optional claimed_by. Omit repo/base/phase/branch/worktree/caller hints unless an operator asks for an explicit scope check.",
+        "operator_action" => "If id-only retry still fails, inspect the ledger assignment scope before weakening authority checks."
+      })
+    else
+      base
+    end
+  end
+
+  defp optional_claim_hint_mismatch?(reason)
+       when reason in [
+              "repo_scope_mismatch",
+              "base_branch_scope_mismatch",
+              "work_request_scope_mismatch",
+              "work_request_repo_scope_mismatch",
+              "work_request_package_link_mismatch",
+              "branch_scope_mismatch",
+              "worktree_scope_mismatch",
+              "phase_scope_mismatch",
+              "architect_anchor_scope_mismatch"
+            ],
+       do: true
+
+  defp optional_claim_hint_mismatch?(_reason), do: false
+
+  defp architect_handoff_state_mismatch_data(reason) do
+    %{
+      "reason" => reason,
+      "classification" => "architect_handoff_state_mismatch",
+      "can_retry_with_id_only" => false,
+      "hint" =>
+        "The durable work_request_id resolved, but the persisted architect handoff anchor no longer matches the WorkRequest or phase. This protects WorkRequest authority and data integrity; id-only retry cannot repair ledger drift.",
+      "operator_action" => "Ask the operator to inspect or recreate the WorkRequest architect handoff before retrying."
+    }
   end
 
   defp claim_lease_active_for_other_actor_data(tool, hint) do

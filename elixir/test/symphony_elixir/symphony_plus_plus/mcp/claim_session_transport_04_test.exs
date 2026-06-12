@@ -5,6 +5,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport04Test do
 
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{HTTPStateStore, HTTPTransport, Session}
 
+  test "unbound claim schemas advertise durable ids and mark optional hints advanced", %{repo: repo} do
+    response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "claim-schema-tools", "method" => "tools/list", "params" => %{}},
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    tools_by_name =
+      response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    worker_claim = Map.fetch!(tools_by_name, "claim_local_assignment")
+    architect_claim = Map.fetch!(tools_by_name, "claim_local_architect_assignment")
+
+    assert worker_claim["description"] =~ "Normal calls pass only work_package_id"
+    assert get_in(worker_claim, ["inputSchema", "required"]) == ["work_package_id"]
+    assert get_in(worker_claim, ["inputSchema", "properties", "work_package_id", "description"]) =~ "normal worker claim coordinate"
+    assert get_in(worker_claim, ["inputSchema", "properties", "claimed_by", "description"]) =~ "Optional stable audit owner"
+
+    for hint <- ["repo", "base_branch", "work_request_id", "branch", "worktree_path", "caller_id"] do
+      assert get_in(worker_claim, ["inputSchema", "properties", hint, "description"]) =~ "Advanced/debug validation hint"
+    end
+
+    assert architect_claim["description"] =~ "Normal calls pass only work_request_id"
+    assert get_in(architect_claim, ["inputSchema", "required"]) == ["work_request_id"]
+    assert get_in(architect_claim, ["inputSchema", "properties", "work_request_id", "description"]) =~ "normal architect claim coordinate"
+
+    for hint <- ["repo", "base_branch", "architect_anchor_work_package_id", "phase_id", "caller_id"] do
+      assert get_in(architect_claim, ["inputSchema", "properties", hint, "description"]) =~ "Advanced/debug validation hint"
+    end
+  end
+
   test "response-only handle supports explicit state keys for recreated servers through local claim replay", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-STATELESS-HANDLE")
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)

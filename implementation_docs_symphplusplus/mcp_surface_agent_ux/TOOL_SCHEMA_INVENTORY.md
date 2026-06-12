@@ -4,6 +4,12 @@ Point-in-time table extracted from `implementation_docs_symphplusplus/mcp/mcp_to
 
 Contract version: 3. Tool schemas: 79.
 
+2026-06-12 cleanup note: the claim schemas still accept the compatible optional
+hint fields, but `mcp_tools_contract.json` now separates them as
+`advanced_hint_arguments`. Normal prompts and generated architect handoffs use
+durable ids by default; optional `claimed_by` stays accepted for explicit audit
+ownership but is not copied into architect handoff prompt claim arguments.
+
 | Tool | Discovery groups | Required args | Required argument sets | Optional args | Scout classification |
 |---|---|---|---|---|---|
 | `sympp.health` | `unbound_tools`, `bound_worker_tools`, `bound_architect_tools` | none | none | none | keep |
@@ -22,8 +28,8 @@ Contract version: 3. Tool schemas: 79.
 | `solo_resume` | `unbound_tools` | `session_id` | none | none | keep |
 | `solo_complete` | `unbound_tools` | `session_id` | none | none | keep |
 | `solo_archive` | `unbound_tools` | `session_id` | none | none | keep |
-| `claim_local_assignment` | `unbound_tools` | `work_package_id` | none | `base_branch`, `branch`, `caller_id`, `claimed_by`, `repo`, `work_request_id`, `worktree_path` | normalize error/output |
-| `claim_local_architect_assignment` | `unbound_tools` | `work_request_id` | none | `architect_anchor_work_package_id`, `base_branch`, `caller_id`, `claimed_by`, `phase_id`, `repo` | normalize error/output |
+| `claim_local_assignment` | `unbound_tools` | `work_package_id` | none | `claimed_by`; advanced hints: `base_branch`, `branch`, `caller_id`, `repo`, `work_request_id`, `worktree_path` | normalize error/output |
+| `claim_local_architect_assignment` | `unbound_tools` | `work_request_id` | none | `claimed_by`; advanced hints: `architect_anchor_work_package_id`, `base_branch`, `caller_id`, `phase_id`, `repo` | normalize error/output |
 | `create_work_request` | `unbound_tools` | `base_branch`, `repo`, `request_kind`, `title` | `description` or `human_description` | `claimed_by`, `constraints`, `created_by_kind`, `created_by_name`, `created_via`, `creator_kind`, `creator_name`, `description`, `human_description`, `status`, `workflow_mode` | keep |
 | `add_work_request_comment` | `trusted_local_http_extra_tools` | `body`, `created_by`, `work_request_id` | none | none | keep |
 | `record_work_request_operator_decision` | `trusted_local_http_extra_tools` | `created_by`, `decision`, `rationale`, `scope_impact`, `work_request_id` | none | `source_id` | keep |

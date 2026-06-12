@@ -188,14 +188,17 @@
       "tool": "claim_local_assignment",
       "required_arguments": ["work_package_id"],
       "optional_arguments": ["claimed_by", "work_request_id", "repo", "base_branch", "branch", "worktree_path", "caller_id"],
+      "advanced_hint_arguments": ["work_request_id", "repo", "base_branch", "branch", "worktree_path", "caller_id"],
       "normal_call": {"work_package_id": "<WP id>"}
     },
     "architect_claim": {
       "tool": "claim_local_architect_assignment",
       "required_arguments": ["work_request_id"],
       "optional_arguments": ["claimed_by", "architect_anchor_work_package_id", "repo", "base_branch", "phase_id", "caller_id"],
+      "advanced_hint_arguments": ["architect_anchor_work_package_id", "repo", "base_branch", "phase_id", "caller_id"],
       "normal_call": {"work_request_id": "<WR id>"}
     },
+    "optional_hint_policy": "Repo, base, WorkRequest, branch, worktree, caller, phase, and anchor fields remain accepted for compatibility and explicit operator/debug validation. Normal bootstrap prompts and generated handoffs omit them. Stale optional hint mismatches return optional_scope_hint_mismatch with can_retry_with_id_only=true.",
     "reclaim_policy": "Replaying the same id heartbeats the current lease. Stale leases may be reclaimed with audit evidence; paused leases and another active owner are rejected.",
     "secret_policy": "Agent-facing tools, prompts, launch payloads, and docs do not require raw grant secrets, private handoff metadata, secret stores, work keys, or helper scripts."
   },
@@ -226,8 +229,8 @@
     {"name": "solo_resume", "required_arguments": ["session_id"], "optional_arguments": []},
     {"name": "solo_complete", "required_arguments": ["session_id"], "optional_arguments": []},
     {"name": "solo_archive", "required_arguments": ["session_id"], "optional_arguments": []},
-    {"name": "claim_local_assignment", "required_arguments": ["work_package_id"], "optional_arguments": ["base_branch", "branch", "caller_id", "claimed_by", "repo", "work_request_id", "worktree_path"]},
-    {"name": "claim_local_architect_assignment", "required_arguments": ["work_request_id"], "optional_arguments": ["architect_anchor_work_package_id", "base_branch", "caller_id", "claimed_by", "phase_id", "repo"]},
+    {"name": "claim_local_assignment", "required_arguments": ["work_package_id"], "optional_arguments": ["base_branch", "branch", "caller_id", "claimed_by", "repo", "work_request_id", "worktree_path"], "advanced_hint_arguments": ["base_branch", "branch", "caller_id", "repo", "work_request_id", "worktree_path"], "normal_call": {"work_package_id": "<WP id>"}},
+    {"name": "claim_local_architect_assignment", "required_arguments": ["work_request_id"], "optional_arguments": ["architect_anchor_work_package_id", "base_branch", "caller_id", "claimed_by", "phase_id", "repo"], "advanced_hint_arguments": ["architect_anchor_work_package_id", "base_branch", "caller_id", "phase_id", "repo"], "normal_call": {"work_request_id": "<WR id>"}},
     {"name": "create_work_request", "required_arguments": ["base_branch", "repo", "request_kind", "title"], "required_argument_sets": [["description"], ["human_description"]], "optional_arguments": ["claimed_by", "constraints", "created_by_kind", "created_by_name", "created_via", "creator_kind", "creator_name", "description", "human_description", "status", "workflow_mode"]},
     {"name": "add_work_request_comment", "required_arguments": ["body", "created_by", "work_request_id"], "optional_arguments": []},
     {"name": "record_work_request_operator_decision", "required_arguments": ["created_by", "decision", "rationale", "scope_impact", "work_request_id"], "optional_arguments": ["source_id"]},
