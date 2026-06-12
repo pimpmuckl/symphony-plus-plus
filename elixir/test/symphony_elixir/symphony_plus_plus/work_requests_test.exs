@@ -108,7 +108,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
   test "creates and fetches a draft work request", %{repo: repo} do
     assert {:ok, %WorkRequest{} = created} = Service.create(repo, attrs(constraints: nil))
 
-    assert created.id =~ "wr_"
+    assert created.id =~ ~r/^wr_[a-z2-7]{16}$/
     assert created.status == "draft"
     assert created.constraints == %{}
     assert %DateTime{} = created.inserted_at

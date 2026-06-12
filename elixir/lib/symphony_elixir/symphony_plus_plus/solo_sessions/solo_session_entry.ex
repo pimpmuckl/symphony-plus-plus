@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.SymphonyPlusPlus.Id
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
 
   @entry_kinds ["task_plan", "finding", "progress", "blocker", "decision", "validation_note"]
@@ -143,6 +144,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry do
   defp normalize_key(key), do: to_string(key)
 
   defp stable_id do
-    "solo_entry_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    Id.random("solo_entry")
   end
 end

@@ -45,7 +45,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
   test "creates and fetches a standalone parentless work package", %{repo: repo} do
     assert {:ok, %WorkPackage{} = created} = Service.create(repo, WorkPackageFactory.attrs(parent_id: nil))
 
-    assert created.id =~ "wp_"
+    assert created.id =~ ~r/^wp_[a-z2-7]{16}$/
     assert created.status == "created"
     assert created.parent_id == nil
     assert %DateTime{} = created.inserted_at
@@ -211,7 +211,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
 
     assert prepared.status == "prepared"
     assert String.starts_with?(prepared.worktree_path, expected_root)
-    assert prepared.worktree_path =~ "SYMPP-WT-001"
+    refute prepared.worktree_path =~ "SYMPP-WT-001"
     assert prepared.branch == "feat/worktree-lifecycle"
     assert prepared.base_branch == "main"
     assert File.dir?(prepared.worktree_path)
@@ -256,7 +256,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     assert {:ok, worktree_root} = WorktreeLifecycle.worktree_root(codex_home: codex_home)
     relative_path = Path.relative_to(prepared.worktree_path, worktree_root)
 
-    assert String.length(relative_path) <= 80
+    assert String.length(relative_path) <= 52
+    assert relative_path =~ ~r/^[a-z2-7]{16}[\/\\][a-z2-7]{16}_[a-z2-7]{16}$/
+    refute prepared.worktree_path =~ long_id
     refute prepared.worktree_path =~ String.replace(long_branch, "/", "-")
     assert File.dir?(prepared.worktree_path)
   end

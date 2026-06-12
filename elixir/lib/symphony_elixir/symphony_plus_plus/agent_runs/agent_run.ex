@@ -5,6 +5,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.SymphonyPlusPlus.Id
+
   @primary_key {:id, :string, autogenerate: false}
   @foreign_key_type :string
 
@@ -157,6 +159,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun do
   end
 
   defp stable_id do
-    "run_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    Id.random("run")
   end
 end

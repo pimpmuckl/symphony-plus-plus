@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.SymphonyPlusPlus.Id
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
 
   @payload_depth_limit 8
@@ -202,6 +203,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent do
   end
 
   defp stable_id(prefix) do
-    prefix <> "_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    Id.random(prefix)
   end
 end

@@ -5,6 +5,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.SymphonyPlusPlus.Id
+
   @primary_key {:id, :string, autogenerate: false}
   @foreign_key_type :string
 
@@ -225,7 +227,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease do
   defp normalized_string(_value), do: nil
 
   defp stable_id do
-    "claim_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    Id.random("claim")
   end
 
   defp utc_datetime_usec(%DateTime{} = datetime) do

@@ -6,6 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.OperatorAudit do
   import Ecto.Changeset
 
   alias SymphonyElixir.SymphonyPlusPlus.Authorization.Decision
+  alias SymphonyElixir.SymphonyPlusPlus.Id
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
 
   @primary_key {:id, :string, autogenerate: false}
@@ -133,6 +134,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.OperatorAudit do
   defp redact_map(_value), do: %{}
 
   defp stable_id do
-    "opa_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    Id.random("opa")
   end
 end
