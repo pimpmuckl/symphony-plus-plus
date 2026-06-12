@@ -15,8 +15,8 @@ Agents claim existing ledger records by id:
 
 | Tool | Required | Optional | Purpose |
 |---|---|---|---|
-| `claim_local_assignment` | `work_package_id` | `claimed_by`, `work_request_id`, `repo`, `base_branch`, `branch`, `worktree_path`, `caller_id` | Bind the current session to one WorkPackage. Runtime metadata is validation context only; the WorkPackage id is the normal claim coordinate. |
-| `claim_local_architect_assignment` | `work_request_id` | `claimed_by`, `architect_anchor_work_package_id`, `repo`, `base_branch`, `phase_id`, `caller_id` | Bind the current session to the architect grant for one WorkRequest. |
+| `claim_local_assignment` | `work_package_id` | `claimed_by`; advanced/debug validation hints: `work_request_id`, `repo`, `base_branch`, `branch`, `worktree_path`, `caller_id` | Bind the current session to one WorkPackage. The WorkPackage id is the normal claim coordinate; scope hints are inferred from the ledger unless an operator asks for an explicit check. |
+| `claim_local_architect_assignment` | `work_request_id` | `claimed_by`; advanced/debug validation hints: `architect_anchor_work_package_id`, `repo`, `base_branch`, `phase_id`, `caller_id` | Bind the current session to the architect grant for one WorkRequest. The WorkRequest id is the normal claim coordinate; anchor, repo, base, and phase are inferred from the ledger. |
 | `create_work_request` | `repo`, `base_branch`, `title`, `request_kind`, plus `description` or `human_description` | status/workflow/creator fields | Create a WorkRequest and return a ledger claim bootstrap for the architect. |
 
 Dispatch and mint responses return non-secret `worker_bootstrap` metadata:
@@ -30,6 +30,15 @@ carrier. Raw grant secrets, private files, and secret stores are not part of the
 agent-facing surface. `caller_id`, when present, is correlation metadata only;
 the active local claim owner is the ledger id plus `claimed_by`. Id-only
 architect claims default to the standard architect handoff owner.
+
+Normal bootstrap prompts and generated handoffs should not copy repo, base,
+phase, anchor, branch, worktree, caller, or linked WorkRequest hints into claim
+arguments. Generated architect handoff prompts also omit optional `claimed_by`
+and use `work_request_id` only. Those fields remain accepted for compatibility
+and explicit operator/debug validation. When a stale optional hint mismatches a
+valid durable id, the claim error includes
+`classification: optional_scope_hint_mismatch`, `can_retry_with_id_only: true`,
+and the same claim tool as `safe_next_tool`.
 
 ## Worker Tools
 

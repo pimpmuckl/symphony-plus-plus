@@ -386,6 +386,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
       )
 
     assert get_in(response, ["error", "data", "reason"]) == "architect_anchor_scope_mismatch"
+    assert get_in(response, ["error", "data", "classification"]) == "optional_scope_hint_mismatch"
+    assert get_in(response, ["error", "data", "can_retry_with_id_only"]) == true
+  end
+
+  test "claim_local_architect_assignment reports persisted anchor drift as non-retryable", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-ANCHOR-DRIFT",
+        status: "ready_for_clarification"
+      )
+
+    assert {:ok, _handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               handoff_opts: handoff_opts(repo)
+             )
+
+    anchor_id = ArchitectHandoff.anchor_id_for_work_request(work_request)
+    assert {:ok, _anchor} = WorkPackageRepository.update(repo, anchor_id, %{base_branch: "stale-base"})
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-anchor-drift",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_architect_assignment",
+            "arguments" => %{"work_request_id" => work_request.id}
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-architect-anchor-drift-state")
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "architect_anchor_scope_mismatch"
+    assert get_in(response, ["error", "data", "classification"]) == "architect_handoff_state_mismatch"
+    assert get_in(response, ["error", "data", "can_retry_with_id_only"]) == false
+    assert get_in(response, ["error", "data", "operator_action"]) =~ "recreate"
   end
 
   defp handoff_opts(repo) do

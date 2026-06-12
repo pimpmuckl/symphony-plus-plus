@@ -253,6 +253,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport02Test do
     assert unclaimed_grant.claimed_by == nil
   end
 
+  test "claim_local_assignment stale optional hints can be retried with durable id only", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-STALE-HINT")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {stale_hint_response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-stale-hint",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" => local_assignment_claim_args(package, %{"base_branch" => "main"})
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-stale-hint-state")
+      )
+
+    assert get_in(stale_hint_response, ["error", "data", "reason"]) == "base_branch_scope_mismatch"
+    assert get_in(stale_hint_response, ["error", "data", "classification"]) == "optional_scope_hint_mismatch"
+    assert get_in(stale_hint_response, ["error", "data", "can_retry_with_id_only"]) == true
+    assert get_in(stale_hint_response, ["error", "data", "safe_next_tool"]) == "claim_local_assignment"
+
+    {id_only_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-id-only-after-stale-hint",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => %{"work_package_id" => package.id}}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-id-only-after-stale-hint-state")
+      )
+
+    assert get_in(id_only_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert claimed_server.session.assignment.work_package_id == package.id
+  end
+
   test "claim_local_assignment rejects packages without recorded local worktree scope", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-MISSING-WORKTREE", worktree_path: nil)
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)

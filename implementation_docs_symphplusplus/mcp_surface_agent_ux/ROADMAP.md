@@ -82,7 +82,8 @@ Why it hurts agents:
 High-confidence simplifications:
 
 - Keep schemas compatible, but change claim bootstrap prompts and generated
-  handoffs to show only the durable id and optional `claimed_by`.
+  handoffs to show durable ids by default. Optional `claimed_by` remains an
+  accepted stable audit owner, but generated architect handoff prompts omit it.
 - Return a stable recovery envelope for claim failures:
   `reason`, `classification`, `can_retry_with_id_only`, `operator_action`,
   `safe_next_tool`, and redacted `scope_snapshot`.
@@ -96,6 +97,25 @@ Operator-decision behavior changes:
   ignore stale optional `repo`/`base_branch`/`work_request_id` hints. The
   existing source-backed delivery-base invariant should stay: linked claims are
   valid when the planned slice target base matches the WorkPackage base.
+
+2026-06-12 implementation update:
+
+- Worker and architect claim tool descriptions now state the normal id-only
+  claim shape and label repo/base/phase/anchor/branch/worktree/caller fields as
+  advanced/debug validation hints.
+- Generated architect handoff prompt references now carry only the sanitized
+  `work_request_id`, optional `ledger_database`, and `local_architect_claim`
+  payload with id-only claim arguments. Repo, base branch, phase, anchor, and
+  optional `claimed_by` remain in the ledger-backed handoff record, but are no
+  longer copied into the prompt reference block.
+- Planned-slice dispatch launch prompts show the minimal JSON claim arguments
+  returned in `worker_bootstrap.claim.arguments`.
+- Optional hint mismatches remain hard failures for authority safety, but now
+  include `classification: optional_scope_hint_mismatch`,
+  `can_retry_with_id_only: true`, and `safe_next_tool` recovery fields.
+- Deliberately deferred: silently ignoring mismatched optional hints, omitting
+  status guards, inferring git/PR metadata, or removing compatible parser
+  support for existing optional fields.
 
 ### P1 - Tool Descriptions Are Too Generic For Agents
 

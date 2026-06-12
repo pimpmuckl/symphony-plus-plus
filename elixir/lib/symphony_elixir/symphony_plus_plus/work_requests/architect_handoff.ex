@@ -4,7 +4,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
-  alias SymphonyElixir.SymphonyPlusPlus.AgentFormat.ArchitectContext
+  alias SymphonyElixir.SymphonyPlusPlus.AgentFormat.Toon
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo, as: SymppRepo
@@ -933,7 +933,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     reference_identifiers =
       prompt_reference_identifiers(work_request, phase, anchor, handoff_opts, local_architect_claim)
 
-    agent_context = ArchitectContext.encode_handoff_reference(reference_identifiers)
+    agent_context = handoff_reference_agent_context(reference_identifiers)
 
     %{
       status: status,
@@ -1082,7 +1082,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       "2. Do not infer claim state from WorkRequest tool visibility. If the session is unbound or a WorkRequest tool returns `claim_required`, do not fall back to Solo planning; use `claim_local_architect_assignment` to bind the architect grant, then retry the scoped reads.",
       "3. Before planning, call `read_work_request` using `work_request_id` from the reference identifiers.",
       "4. Call `list_guidance_requests` and account for any open guidance before slicing.",
-      "5. If `ledger_database` is null, use the current MCP/session assignment or operator repair path; do not guess a ledger."
+      "5. If `ledger_database` is absent, use the current MCP/session assignment or operator repair path; do not guess a ledger."
     ]
 
   defp startup_prompt_lines(nil),
@@ -1092,34 +1092,65 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       "2. Do not infer claim state from WorkRequest tool visibility. If the session is unbound or a WorkRequest tool returns `claim_required`, stop and ask the operator for a local file-backed MCP handoff.",
       "3. Before planning, call `read_work_request` using `work_request_id` from the reference identifiers.",
       "4. Call `list_guidance_requests` and account for any open guidance before slicing.",
-      "5. If `ledger_database` is null, use the current MCP/session assignment or operator repair path; do not guess a ledger."
+      "5. If `ledger_database` is absent, use the current MCP/session assignment or operator repair path; do not guess a ledger."
     ]
 
   defp stop_condition_prompt_line(%{}),
     do:
-      "1. If the MCP session, local architect claim metadata, scoped WorkRequest, guidance list, or a required identifier (`work_request_id`, `repo`, `base_branch`, `phase_id`, `architect_anchor_work_package_id`) is unavailable or null, record/report a blocker and stop."
+      "1. If the MCP session, local architect claim metadata, scoped WorkRequest, guidance list, or required `work_request_id` is unavailable or null, record/report a blocker and stop. Repo, base branch, phase, and anchor package are inferred from the ledger after claim; do not copy them into claim arguments unless an operator asks for an explicit scope check."
 
   defp stop_condition_prompt_line(nil),
     do:
-      "1. If the MCP session, scoped WorkRequest, guidance list, or a required identifier (`work_request_id`, `repo`, `base_branch`, `phase_id`, `architect_anchor_work_package_id`) is unavailable or null, record/report a blocker and stop."
+      "1. If the MCP session, scoped WorkRequest, guidance list, or required `work_request_id` is unavailable or null, record/report a blocker and stop. Repo, base branch, phase, and anchor package are inferred from the ledger after claim; do not copy them into claim arguments unless an operator asks for an explicit scope check."
 
   defp prompt_reference_identifiers(
          %WorkRequest{} = work_request,
-         %Phase{} = phase,
-         %WorkPackage{} = anchor,
+         %Phase{},
+         %WorkPackage{},
          handoff_opts,
          local_architect_claim
        ) do
     %{
       "work_request_id" => prompt_literal_value(work_request.id),
-      "repo" => prompt_literal_value(work_request.repo),
-      "base_branch" => prompt_literal_value(work_request.base_branch),
-      "phase_id" => prompt_literal_value(phase.id),
-      "architect_anchor_work_package_id" => prompt_literal_value(anchor.id),
       "ledger_database" => prompt_literal_value(handoff_database(handoff_opts)),
-      "local_architect_claim" => prompt_literal_data(local_architect_claim)
+      "local_architect_claim" => prompt_literal_data(prompt_local_architect_claim(local_architect_claim))
     }
+    |> drop_nil_reference_values()
   end
+
+  defp prompt_local_architect_claim(%{"arguments" => arguments} = local_architect_claim) when is_map(arguments) do
+    Map.put(local_architect_claim, "arguments", Map.take(arguments, ["work_request_id"]))
+  end
+
+  defp prompt_local_architect_claim(local_architect_claim), do: local_architect_claim
+
+  defp handoff_reference_agent_context(reference_identifiers) do
+    local_claim = Map.get(reference_identifiers, "local_architect_claim")
+
+    %{
+      "agent_context" => "architect_handoff_reference",
+      "source_of_truth" => "architect_handoff",
+      "work_request_id" => Map.get(reference_identifiers, "work_request_id"),
+      "ledger_database" => Map.get(reference_identifiers, "ledger_database"),
+      "claim_tool" => map_value(local_claim, "tool"),
+      "claim_required_runtime_arguments" => map_value(local_claim, "required_runtime_arguments"),
+      "local_architect_claim_arguments" => map_value(local_claim, "arguments")
+    }
+    |> drop_nil_reference_values()
+    |> Toon.encode()
+  end
+
+  defp drop_nil_reference_values(map) do
+    Map.reject(map, fn
+      {_key, nil} -> true
+      {_key, value} when is_map(value) -> map_size(value) == 0
+      {_key, value} when is_list(value) -> value == []
+      _entry -> false
+    end)
+  end
+
+  defp map_value(%{} = map, key), do: Map.get(map, key)
+  defp map_value(_value, _key), do: nil
 
   defp prompt_literal_value(value) when is_binary(value) do
     trimmed = String.trim(value)
