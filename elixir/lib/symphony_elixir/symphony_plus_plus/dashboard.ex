@@ -30,6 +30,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.BulkRepository, as: WorkRequestBulkRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion, as: WorkRequestCompletion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
@@ -86,6 +87,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @dropped_child_statuses ["abandoned"]
   @non_open_child_statuses ["merged_into_phase", "closed", "abandoned"]
   @work_request_count_chunk_size 500
+  @work_request_detail_comment_target_chunk_size 500
+  @work_package_context_chunk_size 500
   @solo_session_query_chunk_size 500
   @solo_session_snippet_limit 120
   @operator_finished_work_package_limit 80
@@ -462,58 +465,178 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   @spec work_request_detail(repo(), String.t(), keyword()) :: {:ok, map()} | {:error, dashboard_error()}
   def work_request_detail(repo, work_request_id, opts) when is_atom(repo) and is_binary(work_request_id) and is_list(opts) do
+    with {:ok, [detail]} <- work_request_details(repo, [work_request_id], opts) do
+      {:ok, detail}
+    end
+  end
+
+  @spec work_request_details(repo(), [String.t()]) :: {:ok, [map()]} | {:error, dashboard_error()}
+  def work_request_details(repo, work_request_ids) when is_atom(repo) and is_list(work_request_ids) do
+    work_request_details(repo, work_request_ids, [])
+  end
+
+  @spec work_request_details(repo(), [String.t()], keyword()) :: {:ok, [map()]} | {:error, dashboard_error()}
+  def work_request_details(repo, work_request_ids, opts)
+      when is_atom(repo) and is_list(work_request_ids) and is_list(opts) do
     safe_read(fn ->
-      with {:ok, work_request} <- WorkRequestRepository.get(repo, work_request_id),
-           {:ok, questions} <- WorkRequestRepository.list_questions(repo, work_request_id),
-           {:ok, decisions} <- WorkRequestRepository.list_decisions(repo, work_request_id),
-           {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id),
-           {:ok, work_package_contexts} <- planned_slice_work_package_contexts(repo, planned_slices),
-           {:ok, delivery_board_contexts} <-
-             delivery_board_work_package_contexts(repo, work_request, work_package_contexts),
-           delivery_board_opts = delivery_board_opts(work_request, planned_slices, delivery_board_contexts, opts),
-           {:ok, delivery_board} <- DeliveryBoard.project(repo, work_request_id, delivery_board_opts),
-           visible_planned_slices = visible_planned_slices(planned_slices, delivery_board),
-           {:ok, comment_context} <- work_request_comment_context(repo, work_request, planned_slices) do
-        all_planned_slices = ordered_sequence_records(planned_slices)
-        repo_identity_catalog = repo_identity_catalog_from_opts(opts, [work_request.repo])
-        questions = ordered_sequence_records(questions)
-        decisions = ordered_sequence_records(decisions)
-        planned_slices = ordered_sequence_records(visible_planned_slices)
-
-        work_request_payload =
-          work_request_payload(
-            work_request,
-            questions,
-            planned_slices,
-            work_package_contexts,
-            repo_identity_catalog,
-            comment_context,
-            delivery_board: delivery_board,
-            comment_planned_slices: all_planned_slices
-          )
-
-        planned_slice_payloads =
-          planned_slice_payloads(
-            planned_slices,
-            work_package_contexts,
-            true,
-            comment_context,
-            delivery_board: delivery_board
-          )
-
-        {:ok,
-         %{
-           work_request: work_request_payload,
-           clarification_questions: Enum.map(questions, &clarification_question/1),
-           decision_logs: Enum.map(decisions, &decision_log_entry/1),
-           planned_slices: planned_slice_payloads,
-           product_tree: ProductTree.project(repo, work_request.id, planned_slice_payloads),
-           delivery_board: redacted_json(delivery_board),
-           comments: comments_for(comment_context, "work_request", work_request.id),
-           summary: work_request_summary(questions, decisions, planned_slices, comment_context)
-         }}
+      with {:ok, context} <- work_request_details_context(repo, work_request_ids, opts) do
+        build_work_request_details(repo, context, opts)
       end
     end)
+  end
+
+  defp work_request_details_context(repo, work_request_ids, opts) do
+    with {:ok, work_requests_by_id} <- WorkRequestBulkRepository.get_many(repo, work_request_ids),
+         {:ok, work_requests} <- work_requests_in_input_order(work_request_ids, work_requests_by_id),
+         {:ok, questions_by_request} <- WorkRequestBulkRepository.list_questions_many(repo, work_request_ids),
+         {:ok, decisions_by_request} <- WorkRequestBulkRepository.list_decisions_many(repo, work_request_ids),
+         {:ok, planned_slices_by_request} <- WorkRequestBulkRepository.list_planned_slices_many(repo, work_request_ids),
+         all_planned_slices = all_planned_slices(work_requests, planned_slices_by_request),
+         {:ok, work_package_contexts} <- planned_slice_work_package_contexts(repo, all_planned_slices),
+         {:ok, comment_context} <- work_request_detail_comment_context(repo, work_requests, all_planned_slices) do
+      {:ok,
+       %{
+         work_requests: work_requests,
+         questions_by_request: questions_by_request,
+         decisions_by_request: decisions_by_request,
+         planned_slices_by_request: planned_slices_by_request,
+         work_package_contexts: work_package_contexts,
+         repo_identity_catalog: repo_identity_catalog_from_opts(opts, Enum.map(work_requests, & &1.repo)),
+         comment_context: comment_context
+       }}
+    end
+  end
+
+  defp build_work_request_details(repo, %{work_requests: work_requests} = context, opts) do
+    work_requests
+    |> Enum.reduce_while([], fn %WorkRequest{} = work_request, details ->
+      case build_work_request_detail(repo, work_request, context, opts) do
+        {:ok, detail} -> {:cont, [detail | details]}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:error, reason} -> {:error, reason}
+      details -> {:ok, Enum.reverse(details)}
+    end
+  end
+
+  defp work_requests_in_input_order(work_request_ids, work_requests_by_id) do
+    work_request_ids
+    |> Enum.reduce_while({:ok, []}, fn work_request_id, {:ok, work_requests} ->
+      case Map.fetch(work_requests_by_id, work_request_id) do
+        {:ok, %WorkRequest{} = work_request} -> {:cont, {:ok, [work_request | work_requests]}}
+        :error -> {:halt, {:error, :not_found}}
+      end
+    end)
+    |> case do
+      {:ok, work_requests} -> {:ok, Enum.reverse(work_requests)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp all_planned_slices(work_requests, planned_slices_by_request) do
+    Enum.flat_map(work_requests, &Map.get(planned_slices_by_request, &1.id, []))
+  end
+
+  defp work_request_detail_comment_context(repo, work_requests, planned_slices) do
+    targets =
+      Enum.map(work_requests, &{"work_request", &1.id}) ++
+        Enum.map(planned_slices, &{"planned_slice", &1.id})
+
+    targets
+    |> Enum.chunk_every(@work_request_detail_comment_target_chunk_size)
+    |> Enum.reduce_while({:ok, %{comments: %{}, counts: %{}}}, fn target_chunk, {:ok, acc} ->
+      case comment_context(repo, target_chunk) do
+        {:ok, context} ->
+          {:cont, {:ok, %{comments: Map.merge(acc.comments, context.comments), counts: Map.merge(acc.counts, context.counts)}}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp build_work_request_detail(
+         repo,
+         %WorkRequest{} = work_request,
+         %{
+           questions_by_request: questions_by_request,
+           decisions_by_request: decisions_by_request,
+           planned_slices_by_request: planned_slices_by_request,
+           work_package_contexts: work_package_contexts,
+           repo_identity_catalog: repo_identity_catalog,
+           comment_context: comment_context
+         },
+         opts
+       ) do
+    questions = Map.get(questions_by_request, work_request.id, [])
+    decisions = Map.get(decisions_by_request, work_request.id, [])
+    planned_slices = Map.get(planned_slices_by_request, work_request.id, [])
+    request_work_package_contexts = request_work_package_contexts(planned_slices, work_package_contexts)
+
+    with {:ok, delivery_board_contexts} <-
+           delivery_board_work_package_contexts(repo, work_request, request_work_package_contexts),
+         delivery_board_opts = delivery_board_opts(work_request, planned_slices, delivery_board_contexts, opts),
+         {:ok, delivery_board} <- DeliveryBoard.project(repo, work_request.id, delivery_board_opts) do
+      all_planned_slices = ordered_sequence_records(planned_slices)
+      questions = ordered_sequence_records(questions)
+      decisions = ordered_sequence_records(decisions)
+      planned_slices = ordered_sequence_records(visible_planned_slices(planned_slices, delivery_board))
+      comment_context = request_comment_context(comment_context, work_request, all_planned_slices)
+
+      work_request_payload =
+        work_request_payload(
+          work_request,
+          questions,
+          planned_slices,
+          request_work_package_contexts,
+          repo_identity_catalog,
+          comment_context,
+          delivery_board: delivery_board,
+          comment_planned_slices: all_planned_slices
+        )
+
+      planned_slice_payloads =
+        planned_slice_payloads(
+          planned_slices,
+          request_work_package_contexts,
+          true,
+          comment_context,
+          delivery_board: delivery_board
+        )
+
+      {:ok,
+       %{
+         work_request: work_request_payload,
+         clarification_questions: Enum.map(questions, &clarification_question/1),
+         decision_logs: Enum.map(decisions, &decision_log_entry/1),
+         planned_slices: planned_slice_payloads,
+         product_tree: ProductTree.project(repo, work_request.id, planned_slice_payloads),
+         delivery_board: redacted_json(delivery_board),
+         comments: comments_for(comment_context, "work_request", work_request.id),
+         summary: work_request_summary(questions, decisions, planned_slices, comment_context)
+       }}
+    end
+  end
+
+  defp request_work_package_contexts(planned_slices, work_package_contexts) do
+    work_package_ids =
+      planned_slices
+      |> Enum.map(& &1.work_package_id)
+      |> Enum.filter(&filled_string?/1)
+      |> MapSet.new()
+
+    Map.filter(work_package_contexts, fn {work_package_id, _context} -> MapSet.member?(work_package_ids, work_package_id) end)
+  end
+
+  defp request_comment_context(comment_context, %WorkRequest{} = work_request, planned_slices) do
+    targets = [{"work_request", work_request.id} | Enum.map(planned_slices, &{"planned_slice", &1.id})]
+
+    %{
+      comments: Map.take(comment_context.comments, targets),
+      counts: Map.take(comment_context.counts, targets)
+    }
   end
 
   defp delivery_board_opts(%WorkRequest{} = work_request, planned_slices, work_package_contexts, opts) do
@@ -2504,11 +2627,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       {:ok, %{}}
     else
       work_packages =
-        repo.all(
-          from(work_package in WorkPackage,
-            where: work_package.id in ^work_package_ids
+        work_package_ids
+        |> work_package_context_chunks()
+        |> Enum.flat_map(fn work_package_id_chunk ->
+          repo.all(
+            from(work_package in WorkPackage,
+              where: work_package.id in ^work_package_id_chunk
+            )
           )
-        )
+        end)
 
       {:ok, linked_work_package_contexts(repo, work_packages)}
     end
@@ -2570,63 +2697,82 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp grouped_progress_events(repo, work_package_ids) do
-    repo.all(
-      from(progress_event in ProgressEvent,
-        where: progress_event.work_package_id in ^work_package_ids,
-        order_by: [asc: progress_event.work_package_id, asc: progress_event.sequence, asc: progress_event.inserted_at]
+    chunked_records_by_work_package_id(work_package_ids, fn work_package_id_chunk ->
+      repo.all(
+        from(progress_event in ProgressEvent,
+          where: progress_event.work_package_id in ^work_package_id_chunk,
+          order_by: [asc: progress_event.work_package_id, asc: progress_event.sequence, asc: progress_event.inserted_at]
+        )
       )
-    )
-    |> records_by_work_package_id()
+    end)
   end
 
   defp grouped_plan_nodes(repo, work_package_ids) do
-    repo.all(
-      from(plan_node in PlanNode,
-        where: plan_node.work_package_id in ^work_package_ids,
-        order_by: [asc: plan_node.work_package_id, asc: plan_node.position, asc: plan_node.inserted_at]
+    chunked_records_by_work_package_id(work_package_ids, fn work_package_id_chunk ->
+      repo.all(
+        from(plan_node in PlanNode,
+          where: plan_node.work_package_id in ^work_package_id_chunk,
+          order_by: [asc: plan_node.work_package_id, asc: plan_node.position, asc: plan_node.inserted_at]
+        )
       )
-    )
-    |> records_by_work_package_id()
+    end)
   end
 
   defp grouped_artifacts(repo, work_package_ids) do
-    repo.all(
-      from(artifact in Artifact,
-        where: artifact.work_package_id in ^work_package_ids,
-        order_by: [asc: artifact.work_package_id, asc: artifact.sequence, asc: artifact.inserted_at]
+    chunked_records_by_work_package_id(work_package_ids, fn work_package_id_chunk ->
+      repo.all(
+        from(artifact in Artifact,
+          where: artifact.work_package_id in ^work_package_id_chunk,
+          order_by: [asc: artifact.work_package_id, asc: artifact.sequence, asc: artifact.inserted_at]
+        )
       )
-    )
-    |> records_by_work_package_id()
+    end)
   end
 
   defp grouped_findings(repo, work_package_ids) do
-    repo.all(
-      from(finding in Finding,
-        where: finding.work_package_id in ^work_package_ids,
-        order_by: [asc: finding.work_package_id, asc: finding.sequence, asc: finding.inserted_at]
+    chunked_records_by_work_package_id(work_package_ids, fn work_package_id_chunk ->
+      repo.all(
+        from(finding in Finding,
+          where: finding.work_package_id in ^work_package_id_chunk,
+          order_by: [asc: finding.work_package_id, asc: finding.sequence, asc: finding.inserted_at]
+        )
       )
-    )
-    |> records_by_work_package_id()
+    end)
   end
 
   defp grouped_agent_runs(repo, work_package_ids) do
-    repo.all(
-      from(agent_run in AgentRun,
-        where: agent_run.work_package_id in ^work_package_ids,
-        order_by: [asc: agent_run.work_package_id, asc: agent_run.started_at, asc: agent_run.inserted_at]
+    chunked_records_by_work_package_id(work_package_ids, fn work_package_id_chunk ->
+      repo.all(
+        from(agent_run in AgentRun,
+          where: agent_run.work_package_id in ^work_package_id_chunk,
+          order_by: [asc: agent_run.work_package_id, asc: agent_run.started_at, asc: agent_run.inserted_at]
+        )
       )
-    )
-    |> records_by_work_package_id()
+    end)
   end
 
   defp grouped_access_grants(repo, work_package_ids) do
-    repo.all(
-      from(access_grant in AccessGrant,
-        where: access_grant.work_package_id in ^work_package_ids,
-        order_by: [asc: access_grant.work_package_id, asc: access_grant.inserted_at]
+    chunked_records_by_work_package_id(work_package_ids, fn work_package_id_chunk ->
+      repo.all(
+        from(access_grant in AccessGrant,
+          where: access_grant.work_package_id in ^work_package_id_chunk,
+          order_by: [asc: access_grant.work_package_id, asc: access_grant.inserted_at]
+        )
       )
-    )
+    end)
+  end
+
+  defp chunked_records_by_work_package_id(work_package_ids, list_fun) do
+    work_package_ids
+    |> work_package_context_chunks()
+    |> Enum.flat_map(list_fun)
     |> records_by_work_package_id()
+  end
+
+  defp work_package_context_chunks(work_package_ids) do
+    work_package_ids
+    |> Enum.uniq()
+    |> Enum.chunk_every(@work_package_context_chunk_size)
   end
 
   defp records_by_work_package_id(records), do: Enum.group_by(records, & &1.work_package_id)
