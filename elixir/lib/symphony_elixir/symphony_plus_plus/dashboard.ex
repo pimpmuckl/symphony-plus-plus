@@ -3,6 +3,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
+  alias SymphonyElixir.SymphonyPlusPlus.AgentFormat.LifecycleVocabulary
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
@@ -62,6 +63,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     "ready_for_worker",
     "planned",
     "merged",
+    "pr_merged",
     "delivered",
     "completed_no_pr",
     "closed",
@@ -2098,7 +2100,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       "completed",
       "Completed",
       "success",
-      "WorkRequest was manually marked completed by the local operator.",
+      "WorkRequest delivery was manually marked complete by the local operator.",
       work_request.status,
       attention_items
     )
@@ -2109,7 +2111,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       "completed",
       "Completed",
       "success",
-      "All WorkRequest questions, slices, linked packages, blockers, and active runtimes are terminal.",
+      "WorkRequest delivery is complete.",
       work_request.status,
       attention_items
     )
@@ -2120,18 +2122,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       "human_info_needed",
       "Human Info Needed",
       "warning",
-      "WorkRequest is waiting for a human answer before architecture can proceed.",
+      "Operator action is needed before architecture can proceed.",
       status,
       attention_items
     )
   end
 
   defp base_work_request_operational_state("ready_for_clarification" = status, attention_items) do
-    operational_state("clarifying", "Clarifying", "warning", "WorkRequest is still in clarification.", status, attention_items)
+    operational_state("clarifying", "Clarifying", "warning", "Operator action is needed to finish clarification.", status, attention_items)
   end
 
   defp base_work_request_operational_state("clarifying" = status, attention_items) do
-    operational_state("clarifying", "Clarifying", "warning", "WorkRequest is still in clarification.", status, attention_items)
+    operational_state("clarifying", "Clarifying", "warning", "Operator action is needed to finish clarification.", status, attention_items)
   end
 
   defp base_work_request_operational_state("draft" = status, attention_items) do
@@ -2143,7 +2145,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       "ready_for_slicing",
       "Ready For Slicing",
       "neutral",
-      "WorkRequest is ready for an architect to author planned slices.",
+      "WorkRequest is ready for planned slices.",
       status,
       attention_items
     )
@@ -2155,7 +2157,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp base_work_request_operational_state(status, attention_items) do
     key = status || "unknown"
-    operational_state(key, status_label(key), "neutral", "Raw WorkRequest lifecycle status is #{key}.", status, attention_items)
+    operational_state(key, status_label(key), "neutral", "Source WorkRequest status is #{key}.", status, attention_items)
   end
 
   defp planned_slice_operational_states(planned_slices, work_package_contexts, delivery_board, delivery_state_opts) do
@@ -2175,12 +2177,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp primary_work_request_slice_state(slice_states) do
     Enum.find_value(@work_request_slice_state_priority, fn key ->
-      Enum.find(slice_states, &(Map.get(&1, :key) == key))
+      Enum.find(slice_states, &(LifecycleVocabulary.source_key(&1) == key))
     end)
   end
 
-  defp delivery_truth_operational_state?(%{key: "needs_closeout"}), do: true
-  defp delivery_truth_operational_state?(%{delivery_outcome: outcome}) when is_binary(outcome), do: true
+  defp delivery_truth_operational_state?(%{} = state), do: LifecycleVocabulary.source_key(state) == "needs_closeout" or is_binary(Map.get(state, :delivery_outcome))
   defp delivery_truth_operational_state?(_state), do: false
 
   defp promoted_work_request_operational_state(%WorkRequest{} = work_request, promoted_state, planned_slices, attention_items) do
@@ -2188,7 +2189,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     |> operational_activity_fields()
     |> Map.merge(
       operational_state(
-        promoted_state.key,
+        LifecycleVocabulary.source_key(promoted_state),
         promoted_state.label,
         promoted_state.tone,
         "Most actionable planned-slice or linked-package state is #{promoted_state.label} across #{length(planned_slices)} slice(s).",
@@ -2326,7 +2327,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp delivery_primary_state?(%{} = delivery_slice, %{} = operational_state) do
     delivery_outcome = map_value(delivery_slice, "delivery_outcome") || map_value(operational_state, "delivery_outcome")
-    key = map_value(operational_state, "key")
+    key = map_value(operational_state, "source_key") || map_value(operational_state, "key")
     attention_reason_codes = map_value(operational_state, "attention_reason_codes") || []
 
     is_binary(delivery_outcome) or
@@ -2360,6 +2361,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     %{
       key: map_value(operational_state, "key"),
       label: map_value(operational_state, "label"),
+      presentation_key: map_value(operational_state, "presentation_key") || map_value(operational_state, "key"),
+      presentation_label: map_value(operational_state, "presentation_label") || map_value(operational_state, "label"),
+      source_key: map_value(operational_state, "source_key") || map_value(operational_state, "key"),
       tone: map_value(operational_state, "tone"),
       reason: map_value(operational_state, "reason"),
       raw_status: map_value(operational_state, "raw_status"),
@@ -2875,16 +2879,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         operational_state("blocked", "Blocked", "critical", blocker_detail(active_blocker_count), status)
 
       status == "blocked" ->
-        operational_state("blocked", "Blocked", "critical", "Raw lifecycle status is blocked.", status)
+        operational_state("blocked", "Blocked", "critical", "Source package status is blocked.", status)
 
       pr_merged?(metadata) and open_package_status?(status) ->
-        operational_state("merged", "Merged", "success", "PR metadata reports a merged pull request while raw status is #{status}.", status)
+        operational_state("merged", "Merged", "success", "PR metadata reports delivered work while source status is #{status}.", status)
 
       status in @merged_package_statuses ->
-        operational_state("merged", "Merged", "success", "Raw lifecycle status indicates merged delivery.", status)
+        operational_state("merged", "Merged", "success", "Source package status indicates delivered work.", status)
 
       status in @closed_package_statuses ->
-        operational_state(status, status_label(status), "neutral", "Raw lifecycle status is #{status}.", status)
+        operational_state(status, status_label(status), "neutral", "Source package status is #{status}.", status)
 
       true ->
         nil
@@ -2903,14 +2907,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
       status in @ready_statuses ->
         tone = if missing_readiness == [], do: "success", else: "warning"
-        reason = if missing_readiness == [], do: "Package is marked ready with required evidence present.", else: "Package is marked ready but evidence is incomplete."
-        operational_state("merge_ready", "Ready For Merge", tone, reason, status)
+        reason = if missing_readiness == [], do: "Package is ready with required evidence present.", else: "Package needs review, but evidence is incomplete."
+        operational_state("merge_ready", "Needs Review", tone, reason, status)
 
       status == "ci_waiting" ->
-        operational_state("ci_waiting", "CI Waiting", "info", "Package is waiting on validation or CI evidence.", status)
+        operational_state("ci_waiting", "Needs Review", "info", "Package needs validation or CI evidence.", status)
 
       status == "reviewing" or review_activity?(metadata) ->
-        operational_state("reviewing", "Reviewing", "info", "Review evidence or lifecycle status indicates review is active.", status)
+        operational_state("reviewing", "Reviewing", "info", "Package needs review.", status)
 
       true ->
         nil
@@ -2918,7 +2922,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp pickup_operational_state("ready_for_worker" = status, %{has_active_worker: true}) do
-    operational_state("active", "Active", "info", "Worker grant or runtime evidence indicates work is active now.", status)
+    operational_state("active", "Active", "info", "Active assignment is working now.", status)
   end
 
   defp pickup_operational_state("ready_for_worker" = status, %{has_started: true}) do
@@ -2926,25 +2930,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       "needs_attention",
       "Needs Attention",
       "warning",
-      "Raw status is ready_for_worker but worker, runtime, progress, PR, review, or merge activity is recorded.",
+      "Source status is ready, but package activity is already recorded.",
       status
     )
   end
 
   defp pickup_operational_state("ready_for_worker" = status, %{has_prepared_worktree: true}) do
-    operational_state("prepared", "Prepared", "neutral", "Worktree preparation is recorded and the package is awaiting worker claim.", status)
+    operational_state("prepared", "Prepared", "neutral", "Package is ready for an active assignment.", status)
   end
 
   defp pickup_operational_state(status, %{has_active_worker: true}) when status != "ready_for_worker" do
-    operational_state("active", "Active", "info", "Worker grant or runtime evidence indicates work is active now.", status)
+    operational_state("active", "Active", "info", "Active assignment is working now.", status)
   end
 
   defp pickup_operational_state(status, %{has_started: true}) do
     operational_state(
       "started_paused",
-      "Started / Paused",
+      "Stale / Recoverable",
       "warning",
-      "Historical lifecycle, runtime, progress, PR, or review evidence exists, but no active worker or runtime is visible now.",
+      "Package has activity history, but no active assignment is visible now.",
       status
     )
   end
@@ -2952,20 +2956,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp pickup_operational_state("ready_for_worker" = status, _activity) do
     operational_state(
       "ready_for_worker",
-      "Ready For Worker",
+      "Ready",
       "neutral",
-      "No linked delivery, worker, runtime, progress, blocker, review, PR, or merge activity is recorded.",
+      "Package is ready for an active assignment.",
       status
     )
   end
 
   defp pickup_operational_state("created" = status, _activity) do
-    operational_state("created", "Created", "neutral", "Package has been created but is not ready for worker pickup.", status)
+    operational_state("created", "Created", "neutral", "Package has been created and is waiting for assignment readiness.", status)
   end
 
   defp pickup_operational_state(status, _activity) do
     key = status || "unknown"
-    operational_state(key, status_label(key), "neutral", "Raw lifecycle status is #{key}.", status)
+    operational_state(key, status_label(key), "neutral", "Source package status is #{key}.", status)
   end
 
   defp planned_slice_operational_state(%PlannedSlice{} = planned_slice, work_package_context, delivery_slice, delivery_state_opts \\ []) do
@@ -3003,7 +3007,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       |> operational_activity_fields()
       |> Map.merge(
         operational_state(
-          linked_state.key,
+          LifecycleVocabulary.source_key(linked_state),
           linked_state.label,
           linked_state.tone,
           "Linked WorkPackage #{work_package.id} is #{linked_state.label}.",
@@ -3017,7 +3021,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp base_unlinked_planned_slice_operational_state(%PlannedSlice{status: "approved"} = planned_slice) do
-    operational_state("ready_for_worker", "Ready For Worker", "neutral", "Approved slice has no linked WorkPackage or delivery activity.", planned_slice.status)
+    operational_state("ready_for_worker", "Ready", "neutral", "Approved slice has no linked WorkPackage or delivery activity.", planned_slice.status)
   end
 
   defp base_unlinked_planned_slice_operational_state(%PlannedSlice{status: "planned"} = planned_slice) do
@@ -3035,7 +3039,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp linked_idle_planned_slice_operational_state(%PlannedSlice{status: "approved"} = planned_slice, %WorkPackage{} = work_package, attention_items) do
     operational_state(
       "ready_for_worker",
-      "Ready For Worker",
+      "Ready",
       "neutral",
       "Approved slice is linked to WorkPackage #{work_package.id}, which has not started.",
       planned_slice.status,
@@ -3101,7 +3105,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
             key: "linked_package_started_while_slice_idle",
             label: "Linked Package Started",
             tone: "warning",
-            reason: "Linked WorkPackage #{work_package.id} has operational state #{linked_state.key} while slice status is #{planned_slice.status}."
+            reason: "Linked WorkPackage #{work_package.id} is #{linked_state.label} while slice status is #{planned_slice.status}."
           }
         ]
       else
@@ -3114,8 +3118,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp linked_work_package_status(%{work_package: %WorkPackage{status: status}}), do: status
   defp linked_work_package_status(_work_package_context), do: nil
 
-  defp promoted_linked_operational_state?(%{key: key}) do
-    key in [
+  defp promoted_linked_operational_state?(%{} = state) do
+    LifecycleVocabulary.source_key(state) in [
       "blocked",
       "active",
       "prepared",
@@ -3131,10 +3135,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     ]
   end
 
-  defp promoted_linked_operational_state?(_state), do: false
-
-  defp linked_package_started_while_slice_idle?(%{key: "prepared"}), do: false
-  defp linked_package_started_while_slice_idle?(linked_state), do: promoted_linked_operational_state?(linked_state)
+  defp linked_package_started_while_slice_idle?(%{} = state) do
+    LifecycleVocabulary.source_key(state) != "prepared" and promoted_linked_operational_state?(state)
+  end
 
   defp work_package_attention_items(%WorkPackage{} = work_package, blockers, context) do
     missing_readiness = Map.fetch!(context, :missing_readiness)
@@ -3195,7 +3198,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         key: "ready_for_worker_with_activity",
         label: "Ready Status With Activity",
         tone: "warning",
-        reason: "Raw status is ready_for_worker but worker, runtime, progress, PR, review, or merge activity is recorded."
+        reason: "Source status is ready, but package activity is already recorded."
       }
     end
   end
@@ -3398,9 +3401,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp open_package_status?(status), do: status not in @merged_package_statuses and status not in @closed_package_statuses
 
   defp operational_state(key, label, tone, reason, raw_status, attention_items \\ []) do
+    presentation = LifecycleVocabulary.present(key, label)
+
     %{
-      key: key,
-      label: label,
+      key: presentation.source_key,
+      label: presentation.label,
+      presentation_key: presentation.key,
+      presentation_label: presentation.label,
+      source_key: presentation.source_key,
       tone: tone,
       reason: reason,
       raw_status: raw_status,

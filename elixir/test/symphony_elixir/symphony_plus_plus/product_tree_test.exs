@@ -132,6 +132,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTreeTest do
     assert projected.summary.blocker_count == 1
   end
 
+  test "treats terminal delivery outcome source states as done", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-V3-TERMINAL-DELIVERY", title: "Terminal delivery tree")
+    pr_merged_node = create_node!(repo, work_request, id: "ptn_terminal_pr_merged", title: "PR merged delivery")
+    superseded_node = create_node!(repo, work_request, id: "ptn_terminal_superseded", title: "Superseded delivery")
+    abandoned_node = create_node!(repo, work_request, id: "ptn_terminal_abandoned", title: "Abandoned delivery", position: 3)
+    pr_merged_slice = add_slice!(repo, work_request, id: "wrs_terminal_pr_merged", title: "PR merged slice")
+    superseded_slice = add_slice!(repo, work_request, id: "wrs_terminal_superseded", title: "Superseded slice")
+    abandoned_slice = add_slice!(repo, work_request, id: "wrs_terminal_abandoned", title: "Abandoned slice")
+
+    assert {:ok, _link} =
+             ProductTree.create_slice_link(repo, %{
+               work_request_id: work_request.id,
+               product_tree_node_id: pr_merged_node.id,
+               planned_slice_id: pr_merged_slice.id,
+               position: 1
+             })
+
+    assert {:ok, _link} =
+             ProductTree.create_slice_link(repo, %{
+               work_request_id: work_request.id,
+               product_tree_node_id: superseded_node.id,
+               planned_slice_id: superseded_slice.id,
+               position: 1
+             })
+
+    assert {:ok, _link} =
+             ProductTree.create_slice_link(repo, %{
+               work_request_id: work_request.id,
+               product_tree_node_id: abandoned_node.id,
+               planned_slice_id: abandoned_slice.id,
+               position: 1
+             })
+
+    projected =
+      ProductTree.project(repo, work_request.id, [
+        %{"id" => pr_merged_slice.id, "operational_state" => %{"key" => "delivered", "presentation_key" => "delivered"}},
+        %{"id" => superseded_slice.id, "operational_state" => %{"key" => "superseded", "presentation_key" => "delivered"}},
+        %{"id" => abandoned_slice.id, "operational_state" => %{"key" => "abandoned", "presentation_key" => "delivered"}}
+      ])
+
+    nodes_by_id = Map.new(projected.nodes, &{&1.id, &1})
+    assert nodes_by_id[pr_merged_node.id].computed_completion_mark == "done"
+    assert nodes_by_id[superseded_node.id].computed_completion_mark == "done"
+    assert nodes_by_id[abandoned_node.id].computed_completion_mark == "done"
+  end
+
   test "visible-only projection keeps scoped slice paths without leaking hidden tree records", %{repo: repo} do
     work_request = create_work_request!(repo, id: "WR-V3-SCOPED-PROJECTION", title: "Scoped projection")
     root = create_node!(repo, work_request, id: "ptn_scoped_root", title: "Backend")

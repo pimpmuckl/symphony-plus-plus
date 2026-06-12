@@ -101,11 +101,11 @@ Operator-decision behavior changes:
 2026-06-12 implementation update:
 
 - Worker and architect claim tool descriptions now state the normal id-only
-  claim shape and label repo/base/phase/anchor/branch/worktree/caller fields as
+  claim shape and label extra repo/base/phase/branch/worktree scope fields as
   advanced/debug validation hints.
 - Generated architect handoff prompt references now carry only the sanitized
   `work_request_id`, optional `ledger_database`, and `local_architect_claim`
-  payload with id-only claim arguments. Repo, base branch, phase, anchor, and
+  payload with id-only claim arguments. Repo, base branch, phase, scope, and
   optional `claimed_by` remain in the ledger-backed handoff record, but are no
   longer copied into the prompt reference block.
 - Planned-slice dispatch launch prompts show the minimal JSON claim arguments
@@ -361,16 +361,15 @@ Classification: rename/reword.
 
 Current examples:
 
-- Agent-facing words include claim lease, session binding, anchor package,
-  runtime cleanup, recycle, grant revoke, phase child, source-root hint, and
-  caller id.
+- Agent-facing words still expose low-level assignment ownership,
+  authority-reset, phase-routing, source-root, and local-correlation details.
 - Some terms are accurate for operators but noisy for worker agents.
 
 Why it hurts agents:
 
 - Agents focus on implementation artifacts instead of the action they can take.
-- Error recovery becomes harder because "binding", "lease", and "grant" sound
-  interchangeable to a caller.
+- Error recovery becomes harder because low-level ownership words sound like
+  separate actions to a caller.
 
 High-confidence simplifications:
 
@@ -381,6 +380,43 @@ High-confidence simplifications:
 - Rename docs/prompts before schema fields.
 
 Compatibility impact: none for text-only rewording.
+
+2026-06-12 implementation update:
+
+- Added a shared presentation vocabulary for dashboard and delivery-board
+  projections. To avoid breaking current board and product-tree consumers,
+  existing `operational_state.key` values remain detailed, while the compact
+  vocabulary is exposed as `presentation_key`/`presentation_label`:
+  `ready`, `working`, `blocked`, `needs_review`, `delivered`,
+  `stale_recoverable`, or `operator_action`.
+- Existing detailed projection states are preserved as `key` and `source_key`,
+  while persisted audit states remain in `raw_status`, `work_package_status`,
+  `delivery_outcome`, and `attention_reason_codes`. Delivery-board `counts`
+  stays detailed; `presentation_counts` carries the compact aggregate and
+  `source_counts` preserves recorded delivery outcomes such as `pr_merged`.
+- Product-tree completion treats terminal delivery source outcomes such as
+  `superseded` and `abandoned` as done, so detailed keys can remain stable
+  without regressing product-tree summaries.
+- Current mapping:
+  - `ready`: `created`, `draft`, `not_started`, `planned`, `prepared`,
+    `ready_for_worker`, `ready_for_slicing`, `sliced`, and hidden linked
+    `dispatched` states.
+  - `working`: `active` and `merging`.
+  - `blocked`: `blocked`.
+  - `needs_review`: `reviewing`, `ci_waiting`, and `merge_ready`.
+  - `delivered`: recorded delivery outcomes and terminal/completed states,
+    including `delivered`, `completed_no_pr`, `completed`, `merged`, `closed`,
+    `skipped`, `superseded`, and `abandoned`.
+  - `stale_recoverable`: `started_paused`, `stale`, `recycled`, and recovered
+    runtime lifecycle projections.
+  - `operator_action`: `human_info_needed`, `clarifying`, `needs_attention`,
+    `needs_closeout`, `paused`, `unknown`, and unmapped source states.
+- Reworded normal MCP and architect handoff descriptions away from low-level
+  ownership, scope-routing, and reset-authority language where field names or
+  audit payloads did not require those terms.
+- Deliberately deferred: persisted DB status removal, migration work, MCP field
+  renames/removal, audit reason-code pruning, and delivery closeout semantic
+  changes. Those need a separately approved compatibility/migration decision.
 
 ### P3 - Phase And Child-Package Stubs Should Be Less Visible
 

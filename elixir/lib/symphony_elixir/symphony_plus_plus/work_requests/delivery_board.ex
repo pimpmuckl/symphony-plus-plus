@@ -3,6 +3,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
 
   import Ecto.Query, only: [from: 2]
 
+  alias SymphonyElixir.SymphonyPlusPlus.AgentFormat.LifecycleVocabulary
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequestProgress
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -22,20 +23,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
 
   @delivery_states %{
     "pr_merged" => {"delivered", "Delivered", "success", "Recorded delivery outcome says the linked PR merged."},
-    "completed_no_pr" => {"completed_no_pr", "Completed Without PR", "success", "Recorded delivery outcome says the slice completed without a PR."},
-    "superseded" => {"superseded", "Superseded", "neutral", "Recorded delivery outcome says this slice was superseded by a successor."},
-    "abandoned" => {"abandoned", "Abandoned", "neutral", "Recorded delivery outcome says this slice was abandoned."}
+    "completed_no_pr" => {"completed_no_pr", "Completed Without PR", "success", "Recorded delivery outcome says the slice was delivered without a PR."},
+    "superseded" => {"superseded", "Superseded", "neutral", "Recorded delivery outcome says this slice was replaced by a successor."},
+    "abandoned" => {"abandoned", "Abandoned", "neutral", "Recorded delivery outcome says this slice was intentionally closed."}
   }
 
   @attention_details %{
     "active_blocker" => {"Active Blocker", "critical", "Linked WorkPackage has an active blocker."},
-    "active_runtime" => {"Active Runtime", "info", "Linked WorkPackage has an active worker or runtime."},
-    "linked_package_active_after_delivery" => {"Active After Delivery", "warning", "Linked WorkPackage still has active runtime evidence after terminal delivery was recorded."},
+    "active_runtime" => {"Active Assignment", "info", "Linked WorkPackage has an active assignment."},
+    "linked_package_active_after_delivery" => {"Active Assignment After Delivery", "warning", "Linked WorkPackage still has an active assignment after delivery was recorded."},
     "linked_package_blocked_after_delivery" => {"Blocked After Delivery", "warning", "Linked WorkPackage still has active blocker evidence after terminal delivery was recorded."},
-    "linked_package_status_stale_after_delivery" => {"Stale Package Status", "warning", "Linked WorkPackage raw status does not match the recorded terminal delivery outcome."},
+    "linked_package_status_stale_after_delivery" => {"Source Status Drift", "warning", "Linked WorkPackage source status does not match the recorded delivery outcome."},
     "missing_linked_work_package" => {"Missing Linked WorkPackage", "warning", "Slice is marked dispatched without a visible linked WorkPackage."},
-    "pr_merged_without_delivery_outcome" => {"Missing Delivery Closeout", "warning", "Linked WorkPackage has merged PR metadata but no planned-slice delivery outcome."},
-    "terminal_package_without_delivery_outcome" => {"Missing Delivery Closeout", "warning", "Linked WorkPackage is terminal but no planned-slice delivery outcome is recorded."}
+    "pr_merged_without_delivery_outcome" => {"Operator Action", "warning", "Linked WorkPackage has merged PR metadata but no delivery outcome."},
+    "terminal_package_without_delivery_outcome" => {"Operator Action", "warning", "Linked WorkPackage is terminal but no delivery outcome is recorded."}
   }
 
   @type repo :: module()
@@ -274,7 +275,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
     %{
       work_request_id: work_request_id,
       slice_count: length(slices),
-      counts: state_counts(slices),
+      counts: state_counts(slices, :key),
+      source_counts: source_state_counts(slices),
+      presentation_counts: state_counts(slices, :presentation_key),
       planning_scratch_slice_count: planning_scratch_count,
       hidden_planning_scratch_slice_count: if(include_planning_scratch?, do: 0, else: planning_scratch_count),
       include_planning_scratch: include_planning_scratch?,
@@ -802,7 +805,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   end
 
   defp no_delivery_operational_state(%PlannedSlice{status: "approved"} = planned_slice, nil) do
-    state("ready_for_worker", "Ready For Worker", "neutral", "Approved slice has no linked WorkPackage.", planned_slice.status, nil, nil, [])
+    state("ready_for_worker", "Ready", "neutral", "Approved slice has no linked WorkPackage.", planned_slice.status, nil, nil, [])
   end
 
   defp no_delivery_operational_state(%PlannedSlice{status: "skipped"} = planned_slice, nil) do
@@ -824,8 +827,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
 
   defp no_delivery_operational_state(%PlannedSlice{} = planned_slice, nil) do
     state(
-      "dispatched",
-      "Dispatched",
+      "needs_attention",
+      "Operator Action",
       "warning",
       "Slice is marked dispatched but no linked WorkPackage or delivery outcome exists.",
       planned_slice.status,
@@ -845,18 +848,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
       pr_merged?(work_package.pr) ->
         {
           "needs_closeout",
-          "Needs Closeout",
+          "Operator Action",
           "warning",
-          "Linked WorkPackage has merged PR metadata but no planned-slice delivery outcome.",
+          "Operator action is needed to record the delivery outcome.",
           ["pr_merged_without_delivery_outcome"]
         }
 
       terminal_package_status?(work_package.raw_status) ->
         {
           "needs_closeout",
-          "Needs Closeout",
+          "Operator Action",
           "warning",
-          "Linked WorkPackage is terminal but no planned-slice delivery outcome is recorded.",
+          "Operator action is needed to record the delivery outcome.",
           ["terminal_package_without_delivery_outcome"]
         }
 
@@ -871,7 +874,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
         {"blocked", "Blocked", "critical", "Linked WorkPackage has an active blocker.", ["active_blocker"]}
 
       active_runtime?(work_package) ->
-        {"active", "Active", "info", "Linked WorkPackage has active runtime evidence.", ["active_runtime"]}
+        {"active", "Active", "info", "Linked WorkPackage has an active assignment.", ["active_runtime"]}
 
       true ->
         status_work_package_state(work_package)
@@ -879,24 +882,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   end
 
   defp status_work_package_state(%{raw_status: raw_status}) when raw_status in @ready_statuses do
-    {"merge_ready", "Ready For Merge", "success", "Linked WorkPackage is ready for merge.", []}
+    {"merge_ready", "Needs Review", "success", "Linked WorkPackage needs review or merge.", []}
   end
 
   defp status_work_package_state(%{raw_status: "reviewing"}) do
-    {"reviewing", "Reviewing", "info", "Linked WorkPackage is in review.", []}
+    {"reviewing", "Needs Review", "info", "Linked WorkPackage needs review.", []}
   end
 
   defp status_work_package_state(%{raw_status: "ci_waiting"}) do
-    {"ci_waiting", "CI Waiting", "info", "Linked WorkPackage is waiting on validation or CI.", []}
+    {"ci_waiting", "Needs Review", "info", "Linked WorkPackage needs validation or CI evidence.", []}
   end
 
   defp status_work_package_state(%{raw_status: "ready_for_worker"}) do
-    {"ready_for_worker", "Ready For Worker", "neutral", "Linked WorkPackage is ready for worker pickup.", []}
+    {"ready_for_worker", "Ready", "neutral", "Linked WorkPackage is ready for an active assignment.", []}
   end
 
   defp status_work_package_state(work_package) do
     key = work_package.raw_status || "unknown"
-    {key, status_label(key), "neutral", "Linked WorkPackage raw status is #{key}.", []}
+    {key, status_label(key), "neutral", "Linked WorkPackage source status is #{key}.", []}
   end
 
   defp terminal_delivery_attention_codes(%PlannedSliceDelivery{} = delivery, work_package) do
@@ -917,9 +920,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   end
 
   defp state(key, label, tone, reason, raw_status, delivery_outcome, work_package, attention_reason_codes) do
+    source_key = delivery_outcome || key
+    presentation = LifecycleVocabulary.present(source_key, label)
+
     %{
       key: key,
-      label: label,
+      label: presentation.label,
+      presentation_key: presentation.key,
+      presentation_label: presentation.label,
+      source_key: source_key,
       tone: tone,
       reason: reason,
       raw_status: raw_status,
@@ -976,8 +985,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   defp pr_merged?(%{} = pr), do: PullRequestProgress.merged?(pr)
   defp pr_merged?(_pr), do: false
 
-  defp state_counts(slices) do
-    Enum.frequencies_by(slices, &get_in(&1, [:operational_state, :key]))
+  defp state_counts(slices, key) do
+    Enum.frequencies_by(slices, &get_in(&1, [:operational_state, key]))
+  end
+
+  defp source_state_counts(slices) do
+    Enum.frequencies_by(slices, fn slice ->
+      get_in(slice, [:operational_state, :delivery_outcome]) || get_in(slice, [:operational_state, :source_key])
+    end)
   end
 
   defp visible_work_package_id(nil, _context), do: nil

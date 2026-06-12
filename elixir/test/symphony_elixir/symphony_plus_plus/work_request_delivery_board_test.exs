@@ -73,7 +73,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
     assert superseded.delivery_outcome == "superseded"
     assert superseded.work_package.id == superseded_package.id
     assert superseded.work_package.raw_status == "implementing"
-    assert superseded.operational_state.key == "superseded"
+    assert superseded.operational_state.presentation_key == "delivered"
+    assert superseded.operational_state.source_key == "superseded"
     assert superseded.operational_state.raw_status == "dispatched"
     assert "linked_package_status_stale_after_delivery" in superseded.attention_reason_codes
     assert superseded.successor.planned_slice.id == successor_slice.id
@@ -117,8 +118,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
                })
              )
 
-    assert {:ok, %{slices: [slice]}} = DeliveryBoard.project(repo, work_request.id)
+    assert {:ok, %{slices: [slice]} = board} = DeliveryBoard.project(repo, work_request.id)
     assert slice.operational_state.key == "delivered"
+    assert slice.operational_state.presentation_key == "delivered"
+    assert slice.operational_state.source_key == "pr_merged"
+    assert board.counts["delivered"] == 1
+    assert board.presentation_counts["delivered"] == 1
+    assert board.source_counts["pr_merged"] == 1
     assert slice.operational_state.raw_status == "dispatched"
     assert slice.work_package.raw_status == "blocked"
     assert "linked_package_blocked_after_delivery" in slice.attention_reason_codes
@@ -159,8 +165,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
 
     assert {:ok, %{slices: [slice]}} = DeliveryBoard.project(repo, work_request.id)
     assert slice.delivery_outcome == nil
-    assert slice.operational_state.key == "needs_closeout"
-    assert slice.operational_state.label == "Needs Closeout"
+    assert slice.operational_state.presentation_key == "operator_action"
+    assert slice.operational_state.label == "Operator Action"
+    assert slice.operational_state.source_key == "needs_closeout"
     assert slice.attention_reason_codes == ["pr_merged_without_delivery_outcome"]
   end
 
@@ -199,7 +206,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
 
     assert {:ok, %{slices: [slice]}} = DeliveryBoard.project(repo, work_request.id)
     assert slice.delivery_outcome == nil
-    assert slice.operational_state.key == "merge_ready"
+    assert slice.operational_state.presentation_key == "needs_review"
+    assert slice.operational_state.source_key == "merge_ready"
     assert slice.attention_reason_codes == []
   end
 
@@ -231,7 +239,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
 
     assert {:ok, %{slices: [slice]}} = DeliveryBoard.project(repo, work_request.id)
     assert slice.work_package.pr.url == "https://github.com/nextide/symphony-plus-plus/pull/905"
-    assert slice.operational_state.key == "merge_ready"
+    assert slice.operational_state.presentation_key == "needs_review"
+    assert slice.operational_state.source_key == "merge_ready"
     assert slice.attention_reason_codes == []
   end
 
@@ -448,7 +457,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
              DeliveryBoard.project(repo, work_request.id, work_package_contexts: work_package_contexts)
 
     assert slice.work_package.pr.url == "https://github.com/nextide/symphony-plus-plus/pull/908"
-    assert slice.operational_state.key == "needs_closeout"
+    assert slice.operational_state.presentation_key == "operator_action"
+    assert slice.operational_state.source_key == "needs_closeout"
   end
 
   test "scoped projection treats filtered linked packages as hidden instead of missing", %{repo: repo} do
@@ -464,8 +474,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
     assert {:ok, %{slices: [slice]}} = DeliveryBoard.project(repo, work_request.id, visible_work_package_ids: [])
     assert slice.work_package == nil
     assert slice.work_package_hidden? == true
-    assert slice.operational_state.key == "dispatched"
+    assert slice.operational_state.presentation_key == "ready"
+    assert slice.operational_state.source_key == "dispatched"
     assert slice.attention_reason_codes == []
+  end
+
+  test "projection asks for operator action when a dispatched linked package is missing", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-BOARD-MISSING-PACKAGE")
+
+    planned_slice =
+      repo
+      |> create_planned_slice!(work_request, id: "WRS-BOARD-MISSING-PACKAGE")
+      |> Map.merge(%{
+        status: "dispatched",
+        work_package_id: "WP-BOARD-MISSING-PACKAGE",
+        dispatched_at: DateTime.utc_now()
+      })
+
+    assert {:ok, %{slices: [slice]}} = DeliveryBoard.project(repo, work_request.id, planned_slices: [planned_slice])
+    assert slice.work_package == nil
+    assert slice.work_package_hidden? == false
+    assert slice.operational_state.key == "needs_attention"
+    assert slice.operational_state.presentation_key == "operator_action"
+    assert slice.operational_state.source_key == "needs_attention"
+    assert slice.attention_reason_codes == ["missing_linked_work_package"]
   end
 
   test "hides only skipped scratch planned slices by default", %{repo: repo} do
@@ -617,7 +649,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
     slices_by_id = Map.new(board.slices, &{&1.id, &1})
 
     assert get_in(slices_by_id, [no_pr_slice.id, :operational_state, :key]) == "completed_no_pr"
+    assert get_in(slices_by_id, [no_pr_slice.id, :operational_state, :presentation_key]) == "delivered"
+    assert get_in(slices_by_id, [no_pr_slice.id, :operational_state, :source_key]) == "completed_no_pr"
     assert get_in(slices_by_id, [superseded_slice.id, :operational_state, :key]) == "superseded"
+    assert get_in(slices_by_id, [superseded_slice.id, :operational_state, :presentation_key]) == "delivered"
+    assert get_in(slices_by_id, [superseded_slice.id, :operational_state, :source_key]) == "superseded"
     assert get_in(slices_by_id, [superseded_slice.id, :successor, :planned_slice_id]) == successor_slice.id
   end
 

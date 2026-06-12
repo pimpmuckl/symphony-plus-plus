@@ -1079,7 +1079,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     do: [
       "Startup:",
       "1. Connect through the Symphony++ MCP/session using `local_architect_claim` from the reference identifiers.",
-      "2. Do not infer claim state from WorkRequest tool visibility. If the session is unbound or a WorkRequest tool returns `claim_required`, do not fall back to Solo planning; use `claim_local_architect_assignment` to bind the architect grant, then retry the scoped reads.",
+      "2. Do not infer assignment state from WorkRequest tool visibility. If the session is unbound or a WorkRequest tool returns `claim_required`, do not fall back to Solo planning; use `claim_local_architect_assignment` to activate the architect assignment, then retry the scoped reads.",
       "3. Before planning, call `read_work_request` using `work_request_id` from the reference identifiers.",
       "4. Call `list_guidance_requests` and account for any open guidance before slicing.",
       "5. If `ledger_database` is absent, use the current MCP/session assignment or operator repair path; do not guess a ledger."
@@ -1097,11 +1097,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
 
   defp stop_condition_prompt_line(%{}),
     do:
-      "1. If the MCP session, local architect claim metadata, scoped WorkRequest, guidance list, or required `work_request_id` is unavailable or null, record/report a blocker and stop. Repo, base branch, phase, and anchor package are inferred from the ledger after claim; do not copy them into claim arguments unless an operator asks for an explicit scope check."
+      "1. If the MCP session, local architect claim metadata, scoped WorkRequest, guidance list, or required `work_request_id` is unavailable or null, record/report a blocker and stop. Repo, base branch, phase, and handoff scope are inferred from the ledger after claim; do not copy them into claim arguments unless an operator asks for an explicit scope check."
 
   defp stop_condition_prompt_line(nil),
     do:
-      "1. If the MCP session, scoped WorkRequest, guidance list, or required `work_request_id` is unavailable or null, record/report a blocker and stop. Repo, base branch, phase, and anchor package are inferred from the ledger after claim; do not copy them into claim arguments unless an operator asks for an explicit scope check."
+      "1. If the MCP session, scoped WorkRequest, guidance list, or required `work_request_id` is unavailable or null, record/report a blocker and stop. Repo, base branch, phase, and handoff scope are inferred from the ledger after claim; do not copy them into claim arguments unless an operator asks for an explicit scope check."
 
   defp prompt_reference_identifiers(
          %WorkRequest{} = work_request,
