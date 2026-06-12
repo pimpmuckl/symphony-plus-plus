@@ -55,19 +55,24 @@ defmodule Mix.Tasks.CodeQuality.Guard do
     "lib/symphony_elixir/symphony_plus_plus/mcp/http_state_store.ex" => %{
       functions: %{"handle_call/3" => %{max_complexity: 33}}
     },
+    "lib/symphony_elixir/symphony_plus_plus/mcp/tool_catalog.ex" => %{
+      functions: %{
+        "architect_tool_description/1" => %{max_complexity: 39},
+        "architect_tool_input_schema/1" => %{max_complexity: 40, max_function_lines: 360},
+        "worker_tool_input_schema/1" => %{max_function_lines: 179}
+      },
+      max_lines: 1407
+    },
     "lib/symphony_elixir/symphony_plus_plus/mcp/server.ex" => %{
       functions: %{
         "architect_tool/3" => %{max_complexity: 195, max_function_lines: 1053},
         "architect_tool_capability/1" => %{max_complexity: 40},
-        "architect_tool_description/1" => %{max_complexity: 39},
-        "architect_tool_input_schema/1" => %{max_complexity: 40, max_function_lines: 378},
         "dispatch/3" => %{max_complexity: 100, max_function_lines: 255},
         "handle_state/2" => %{max_complexity: 22},
         "invalid_params_error/2" => %{max_complexity: 21, max_function_lines: 204},
-        "worker_tool/3" => %{max_complexity: 69, max_function_lines: 245},
-        "worker_tool_input_schema/1" => %{max_function_lines: 182}
+        "worker_tool/3" => %{max_complexity: 69, max_function_lines: 245}
       },
-      max_lines: 15_535
+      max_lines: 14_230
     },
     "lib/symphony_elixir/symphony_plus_plus/planning/repository.ex" => %{max_lines: 981},
     "lib/symphony_elixir/symphony_plus_plus/solo_sessions/repository.ex" => %{max_lines: 770},
