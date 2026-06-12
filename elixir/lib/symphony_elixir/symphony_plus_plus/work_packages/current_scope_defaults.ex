@@ -39,7 +39,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.CurrentScopeDefaults do
     case Map.fetch(arguments, "head_sha") do
       :error -> current_head_sha_argument(current_head_sha)
       {:ok, nil} -> current_head_sha_argument(current_head_sha)
-      {:ok, head_sha} when is_binary(head_sha) -> trim_required(head_sha, "head_sha")
+      {:ok, head_sha} when is_binary(head_sha) -> explicit_head_sha_argument(head_sha, current_head_sha)
       {:ok, _head_sha} -> {:tool_error, "invalid_head_sha"}
     end
   end
@@ -53,6 +53,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.CurrentScopeDefaults do
 
   defp current_head_sha_argument(head_sha) when is_binary(head_sha), do: trim_required(head_sha, "current_head_sha")
   defp current_head_sha_argument(_head_sha), do: {:tool_error, "missing_current_head_sha"}
+
+  defp explicit_head_sha_argument(head_sha, current_head_sha) do
+    with {:ok, current_head_sha} <- current_head_sha_argument(current_head_sha),
+         {:ok, head_sha} <- trim_required(head_sha, "head_sha"),
+         true <- head_sha_matches?(current_head_sha, head_sha) do
+      {:ok, current_head_sha}
+    else
+      false -> {:tool_error, "head_sha_mismatch"}
+      error -> error
+    end
+  end
 
   defp generated_idempotency_key(tool, _work_package_id, _arguments) do
     "generated:" <> tool <> ":" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
