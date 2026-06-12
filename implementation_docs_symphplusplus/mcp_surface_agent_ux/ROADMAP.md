@@ -48,6 +48,74 @@ The remaining agent pain is in validation hints, recovery flows, generic
 descriptions, repeated optimistic-lock/status fields, and implementation
 vocabulary leaking into the tool surface.
 
+## Final Feature-Branch Status - 2026-06-12
+
+The feature branch `feat/mcp-surface-agent-ux` now includes the implementation
+PRs that covered the high-confidence cleanup lanes:
+
+- #368: scout roadmap and schema inventory.
+- #369: terse mutation receipts and output sludge removal.
+- #370: id-first claim/bootstrap contract and prompt cleanup.
+- #371: compact lifecycle presentation vocabulary.
+- #372: optional claim-scope hint relaxation and recovery guidance.
+- #373: current-scope worker defaults for comments, append-only
+  idempotency, PR/head metadata, and matching contract docs.
+
+Current agent-facing contract state:
+
+- Compact contract JSON remains at 79 tool schemas.
+- Normal worker claim is `claim_local_assignment(work_package_id)`;
+  normal architect claim is
+  `claim_local_architect_assignment(work_request_id)`.
+- Optional repo/base/phase/branch/worktree/caller hints stay accepted for
+  compatibility and debug validation, but successful id-only claims are the
+  documented default.
+- Routine mutation text is intentionally terse; `structuredContent` remains
+  the audit and machine-readable source of truth.
+- Worker comments default to the current WorkPackage, append-style worker
+  writes may omit idempotency keys, and PR/review evidence is anchored to the
+  latest recorded `attach_branch`.
+- Delivery-board and dashboard projections expose compact presentation state
+  while preserving detailed source keys for existing consumers.
+
+Deferred compatibility decisions:
+
+- Live git worktree reads for `head_sha` inference remain deferred until the
+  trust boundary is specified. Current metadata inference uses recorded
+  `attach_branch` context only.
+- Architect `work_request_id` omission is still a follow-up pilot, starting
+  with read-only tools before any mutating tool.
+- Deprecated status aliases, status guard omission, schema field renames, and
+  hiding/removing Phase 7 stubs require a versioned contract or explicit
+  operator approval.
+- Read-heavy WorkRequest/product-tree/delivery-board resources still expose
+  detailed context; they need a separate compact-read pass rather than
+  one-line mutation receipts.
+- Solo `solo_attach` still requires repo/base/workspace/caller metadata. That
+  remains a separate Solo-session UX cleanup.
+
+Validation/cutover boundary:
+
+- Final branch validation should exercise the MCP contract JSON, focused MCP
+  suites, broad Elixir checks where practical, Review Suite, and GitHub review.
+- Runtime smoke against `19998/19999`, installed-cache refresh, server reboot,
+  marketplace upgrade, and the final merge from `feat/mcp-surface-agent-ux`
+  to `main` are deliberately outside this feature-branch sweep until the
+  operator approves the cutover.
+
+Final sweep evidence collected:
+
+- `mcp_tools_contract.json` parses as JSON and still declares 79 tool schemas.
+- `TOOL_SCHEMA_INVENTORY.md` was regenerated from the compact contract and
+  covers every tool name in the JSON contract.
+- `git diff --check` passed.
+- `mix test test/symphony_elixir/symphony_plus_plus/mcp` passed: 330 tests.
+- `make -C elixir all` passed setup, build, and format, then failed lint on
+  pre-existing `RecoveryPayload` missing `@spec` declarations. That is
+  feature-branch static debt outside this docs-only final sweep.
+- Runtime smoke was not run because the slice explicitly forbids rebooting or
+  cutover without operator approval.
+
 ## Ranked Findings
 
 ### P0 - Claim And Recovery Errors Block Work Before Context Exists
