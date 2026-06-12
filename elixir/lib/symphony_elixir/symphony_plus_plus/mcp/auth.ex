@@ -50,8 +50,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Auth do
   def require_live_session_grant(%Session{} = session, repo) when is_atom(repo) do
     case fetch_grant(repo, session.assignment.grant_id) do
       {:ok, %AccessGrant{} = grant} ->
-        with :ok <- AccessGrantService.require_live_package_authority(repo, grant),
-             {:ok, %Session{}} <- session_from_grant(repo, grant, proof_hash: grant.secret_hash) do
+        with :ok <- require_proof(session, grant),
+             :ok <- AccessGrantService.require_live_package_authority(repo, grant),
+             {:ok, %Session{}} <- session_from_grant(repo, grant, proof_hash: session.proof_hash) do
           :ok
         end
 

@@ -403,6 +403,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport04Test do
     assert {:ok, []} = PlanningRepository.list_progress_events(repo, package.id)
   end
 
+  test "bound worker tools do not refresh claim leases for tampered session proofs", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-STATE-BAD-PROOF-NO-HEARTBEAT")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {_claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-bad-proof-no-heartbeat",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(repo), "claim-bad-proof-no-heartbeat-state")
+      )
+
+    assert {:ok, lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    old_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -4, :minute)
+    lease |> ClaimLease.update_changeset(%{last_seen_at: old_seen_at}) |> repo.update!()
+    tampered_server = %{claimed_server | session: %{claimed_server.session | proof_hash: "bad-proof"}}
+
+    {blocked_response, updated_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "append-after-bad-proof",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_progress", "arguments" => %{"summary" => "This should not be recorded", "status" => "in_progress"}}
+        },
+        tampered_server
+      )
+
+    assert get_in(blocked_response, ["error", "data", "reason"]) == "claim_lease_lost"
+    assert get_in(blocked_response, ["error", "data", "claim_lease_reason"]) == "invalid_session_proof"
+    assert updated_server.session == nil
+    assert {:ok, unchanged_lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    assert DateTime.compare(unchanged_lease.last_seen_at, old_seen_at) == :eq
+    assert {:ok, []} = PlanningRepository.list_progress_events(repo, package.id)
+  end
+
   test "bound worker tools stop before mutation when the current claim lease is paused", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-STATE-PAUSED-PREFLIGHT")
     assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
