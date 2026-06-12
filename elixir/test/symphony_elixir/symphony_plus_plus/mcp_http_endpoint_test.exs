@@ -686,12 +686,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
         [{"mcp-session-id", session_id}]
       )
 
-    assert get_in(json_response(progress, 200), ["error", "data", "reason"]) == "revoked"
+    assert get_in(json_response(progress, 200), ["error", "data", "reason"]) == "claim_required"
 
     assignment_resource =
       post_json(resources_read_request("revoked-resource", "sympp://assignment/current"), [{"mcp-session-id", session_id}])
 
-    assert get_in(json_response(assignment_resource, 200), ["error", "data", "reason"]) == "revoked"
+    assert get_in(json_response(assignment_resource, 200), ["error", "data", "reason"]) == "missing_session"
   end
 
   test "POST /mcp dispatches Solo tools through the dashboard lazy repo seam" do

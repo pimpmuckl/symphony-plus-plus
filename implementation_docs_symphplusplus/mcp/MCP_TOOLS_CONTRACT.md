@@ -31,6 +31,11 @@ agent-facing surface. `caller_id`, when present, is correlation metadata only;
 the active local claim owner is the ledger id plus `claimed_by`. Id-only
 architect claims default to the standard architect handoff owner.
 
+Local claim leases use heartbeat freshness. Successful bound MCP calls refresh
+the current lease, and replayed claims may reclaim stale no-heartbeat residue.
+Fresh worker leases continue to block other workers, while paused leases remain
+operator-controlled.
+
 ## Worker Tools
 
 Bound worker sessions expose health, assignment release, and:
@@ -136,6 +141,10 @@ capabilities, grant scope, lifecycle state, and handler-specific checks.
 
 Stale or revoked sessions recover by replaying the relevant local claim tool on
 the same id or by starting a new session and claiming the same id.
+`release_current_assignment` is safe to call repeatedly; absent, stale, or
+mismatched bindings return a compact ok-style cleanup result. Normal visible
+claim/release text omits claim lease ids, grant ids, caller ids, and raw
+recovery maps; `structuredContent` keeps non-secret audit details.
 
 ## Resources
 

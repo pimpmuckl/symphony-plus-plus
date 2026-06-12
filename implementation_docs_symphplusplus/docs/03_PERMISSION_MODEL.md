@@ -11,6 +11,11 @@ UI are workflow aids only.
 - Repo, base branch, phase, anchor package, worktree, branch, and caller fields
   are derived from the ledger when omitted and are validation context when
   supplied.
+- Local claim leases use a short heartbeat freshness window. Replaying the
+  same claim or using a bound MCP session refreshes the lease; stale
+  no-heartbeat residue may be reclaimed without operator database repair.
+- Fresh worker leases still block other workers. Paused leases remain an
+  intentional operator state, not reboot residue.
 
 ## Role Boundaries
 
@@ -32,3 +37,6 @@ as scope expansion.
 Agent-facing tools do not require private files, secret stores, or raw grant
 secrets. Responses and durable notes redact bearer/API/GitHub/Linear/MCP tokens,
 grant verifiers, secret hashes, and secret-like prose.
+Normal claim/release tool text is compact and omits claim lease ids, grant ids,
+caller ids, and raw recovery maps. Structured MCP results retain those
+non-secret audit details for debuggers and cockpit projections.

@@ -638,6 +638,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport01Test do
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "claimed_by"]) == "local-worker-1"
     assert get_in(claim_response, ["result", "structuredContent", "local_claim", "mode"]) == "local-http"
+    claim_text = assert_toon_tool_text!(claim_response)
+    assert claim_text =~ "status: ok"
+    assert claim_text =~ "work_package_id: #{package.id}"
+    refute claim_text =~ "grant_id"
+    refute claim_text =~ "claim_lease_id"
+    refute claim_text =~ "caller_id"
     refute inspect(claim_response) =~ minted.work_key.secret
     assert claimed_server.session.assignment.work_package_id == package.id
     assert claimed_server.session.proof_hash == minted.grant.secret_hash

@@ -23,6 +23,16 @@ default to the standard architect handoff owner. `caller_id` is optional
 correlation metadata, not claim ownership. Other claim fields are optional
 validation context and should be omitted unless already known.
 
+Local claim leases are heartbeat-based. Replaying the claim or making
+successful calls from the bound MCP session refreshes the lease. Stale
+no-heartbeat leases may be reclaimed quickly; fresh worker conflicts and paused
+leases remain protected.
+
+`release_current_assignment` is idempotent. If the current session, binding, or
+matching lease is already absent, stale, or mismatched, the tool returns a
+compact successful cleanup result and leaves audit detail in
+`structuredContent`.
+
 ## Skill Responsibilities
 
 - `symphony-plus-plus-mcp:symphony-work-package` claims by WorkPackage id, reads

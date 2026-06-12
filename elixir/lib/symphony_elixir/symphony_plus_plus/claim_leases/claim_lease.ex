@@ -89,16 +89,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease do
 
   @spec stale?(t(), DateTime.t()) :: boolean()
   def stale?(%__MODULE__{} = claim_lease, %DateTime{} = now) do
-    expired?(claim_lease, now) or heartbeat_stale?(claim_lease, now)
+    stale?(claim_lease, now, nil)
+  end
+
+  @spec stale?(t(), DateTime.t(), pos_integer() | nil) :: boolean()
+  def stale?(%__MODULE__{} = claim_lease, %DateTime{} = now, stale_after_ms) do
+    expired?(claim_lease, now) or heartbeat_stale?(claim_lease, now, stale_after_ms)
   end
 
   @spec heartbeat_stale_at(t()) :: DateTime.t() | nil
-  def heartbeat_stale_at(%__MODULE__{last_seen_at: %DateTime{} = last_seen_at, stale_after_ms: stale_after_ms})
-      when is_integer(stale_after_ms) and stale_after_ms > 0 do
-    DateTime.add(last_seen_at, stale_after_ms, :millisecond)
+  def heartbeat_stale_at(%__MODULE__{} = claim_lease), do: heartbeat_stale_at(claim_lease, nil)
+
+  @spec heartbeat_stale_at(t(), pos_integer() | nil) :: DateTime.t() | nil
+  def heartbeat_stale_at(%__MODULE__{last_seen_at: %DateTime{} = last_seen_at} = claim_lease, stale_after_ms) do
+    stale_after_ms = effective_stale_after_ms(claim_lease.stale_after_ms, stale_after_ms)
+
+    if is_integer(stale_after_ms) and stale_after_ms > 0 do
+      DateTime.add(last_seen_at, stale_after_ms, :millisecond)
+    end
   end
 
-  def heartbeat_stale_at(%__MODULE__{}), do: nil
+  def heartbeat_stale_at(%__MODULE__{}, _stale_after_ms), do: nil
+
+  defp effective_stale_after_ms(stored_stale_after_ms, override_stale_after_ms) do
+    [stored_stale_after_ms, override_stale_after_ms]
+    |> Enum.filter(&(is_integer(&1) and &1 > 0))
+    |> case do
+      [] -> nil
+      stale_after_values -> Enum.min(stale_after_values)
+    end
+  end
 
   @spec update_changeset(t(), map()) :: Ecto.Changeset.t()
   def update_changeset(%__MODULE__{} = claim_lease, attrs) do
@@ -180,8 +200,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease do
   defp expired?(%__MODULE__{lease_expires_at: %DateTime{} = expires_at}, %DateTime{} = now), do: DateTime.compare(expires_at, now) != :gt
   defp expired?(%__MODULE__{}, %DateTime{}), do: false
 
-  defp heartbeat_stale?(%__MODULE__{} = claim_lease, %DateTime{} = now) do
-    case heartbeat_stale_at(claim_lease) do
+  defp heartbeat_stale?(%__MODULE__{} = claim_lease, %DateTime{} = now, stale_after_ms) do
+    case heartbeat_stale_at(claim_lease, stale_after_ms) do
       %DateTime{} = stale_at -> DateTime.compare(stale_at, now) != :gt
       nil -> false
     end

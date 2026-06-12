@@ -169,6 +169,86 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
     assert get_in(repo_mismatch_response, ["error", "data", "reason"]) == "repo_scope_mismatch"
   end
 
+  test "claim_local_architect_assignment reclaims old other-actor handoff lease after local recovery window", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-STALE-OTHER",
+        status: "ready_for_clarification"
+      )
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               handoff_opts: handoff_opts(repo)
+             )
+
+    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -6, :minute)
+
+    assert {:ok, stale_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               handoff.anchor_package.id,
+               %{"actor_kind" => "agent", "actor_id" => "local:previous-architect", "actor_display_name" => "previous-architect"},
+               now: stale_seen_at,
+               stale_after_ms: :timer.hours(24)
+             )
+
+    refute ClaimLease.stale?(stale_lease, DateTime.utc_now(:microsecond))
+
+    {response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-stale-other-reclaim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => %{"work_request_id" => work_request.id}}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-architect-stale-other-reclaim-state")
+      )
+
+    assert get_in(response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert get_in(response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "reclaimed"
+    assert Scope.work_request(work_request.id) in claimed_server.session.assignment.scopes
+    text = assert_toon_tool_text!(response)
+    assert text =~ "lease: reclaimed"
+    refute text =~ "grant_id"
+    refute text =~ "claim_lease_id"
+    refute text =~ "caller_id"
+
+    assert {:ok, current_lease} = ClaimLeaseService.current_for_work_package(repo, handoff.anchor_package.id)
+    assert current_lease.previous_claim_id == stale_lease.id
+    assert current_lease.stale_after_ms == :timer.minutes(5)
+
+    other_work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-OTHER-SCOPE",
+        status: "ready_for_clarification"
+      )
+
+    write_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "stale-reclaim-other-write",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "record_work_request_decision",
+            "arguments" => %{
+              "work_request_id" => other_work_request.id,
+              "source_type" => "architect",
+              "decision" => "Attempt write outside stale-reclaimed owner WorkRequest.",
+              "rationale" => "This must remain scoped.",
+              "scope_impact" => "No change.",
+              "created_by" => "architect-1"
+            }
+          }
+        },
+        claimed_server
+      )
+
+    assert get_in(write_response, ["error", "data", "reason"]) == "not_found"
+  end
+
   test "claim_local_architect_assignment reports the current binding before rebinding", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-ARCHITECT-CLAIM-BOUND-WORKER", base_branch: "main")
     assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)

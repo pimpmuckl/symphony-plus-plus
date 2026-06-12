@@ -46,6 +46,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Auth do
 
   def require_session(_session, repo) when is_atom(repo), do: {:error, {:unauthorized, :invalid_session}}
 
+  @spec require_live_session_grant(Session.t() | nil, module()) :: :ok | {:error, denial() | term()}
+  def require_live_session_grant(%Session{} = session, repo) when is_atom(repo) do
+    case fetch_grant(repo, session.assignment.grant_id) do
+      {:ok, %AccessGrant{} = grant} ->
+        with :ok <- require_proof(session, grant),
+             :ok <- AccessGrantService.require_live_package_authority(repo, grant),
+             {:ok, %Session{}} <- session_from_grant(repo, grant, proof_hash: session.proof_hash) do
+          :ok
+        end
+
+      {:ok, unexpected} ->
+        {:error, {:service_unavailable, {:unexpected_grant_lookup_result, term_type(unexpected)}}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def require_live_session_grant(nil, repo) when is_atom(repo), do: {:error, :unauthorized}
+  def require_live_session_grant(_session, repo) when is_atom(repo), do: {:error, {:unauthorized, :invalid_session}}
+
+  @spec live_grant_loss_reason?(term()) :: boolean()
+  def live_grant_loss_reason?(reason), do: reason in [:revoked, :expired, :work_package_terminal]
+
   @spec session_from_grant(module(), AccessGrant.t(), keyword()) :: {:ok, Session.t()} | {:error, term()}
   def session_from_grant(repo, %AccessGrant{} = grant, opts \\ []) when is_atom(repo) and is_list(opts) do
     now = Keyword.get(opts, :now, DateTime.utc_now(:microsecond))
