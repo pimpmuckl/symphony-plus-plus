@@ -10315,7 +10315,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
          {:ok, idempotency_key} <- CurrentScopeDefaults.idempotency_key(arguments, "report_blocker", Session.work_package_id(session)),
          {:ok, blocker_id} <- optional_blocker_id(arguments, idempotency_key) do
-      append_scoped_progress(config.repo, session, arguments, "report_blocker", %{
+      append_scoped_progress(config.repo, session, Map.put(arguments, "idempotency_key", idempotency_key), "report_blocker", %{
         "type" => "blocker",
         "source_tool" => "report_blocker",
         "blocker_id" => blocker_id,

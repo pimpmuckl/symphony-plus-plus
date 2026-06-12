@@ -701,6 +701,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools07Test do
 
     assert is_binary(blocker_id)
     assert String.starts_with?(blocker_id, "generated:report_blocker:")
+    assert get_in(blocker_response, ["result", "structuredContent", "progress_event", "idempotency_key"]) == "report_blocker:#{blocker_id}"
 
     resolved_response =
       attach_tool(repo, session, "resolve_blocker", %{
