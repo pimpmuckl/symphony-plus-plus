@@ -282,7 +282,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport04Test do
     assert DateTime.compare(refreshed_lease.last_seen_at, old_seen_at) == :gt
   end
 
-  test "bound worker tools refresh stale current claim leases before mutation", %{repo: repo} do
+  test "bound worker tools reclaim old current claim leases before mutation", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-STATE-STALE-PREFLIGHT")
     assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
 
@@ -298,7 +298,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport04Test do
       )
 
     assert {:ok, original_lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
-    original_lease |> ClaimLease.update_changeset(%{last_seen_at: DateTime.add(DateTime.utc_now(:microsecond), -6, :minute)}) |> repo.update!()
+    old_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -6, :minute)
+
+    original_lease =
+      original_lease
+      |> ClaimLease.update_changeset(%{last_seen_at: old_seen_at, stale_after_ms: :timer.hours(24)})
+      |> repo.update!()
+
+    refute ClaimLease.stale?(original_lease, DateTime.utc_now(:microsecond))
 
     {progress_response, updated_server} =
       Server.handle_state(

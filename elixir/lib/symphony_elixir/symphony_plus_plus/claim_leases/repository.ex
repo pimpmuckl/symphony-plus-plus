@@ -75,7 +75,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
 
     with {:ok, %ClaimLease{} = claim_lease} <- get(repo, id),
          :ok <- require_status(claim_lease, ["active"]),
-         :ok <- require_not_stale(claim_lease, now) do
+         :ok <- require_not_stale(claim_lease, now, heartbeat_current_stale_after_ms(attrs, opts)) do
       update_claim_lease(
         repo,
         claim_lease,
@@ -275,7 +275,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
   end
 
   defp require_not_stale(%ClaimLease{} = claim_lease, now) do
-    if ClaimLease.stale?(claim_lease, now), do: {:error, :claim_stale}, else: :ok
+    require_not_stale(claim_lease, now, nil)
+  end
+
+  defp require_not_stale(%ClaimLease{} = claim_lease, now, current_stale_after_ms) do
+    if ClaimLease.stale?(claim_lease, now, current_stale_after_ms), do: {:error, :claim_stale}, else: :ok
   end
 
   defp require_releasable(%ClaimLease{status: "paused"}, _now), do: :ok
@@ -346,6 +350,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
     |> Map.take([:lease_expires_at, "lease_expires_at", :stale_after_ms, "stale_after_ms"])
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
+  end
+
+  defp heartbeat_current_stale_after_ms(attrs, opts) do
+    Map.get(attrs, :stale_after_ms) || Map.get(attrs, "stale_after_ms") || Keyword.get(opts, :current_stale_after_ms)
   end
 
   defp put_inherited_value(attrs, key, value) do
