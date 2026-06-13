@@ -438,6 +438,26 @@ function Resolve-SymppArtifactSourceUri($Artifact, [string]$ManifestPath) {
   return [System.IO.Path]::GetFullPath((Join-Path $manifestDir $value))
 }
 
+function Assert-SymppArtifactSourceUsable([string]$SourceUri) {
+  if ([System.Uri]::IsWellFormedUriString($SourceUri, [System.UriKind]::Absolute)) {
+    $uri = [System.Uri]$SourceUri
+    if ($uri.Scheme -eq "file") {
+      if (-not (Test-Path -LiteralPath $uri.LocalPath -PathType Leaf)) {
+        throw "artifact_missing: selected Symphony++ runtime artifact file does not exist: $($uri.LocalPath)"
+      }
+      return
+    }
+    if ($uri.Scheme -eq "https" -or ($uri.Scheme -eq "http" -and $uri.IsLoopback)) {
+      return
+    }
+    throw "artifact_download_blocked: Symphony++ runtime artifacts must use https, file, or loopback http URLs."
+  }
+
+  if (-not (Test-Path -LiteralPath $SourceUri -PathType Leaf)) {
+    throw "artifact_missing: selected Symphony++ runtime artifact file does not exist: $SourceUri"
+  }
+}
+
 function Resolve-SymppArtifactEntrypoint($Artifact) {
   $entrypoint = [string](Get-JsonPropertyValue $Artifact @("entrypoint", "backend_entrypoint", "command"))
   if ([string]::IsNullOrWhiteSpace($entrypoint)) {
@@ -578,6 +598,7 @@ function Resolve-SymppPreparedArtifactRuntime([string]$PluginRoot, [string]$Expe
   $extractRoot = Join-Path $cacheRoot "runtime"
   $archivePath = Join-Path $cacheRoot "artifact.zip"
   $sourceUri = Resolve-SymppArtifactSourceUri $artifact $manifest.manifest_path
+  Assert-SymppArtifactSourceUsable $sourceUri
 
   if ($ValidateOnly) {
     $ready = Test-SymppArtifactCacheReady $extractRoot $entrypoint $sha256
@@ -3642,6 +3663,9 @@ try {
   $artifactDashboardPortMatchesBackend = $dashboardPortExplicit -and $dashboardPort -eq $backendPlan.port
   $artifactBackendProvidesDashboard = (Test-ArtifactBackendProvidesDashboard $runtimeState $backendPlan $runtimeMode) -and
     ($backendPlan.should_start -or ((Test-HealthySymppDashboard $backendPlan.url) -and (Test-SymppDashboardMcpProxyMatches $backendPlan.url $expectedContractFingerprint)))
+  if ($artifactBackendProvidesDashboard -and -not $backendPlan.should_start) {
+    $runtimeMode = "artifact"
+  }
   if ($artifactBackendProvidesDashboard -and
       [string]::IsNullOrWhiteSpace($env:SYMPP_DASHBOARD_ORIGIN) -and
       ((-not $dashboardPortExplicit) -or $artifactDashboardPortMatchesBackend) -and
