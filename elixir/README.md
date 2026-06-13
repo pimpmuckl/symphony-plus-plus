@@ -135,19 +135,22 @@ command, or secret-retrieval metadata.
 
 ## Local Operator WorkRequest Notes
 
-Trusted local HTTP MCP sessions may append non-secret WorkRequest notes without
-claiming each WorkRequest as the owning architect. The unbound local-operator
-tools are:
+Trusted local HTTP MCP sessions may create WorkRequests and append non-secret
+WorkRequest notes without claiming each WorkRequest as the owning architect.
+The local-operator tools are:
 
 - `add_work_request_comment`
+- `list_comments`
 - `record_work_request_operator_decision`
 
 Both tools require an explicit local MCP state key, a trusted local daemon, and
-a local filesystem ledger database. They are not advertised to bound worker or
-architect sessions and are rejected for remote/company database URLs. The tools
-reuse the WorkRequest comment and decision services, store `source_type: "operator"`,
-include caller provenance such as `created_by`, and apply the
-standard redaction pass before persisting or returning note content.
+a local filesystem ledger database. They remain visible with
+`create_work_request` when the MCP wrapper is bound to a worker or architect
+assignment, but they do not widen that assignment's package or WorkRequest
+authority. They are rejected for remote/company database URLs. The tools reuse
+the WorkRequest comment and decision services, store `source_type: "operator"`,
+include caller provenance such as `created_by`, and apply the standard
+redaction pass before persisting or returning note content.
 
 Tool contracts are intentionally small: comments require `work_request_id`,
 `body`, and `created_by`; decisions require `work_request_id`, `decision`,

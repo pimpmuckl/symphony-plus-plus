@@ -7,12 +7,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.LocalArchitectGrantClaim do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
   @type recovered_grant :: %{
           id: String.t(),
           previous_claimed_at: DateTime.t() | nil,
           previous_claimed_by: String.t() | nil,
-          recovered_claimed_by: String.t()
+          recovered_claimed_by: String.t(),
+          completion_snapshots: [map()]
         }
   @type grant_action :: :claimed | :reconnected | {:recovered, recovered_grant()}
   @type grant_validator :: (AccessGrant.t() -> :ok | {:error, term()})
@@ -35,6 +37,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.LocalArchitectGrantClaim do
 
   @spec rollback_failed_claim(module(), grant_action()) :: :ok
   def rollback_failed_claim(repo, {:recovered, recovery}) when is_atom(repo) and is_map(recovery) do
+    _result = restore_recovered_completion(repo, recovery)
     _result = restore_recovered_handoff_owner(repo, recovery)
     :ok
   end
@@ -88,8 +91,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.LocalArchitectGrantClaim do
            {1, _rows} <- recover_released_handoff_owner_id(repo, recovered_owner.id, claim, now),
            {:ok, %AccessGrant{} = grant} <- claim_grant(repo, anchor, claim, now),
            :ok <- validate_grant.(grant),
+           {:ok, completion_snapshots} <- WorkRequestRepository.completion_snapshots_for_work_package(repo, anchor.id),
            :ok <- WorkRequestRepository.clear_completion_for_work_package(repo, anchor.id) do
-        {:ok, grant, {:recovered, recovered_owner_snapshot(recovered_owner, claim)}}
+        {:ok, grant, {:recovered, recovered_owner_snapshot(recovered_owner, claim, completion_snapshots)}}
       else
         nil -> repo.rollback(:already_claimed)
         {0, _rows} -> repo.rollback(:already_claimed)
@@ -127,14 +131,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.LocalArchitectGrantClaim do
     repo.update_all(query, set: [claimed_at: now, claimed_by: claim.claimed_by, updated_at: now])
   end
 
-  defp recovered_owner_snapshot(%AccessGrant{} = recovered_owner, claim) do
+  defp recovered_owner_snapshot(%AccessGrant{} = recovered_owner, claim, completion_snapshots) do
     %{
       id: recovered_owner.id,
       previous_claimed_at: recovered_owner.claimed_at,
       previous_claimed_by: recovered_owner.claimed_by,
-      recovered_claimed_by: claim.claimed_by
+      recovered_claimed_by: claim.claimed_by,
+      completion_snapshots: completion_snapshots
     }
   end
+
+  defp restore_recovered_completion(repo, %{completion_snapshots: snapshots}) when is_list(snapshots) do
+    now = DateTime.utc_now(:microsecond)
+
+    Enum.each(snapshots, fn snapshot ->
+      repo.update_all(
+        from(work_request in WorkRequest, where: work_request.id == ^snapshot.id),
+        set: [
+          completed_at: snapshot.completed_at,
+          completion_source: snapshot.completion_source,
+          archived_at: snapshot.archived_at,
+          archive_reason: snapshot.archive_reason,
+          updated_at: now
+        ]
+      )
+    end)
+  end
+
+  defp restore_recovered_completion(_repo, _recovery), do: :ok
 
   defp restore_recovered_handoff_owner(repo, %{id: id, recovered_claimed_by: recovered_claimed_by} = recovery)
        when is_binary(id) and is_binary(recovered_claimed_by) do

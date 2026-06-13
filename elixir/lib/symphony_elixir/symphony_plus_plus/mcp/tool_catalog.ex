@@ -1180,6 +1180,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
       Enum.map(@bootstrap_tools, &bootstrap_tool_spec/1)
   end
 
+  @spec bootstrap_tool_specs() :: [tool_spec()]
+  def bootstrap_tool_specs, do: Enum.map(@bootstrap_tools, &bootstrap_tool_spec/1)
+
+  @spec trusted_local_comment_tool_specs() :: [tool_spec()]
+  def trusted_local_comment_tool_specs, do: [shared_worker_architect_tool_spec("list_comments")]
+
   defp local_assignment_claim_tool_specs(%Config{}), do: [worker_tool_spec(@local_assignment_claim_tool)]
 
   defp local_architect_assignment_claim_tool_specs(%Config{}), do: [local_architect_assignment_claim_tool_spec()]
@@ -1203,6 +1209,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   end
 
   defp shared_worker_architect_tool_spec(name), do: worker_tool_spec(name)
+
   @spec local_operator_tool_specs() :: [tool_spec()]
   def local_operator_tool_specs, do: Enum.map(@local_operator_tools, &local_operator_tool_spec/1)
 

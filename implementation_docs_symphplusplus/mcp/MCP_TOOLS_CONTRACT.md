@@ -72,12 +72,18 @@ approve scope, merge PRs, advance phases, or close WorkRequest delivery.
 Unbound sessions expose `sympp.health`, `release_current_assignment`, Solo
 Session tools, scoped worker/architect schemas, the local claim tools, and
 `create_work_request`. Trusted local HTTP sessions with explicit state-key
-continuity and a file-backed ledger also expose:
+continuity and a file-backed ledger also expose safe local operator tools:
 
 ```text
 add_work_request_comment
+list_comments
 record_work_request_operator_decision
 ```
+
+Trusted local sessions keep `create_work_request` and these safe local
+operator tools visible even when the wrapper is bound to a worker or architect
+assignment, or when that binding needs refresh. They do not widen the active
+assignment's package or WorkRequest authority.
 
 Solo Session tools are for ordinary local planning memory. They do not claim a
 WorkRequest or WorkPackage and do not grant dispatch or lifecycle authority.
@@ -135,9 +141,11 @@ secret handoff options.
 
 `tools/list` is schema discovery, not authorization. Healthy unbound sessions
 show health, Solo tools, scoped schemas, local claim tools, and
-`create_work_request`. Bound worker sessions show worker tools. Bound architect
-sessions show architect tools. Calls still enforce live session role,
-capabilities, grant scope, lifecycle state, and handler-specific checks.
+`create_work_request`. Bound worker sessions show worker tools plus trusted
+local bootstrap/operator tools when available. Bound architect sessions show
+architect tools plus trusted local bootstrap/operator tools when available.
+Calls still enforce live session role, capabilities, grant scope, lifecycle
+state, local daemon trust, and handler-specific checks.
 
 Stale or revoked sessions recover by replaying the relevant local claim tool on
 the same id or by starting a new session and claiming the same id.

@@ -96,9 +96,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport04Test do
     assert get_in(other_repo_response, ["error", "data", "reason"]) == "server_not_initialized"
   end
 
-  test "explicit state key stale live server remains local-claim-only until new session", %{repo: repo} do
+  test "explicit state key stale live server keeps claim and trusted local tools until new session", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-STATE-STALE-LIVE")
     assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    assert {:ok, comment} =
+             CommentService.create(repo, %{
+               "target_kind" => "work_package",
+               "target_id" => package.id,
+               "body" => "stale session local comment",
+               "source_type" => "operator",
+               "author_name" => "operator"
+             })
+
     arguments = local_assignment_claim_args(package)
     state_key = make_ref()
 
@@ -139,6 +149,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport04Test do
         tools_server
       )
 
+    {stale_list_comments_response, _stale_comments_server} =
+      Server.handle_response_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "list-comments-after-stale-init",
+          "method" => "tools/call",
+          "params" => %{"name" => "list_comments", "arguments" => %{"target_kind" => "work_package", "target_id" => package.id}}
+        },
+        tools_server
+      )
+
     {fresh_init_response, fresh_initialized_server} =
       Server.handle_response_state(
         %{"jsonrpc" => "2.0", "id" => "fresh-init-after-stale", "method" => "initialize", "params" => initialize_params()},
@@ -154,9 +175,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport04Test do
     fresh_tools_by_name = fresh_tools_response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
 
     assert get_in(reinit_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
-    assert Map.keys(tools_by_name) |> Enum.sort() == ["claim_local_architect_assignment", "claim_local_assignment", "sympp.health"]
+
+    assert Map.keys(tools_by_name) |> Enum.sort() == [
+             "add_work_request_comment",
+             "claim_local_architect_assignment",
+             "claim_local_assignment",
+             "create_work_request",
+             "list_comments",
+             "record_work_request_operator_decision",
+             "sympp.health"
+           ]
+
     assert get_in(stale_solo_response, ["error", "data", "reason"]) == "claim_required"
     assert get_in(stale_solo_response, ["error", "data", "action"]) == "claim_local_assignment"
+    assert [%{"id" => stale_comment_id}] = get_in(stale_list_comments_response, ["result", "structuredContent", "comments"])
+    assert stale_comment_id == comment.id
     assert get_in(fresh_init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
     refute Map.has_key?(tools_by_name, "get_current_assignment")
     assert Map.has_key?(fresh_tools_by_name, "read_work_request")

@@ -103,14 +103,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
     assert Scope.work_request(work_request.id) in rebooted_server.session.assignment.scopes
   end
 
-  test "claim_local_architect_assignment reports missing prepared handoff for existing WorkRequests", %{repo: repo} do
+  test "claim_local_architect_assignment creates a missing local handoff for existing WorkRequests", %{repo: repo} do
     work_request =
       create_work_request!(repo,
         id: "WR-MCP-LOCAL-ARCHITECT-MISSING-HANDOFF",
         status: "ready_for_clarification"
       )
 
-    {response, _server} =
+    expected_anchor_id = ArchitectHandoff.anchor_id_for_work_request(work_request)
+    assert {:error, :not_found} = WorkPackageRepository.get(repo, expected_anchor_id)
+
+    {response, claimed_server} =
       Server.handle_state(
         %{
           "jsonrpc" => "2.0",
@@ -124,17 +127,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
         local_mcp_server(local_mcp_config(repo), "local-architect-missing-handoff-state")
       )
 
-    assert get_in(response, ["error", "code"]) == -32_001
-    assert get_in(response, ["error", "data", "reason"]) == "architect_handoff_not_prepared"
-    assert get_in(response, ["error", "data", "action"]) == "prepare_architect_handoff"
-    assert get_in(response, ["error", "data", "work_request_id"]) == work_request.id
-
-    assert get_in(response, ["error", "data", "expected_architect_anchor_work_package_id"]) ==
-             ArchitectHandoff.anchor_id_for_work_request(work_request)
-
-    assert get_in(response, ["error", "data", "expected_phase_id"]) == ArchitectHandoff.phase_id_for_work_request(work_request)
-    assert get_in(response, ["error", "data", "hint"]) =~ "prepare the architect handoff"
-    assert {:error, :not_found} = WorkPackageRepository.get(repo, ArchitectHandoff.anchor_id_for_work_request(work_request))
+    assert get_in(response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert get_in(response, ["result", "structuredContent", "assignment", "work_package_id"]) == expected_anchor_id
+    assert get_in(response, ["result", "structuredContent", "assignment", "claimed_by"]) == "local-architect-1"
+    assert get_in(response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "created"
+    assert claimed_server.session.assignment.grant_role == "architect"
+    assert Scope.work_request(work_request.id) in claimed_server.session.assignment.scopes
+    assert {:ok, anchor} = WorkPackageRepository.get(repo, expected_anchor_id)
+    assert anchor.phase_id == ArchitectHandoff.phase_id_for_work_request(work_request)
 
     {phase_mismatch_response, _server} =
       Server.handle_state(
@@ -342,6 +342,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
     |> ClaimLease.update_changeset(%{last_seen_at: DateTime.add(DateTime.utc_now(:microsecond), -6, :minute)})
     |> repo.update!()
 
+    assert {:ok, linked_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-LOCAL-ARCHITECT-RECOVERED-AUDIT-FAILS",
+                 target_base_branch: work_request.base_branch
+               )
+             )
+
+    repo.update!(
+      Ecto.Changeset.change(linked_slice,
+        status: "dispatched",
+        work_package_id: handoff.anchor_package.id,
+        dispatched_at: DateTime.utc_now(:microsecond)
+      )
+    )
+
+    completed_at = ~U[2026-06-01 12:00:00.000000Z]
+
+    repo.update!(
+      Ecto.Changeset.change(work_request,
+        completed_at: completed_at,
+        completion_source: "derived"
+      )
+    )
+
     new_arguments = %{"work_request_id" => work_request.id, "claimed_by" => "Codex janitor"}
 
     {response, _failed_server} =
@@ -361,6 +388,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
     assert {:ok, restored_grant} = AccessGrantRepository.get(repo, handoff.grant.id)
     assert restored_grant.claimed_by == "Codex coordinator"
     assert restored_grant.revoked_at == nil
+
+    assert {:ok, restored_work_request} = WorkRequestRepository.get(repo, work_request.id)
+    assert restored_work_request.completed_at == completed_at
+    assert restored_work_request.completion_source == "derived"
+    assert is_nil(restored_work_request.archived_at)
+    assert is_nil(restored_work_request.archive_reason)
   end
 
   test "claim_local_architect_assignment rolls back recovered owners when handoff validation fails", %{repo: repo} do

@@ -915,15 +915,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp dispatch(
-         "tools/call",
-         %{"name" => "list_comments"} = params,
-         %__MODULE__{session: %Session{assignment: %{grant_role: "architect"}}} = server
-       ) do
-    case prepare_architect_tool_call(server, params, "list_comments") do
-      {:ok, arguments} -> architect_tool("list_comments", arguments, server)
-      {:error, code, message, data} -> {:error, code, message, data}
-      {:error, reason} -> architect_error(reason, "list_comments")
+  defp dispatch("tools/call", %{"name" => "list_comments"} = params, %__MODULE__{session: %Session{}} = server) do
+    dispatch_scoped_list_comments(params, server)
+  end
+
+  defp dispatch("tools/call", %{"name" => "list_comments"} = params, %__MODULE__{} = server) do
+    if local_trusted_tools_enabled?(server) do
+      case prepare_local_trusted_list_comments_tool_call(server, params) do
+        {:ok, arguments} -> local_trusted_list_comments_tool(arguments, server)
+        {:error, code, message, data} -> {:error, code, message, data}
+      end
+    else
+      dispatch_scoped_list_comments(params, server)
     end
   end
 
@@ -1026,6 +1029,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp dispatch(_method, _params, _server) do
     {:error, -32_601, "Method not found", %{}}
+  end
+
+  defp dispatch_scoped_list_comments(params, %__MODULE__{session: %Session{assignment: %{grant_role: "architect"}}} = server) do
+    case prepare_architect_tool_call(server, params, "list_comments") do
+      {:ok, arguments} -> architect_tool("list_comments", arguments, server)
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:error, reason} -> architect_error(reason, "list_comments")
+    end
+  end
+
+  defp dispatch_scoped_list_comments(params, %__MODULE__{session: nil} = server) do
+    case prepare_architect_tool_call(server, params, "list_comments") do
+      {:ok, arguments} -> architect_tool("list_comments", arguments, server)
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:error, reason} -> architect_error(reason, "list_comments")
+    end
+  end
+
+  defp dispatch_scoped_list_comments(params, %__MODULE__{} = server) do
+    case prepare_worker_tool_call(server, params, "list_comments") do
+      {:ok, arguments} -> worker_tool("list_comments", arguments, server)
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:error, reason} -> worker_error(reason, "list_comments")
+    end
   end
 
   defp health(%__MODULE__{config: %Config{health_ledger_mode: :configured_identity} = config}) do
@@ -1598,33 +1625,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_session_tool_specs, do: ToolCatalog.worker_session_tool_specs()
 
   defp tool_specs_for_server(%__MODULE__{session_refresh_required: true, config: config} = server) do
-    {:ok, claimable_tool_specs(config) ++ local_operator_tool_specs(server)}
+    {:ok, dedupe_tool_specs(claimable_tool_specs(config) ++ local_trusted_tool_specs(server))}
   end
 
   defp tool_specs_for_server(%__MODULE__{config: config, session: session} = server) do
     with {:ok, specs} <- tool_specs_for_session(config, session) do
-      {:ok, specs ++ local_operator_tool_specs(server)}
+      {:ok, dedupe_tool_specs(specs ++ local_trusted_tool_specs(server))}
     end
   end
 
-  defp local_operator_tool_specs(%__MODULE__{} = server) do
-    if local_operator_tools_enabled?(server), do: local_operator_tool_specs(), else: []
+  defp dedupe_tool_specs(specs) do
+    Enum.uniq_by(specs, & &1["name"])
+  end
+
+  defp local_trusted_tool_specs(%__MODULE__{} = server) do
+    if local_trusted_tools_enabled?(server) do
+      ToolCatalog.bootstrap_tool_specs() ++ local_operator_tool_specs() ++ ToolCatalog.trusted_local_comment_tool_specs()
+    else
+      []
+    end
   end
 
   defp local_operator_tool_specs, do: ToolCatalog.local_operator_tool_specs()
 
-  defp local_operator_tools_enabled?(%__MODULE__{
-         config: %Config{mode: :http, local_daemon_trusted: true} = config,
-         local_daemon_trusted: true,
-         initialized: true,
-         session_refresh_required: false,
-         state_key_explicit: true,
-         session: nil
-       }) do
-    require_local_operator_database(config) == :ok
-  end
-
-  defp local_operator_tools_enabled?(%__MODULE__{}), do: false
+  defp local_trusted_tools_enabled?(%__MODULE__{} = server), do: authorize_trusted_local_tool_call(server, "tools/list") == :ok
 
   defp solo_tool_input_schema(name), do: ToolCatalog.solo_tool_input_schema(name)
   defp bootstrap_tool_input_schema(name), do: ToolCatalog.bootstrap_tool_input_schema(name)
@@ -2337,7 +2361,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, work_request} <- WorkRequestRepository.get(config.repo, claim.work_request_id),
          claim <- hydrate_local_architect_assignment_claim(work_request, claim),
          :ok <- require_local_architect_assignment_rebind_allowed(config.repo, session, claim),
-         {:ok, anchor} <- require_local_architect_handoff_anchor(config.repo, work_request, claim),
+         {:ok, anchor} <- require_local_architect_handoff_anchor(config, work_request, claim),
          :ok <- validate_local_architect_assignment_scope(work_request, anchor, claim),
          {:ok, lease, lease_action} <- ensure_local_architect_assignment_claim_lease(config.repo, anchor, claim) do
       case claim_local_architect_assignment_session(config.repo, anchor, claim, lease_action) do
@@ -2438,7 +2462,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_local_architect_handoff_anchor(repo, %WorkRequest{} = work_request, claim) do
+  defp require_local_architect_handoff_anchor(%Config{} = config, %WorkRequest{} = work_request, claim) do
+    repo = config.repo
     expected_anchor_id = ArchitectHandoff.anchor_id_for_work_request(work_request)
     expected_phase_id = ArchitectHandoff.phase_id_for_work_request(work_request)
 
@@ -2456,11 +2481,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
           {:ok, anchor}
 
         {:error, :not_found} ->
-          {:error, {:architect_handoff_not_prepared, work_request}}
+          create_local_architect_handoff_anchor(config, work_request, claim, expected_anchor_id)
 
         {:error, reason} ->
           {:error, reason}
       end
+    end
+  end
+
+  defp create_local_architect_handoff_anchor(%Config{} = config, %WorkRequest{} = work_request, claim, expected_anchor_id) do
+    with {:ok, handoff_opts} <- create_work_request_handoff_opts(config, claim.claimed_by),
+         {:ok, _handoff} <-
+           ArchitectHandoff.create_or_replay(config.repo, work_request.id,
+             local_operator?: true,
+             local_architect_claim?: true,
+             handoff_opts: handoff_opts
+           ) do
+      WorkPackageRepository.get(config.repo, expected_anchor_id)
     end
   end
 
@@ -2748,10 +2785,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp local_architect_assignment_claim_error({:migration_failed, _reason} = reason),
     do: service_error(reason, @local_architect_assignment_claim_tool)
 
-  defp local_architect_assignment_claim_error({:architect_handoff_not_prepared, %WorkRequest{} = work_request}) do
-    {:error, -32_001, "Unauthorized", architect_handoff_not_prepared_data(work_request)}
-  end
-
   defp local_architect_assignment_claim_error({:session_already_bound, current_assignment}) do
     {:error, -32_001, "Unauthorized", session_already_bound_data(@local_architect_assignment_claim_tool, current_assignment)}
   end
@@ -2774,19 +2807,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "reason" => "claim_lease_active_for_other_actor",
       "action" => "reuse_claim_identity_or_recycle_stale_claim",
       "hint" => hint
-    }
-  end
-
-  defp architect_handoff_not_prepared_data(%WorkRequest{} = work_request) do
-    %{
-      "tool" => @local_architect_assignment_claim_tool,
-      "reason" => "architect_handoff_not_prepared",
-      "action" => "prepare_architect_handoff",
-      "work_request_id" => work_request.id,
-      "expected_architect_anchor_work_package_id" => ArchitectHandoff.anchor_id_for_work_request(work_request),
-      "expected_phase_id" => ArchitectHandoff.phase_id_for_work_request(work_request),
-      "message" => "This WorkRequest exists, but its local architect handoff anchor has not been prepared.",
-      "hint" => "Ask the local operator to prepare the architect handoff, then retry claim_local_architect_assignment."
     }
   end
 
@@ -2876,6 +2896,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp prepare_local_trusted_list_comments_tool_call(%__MODULE__{} = server, params) do
+    with :ok <- require_tool_arguments_object(params, "list_comments"),
+         :ok <- authorize_trusted_local_tool_call(server, "list_comments"),
+         :ok <- prepare_mcp_repository_for_tool(server.config.repo, "list_comments") do
+      architect_tool_arguments(params, "list_comments")
+    end
+  end
+
   defp require_tool_arguments_object(params, name) do
     case Map.get(params, "arguments", %{}) do
       arguments when is_map(arguments) -> :ok
@@ -2929,28 +2957,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp authorize_bootstrap_tool_call(%__MODULE__{session_refresh_required: true}, tool) do
-    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "claim_required", "action" => @local_assignment_claim_tool}}
-  end
-
   defp authorize_bootstrap_tool_call(%__MODULE__{session: nil}, _tool), do: :ok
 
-  defp authorize_bootstrap_tool_call(%__MODULE__{}, tool) do
-    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "bootstrap_tools_require_unbound_session"}}
+  defp authorize_bootstrap_tool_call(%__MODULE__{} = server, tool) do
+    case authorize_trusted_local_tool_call(server, tool) do
+      :ok ->
+        :ok
+
+      {:error, -32_001, "Unauthorized", _data} ->
+        {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "bootstrap_tools_require_unbound_or_trusted_local_session"}}
+
+      error ->
+        error
+    end
   end
 
   defp authorize_local_trusted_work_request_read_tool_call(%__MODULE__{} = server, tool) do
     authorize_local_operator_tool_call(server, tool)
   end
 
-  defp authorize_local_operator_tool_call(
+  defp authorize_local_operator_tool_call(%__MODULE__{} = server, tool), do: authorize_trusted_local_tool_call(server, tool)
+
+  defp authorize_trusted_local_tool_call(
          %__MODULE__{
            initialized: true,
-           session_refresh_required: false,
            config: %Config{mode: :http, local_daemon_trusted: true} = config,
            local_daemon_trusted: true,
-           state_key_explicit: true,
-           session: nil
+           state_key_explicit: true
          },
          tool
        ) do
@@ -2960,27 +2993,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp authorize_local_operator_tool_call(%__MODULE__{initialized: false}, tool) do
+  defp authorize_trusted_local_tool_call(%__MODULE__{initialized: false}, tool) do
     {:error, -32_000, "Server error", %{"tool" => tool, "reason" => "server_not_initialized"}}
   end
 
-  defp authorize_local_operator_tool_call(%__MODULE__{session_refresh_required: true}, tool) do
-    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "claim_required", "action" => @local_architect_assignment_claim_tool}}
-  end
-
-  defp authorize_local_operator_tool_call(%__MODULE__{config: %Config{mode: :http}, session: %Session{}}, tool) do
-    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "local_operator_unbound_session_required"}}
-  end
-
-  defp authorize_local_operator_tool_call(%__MODULE__{config: %Config{mode: :http}, state_key_explicit: false}, tool) do
+  defp authorize_trusted_local_tool_call(%__MODULE__{config: %Config{mode: :http}, state_key_explicit: false}, tool) do
     {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "local_mcp_session_required"}}
   end
 
-  defp authorize_local_operator_tool_call(%__MODULE__{config: %Config{mode: :http}}, tool) do
+  defp authorize_trusted_local_tool_call(%__MODULE__{config: %Config{mode: :http}}, tool) do
     {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "local_daemon_trust_required"}}
   end
 
-  defp authorize_local_operator_tool_call(%__MODULE__{}, tool) do
+  defp authorize_trusted_local_tool_call(%__MODULE__{}, tool) do
     {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "local_mcp_required"}}
   end
 
@@ -3235,6 +3260,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> optional_put("source_id", Redactor.redact_text(source_id))
   end
 
+  defp local_trusted_list_comments_tool(arguments, %__MODULE__{config: config}) do
+    with {:ok, target_kind} <- required_argument(arguments, "target_kind"),
+         :ok <- require_comment_target_kind(target_kind),
+         {:ok, target_id} <- required_argument(arguments, "target_id"),
+         :ok <- require_local_trusted_comment_target(config.repo, target_kind, target_id),
+         {:ok, comments} <- CommentService.list_for_target(config.repo, target_kind, target_id) do
+      {:ok,
+       tool_result(%{
+         "comments" => Enum.map(comments, &comment_payload/1),
+         "target" => %{"kind" => target_kind, "id" => target_id}
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "list_comments", "reason" => reason}}
+      {:error, :not_found} -> not_found_error("list_comments")
+      {:error, reason} -> architect_error(reason, "list_comments")
+    end
+  end
+
   defp architect_tool("list_work_requests", arguments, %__MODULE__{config: config, session: nil} = server) do
     with :ok <- authorize_local_trusted_work_request_read_tool_call(server, "list_work_requests"),
          {:ok, status} <- optional_work_request_status(arguments),
@@ -3368,7 +3411,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp architect_tool(name, arguments, %__MODULE__{config: config, session: session})
+  defp architect_tool(name, arguments, %__MODULE__{config: config, session: %Session{} = session})
        when name in ["add_comment", "list_comments", "resolve_comment"] do
     with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, result} <- comment_tool_result(name, config.repo, session, arguments, :architect, session_claimed_by(session)) do
@@ -12423,6 +12466,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_comment_target_kind(target_kind) do
     if target_kind in Comment.target_kinds(), do: :ok, else: {:tool_error, "invalid_target_kind"}
   end
+
+  defp require_local_trusted_comment_target(repo, "work_request", target_id) do
+    case WorkRequestService.get(repo, target_id) do
+      {:ok, %WorkRequest{}} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_local_trusted_comment_target(repo, "planned_slice", target_id) do
+    case repo.get(PlannedSlice, target_id) do
+      %PlannedSlice{} -> :ok
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp require_local_trusted_comment_target(repo, "work_package", target_id) do
+    case WorkPackageRepository.get(repo, target_id) do
+      {:ok, %WorkPackage{}} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_local_trusted_comment_target(_repo, _target_kind, _target_id), do: {:tool_error, "invalid_target_kind"}
 
   defp comment_tool_result("add_comment", repo, %Session{} = session, arguments, source_type, author_name) do
     with {:ok, target_kind} <- required_argument(arguments, "target_kind"),
