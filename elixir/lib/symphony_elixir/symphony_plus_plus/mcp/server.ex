@@ -9116,7 +9116,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp chronological_progress_events(progress_events) do
     Enum.sort_by(progress_events, fn %ProgressEvent{created_at: created_at, sequence: sequence, id: id} ->
-      {created_at || DateTime.from_unix!(0), sequence || 0, id || ""}
+      {timestamp_sort_value(created_at), sequence || 0, id || ""}
     end)
   end
 
