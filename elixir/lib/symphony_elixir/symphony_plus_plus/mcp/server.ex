@@ -37,6 +37,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     Auth,
     ClaimToolText,
     Config,
+    LocalArchitectGrantClaim,
+    LocalClaimLeases,
     PlannedSliceWorkerRevoke,
     Repository,
     Session,
@@ -2169,81 +2171,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp ensure_local_assignment_claim_lease(repo, %WorkPackage{} = work_package, claim) do
-    actor = local_assignment_actor(claim)
-
-    case ClaimLeaseService.current_for_work_package(repo, work_package.id) do
-      {:ok, %ClaimLease{} = lease} ->
-        renew_local_assignment_claim_lease(repo, work_package.id, lease, actor)
-
-      {:error, :not_found} ->
-        claim_new_local_assignment_lease(repo, work_package.id, actor)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp renew_local_assignment_claim_lease(repo, work_package_id, %ClaimLease{} = lease, actor) do
-    now = DateTime.utc_now(:microsecond)
-
-    cond do
-      lease.status == "paused" ->
-        {:error, :claim_lease_paused}
-
-      ClaimLease.stale?(lease, now, @local_assignment_claim_stale_after_ms) ->
-        reclaim_local_assignment_claim_lease(repo, work_package_id, actor, "local_assignment_claim_stale")
-
-      local_claim_same_owner?(lease, actor) and lease.status == "active" ->
-        heartbeat_local_assignment_claim_lease(repo, work_package_id, lease, actor)
-
-      local_claim_same_owner?(lease, actor) ->
-        {:error, :claim_lease_not_active}
-
-      true ->
-        {:error, :claim_lease_active_for_other_actor}
-    end
-  end
-
-  defp heartbeat_local_assignment_claim_lease(repo, work_package_id, %ClaimLease{} = lease, actor) do
-    case ClaimLeaseService.heartbeat(repo, lease.id, stale_after_ms: @local_assignment_claim_stale_after_ms) do
-      {:ok, %ClaimLease{} = renewed} ->
-        {:ok, renewed, :heartbeat}
-
-      {:error, :claim_stale} ->
-        reclaim_local_assignment_claim_lease(repo, work_package_id, actor, "local_assignment_claim_stale")
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp claim_new_local_assignment_lease(repo, work_package_id, actor) do
-    case ClaimLeaseService.claim(repo, work_package_id, actor, stale_after_ms: @local_assignment_claim_stale_after_ms) do
-      {:ok, %ClaimLease{} = lease} -> {:ok, lease, :created}
-      {:error, :active_claim_exists} -> renew_current_local_assignment_claim_lease(repo, work_package_id, actor)
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp renew_current_local_assignment_claim_lease(repo, work_package_id, actor) do
-    case ClaimLeaseService.current_for_work_package(repo, work_package_id) do
-      {:ok, %ClaimLease{} = lease} ->
-        if local_claim_same_owner?(lease, actor) do
-          renew_local_assignment_claim_lease(repo, work_package_id, lease, actor)
-        else
-          {:error, :active_claim_exists}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp reclaim_local_assignment_claim_lease(repo, work_package_id, actor, reason) do
-    case ClaimLeaseService.reclaim_stale(repo, work_package_id, actor, local_assignment_claim_reclaim_opts(reason)) do
-      {:ok, %ClaimLease{} = lease} -> {:ok, lease, :reclaimed}
-      {:error, reason} -> {:error, reason}
-    end
+    LocalClaimLeases.ensure(
+      repo,
+      work_package.id,
+      LocalClaimLeases.worker_actor(claim),
+      @local_assignment_claim_stale_after_ms,
+      "local_assignment_claim_stale"
+    )
   end
 
   defp claim_local_assignment_session(repo, %WorkPackage{} = work_package, claim) do
@@ -2284,51 +2218,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @spec local_assignment_grant_action(AccessGrant.t(), [String.t()]) :: :reconnected | :claimed
   defp local_assignment_grant_action(%AccessGrant{id: id}, existing_grant_ids) when is_binary(id) do
     if id in existing_grant_ids, do: :reconnected, else: :claimed
-  end
-
-  defp local_assignment_actor(claim) do
-    owner_material =
-      [
-        "worker",
-        claim.work_package_id,
-        claim.claimed_by
-      ]
-      |> Enum.join("\0")
-
-    owner_id = local_assignment_actor_hash(owner_material)
-
-    %{
-      "actor_kind" => "agent",
-      "actor_id" => "local:" <> owner_id,
-      "actor_display_name" => claim.claimed_by
-    }
-  end
-
-  defp local_claim_same_owner?(%ClaimLease{} = lease, actor) when is_map(actor) do
-    lease.actor_kind == Map.get(actor, "actor_kind") and
-      lease.actor_display_name == Map.get(actor, "actor_display_name") and
-      local_claim_actor_id_match?(lease.actor_id, Map.get(actor, "actor_id"))
-  end
-
-  defp local_assignment_claim_reclaim_opts(reason) do
-    [
-      reason: reason,
-      current_stale_after_ms: @local_assignment_claim_stale_after_ms,
-      inherit_access_grant?: false,
-      stale_after_ms: @local_assignment_claim_stale_after_ms
-    ]
-  end
-
-  defp local_claim_actor_id_match?(actor_id, actor_id) when is_binary(actor_id), do: true
-
-  defp local_claim_actor_id_match?(lease_actor_id, actor_id) when is_binary(lease_actor_id) and is_binary(actor_id) do
-    String.starts_with?(lease_actor_id, actor_id <> ":")
-  end
-
-  defp local_claim_actor_id_match?(_lease_actor_id, _actor_id), do: false
-
-  defp local_assignment_actor_hash(material) when is_binary(material) do
-    Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
   defp finalize_local_assignment_claim(repo, result, %Session{} = session, claim, %ClaimLease{} = lease, lease_action, grant_action) do
@@ -2452,7 +2341,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, anchor} <- require_local_architect_handoff_anchor(config.repo, work_request, claim),
          :ok <- validate_local_architect_assignment_scope(work_request, anchor, claim),
          {:ok, lease, lease_action} <- ensure_local_architect_assignment_claim_lease(config.repo, anchor, claim) do
-      case claim_local_architect_assignment_session(config.repo, anchor, claim) do
+      case claim_local_architect_assignment_session(config.repo, anchor, claim, lease_action) do
         {:ok, result, session, grant_action} ->
           finalize_local_architect_assignment_claim(config.repo, result, session, claim, lease, lease_action, grant_action)
 
@@ -2584,119 +2473,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_architect_handoff_anchor_kind(%WorkPackage{}), do: {:error, :architect_anchor_scope_mismatch}
 
   defp ensure_local_architect_assignment_claim_lease(repo, %WorkPackage{} = anchor, claim) do
-    actor = local_architect_assignment_actor(claim)
-
-    case ClaimLeaseService.current_for_work_package(repo, anchor.id) do
-      {:ok, %ClaimLease{} = lease} ->
-        renew_local_architect_assignment_claim_lease(repo, anchor, lease, actor)
-
-      {:error, :not_found} ->
-        claim_new_local_architect_assignment_lease(repo, anchor.id, actor)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    LocalClaimLeases.ensure(
+      repo,
+      anchor.id,
+      LocalClaimLeases.architect_actor(claim),
+      @local_assignment_claim_stale_after_ms,
+      "local_architect_assignment_claim_stale"
+    )
   end
 
-  defp renew_local_architect_assignment_claim_lease(repo, %WorkPackage{} = anchor, %ClaimLease{} = lease, actor) do
-    now = DateTime.utc_now(:microsecond)
+  defp claim_local_architect_assignment_session(repo, %WorkPackage{} = anchor, claim, lease_action) do
+    validate_grant = &validate_local_architect_assignment_grant(repo, &1, anchor, claim)
 
-    cond do
-      lease.status == "paused" ->
-        {:error, :claim_lease_paused}
-
-      ClaimLease.stale?(lease, now, @local_assignment_claim_stale_after_ms) ->
-        reclaim_local_architect_assignment_claim_lease(repo, anchor.id, actor, "local_architect_assignment_claim_stale")
-
-      local_claim_same_owner?(lease, actor) and lease.status == "active" ->
-        heartbeat_local_architect_assignment_claim_lease(repo, anchor.id, lease, actor)
-
-      local_claim_same_owner?(lease, actor) ->
-        {:error, :claim_lease_not_active}
-
-      true ->
-        {:error, :claim_lease_active_for_other_actor}
-    end
-  end
-
-  defp heartbeat_local_architect_assignment_claim_lease(repo, anchor_id, %ClaimLease{} = lease, actor) do
-    case ClaimLeaseService.heartbeat(repo, lease.id, stale_after_ms: @local_assignment_claim_stale_after_ms) do
-      {:ok, %ClaimLease{} = renewed} ->
-        {:ok, renewed, :heartbeat}
-
-      {:error, :claim_stale} ->
-        reclaim_local_architect_assignment_claim_lease(repo, anchor_id, actor, "local_architect_assignment_claim_stale")
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp claim_new_local_architect_assignment_lease(repo, anchor_id, actor) do
-    case ClaimLeaseService.claim(repo, anchor_id, actor, stale_after_ms: @local_assignment_claim_stale_after_ms) do
-      {:ok, %ClaimLease{} = lease} -> {:ok, lease, :created}
-      {:error, :active_claim_exists} -> renew_current_local_architect_assignment_claim_lease(repo, anchor_id, actor)
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp renew_current_local_architect_assignment_claim_lease(repo, anchor_id, actor) do
-    case ClaimLeaseService.current_for_work_package(repo, anchor_id) do
-      {:ok, %ClaimLease{} = lease} ->
-        if local_claim_same_owner?(lease, actor) do
-          renew_local_architect_assignment_claim_lease(repo, %WorkPackage{id: anchor_id}, lease, actor)
-        else
-          {:error, :active_claim_exists}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp reclaim_local_architect_assignment_claim_lease(repo, anchor_id, actor, reason) do
-    case ClaimLeaseService.reclaim_stale(repo, anchor_id, actor, local_assignment_claim_reclaim_opts(reason)) do
-      {:ok, %ClaimLease{} = lease} -> {:ok, lease, :reclaimed}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp claim_local_architect_assignment_session(repo, %WorkPackage{} = anchor, claim) do
-    claim_now = DateTime.utc_now(:microsecond)
-    existing_grant_ids = local_architect_assignment_active_grant_ids(repo, anchor, claim, claim_now)
-
-    with {:ok, grant} <-
-           AccessGrantService.claim_local_architect_grant(repo, anchor.id, anchor.phase_id,
-             claimed_by: claim.claimed_by,
-             scope_repo: claim.repo,
-             scope_base_branch: claim.base_branch,
-             work_request_id: claim.work_request_id,
-             now: claim_now
-           ),
+    with {:ok, grant, grant_action} <- LocalArchitectGrantClaim.claim(repo, anchor, claim, lease_action, validate_grant),
          :ok <- validate_local_architect_assignment_grant(repo, grant, anchor, claim),
          {:ok, session} <- Auth.session_from_grant(repo, grant, proof_hash: grant.secret_hash),
          :ok <- require_architect_assignment(session.assignment) do
       assignment = %{"assignment" => Session.public_assignment(session)}
-      {:ok, assignment, session, local_assignment_grant_action(grant, existing_grant_ids)}
+      {:ok, assignment, session, grant_action}
     end
-  end
-
-  defp local_architect_assignment_active_grant_ids(repo, %WorkPackage{} = anchor, claim, %DateTime{} = now) do
-    query =
-      from(grant in AccessGrant,
-        where: grant.work_package_id == ^anchor.id,
-        where: grant.phase_id == ^anchor.phase_id,
-        where: grant.grant_role == "architect",
-        where: grant.scope_repo == ^claim.repo,
-        where: grant.scope_base_branch == ^claim.base_branch,
-        where: grant.claimed_by == ^claim.claimed_by,
-        where: not is_nil(grant.claimed_at),
-        where: is_nil(grant.revoked_at),
-        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
-        select: grant.id
-      )
-
-    repo.all(query)
   end
 
   defp validate_local_architect_assignment_grant(repo, %AccessGrant{} = grant, %WorkPackage{} = anchor, claim) do
@@ -2715,25 +2510,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, false} -> {:error, :architect_grant_scope_mismatch}
       {:error, reason} -> {:error, reason}
     end
-  end
-
-  defp local_architect_assignment_actor(claim) do
-    owner_material =
-      [
-        "architect",
-        claim.work_request_id,
-        claim.architect_anchor_work_package_id,
-        claim.claimed_by
-      ]
-      |> Enum.join("\0")
-
-    owner_id = local_assignment_actor_hash(owner_material)
-
-    %{
-      "actor_kind" => "agent",
-      "actor_id" => "local:" <> owner_id,
-      "actor_display_name" => claim.claimed_by
-    }
   end
 
   defp finalize_local_architect_assignment_claim(repo, result, %Session{} = session, claim, %ClaimLease{} = lease, lease_action, grant_action) do
@@ -2859,7 +2635,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     material =
       :erlang.term_to_binary({server.config.mode, server.state_key})
 
-    "mcp-state:" <> local_assignment_actor_hash(material)
+    "mcp-state:" <> LocalClaimLeases.actor_hash(material)
   end
 
   defp default_caller_id(%__MODULE__{config: %Config{mode: mode}}), do: "mcp-#{mode}:default"
@@ -13937,7 +13713,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "actor_display_name" => session.claim_actor_display_name
     }
 
-    case ClaimLeaseService.reclaim_stale(repo, lease.work_package_id, actor, local_assignment_claim_reclaim_opts("mcp_session_tool_heartbeat_stale")) do
+    opts = LocalClaimLeases.reclaim_opts("mcp_session_tool_heartbeat_stale", @local_assignment_claim_stale_after_ms)
+
+    case ClaimLeaseService.reclaim_stale(repo, lease.work_package_id, actor, opts) do
       {:ok, %ClaimLease{} = replacement} -> {:ok, %{server | session: Session.with_claim_lease(session, replacement)}}
       {:error, reason} -> lost_current_session_claim(server, reason)
     end

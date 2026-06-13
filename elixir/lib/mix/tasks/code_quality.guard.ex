@@ -72,7 +72,7 @@ defmodule Mix.Tasks.CodeQuality.Guard do
         "invalid_params_error/2" => %{max_complexity: 21, max_function_lines: 204},
         "worker_tool/3" => %{max_complexity: 69, max_function_lines: 245}
       },
-      max_lines: 14_230
+      max_lines: 14_008
     },
     "lib/symphony_elixir/symphony_plus_plus/planning/repository.ex" => %{max_lines: 981},
     "lib/symphony_elixir/symphony_plus_plus/solo_sessions/repository.ex" => %{max_lines: 770},
