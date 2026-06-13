@@ -427,7 +427,11 @@ function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [s
   try {
     $powershell = Get-AvailablePowerShellCommandName
     if ($PluginName -eq "symphony-plus-plus-mcp") {
-      & cmd.exe @("/d", "/s", "/c", "scripts\start-sympp-mcp.cmd -ValidateOnly")
+      if (Get-Command cmd.exe -ErrorAction SilentlyContinue) {
+        & cmd.exe @("/d", "/s", "/c", "scripts\start-sympp-mcp.cmd -ValidateOnly")
+      } else {
+        & $powershell @("-NoProfile", "-File", "scripts/start-sympp-mcp.ps1", "-ValidateOnly")
+      }
       if ($LASTEXITCODE -ne 0) {
         throw "Installed plugin MCP launcher validation failed for $Label cache with exit code $LASTEXITCODE."
       }

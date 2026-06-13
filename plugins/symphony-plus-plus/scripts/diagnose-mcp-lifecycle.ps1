@@ -12,6 +12,14 @@ param(
 $ErrorActionPreference = "Stop"
 $SymppPluginPackageNames = @("symphony-plus-plus", "symphony-plus-plus-mcp")
 
+function Test-CurrentPlatformWindows {
+  return [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+}
+
+function Test-WindowsDriveAbsolutePath([string]$Path) {
+  return -not [string]::IsNullOrWhiteSpace($Path) -and $Path -match "^[A-Za-z]:[\\/]"
+}
+
 function Resolve-OptionalFullPath([string]$Path) {
   if ([string]::IsNullOrWhiteSpace($Path)) {
     return $null
@@ -24,6 +32,10 @@ function Resolve-OptionalFullPath([string]$Path) {
     $expandedPath = Join-Path $HOME $expandedPath.Substring(2)
   }
 
+  if ((-not (Test-CurrentPlatformWindows)) -and (Test-WindowsDriveAbsolutePath $expandedPath)) {
+    return $expandedPath
+  }
+
   return [System.IO.Path]::GetFullPath($expandedPath)
 }
 
@@ -31,6 +43,10 @@ function Normalize-ComparablePath([string]$Path) {
   $fullPath = Resolve-OptionalFullPath $Path
   if (-not $fullPath) {
     return $null
+  }
+
+  if (Test-WindowsDriveAbsolutePath $fullPath) {
+    return $fullPath.TrimEnd("\", "/").Replace("\", "/").ToLowerInvariant()
   }
 
   $trimmedPath = $fullPath.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
@@ -107,7 +123,7 @@ function Get-FileIdentityKey([string]$Path) {
 }
 
 function Test-PathComparisonCaseInsensitive([string]$Path = $null) {
-  if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
+  if (Test-CurrentPlatformWindows) {
     return $true
   }
 
