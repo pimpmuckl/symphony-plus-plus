@@ -1821,8 +1821,6 @@ function Get-DiagnosticRuntimeArtifactStatus([string]$Root, [string]$ExpectedRev
   $sha256 = $sha256.Trim().ToLowerInvariant()
   try {
     $entrypoint = Resolve-DiagnosticRuntimeArtifactEntrypoint $artifact
-    $sourceUri = Resolve-DiagnosticRuntimeArtifactSourceUri $artifact $manifestPath
-    Assert-DiagnosticRuntimeArtifactSourceUsable $sourceUri
   } catch {
     return [pscustomobject]@{ status = "artifact_verification_failed"; detail = $_.Exception.Message; platform = $platform; manifest_path = $manifestPath }
   }
@@ -1840,6 +1838,13 @@ function Get-DiagnosticRuntimeArtifactStatus([string]$Root, [string]$ExpectedRev
 
   if (Test-DiagnosticRuntimeArtifactCacheReady $cacheRoot $entrypoint $sha256) {
     return [pscustomobject]@{ status = "ready"; detail = "cache_ready"; platform = $platform; manifest_path = $manifestPath; cache_root = $cacheRoot }
+  }
+
+  try {
+    $sourceUri = Resolve-DiagnosticRuntimeArtifactSourceUri $artifact $manifestPath
+    Assert-DiagnosticRuntimeArtifactSourceUsable $sourceUri
+  } catch {
+    return [pscustomobject]@{ status = "artifact_verification_failed"; detail = $_.Exception.Message; platform = $platform; manifest_path = $manifestPath; cache_root = $cacheRoot }
   }
 
   $archivePath = Join-Path $cacheRoot "artifact.zip"
