@@ -63,7 +63,7 @@ defmodule Mix.Tasks.CodeQuality.Guard do
       functions: %{"error_message/1" => %{max_complexity: 24}},
       max_lines: 901
     },
-    "lib/symphony_elixir/symphony_plus_plus/dashboard.ex" => %{max_lines: 4532},
+    "lib/symphony_elixir/symphony_plus_plus/dashboard.ex" => %{max_lines: 3960},
     "lib/symphony_elixir/symphony_plus_plus/mcp/http_state_store.ex" => %{
       functions: %{"handle_call/3" => %{max_complexity: 33}}
     },
@@ -126,7 +126,7 @@ defmodule Mix.Tasks.CodeQuality.Guard do
     "test/symphony_elixir/symphony_plus_plus/access_grants_test.exs" => %{max_lines: 1443},
     "test/symphony_elixir/symphony_plus_plus/codex_skill_package_test.exs" => %{max_lines: 3913},
     "test/symphony_elixir/symphony_plus_plus/create_work_test.exs" => %{max_lines: 1103},
-    "test/symphony_elixir/symphony_plus_plus/dashboard_api_test.exs" => %{max_lines: 7532},
+    "test/symphony_elixir/symphony_plus_plus/dashboard_api_test.exs" => %{max_lines: 7247},
     "test/symphony_elixir/symphony_plus_plus/mcp/claim_session_transport_03_test.exs" => %{max_lines: 1055},
     "test/symphony_elixir/symphony_plus_plus/mcp/claim_session_transport_04_test.exs" => %{max_lines: 1012},
     "test/symphony_elixir/symphony_plus_plus/mcp/solo_schema_01_test.exs" => %{max_lines: 1388},
