@@ -144,6 +144,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     end
   end
 
+  test "installed MCP launcher validate-only fails when artifact and source fallback are unavailable" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-artifact-blocked")
+
+    if powershell do
+      mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
+
+      try do
+        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        script_path = write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            ["-NoProfile", "-File", script_path, "-ValidateOnly"],
+            cd: Path.dirname(Path.dirname(script_path)),
+            stderr_to_stdout: true,
+            env: [{"SYMPP_REPO_ROOT", ""}, {"SYMPP_HOME", Path.join(temp_codex_home, "sympp-home")}]
+          )
+
+        assert status != 0
+        assert output =~ "Cannot infer the Symphony++ runtime source"
+        refute output =~ "Symphony++ MCP launcher validation passed."
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
   test "installed MCP launcher direct stdio runs verified artifact before source fallback" do
     powershell = System.find_executable("pwsh")
     temp_codex_home = unique_temp_path("sympp-plugin-artifact-runtime")
@@ -494,6 +523,58 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
         runtime_artifact = get_in(report, ["readiness", "workrequest_mcp", "runtime_artifact"])
         assert runtime_artifact["status"] == "artifact_missing"
         assert runtime_artifact["detail"] == "matching_artifact_missing"
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  test "lifecycle doctor blocks missing runtime artifacts when source fallback is unavailable" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = unique_temp_path("sympp-plugin-doctor-artifact-blocked")
+
+    if powershell do
+      default_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version])
+      mcp_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version], "symphony-plus-plus-mcp")
+
+      try do
+        File.mkdir_p!(temp_codex_home)
+
+        File.write!(Path.join(temp_codex_home, "config.toml"), """
+        [plugins."symphony-plus-plus-mcp@#{@plugin_marketplace_name}"]
+        enabled = true
+        """)
+
+        installed_script_path = write_cached_script(default_cache_root, @plugin_lifecycle_diagnostic_path)
+        write_cache_manifest(default_cache_root, "symphony-plus-plus")
+        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              installed_script_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              @plugin_marketplace_name,
+              "-SkipProcessScan",
+              "-Json"
+            ],
+            cd: temp_codex_home,
+            stderr_to_stdout: true,
+            env: [{"SYMPP_REPO_ROOT", ""}]
+          )
+
+        assert status == 0, output
+        report = Jason.decode!(output)
+        assert get_in(report, ["readiness", "workrequest_mcp", "status"]) == "runtime_artifact_unavailable"
+        runtime_artifact = get_in(report, ["readiness", "workrequest_mcp", "runtime_artifact"])
+        assert runtime_artifact["status"] == "artifact_missing"
+        assert runtime_artifact["detail"] == "manifest_missing"
       after
         File.rm_rf!(temp_codex_home)
       end

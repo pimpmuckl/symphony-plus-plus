@@ -524,6 +524,16 @@ function Expand-SymppArtifactArchive([string]$ArchivePath, [string]$ExtractRoot,
     if (-not (Test-Path -LiteralPath $entrypointPath -PathType Leaf)) {
       throw "artifact_missing: extracted Symphony++ runtime artifact did not contain entrypoint $Entrypoint."
     }
+    if (-not (Test-SymppWindowsPlatform)) {
+      try {
+        & chmod +x $entrypointPath
+        if ($LASTEXITCODE -ne 0) {
+          throw "chmod exited with $LASTEXITCODE"
+        }
+      } catch {
+        throw "artifact_verification_failed: could not mark extracted Symphony++ runtime artifact entrypoint executable. detail=$($_.Exception.Message)"
+      }
+    }
 
     $marker = [pscustomobject]@{
       sha256 = $Sha256
@@ -588,6 +598,13 @@ function Resolve-SymppPreparedArtifactRuntime([string]$PluginRoot, [string]$Expe
     } else {
       if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
         Write-Diagnostic "artifact_downloading: downloading Symphony++ runtime artifact for $platform."
+        Copy-SymppArtifactArchive $sourceUri $archivePath
+      }
+      try {
+        Assert-SymppArtifactArchiveVerified $archivePath $sha256
+      } catch {
+        Write-Diagnostic "artifact_redownloading: cached Symphony++ runtime artifact failed verification; downloading again. detail=$($_.Exception.Message)"
+        Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
         Copy-SymppArtifactArchive $sourceUri $archivePath
       }
       Assert-SymppArtifactArchiveVerified $archivePath $sha256
@@ -3439,16 +3456,21 @@ $defaultLauncher = if ($sourceFallbackAllowed -and (Test-Path -LiteralPath $elix
 $launcher = Get-EnvMode "SYMPP_LAUNCHER" $defaultLauncher @("direct", "mise")
 Set-SymppSourceRevisionEnvironment $expectedSourceRevision
 Set-SymppWindowsNativeTargetEnvironment
-$defaultMixBuildRoot = if ($sourceFallbackAllowed -and (Test-Path -LiteralPath $elixirDir)) { Resolve-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp" } else { $null }
+$defaultMixBuildRoot = if ($sourceFallbackAllowed -and (Test-Path -LiteralPath $elixirDir)) { Resolve-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp" $pluginRoot } else { $null }
 if (-not $ValidateOnly) {
   if ($sourceFallbackAllowed -and (Test-Path -LiteralPath $elixirDir)) {
-    Set-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp"
+    Set-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp" $pluginRoot
   }
 }
 $runtimeFile = Resolve-RuntimeFile
 $logDir = Resolve-LogDir
 
 if ($ValidateOnly) {
+  $validationRuntimeMode = if ($artifactValidationLaunchable) { "artifact" } elseif ($sourceFallbackAllowed) { "source" } else { "blocked" }
+  if ($validationRuntimeMode -eq "blocked") {
+    throw "Symphony++ MCP launcher validation failed: no verified runtime artifact is launchable and source fallback is unavailable."
+  }
+
   if ($sourceFallbackAllowed -and -not $artifactValidationLaunchable) {
     Assert-LauncherAvailable $launcher $mix $mise
     Set-Location -LiteralPath $elixirDir
@@ -3462,7 +3484,7 @@ if ($ValidateOnly) {
   Write-Host "  repoRoot: $repoRoot"
   Write-Host "  elixirDir: $elixirDir"
   Write-Host "  assetsDir: $assetsDir"
-  Write-Host "  runtimeMode: $(if ($artifactValidationLaunchable) { "artifact" } elseif ($sourceFallbackAllowed) { "source" } else { "blocked" })"
+  Write-Host "  runtimeMode: $validationRuntimeMode"
   Write-Host "  artifactStatus: $($artifactProbe.status)"
   Write-Host "  artifactDetail: $($artifactProbe.detail)"
   if ($artifactProbe.manifest_path) {
@@ -3618,7 +3640,8 @@ try {
 
   $allowRecordedDashboardReuse = $backendPlan.managed -eq $true -and [string]$backendPlan.status -eq "reused"
   $artifactDashboardPortMatchesBackend = $dashboardPortExplicit -and $dashboardPort -eq $backendPlan.port
-  $artifactBackendProvidesDashboard = Test-ArtifactBackendProvidesDashboard $runtimeState $backendPlan $runtimeMode
+  $artifactBackendProvidesDashboard = (Test-ArtifactBackendProvidesDashboard $runtimeState $backendPlan $runtimeMode) -and
+    ($backendPlan.should_start -or ((Test-HealthySymppDashboard $backendPlan.url) -and (Test-SymppDashboardMcpProxyMatches $backendPlan.url $expectedContractFingerprint)))
   if ($artifactBackendProvidesDashboard -and
       [string]::IsNullOrWhiteSpace($env:SYMPP_DASHBOARD_ORIGIN) -and
       ((-not $dashboardPortExplicit) -or $artifactDashboardPortMatchesBackend) -and
@@ -3649,6 +3672,9 @@ try {
     $backendPlan.contract_fingerprint = $backendLaunch.contract_fingerprint
     if ($runtimeMode -eq "artifact" -and [string]$dashboardPlan.status -eq "artifact_static") {
       $dashboardPlan.pid = $backendLaunch.pid
+      if (-not (Test-HealthySymppDashboard $backendPlan.url) -or -not (Test-SymppDashboardMcpProxyMatches $backendPlan.url $expectedContractFingerprint)) {
+        throw "artifact_dashboard_unavailable: verified artifact backend started, but its dashboard route is not healthy for the expected MCP contract."
+      }
     }
   }
 
