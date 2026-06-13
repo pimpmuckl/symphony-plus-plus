@@ -41,7 +41,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
               ["-NoProfile", "-File", script_path, "-ValidateOnly"],
               cd: Path.dirname(Path.dirname(script_path)),
               stderr_to_stdout: true,
-              env: [{"SYMPP_LAUNCHER", "direct"}, {"SYMPP_MIX", fake_mix}, {"SYMPP_REPO_ROOT", ""}]
+              env: [
+                {"SYMPP_LAUNCHER", "direct"},
+                {"SYMPP_MIX", fake_mix},
+                {"SYMPP_REPO_ROOT", ""},
+                {"SYMPP_SOURCE_FALLBACK", "1"}
+              ]
             )
 
           assert status == 0, output
@@ -78,7 +83,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
               ["-NoProfile", "-File", script_path, "-ValidateOnly"],
               cd: Path.dirname(Path.dirname(script_path)),
               stderr_to_stdout: true,
-              env: [{"SYMPP_MISE", fake_mise}, {"SYMPP_REPO_ROOT", ""}, {"SYMPP_HOME", sympp_home}]
+              env: [
+                {"SYMPP_MISE", fake_mise},
+                {"SYMPP_REPO_ROOT", ""},
+                {"SYMPP_HOME", sympp_home},
+                {"SYMPP_SOURCE_FALLBACK", "1"}
+              ]
             )
 
           assert status == 0, output
@@ -87,6 +97,259 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
           assert output =~ "launcher: mise"
           assert normalize_path_fragment(output) =~ "mixbuildroot: #{normalize_path_fragment(sympp_home)}"
         end
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  test "installed MCP launcher falls back to marketplace source when artifact manifest is missing" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-artifact-missing")
+
+    if powershell do
+      fake_mix = fake_mix_executable(temp_codex_home)
+      marketplace_root = write_minimal_marketplace_source(temp_codex_home)
+      mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
+      sympp_home = Path.join(temp_codex_home, "sympp-home")
+
+      try do
+        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        script_path = write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            ["-NoProfile", "-File", script_path, "-ValidateOnly"],
+            cd: Path.dirname(Path.dirname(script_path)),
+            stderr_to_stdout: true,
+            env: [
+              {"SYMPP_LAUNCHER", "direct"},
+              {"SYMPP_MIX", fake_mix},
+              {"SYMPP_REPO_ROOT", ""},
+              {"SYMPP_HOME", sympp_home}
+            ]
+          )
+
+        assert status == 0, output
+        assert output =~ "Symphony++ MCP launcher validation passed."
+        assert normalize_path_fragment(output) =~ "reporoot: #{normalize_path_fragment(marketplace_root)}"
+        assert output =~ "runtimeMode: source"
+        assert output =~ "artifactStatus: artifact_missing"
+        assert output =~ "artifactDetail: manifest_missing"
+        assert output =~ "sourceFallback: enabled"
+        assert output =~ "Mix 1.99.0 test"
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  test "installed MCP launcher direct stdio runs verified artifact before source fallback" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-artifact-runtime")
+
+    if powershell && windows?() do
+      marketplace_root = write_minimal_marketplace_source(temp_codex_home)
+      mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
+      sympp_home = Path.join(temp_codex_home, "sympp-home")
+      artifact_log = Path.join(temp_codex_home, "artifact.log")
+
+      try do
+        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        script_path = write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
+        write_runtime_artifact!(mcp_cache_root, source_revision: String.duplicate("b", 40))
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            ["-NoProfile", "-File", script_path],
+            cd: Path.dirname(Path.dirname(script_path)),
+            stderr_to_stdout: true,
+            env: [
+              {"SYMPP_HOME", sympp_home},
+              {"SYMPP_MCP_BRIDGE_MODE", "direct_stdio"},
+              {"SYMPP_REPO_ROOT", ""},
+              {"SYMPP_FAKE_ARTIFACT_LOG", artifact_log}
+            ]
+          )
+
+        assert status == 0, output
+        assert output =~ "artifact_downloading:"
+        assert output =~ "artifact_extracting:"
+        assert output =~ "ready: verified Symphony++ runtime artifact selected"
+        artifact_call = File.read!(artifact_log)
+        assert artifact_call =~ "sympp.mcp --mode stdio --repo-root"
+        assert normalize_path_fragment(artifact_call) =~ normalize_path_fragment(marketplace_root)
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  test "installed MCP launcher validate-only treats downloadable artifacts as launchable" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-artifact-validate-selected")
+
+    if powershell && windows?() do
+      write_minimal_marketplace_source(temp_codex_home)
+      mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
+      sympp_home = Path.join(temp_codex_home, "sympp-home")
+
+      try do
+        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        script_path = write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
+        write_runtime_artifact!(mcp_cache_root, source_revision: String.duplicate("b", 40))
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            ["-NoProfile", "-File", script_path, "-ValidateOnly"],
+            cd: Path.dirname(Path.dirname(script_path)),
+            stderr_to_stdout: true,
+            env: [
+              {"SYMPP_HOME", sympp_home},
+              {"SYMPP_LAUNCHER", "direct"},
+              {"SYMPP_MIX", Path.join(temp_codex_home, "missing-mix.cmd")},
+              {"SYMPP_REPO_ROOT", ""}
+            ]
+          )
+
+        assert status == 0, output
+        assert output =~ "runtimeMode: artifact"
+        assert output =~ "artifactStatus: artifact_selected"
+        assert output =~ "artifactDetail: download_required"
+        assert output =~ "sourceFallback: enabled"
+        refute output =~ "runtimeMode: blocked"
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  test "source checkout MCP launcher ignores artifacts unless explicitly opted in" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-source-artifact-skip")
+
+    if powershell && windows?() do
+      fake_mix = fake_mix_executable(temp_codex_home)
+      marketplace_root = write_minimal_marketplace_source(temp_codex_home)
+      source_plugin_root = Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp")
+      sympp_home = Path.join(temp_codex_home, "sympp-home")
+      fake_mix_log = Path.join(temp_codex_home, "fake-mix.log")
+      artifact_log = Path.join(temp_codex_home, "artifact.log")
+
+      try do
+        write_runtime_artifact!(source_plugin_root, source_revision: String.duplicate("b", 40))
+        script_path = Path.join(source_plugin_root, "scripts/start-sympp-mcp.ps1")
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            ["-NoProfile", "-File", script_path],
+            cd: marketplace_root,
+            stderr_to_stdout: true,
+            env: [
+              {"SYMPP_ELIXIR_SETUP_TIMEOUT_SEC", "5"},
+              {"SYMPP_FAKE_ARTIFACT_LOG", artifact_log},
+              {"SYMPP_FAKE_MIX_LOG", fake_mix_log},
+              {"SYMPP_HOME", sympp_home},
+              {"SYMPP_LAUNCHER", "direct"},
+              {"SYMPP_MCP_BRIDGE_MODE", "direct_stdio"},
+              {"SYMPP_MIX", fake_mix},
+              {"SYMPP_REPO_ROOT", ""}
+            ]
+          )
+
+        assert status == 0, output
+        assert File.read!(fake_mix_log) =~ "sympp.mcp --mode stdio --repo-root"
+        refute File.exists?(artifact_log)
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  test "artifact manifest errors degrade to explicit source fallback" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-artifact-invalid-fallback")
+
+    if powershell do
+      fake_mix = fake_mix_executable(temp_codex_home)
+      write_minimal_marketplace_source(temp_codex_home)
+      mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
+      sympp_home = Path.join(temp_codex_home, "sympp-home")
+      fake_mix_log = Path.join(temp_codex_home, "fake-mix.log")
+
+      try do
+        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        script_path = write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
+        File.write!(Path.join(mcp_cache_root, ".sympp-runtime-artifacts.json"), "{not-json")
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            ["-NoProfile", "-File", script_path],
+            cd: Path.dirname(Path.dirname(script_path)),
+            stderr_to_stdout: true,
+            env: [
+              {"SYMPP_ELIXIR_SETUP_TIMEOUT_SEC", "5"},
+              {"SYMPP_FAKE_MIX_LOG", fake_mix_log},
+              {"SYMPP_HOME", sympp_home},
+              {"SYMPP_LAUNCHER", "direct"},
+              {"SYMPP_MCP_BRIDGE_MODE", "direct_stdio"},
+              {"SYMPP_MIX", fake_mix},
+              {"SYMPP_REPO_ROOT", ""},
+              {"SYMPP_SOURCE_FALLBACK", "1"}
+            ]
+          )
+
+        assert status == 0, output
+        assert output =~ "artifact_manifest_invalid"
+        assert File.read!(fake_mix_log) =~ "sympp.mcp --mode stdio --repo-root"
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  test "stale artifact metadata falls back to marketplace source when available" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-artifact-stale-source-fallback")
+
+    if powershell do
+      fake_mix = fake_mix_executable(temp_codex_home)
+      marketplace_root = write_minimal_marketplace_source(temp_codex_home)
+      mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
+      sympp_home = Path.join(temp_codex_home, "sympp-home")
+      fake_mix_log = Path.join(temp_codex_home, "fake-mix.log")
+
+      try do
+        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        script_path = write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
+        write_runtime_artifact!(mcp_cache_root, source_revision: String.duplicate("a", 40))
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            ["-NoProfile", "-File", script_path],
+            cd: Path.dirname(Path.dirname(script_path)),
+            stderr_to_stdout: true,
+            env: [
+              {"SYMPP_ELIXIR_SETUP_TIMEOUT_SEC", "5"},
+              {"SYMPP_FAKE_MIX_LOG", fake_mix_log},
+              {"SYMPP_HOME", sympp_home},
+              {"SYMPP_LAUNCHER", "direct"},
+              {"SYMPP_MCP_BRIDGE_MODE", "direct_stdio"},
+              {"SYMPP_MIX", fake_mix},
+              {"SYMPP_REPO_ROOT", ""}
+            ]
+          )
+
+        assert status == 0, output
+
+        assert normalize_path_fragment(File.read!(fake_mix_log)) =~
+                 "--repo-root #{normalize_path_fragment(marketplace_root)}"
       after
         File.rm_rf!(temp_codex_home)
       end
@@ -177,6 +440,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
       mcp_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version], "symphony-plus-plus-mcp")
 
       try do
+        File.write!(Path.join(temp_codex_home, "config.toml"), """
+        [plugins."symphony-plus-plus-mcp@#{@plugin_marketplace_name}"]
+        enabled = true
+        """)
+
         installed_script_path = write_cached_script(default_cache_root, @plugin_lifecycle_diagnostic_path)
         write_cache_manifest(default_cache_root, "symphony-plus-plus")
         write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
@@ -210,6 +478,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
         assert report["process_scan_scope"] == "installed_cache_marketplace_source_clone"
         assert [process_filter] = report["process_repo_root_filters"]
         assert normalize_path_fragment(process_filter) == normalize_path_fragment(marketplace_root)
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  test "lifecycle doctor reports stale runtime artifacts without blocking source fallback" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = unique_temp_path("sympp-plugin-doctor-artifact-filter")
+
+    if powershell do
+      write_minimal_marketplace_source(temp_codex_home)
+      default_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version])
+      mcp_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version], "symphony-plus-plus-mcp")
+      stale_revision = String.duplicate("a", 40)
+
+      try do
+        File.write!(Path.join(temp_codex_home, "config.toml"), """
+        [plugins."symphony-plus-plus-mcp@#{@plugin_marketplace_name}"]
+        enabled = true
+        """)
+
+        installed_script_path = write_cached_script(default_cache_root, @plugin_lifecycle_diagnostic_path)
+        write_cache_manifest(default_cache_root, "symphony-plus-plus")
+        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
+
+        write_runtime_artifact!(mcp_cache_root,
+          source_revision: stale_revision,
+          mcp_contract_fingerprint: expected_mcp_contract_fingerprint()
+        )
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              installed_script_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              @plugin_marketplace_name,
+              "-SkipProcessScan",
+              "-Json"
+            ],
+            cd: temp_codex_home,
+            stderr_to_stdout: true,
+            env: [{"SYMPP_REPO_ROOT", ""}]
+          )
+
+        assert status == 0, output
+        report = Jason.decode!(output)
+        assert get_in(report, ["readiness", "workrequest_mcp", "status"]) == "ready"
+        runtime_artifact = get_in(report, ["readiness", "workrequest_mcp", "runtime_artifact"])
+        assert runtime_artifact["status"] == "artifact_missing"
+        assert runtime_artifact["detail"] == "matching_artifact_missing"
       after
         File.rm_rf!(temp_codex_home)
       end
@@ -251,7 +576,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
               {"SYMPP_LOG_DIR", log_dir},
               {"SYMPP_MCP_BRIDGE_MODE", "direct_stdio"},
               {"SYMPP_MIX", fake_mix},
-              {"SYMPP_REPO_ROOT", ""}
+              {"SYMPP_REPO_ROOT", ""},
+              {"SYMPP_SOURCE_FALLBACK", "1"}
             ]
           )
 
@@ -325,6 +651,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
 
   defp write_minimal_marketplace_source(codex_home) do
     marketplace_root = Path.join([codex_home, ".tmp", "marketplaces", @plugin_marketplace_name])
+    File.mkdir_p!(marketplace_root)
+    File.write!(Path.join(marketplace_root, ".codex-marketplace-install.json"), Jason.encode!(%{"revision" => String.duplicate("b", 40)}))
     File.mkdir_p!(Path.join(marketplace_root, "elixir"))
     File.write!(Path.join(marketplace_root, "elixir/mix.exs"), "defmodule SymphonyElixir.MixProject do\nend\n")
     File.mkdir_p!(Path.join(marketplace_root, "elixir/lib/mix/tasks"))
@@ -349,11 +677,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
       Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-mcp-launcher-helpers.ps1")
     )
 
-    for plugin_name <- ~w(symphony-plus-plus symphony-plus-plus-mcp) do
-      manifest_path = Path.join([marketplace_root, "plugins", plugin_name, ".codex-plugin", "plugin.json"])
-      File.mkdir_p!(Path.dirname(manifest_path))
-      File.write!(manifest_path, Jason.encode!(%{"name" => plugin_name, "version" => @plugin_version}))
-    end
+    write_cache_manifest(Path.join(marketplace_root, "plugins/symphony-plus-plus"), "symphony-plus-plus")
+    write_cache_manifest(Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp"), "symphony-plus-plus-mcp", mcp?: true)
 
     marketplace_root
   end
@@ -365,6 +690,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     File.write!(Path.join(source_root, "elixir/lib/mix/tasks/sympp.solo.ex"), "")
     source_root
   end
+
+  defp write_runtime_artifact!(cache_root, opts) do
+    artifact_build_root = Path.join(cache_root, "artifact-build")
+    archive_path = Path.join(cache_root, "sympp-runtime.zip")
+    entrypoint = "runtime.cmd"
+    File.mkdir_p!(artifact_build_root)
+
+    File.write!(Path.join(artifact_build_root, entrypoint), """
+    @echo off
+    if not "%SYMPP_FAKE_ARTIFACT_LOG%"=="" echo %*>>"%SYMPP_FAKE_ARTIFACT_LOG%"
+    exit /b 0
+    """)
+
+    {:ok, _} =
+      :zip.create(
+        String.to_charlist(archive_path),
+        [{String.to_charlist(entrypoint), File.read!(Path.join(artifact_build_root, entrypoint))}]
+      )
+
+    sha256 = file_sha256(archive_path)
+
+    artifact =
+      %{
+        "platform" => runtime_platform_key(),
+        "path" => Path.basename(archive_path),
+        "sha256" => sha256,
+        "entrypoint" => entrypoint
+      }
+      |> maybe_put("source_revision", Keyword.get(opts, :source_revision))
+      |> maybe_put("mcp_contract_fingerprint", Keyword.get(opts, :mcp_contract_fingerprint))
+
+    manifest =
+      %{"artifacts" => [artifact]}
+      |> maybe_put("source_revision", Keyword.get(opts, :manifest_source_revision))
+      |> maybe_put("mcp_contract_fingerprint", Keyword.get(opts, :manifest_contract_fingerprint))
+
+    File.write!(Path.join(cache_root, ".sympp-runtime-artifacts.json"), Jason.encode!(manifest))
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp fake_mix_executable(temp_root) do
     path = Path.join(temp_root, if(windows?(), do: "mix.cmd", else: "mix"))
@@ -497,6 +863,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
   end
 
   defp windows?, do: match?({:win32, _name}, :os.type())
+
+  defp runtime_platform_key do
+    os =
+      case :os.type() do
+        {:win32, _} -> "windows"
+        {:unix, :darwin} -> "macos"
+        {:unix, _} -> "linux"
+      end
+
+    architecture =
+      :erlang.system_info(:system_architecture)
+      |> List.to_string()
+      |> String.downcase()
+
+    arch =
+      cond do
+        String.contains?(architecture, "aarch64") -> "aarch64"
+        String.contains?(architecture, "arm64") -> "aarch64"
+        String.contains?(architecture, "x86_64") -> "x86_64"
+        String.contains?(architecture, "amd64") -> "x86_64"
+        String.contains?(architecture, "i386") -> "x86"
+        true -> "unknown"
+      end
+
+    "#{os}-#{arch}"
+  end
+
+  defp expected_mcp_contract_fingerprint do
+    [_, fingerprint] =
+      Regex.run(
+        ~r/\$ExpectedMcpContractFingerprint\s*=\s*"([0-9a-fA-F]{64})"/,
+        File.read!(@mcp_plugin_start_script_path)
+      )
+
+    String.downcase(fingerprint)
+  end
+
+  defp file_sha256(path) do
+    :crypto.hash(:sha256, File.read!(path))
+    |> Base.encode16(case: :lower)
+  end
 
   defp normalize_path_fragment(value) do
     value

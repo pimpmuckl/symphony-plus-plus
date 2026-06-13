@@ -1421,6 +1421,365 @@ function Get-SymppMcpServerStatus($McpConfig) {
   return "ok"
 }
 
+function Get-DiagnosticRuntimePlatformKey {
+  $os = if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
+    "windows"
+  } elseif ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)) {
+    "linux"
+  } elseif ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)) {
+    "macos"
+  } else {
+    $null
+  }
+
+  $arch = try {
+    [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant()
+  } catch {
+    $null
+  }
+  $arch = switch ($arch) {
+    "x64" { "x86_64" }
+    "amd64" { "x86_64" }
+    "arm64" { "aarch64" }
+    "aarch64" { "aarch64" }
+    "x86" { "x86" }
+    default { $null }
+  }
+
+  if ([string]::IsNullOrWhiteSpace($os) -or [string]::IsNullOrWhiteSpace($arch)) {
+    return $null
+  }
+
+  return "$os-$arch"
+}
+
+function Resolve-DiagnosticPluginHome {
+  $configured = Resolve-OptionalFullPath $env:SYMPP_HOME
+  if ($configured) {
+    return $configured
+  }
+
+  return [System.IO.Path]::GetFullPath((Join-Path $HOME ".agents/splusplus"))
+}
+
+function Get-DiagnosticJsonPropertyValue($Object, [string[]]$Names) {
+  if ($null -eq $Object) {
+    return $null
+  }
+
+  foreach ($name in $Names) {
+    if ($Object.PSObject.Properties[$name]) {
+      return $Object.PSObject.Properties[$name].Value
+    }
+  }
+
+  return $null
+}
+
+function Test-DiagnosticRuntimeArtifactPlatformMatches($Artifact, [string]$Platform) {
+  $artifactPlatform = [string](Get-DiagnosticJsonPropertyValue $Artifact @("platform", "target", "platform_key"))
+  if (-not [string]::IsNullOrWhiteSpace($artifactPlatform)) {
+    return [System.StringComparer]::OrdinalIgnoreCase.Equals($artifactPlatform.Trim(), $Platform)
+  }
+
+  $os = [string](Get-DiagnosticJsonPropertyValue $Artifact @("os", "target_os"))
+  $arch = [string](Get-DiagnosticJsonPropertyValue $Artifact @("arch", "architecture", "target_arch"))
+  if ([string]::IsNullOrWhiteSpace($os) -or [string]::IsNullOrWhiteSpace($arch)) {
+    return $false
+  }
+
+  $artifactPlatform = "$($os.Trim().ToLowerInvariant())-$($arch.Trim().ToLowerInvariant())"
+  return [System.StringComparer]::OrdinalIgnoreCase.Equals($artifactPlatform, $Platform)
+}
+
+function Normalize-DiagnosticSourceRevision([string]$Revision) {
+  if ([string]::IsNullOrWhiteSpace($Revision)) {
+    return $null
+  }
+
+  $normalized = $Revision.Trim().ToLowerInvariant()
+  if ($normalized -match "^[0-9a-f]{40}$") {
+    return $normalized
+  }
+
+  return $null
+}
+
+function Normalize-DiagnosticMcpContractFingerprint([string]$Fingerprint) {
+  if ([string]::IsNullOrWhiteSpace($Fingerprint)) {
+    return $null
+  }
+
+  $normalized = $Fingerprint.Trim().ToLowerInvariant()
+  if ($normalized -match "^[0-9a-f]{64}$") {
+    return $normalized
+  }
+
+  return $null
+}
+
+function Test-DiagnosticRuntimeArtifactRevisionMatches($Artifact, [string]$ExpectedSourceRevision, [string]$ManifestSourceRevision) {
+  if ([string]::IsNullOrWhiteSpace($ExpectedSourceRevision)) {
+    return $true
+  }
+
+  $artifactRevision = Normalize-DiagnosticSourceRevision ([string](Get-DiagnosticJsonPropertyValue $Artifact @("source_revision", "revision", "git_revision")))
+  if (-not $artifactRevision) {
+    $artifactRevision = Normalize-DiagnosticSourceRevision $ManifestSourceRevision
+  }
+
+  return $artifactRevision -and
+    [System.StringComparer]::OrdinalIgnoreCase.Equals($artifactRevision, $ExpectedSourceRevision)
+}
+
+function Test-DiagnosticRuntimeArtifactContractMatches($Artifact, [string]$ExpectedContractFingerprint, [string]$ManifestContractFingerprint) {
+  $artifactContract = Normalize-DiagnosticMcpContractFingerprint ([string](Get-DiagnosticJsonPropertyValue $Artifact @("mcp_contract_fingerprint", "contract_fingerprint")))
+  if (-not $artifactContract) {
+    $artifactContract = Normalize-DiagnosticMcpContractFingerprint $ManifestContractFingerprint
+  }
+
+  if (-not $artifactContract) {
+    return $true
+  }
+
+  return [System.StringComparer]::OrdinalIgnoreCase.Equals($artifactContract, $ExpectedContractFingerprint)
+}
+
+function Assert-DiagnosticRelativeArtifactPath([string]$Path, [string]$Label) {
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    throw "$Label must be present in the Symphony++ runtime artifact manifest."
+  }
+
+  if ([System.IO.Path]::IsPathRooted($Path) -or $Path.Contains("..")) {
+    throw "$Label must be a relative path inside the extracted Symphony++ runtime artifact."
+  }
+}
+
+function Resolve-DiagnosticRuntimeArtifactEntrypoint($Artifact) {
+  $entrypoint = [string](Get-DiagnosticJsonPropertyValue $Artifact @("entrypoint", "backend_entrypoint", "command"))
+  if ([string]::IsNullOrWhiteSpace($entrypoint)) {
+    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
+      $entrypoint = "bin/symphony_elixir.bat"
+    } else {
+      $entrypoint = "bin/symphony_elixir"
+    }
+  }
+
+  Assert-DiagnosticRelativeArtifactPath $entrypoint "artifact entrypoint"
+  return $entrypoint.Replace("\", "/")
+}
+
+function Test-DiagnosticRuntimeArtifactCacheReady([string]$CacheRoot, [string]$Entrypoint, [string]$Sha256) {
+  $extractRoot = Join-Path $CacheRoot "runtime"
+  $markerPath = Join-Path $extractRoot ".sympp-artifact.json"
+  $entrypointPath = Join-Path $extractRoot $Entrypoint
+  if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf) -or
+      -not (Test-Path -LiteralPath $entrypointPath -PathType Leaf)) {
+    return $false
+  }
+
+  try {
+    $marker = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
+    return [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$marker.sha256, $Sha256)
+  } catch {
+    return $false
+  }
+}
+
+function Get-DiagnosticExpectedMcpContractFingerprint([string]$Root) {
+  $scriptPath = Join-Path $Root "scripts/start-sympp-mcp.ps1"
+  if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
+    return $null
+  }
+
+  $scriptText = Get-Content -LiteralPath $scriptPath -Raw
+  $match = [regex]::Match($scriptText, '\$ExpectedMcpContractFingerprint\s*=\s*"([0-9a-fA-F]{64})"')
+  if (-not $match.Success) {
+    return $null
+  }
+
+  return Normalize-DiagnosticMcpContractFingerprint $match.Groups[1].Value
+}
+
+function Get-DiagnosticPinnedRevision([string]$Root) {
+  $path = Join-Path $Root ".sympp-source-revision"
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+    return $null
+  }
+
+  $revision = (Get-Content -LiteralPath $path -Raw).Trim().ToLowerInvariant()
+  if ($revision -match "^[0-9a-f]{40}$") {
+    return $revision
+  }
+
+  return $null
+}
+
+function Test-DiagnosticEnvEnabled([string]$Name) {
+  $value = [Environment]::GetEnvironmentVariable($Name)
+  if ([string]::IsNullOrWhiteSpace($value)) {
+    return $false
+  }
+
+  return $value.Trim().ToLowerInvariant() -in @("1", "true", "yes", "on")
+}
+
+function Get-DiagnosticGitHeadRevision([string]$RepoRoot) {
+  $git = Get-Command git -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $git -or -not (Test-SourceCheckoutRoot $RepoRoot)) {
+    return $null
+  }
+
+  try {
+    $output = @(& $git.Source @("-C", $RepoRoot, "rev-parse", "--verify", "HEAD") 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $output.Count -gt 0) {
+      return Normalize-DiagnosticSourceRevision ([string]$output[0])
+    }
+  } catch {
+  }
+
+  return $null
+}
+
+function Get-DiagnosticMarketplaceInstallRevision([string]$RepoRoot) {
+  if (-not (Test-SourceCheckoutRoot $RepoRoot)) {
+    return $null
+  }
+
+  $installPath = Join-Path $RepoRoot ".codex-marketplace-install.json"
+  if (-not (Test-Path -LiteralPath $installPath -PathType Leaf)) {
+    return $null
+  }
+
+  try {
+    $install = Get-Content -LiteralPath $installPath -Raw | ConvertFrom-Json
+    return Normalize-DiagnosticSourceRevision ([string]$install.revision)
+  } catch {
+    return $null
+  }
+}
+
+function Resolve-DiagnosticRuntimeArtifactSourceRoot([string]$Root, [string]$SourceHint) {
+  $sourceRoot = Get-SourceCheckoutFromPluginRoot $Root
+  if ($sourceRoot) {
+    return $sourceRoot
+  }
+
+  $sourceRoot = Get-MarketplaceSourceRootFromCachePackage ([pscustomobject]@{ root = $Root })
+  if ($sourceRoot) {
+    return $sourceRoot
+  }
+
+  $hintRoot = Resolve-OptionalFullPath $SourceHint
+  if (Test-SourceCheckoutRoot $hintRoot) {
+    return $hintRoot
+  }
+
+  return $null
+}
+
+function Test-DiagnosticRuntimeArtifactSourceFallbackAllowed([string]$Root, [string]$SourceRoot) {
+  if (Get-SourceCheckoutFromPluginRoot $Root) {
+    return $true
+  }
+
+  if (Test-SourceCheckoutRoot $SourceRoot) {
+    return $true
+  }
+
+  return (Test-DiagnosticEnvEnabled "SYMPP_DEVELOPER_MODE") -or
+    (Test-DiagnosticEnvEnabled "SYMPP_SOURCE_FALLBACK") -or
+    (Test-DiagnosticEnvEnabled "SYMPP_ALLOW_SOURCE_COMPILE")
+}
+
+function Resolve-DiagnosticRuntimeArtifactExpectedRevision([string]$Root, [string]$SourceRoot) {
+  $pinnedRevision = Get-DiagnosticPinnedRevision $Root
+  if ($pinnedRevision) {
+    return $pinnedRevision
+  }
+
+  $gitRevision = Get-DiagnosticGitHeadRevision $SourceRoot
+  if ($gitRevision) {
+    return $gitRevision
+  }
+
+  return Get-DiagnosticMarketplaceInstallRevision $SourceRoot
+}
+
+function Get-DiagnosticRuntimeArtifactStatus([string]$Root, [string]$ExpectedRevision = $null) {
+  $manifestPath = @(
+    Join-Path $Root ".sympp-runtime-artifacts.json"
+    Join-Path $Root "assets/sympp-runtime-artifacts.json"
+  ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+
+  $platform = Get-DiagnosticRuntimePlatformKey
+  if (-not $manifestPath) {
+    return [pscustomobject]@{ status = "artifact_missing"; detail = "manifest_missing"; platform = $platform; manifest_path = $null }
+  }
+
+  try {
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+  } catch {
+    return [pscustomobject]@{ status = "artifact_manifest_invalid"; detail = $_.Exception.Message; platform = $platform; manifest_path = $manifestPath }
+  }
+
+  $expectedRevision = Normalize-DiagnosticSourceRevision $ExpectedRevision
+  $expectedContract = Get-DiagnosticExpectedMcpContractFingerprint $Root
+  $manifestRevision = Normalize-DiagnosticSourceRevision ([string](Get-DiagnosticJsonPropertyValue $manifest @("source_revision", "revision", "git_revision")))
+  $manifestContract = Normalize-DiagnosticMcpContractFingerprint ([string](Get-DiagnosticJsonPropertyValue $manifest @("mcp_contract_fingerprint", "contract_fingerprint")))
+  $artifacts = @(Get-DiagnosticJsonPropertyValue $manifest @("artifacts", "runtime_artifacts"))
+  $artifact = @(
+    foreach ($candidate in $artifacts) {
+      if ((Test-DiagnosticRuntimeArtifactPlatformMatches $candidate $platform) -and
+          (Test-DiagnosticRuntimeArtifactRevisionMatches $candidate $expectedRevision $manifestRevision) -and
+          (Test-DiagnosticRuntimeArtifactContractMatches $candidate $expectedContract $manifestContract)) {
+        $candidate
+      }
+    }
+  ) | Select-Object -First 1
+
+  if ($null -eq $artifact) {
+    return [pscustomobject]@{ status = "artifact_missing"; detail = "matching_artifact_missing"; platform = $platform; manifest_path = $manifestPath }
+  }
+
+  $sha256 = [string](Get-DiagnosticJsonPropertyValue $artifact @("sha256", "sha256sum", "digest"))
+  if ([string]::IsNullOrWhiteSpace($sha256) -or $sha256.Trim().ToLowerInvariant() -notmatch "^[0-9a-f]{64}$") {
+    return [pscustomobject]@{ status = "artifact_verification_failed"; detail = "sha256_missing_or_invalid"; platform = $platform; manifest_path = $manifestPath }
+  }
+
+  $sha256 = $sha256.Trim().ToLowerInvariant()
+  try {
+    $entrypoint = Resolve-DiagnosticRuntimeArtifactEntrypoint $artifact
+  } catch {
+    return [pscustomobject]@{ status = "artifact_verification_failed"; detail = $_.Exception.Message; platform = $platform; manifest_path = $manifestPath }
+  }
+
+  $revision = $expectedRevision
+  $version = [string](Get-DiagnosticJsonPropertyValue (Get-JsonFile (Join-Path $Root ".codex-plugin/plugin.json")) @("version"))
+  $revisionKey = if ($revision) {
+    $revision.Substring(0, [Math]::Min(12, $revision.Length))
+  } elseif (-not [string]::IsNullOrWhiteSpace($version)) {
+    $version -replace "[^A-Za-z0-9_.-]", "_"
+  } else {
+    "unknown"
+  }
+  $cacheRoot = [System.IO.Path]::GetFullPath((Join-Path (Resolve-DiagnosticPluginHome) "artifacts/mcp/$platform/$revisionKey/$($sha256.Substring(0, 16))"))
+
+  if (Test-DiagnosticRuntimeArtifactCacheReady $cacheRoot $entrypoint $sha256) {
+    return [pscustomobject]@{ status = "ready"; detail = "cache_ready"; platform = $platform; manifest_path = $manifestPath; cache_root = $cacheRoot }
+  }
+
+  $archivePath = Join-Path $cacheRoot "artifact.zip"
+  if (Test-Path -LiteralPath $archivePath -PathType Leaf) {
+    $actual = Get-FileSha256Hex $archivePath
+    if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($actual, $sha256)) {
+      return [pscustomobject]@{ status = "artifact_verification_failed"; detail = "cached_archive_sha256_mismatch"; platform = $platform; manifest_path = $manifestPath; cache_root = $cacheRoot }
+    }
+  }
+
+  return [pscustomobject]@{ status = "artifact_selected"; detail = "download_required"; platform = $platform; manifest_path = $manifestPath; cache_root = $cacheRoot }
+}
+
 function Get-PluginPackageSummary([string]$Root, [string]$Label, [string]$PackageMarketplaceName) {
   $manifestPath = Join-Path $Root ".codex-plugin/plugin.json"
   $manifestExists = Test-Path -LiteralPath $manifestPath
@@ -1445,6 +1804,9 @@ function Get-PluginPackageSummary([string]$Root, [string]$Label, [string]$Packag
   } else {
     $null
   }
+  $artifactSourceRoot = Resolve-DiagnosticRuntimeArtifactSourceRoot $Root $sourceHint
+  $artifactExpectedRevision = Resolve-DiagnosticRuntimeArtifactExpectedRevision $Root $artifactSourceRoot
+  $artifactSourceFallbackAllowed = Test-DiagnosticRuntimeArtifactSourceFallbackAllowed $Root $artifactSourceRoot
   $mcpServerStatus = Get-SymppMcpServerStatus $mcp
   $isOptInMcpPackage = $manifestName -eq "symphony-plus-plus-mcp"
   $packageNameFromRoot = Split-Path (Split-Path $Root -Parent) -Leaf
@@ -1482,6 +1844,8 @@ function Get-PluginPackageSummary([string]$Root, [string]$Label, [string]$Packag
     symphony_plus_plus_server = if (-not $manifestExists) { "missing_manifest" } elseif ($manifestParseError) { "manifest_parse_error" } elseif ($manifestHasMcpServers -and $isOptInMcpPackage) { $mcpServerStatus } elseif ($defaultPackageBundlesMcp) { "incompatible_default_plugin_bundles_mcp" } else { $mcpServerStatus }
     has_start_script = Test-Path -LiteralPath (Join-Path $Root "scripts/start-sympp-mcp.ps1")
     source_root_hint = $sourceHint
+    runtime_artifact = Get-DiagnosticRuntimeArtifactStatus $Root $artifactExpectedRevision
+    runtime_artifact_source_fallback_allowed = $artifactSourceFallbackAllowed
     package_fingerprint = Get-PluginPackageFingerprint $Root
   }
 }
@@ -2995,6 +3359,24 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     $actions += New-ReadinessAction "enable_default_plugin" "solo_session" "Enable the default skill-only plugin for MCP-free Symphony++ planning: [plugins.`"$defaultConfigKey`"] enabled = true."
   }
 
+  $companionArtifactStatus = if ($null -ne $companionPackage -and $null -ne $companionPackage.runtime_artifact) {
+    [string]$companionPackage.runtime_artifact.status
+  } else {
+    $null
+  }
+  $companionArtifactDetail = if ($null -ne $companionPackage -and $null -ne $companionPackage.runtime_artifact) {
+    [string]$companionPackage.runtime_artifact.detail
+  } else {
+    $null
+  }
+  $companionArtifactFallbackAllowed = $null -ne $companionPackage -and
+    $companionPackage.PSObject.Properties["runtime_artifact_source_fallback_allowed"] -and
+    $companionPackage.runtime_artifact_source_fallback_allowed -eq $true
+  $companionArtifactUnavailable =
+    $companionArtifactStatus -in @("artifact_manifest_invalid", "artifact_verification_failed") -or
+    ($companionArtifactStatus -eq "artifact_missing" -and $companionArtifactDetail -ne "manifest_missing")
+  $companionArtifactBlocksLaunch = $companionArtifactUnavailable -and -not $companionArtifactFallbackAllowed
+
   $companionStatus = if (-not $configExists) {
     "config_missing"
   } elseif ($companionMarketplaceAmbiguous) {
@@ -3011,6 +3393,8 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     "companion_installed_not_enabled"
   } elseif ($companionCacheStale) {
     "companion_cache_stale"
+  } elseif ($companionArtifactBlocksLaunch) {
+    "runtime_artifact_unavailable"
   } elseif ($companionPackage.http_mcp_reachability_status -eq "not_applicable") {
     "ready"
   } elseif ($companionPackage.http_mcp_reachability_status -eq "mcp_endpoint_available") {
@@ -3048,6 +3432,8 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
   } elseif (-not $companionSelectionBlocked -and $companionStatus -eq "endpoint_unreachable") {
     $actions += New-SourceCheckoutAction "start_cockpit" "workrequest_mcp" "Start the local Symphony++ cockpit/HTTP MCP daemon." $SourceCheckout (New-CockpitCommand $sourceRoot)
     $actions += New-SourceCheckoutAction "verify_http_mcp" "workrequest_mcp" "Verify the local HTTP MCP daemon source revision independently of Codex plugin loading." $SourceCheckout (New-VerifyHttpMcpCommand $sourceRoot)
+  } elseif (-not $companionSelectionBlocked -and $companionStatus -eq "runtime_artifact_unavailable") {
+    $actions += New-SourceCheckoutAction "refresh_mcp_companion_cache" "workrequest_mcp" "Refresh the opt-in MCP companion cache so its runtime artifact manifest matches the launcher revision and MCP contract." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($companionRefreshMarketplaceArg)-PluginName symphony-plus-plus-mcp -ValidateInstalledCache")
   } elseif (-not $companionSelectionBlocked -and $companionStatus -eq "ready") {
     $actions += New-SourceCheckoutAction "verify_http_mcp" "workrequest_mcp" "Verify the local HTTP MCP daemon source revision independently of Codex plugin loading." $SourceCheckout (New-VerifyHttpMcpCommand $sourceRoot)
     $actions += New-ReadinessAction "verify_codex_session" "workrequest_mcp" "If the current Codex session still lacks symphony_plus_plus tools, restart or reload the dedicated MCP-enabled session; this doctor verifies config, cache, and daemon reachability, not the already-open model tool list."
@@ -3117,6 +3503,7 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
       cache_label = if ($null -ne $companionPackage) { $companionPackage.label } else { $null }
       cache_lifecycle = if ($null -ne $companionPackage) { $companionPackage.default_plugin_lifecycle_status } else { $null }
       cache_freshness = $companionFreshness
+      runtime_artifact = if ($null -ne $companionPackage) { $companionPackage.runtime_artifact } else { $null }
       reference_mcp_server_status = if ($null -ne $companionPackage) { $companionPackage.reference_mcp_server_status } else { $null }
       http_mcp_reachability_status = if ($null -ne $companionPackage) { $companionPackage.http_mcp_reachability_status } else { $null }
       transport = if ($null -ne $companionPackage -and $companionPackage.http_mcp_reachability_status -eq "not_applicable") { "command_stdio_to_http_bridge" } else { "http_url" }
@@ -3157,6 +3544,9 @@ function Write-DoctorSummary($Summary) {
   Write-Host "  enabled: $($readiness.workrequest_mcp.companion_plugin_enabled)"
   Write-Host "  cache: $($readiness.workrequest_mcp.cache_label) / $($readiness.workrequest_mcp.cache_lifecycle)"
   Write-Host "  cache freshness: $($readiness.workrequest_mcp.cache_freshness.status)"
+  if ($null -ne $readiness.workrequest_mcp.runtime_artifact) {
+    Write-Host "  runtime artifact: $($readiness.workrequest_mcp.runtime_artifact.status) / $($readiness.workrequest_mcp.runtime_artifact.detail)"
+  }
   Write-Host "  server: $($readiness.workrequest_mcp.reference_mcp_server_status)"
   Write-Host "  endpoint: $($readiness.workrequest_mcp.http_mcp_reachability_status)"
   Write-Host "  transport: $($readiness.workrequest_mcp.transport)"
