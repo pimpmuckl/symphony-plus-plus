@@ -60,6 +60,7 @@ defmodule SymphonyElixir.MixProject do
       ],
       cli: cli(),
       escript: escript(),
+      releases: releases(),
       aliases: aliases(),
       deps: deps()
     ]
@@ -116,6 +117,17 @@ defmodule SymphonyElixir.MixProject do
       main_module: SymphonyElixir.CLI,
       name: "symphony",
       path: "bin/symphony"
+    ]
+  end
+
+  defp releases do
+    [
+      symphony_elixir: [
+        include_executables_for: [:unix, :windows],
+        applications: [
+          runtime_tools: :permanent
+        ]
+      ]
     ]
   end
 end
