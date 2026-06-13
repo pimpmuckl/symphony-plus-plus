@@ -6,6 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.LocalArchitectGrantClaim do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.CompletionRecovery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
@@ -91,7 +92,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.LocalArchitectGrantClaim do
            {1, _rows} <- recover_released_handoff_owner_id(repo, recovered_owner.id, claim, now),
            {:ok, %AccessGrant{} = grant} <- claim_grant(repo, anchor, claim, now),
            :ok <- validate_grant.(grant),
-           {:ok, completion_snapshots} <- WorkRequestRepository.completion_snapshots_for_work_package(repo, anchor.id),
+           {:ok, completion_snapshots} <- CompletionRecovery.snapshots_for_work_package(repo, anchor.id),
            :ok <- WorkRequestRepository.clear_completion_for_work_package(repo, anchor.id) do
         {:ok, grant, {:recovered, recovered_owner_snapshot(recovered_owner, claim, completion_snapshots)}}
       else
