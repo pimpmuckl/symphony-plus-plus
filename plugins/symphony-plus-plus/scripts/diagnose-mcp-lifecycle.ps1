@@ -1576,7 +1576,7 @@ function Test-DiagnosticRuntimeArtifactContractMatches($Artifact, [string]$Expec
   }
 
   if (-not $artifactContract) {
-    return $true
+    return [string]::IsNullOrWhiteSpace($ExpectedContractFingerprint)
   }
 
   return [System.StringComparer]::OrdinalIgnoreCase.Equals($artifactContract, $ExpectedContractFingerprint)
