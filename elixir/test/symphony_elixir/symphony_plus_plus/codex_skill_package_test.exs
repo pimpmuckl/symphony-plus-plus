@@ -3786,6 +3786,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     value
     |> normalize_newlines()
     |> String.replace(~r/\e\[[0-9;]*m/, "")
+    |> String.replace(~r/\s+\|\s+/, " ")
     |> String.replace(~r/\s+/, " ")
   end
 
