@@ -913,7 +913,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert status != 0
-        assert output =~ "Target plugin inline table contains no supported enabled = true/false entry"
+
+        assert normalize_powershell_error(output) =~
+                 "Target plugin inline table contains no supported enabled = true/false entry"
+
         assert normalize_newlines(File.read!(Path.join(temp_codex_home, "config.toml"))) == normalize_newlines(config)
         assert config_backups(temp_codex_home) == []
       after
@@ -983,7 +986,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert status != 0
-        assert output =~ "multiple enabled entries"
+        assert normalize_powershell_error(output) =~ "multiple enabled entries"
         assert normalize_newlines(File.read!(Path.join(temp_codex_home, "config.toml"))) == normalize_newlines(config)
         assert config_backups(temp_codex_home) == []
       after
@@ -1021,7 +1024,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert status != 0
-        assert output =~ "Refusing to enable symphony-plus-plus-mcp in the default Codex home"
+
+        assert normalize_powershell_error(output) =~
+                 "Refusing to enable symphony-plus-plus-mcp in the default Codex home"
       after
         File.rm_rf(fake_home)
       end
@@ -1059,7 +1064,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert status != 0
-        assert output =~ "without an explicit -CodexHome"
+        assert normalize_powershell_error(output) =~ "without an explicit -CodexHome"
         assert normalize_newlines(File.read!(Path.join(temp_codex_home, "config.toml"))) == normalize_newlines(config)
         assert config_backups(temp_codex_home) == []
       after
@@ -1337,7 +1342,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert status != 0
-        assert output =~ "Cannot enable symphony-plus-plus-mcp"
+        assert normalize_powershell_error(output) =~ "Cannot enable symphony-plus-plus-mcp"
         assert normalize_newlines(File.read!(Path.join(temp_codex_home, "config.toml"))) == normalize_newlines(config)
         assert config_backups(temp_codex_home) == []
       after
@@ -1427,7 +1432,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
             )
 
           assert status != 0
-          assert output =~ "Codex config already contains [mcp_servers.symphony_plus_plus]"
+
+          assert normalize_powershell_error(output) =~
+                   "Codex config already contains [mcp_servers.symphony_plus_plus]"
+
           assert normalize_newlines(File.read!(Path.join(temp_codex_home, "config.toml"))) == normalize_newlines(config)
           assert config_backups(temp_codex_home) == []
         after
@@ -1566,7 +1574,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert enable_status != 0
-        assert enable_output =~ "Another symphony-plus-plus-mcp marketplace is already enabled"
+
+        assert normalize_powershell_error(enable_output) =~
+                 "Another symphony-plus-plus-mcp marketplace is already enabled"
+
         refute File.read!(Path.join(temp_codex_home, "config.toml")) =~ "symphony-plus-plus-mcp@jonat-local"
         assert config_backups(temp_codex_home) == []
       after
@@ -1630,7 +1641,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert enable_status != 0
-        assert enable_output =~ "resolve to different marketplaces"
+        assert normalize_powershell_error(enable_output) =~ "resolve to different marketplaces"
         refute File.read!(Path.join(temp_codex_home, "config.toml")) =~ "symphony-plus-plus-mcp"
         assert config_backups(temp_codex_home) == []
       after
@@ -3761,6 +3772,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   defp normalize_prose(value) do
     value
     |> normalize_newlines()
+    |> String.replace(~r/\s+/, " ")
+  end
+
+  defp normalize_powershell_error(value) do
+    value
+    |> normalize_newlines()
+    |> String.replace(~r/\e\[[0-9;]*m/, "")
+    |> String.replace(~r/\s+\|\s+/, " ")
     |> String.replace(~r/\s+/, " ")
   end
 

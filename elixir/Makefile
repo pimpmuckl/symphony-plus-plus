@@ -19,7 +19,7 @@ endif
 
 ifeq ($(OS),Windows_NT)
 define run_ci_step
-	@powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "New-Item -ItemType Directory -Force -Path '$(GATE_LOG_DIR)' | Out-Null; $$label = '$(1)'; $$command = '$(2)'; if ('$(QUIET)' -eq '0') { Write-Output ('==> ' + $$label); cmd.exe /d /s /c $$command; exit $$LASTEXITCODE } else { $$log = '$(GATE_LOG_DIR)/$(1).log'; Write-Output ('==> ' + $$label); cmd.exe /d /s /c $$command > $$log 2>&1; $$status = $$LASTEXITCODE; if ($$null -eq $$status) { $$status = 1 }; if ($$status -eq 0) { Write-Output ('ok  ' + $$label + ' (log: ' + $$log + ')') } else { Write-Output ('fail ' + $$label + ' (exit ' + $$status + ', log: ' + $$log + ')'); exit $$status } }"
+	@powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "New-Item -ItemType Directory -Force -Path '$(GATE_LOG_DIR)' | Out-Null; $$label = '$(1)'; $$command = '$(2)'; if ('$(QUIET)' -eq '0') { Write-Output ('==> ' + $$label); cmd.exe /d /s /c $$command; exit $$LASTEXITCODE } else { $$log = '$(GATE_LOG_DIR)/$(1).log'; Write-Output ('==> ' + $$label); cmd.exe /d /s /c $$command > $$log 2>&1; $$status = $$LASTEXITCODE; if ($$null -eq $$status) { $$status = 1 }; if ($$status -eq 0) { Write-Output ('ok  ' + $$label + ' (log: ' + $$log + ')') } else { Write-Output ('fail ' + $$label + ' (exit ' + $$status + ', log: ' + $$log + ')'); Get-Content -LiteralPath $$log; exit $$status } }"
 endef
 else
 define run_ci_step
@@ -36,6 +36,7 @@ define run_ci_step
 			printf 'ok  %s (log: %s)\n' "$(1)" "$$log"; \
 		else \
 			printf 'fail %s (exit %s, log: %s)\n' "$(1)" "$$status" "$$log"; \
+			cat "$$log"; \
 			exit $$status; \
 		fi; \
 	fi
