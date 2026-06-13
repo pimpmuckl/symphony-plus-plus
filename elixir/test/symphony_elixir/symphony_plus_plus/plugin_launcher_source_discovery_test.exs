@@ -254,6 +254,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     end
   end
 
+  test "installed MCP launcher rejects invalid explicit repo root before artifact fallback" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-artifact-invalid-explicit-root")
+
+    if powershell && windows?() do
+      mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
+      sympp_home = Path.join(temp_codex_home, "sympp-home")
+      invalid_root = Path.join(temp_codex_home, "not-a-checkout")
+
+      try do
+        File.mkdir_p!(invalid_root)
+        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        script_path = write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
+        write_runtime_artifact!(mcp_cache_root, source_revision: String.duplicate("b", 40))
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            ["-NoProfile", "-File", script_path, "-ValidateOnly"],
+            cd: Path.dirname(Path.dirname(script_path)),
+            stderr_to_stdout: true,
+            env: [
+              {"SYMPP_HOME", sympp_home},
+              {"SYMPP_REPO_ROOT", invalid_root}
+            ]
+          )
+
+        assert status != 0
+        assert output =~ "SYMPP_REPO_ROOT does not look like a Symphony++ checkout"
+        refute output =~ "Symphony++ MCP launcher validation passed."
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
   test "installed MCP launcher validate-only treats downloadable artifacts as launchable" do
     powershell = System.find_executable("pwsh")
     temp_codex_home = unique_temp_path("sympp-plugin-artifact-validate-selected")

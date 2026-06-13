@@ -3512,6 +3512,9 @@ try {
   }
   $sourceFallbackAllowed = $sourceFallbackAllowed -or (Test-SymphonySourceRoot $repoRoot)
 } catch {
+  if (-not [string]::IsNullOrWhiteSpace($env:SYMPP_REPO_ROOT)) {
+    throw
+  }
   $repoRoot = $null
 }
 $artifactProbe = $null
