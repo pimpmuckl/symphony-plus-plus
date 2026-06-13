@@ -3500,25 +3500,62 @@ $artifactRuntimeAllowed = Test-ArtifactRuntimeAllowed $pluginRoot
 $artifactRuntime = $null
 $runtimeMode = "source"
 
-$repoRoot = Resolve-RepoRoot
-if ([string]::IsNullOrWhiteSpace($expectedSourceRevision)) {
-  $expectedSourceRevision = Resolve-SymppSourceRevision $repoRoot $pluginRoot
+$repoRoot = $null
+$sourceFallbackAllowed = Test-SourceFallbackAllowed $pluginRoot
+try {
+  $repoRoot = Resolve-RepoRoot
+  if ([string]::IsNullOrWhiteSpace($expectedSourceRevision)) {
+    $expectedSourceRevision = Resolve-SymppSourceRevision $repoRoot $pluginRoot
+  }
+  $sourceFallbackAllowed = $sourceFallbackAllowed -or (Test-SymphonySourceRoot $repoRoot)
+} catch {
+  $repoRoot = $null
 }
-$sourceFallbackAllowed = (Test-SourceFallbackAllowed $pluginRoot) -or (Test-SymphonySourceRoot $repoRoot)
-$artifactProbe = Resolve-SymppArtifactProbe $pluginRoot $expectedSourceRevision $expectedContractFingerprint $artifactRuntimeAllowed $sourceFallbackAllowed -ValidateOnly
-$artifactValidationLaunchable = @("ready", "artifact_selected") -contains $artifactProbe.status
+$artifactProbe = $null
+$artifactProbeError = $null
+try {
+  $artifactProbe = Resolve-SymppArtifactProbe $pluginRoot $expectedSourceRevision $expectedContractFingerprint $artifactRuntimeAllowed $sourceFallbackAllowed -ValidateOnly
+} catch {
+  $artifactProbeError = $_
+}
 
-$elixirDir = Join-Path $repoRoot "elixir"
-$assetsDir = Join-Path $elixirDir "assets"
+if ($null -ne $artifactProbeError -or $null -eq $artifactProbe -or @("ready", "artifact_selected") -notcontains $artifactProbe.status) {
+  try {
+    $repoRoot = Resolve-RepoRoot
+    if ([string]::IsNullOrWhiteSpace($expectedSourceRevision)) {
+      $expectedSourceRevision = Resolve-SymppSourceRevision $repoRoot $pluginRoot
+    }
+    $sourceFallbackAllowed = $sourceFallbackAllowed -or (Test-SymphonySourceRoot $repoRoot)
+    if ($null -ne $artifactProbeError -and $sourceFallbackAllowed) {
+      $artifactProbe = Resolve-SymppArtifactProbe $pluginRoot $expectedSourceRevision $expectedContractFingerprint $artifactRuntimeAllowed $sourceFallbackAllowed -ValidateOnly
+      $artifactProbeError = $null
+    }
+  } catch {
+    if ($null -ne $artifactProbeError) {
+      throw $artifactProbeError
+    }
+    throw
+  }
+}
+if ($null -ne $artifactProbeError) {
+  throw $artifactProbeError
+}
+$artifactValidationLaunchable = @("ready", "artifact_selected") -contains $artifactProbe.status
+if (-not $artifactValidationLaunchable -and $sourceFallbackAllowed -and [string]::IsNullOrWhiteSpace($repoRoot)) {
+  $repoRoot = Resolve-RepoRoot
+}
+
+$elixirDir = if ([string]::IsNullOrWhiteSpace($repoRoot)) { $null } else { Join-Path $repoRoot "elixir" }
+$assetsDir = if ([string]::IsNullOrWhiteSpace($elixirDir)) { $null } else { Join-Path $elixirDir "assets" }
 $mix = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MIX)) { "mix" } else { $env:SYMPP_MIX }
 $mise = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MISE)) { "mise" } else { $env:SYMPP_MISE }
-$defaultLauncher = if ($sourceFallbackAllowed -and (Test-Path -LiteralPath $elixirDir)) { Resolve-SymppDefaultLauncher $elixirDir $mise } else { "direct" }
+$defaultLauncher = if ($sourceFallbackAllowed -and -not [string]::IsNullOrWhiteSpace($elixirDir) -and (Test-Path -LiteralPath $elixirDir)) { Resolve-SymppDefaultLauncher $elixirDir $mise } else { "direct" }
 $launcher = Get-EnvMode "SYMPP_LAUNCHER" $defaultLauncher @("direct", "mise")
 Set-SymppSourceRevisionEnvironment $expectedSourceRevision
 Set-SymppWindowsNativeTargetEnvironment
-$defaultMixBuildRoot = if ($sourceFallbackAllowed -and (Test-Path -LiteralPath $elixirDir)) { Resolve-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp" $pluginRoot } else { $null }
+$defaultMixBuildRoot = if ($sourceFallbackAllowed -and -not [string]::IsNullOrWhiteSpace($elixirDir) -and (Test-Path -LiteralPath $elixirDir)) { Resolve-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp" $pluginRoot } else { $null }
 if (-not $ValidateOnly) {
-  if ($sourceFallbackAllowed -and (Test-Path -LiteralPath $elixirDir)) {
+  if ($sourceFallbackAllowed -and -not [string]::IsNullOrWhiteSpace($elixirDir) -and (Test-Path -LiteralPath $elixirDir)) {
     Set-SymppDefaultMixBuildRoot $repoRoot $launcher "mcp" $pluginRoot
   }
 }
@@ -3541,9 +3578,9 @@ if ($ValidateOnly) {
   }
 
   Write-Host "Symphony++ MCP launcher validation passed."
-  Write-Host "  repoRoot: $repoRoot"
-  Write-Host "  elixirDir: $elixirDir"
-  Write-Host "  assetsDir: $assetsDir"
+  Write-Host "  repoRoot: $(if ([string]::IsNullOrWhiteSpace($repoRoot)) { "artifact-only" } else { $repoRoot })"
+  Write-Host "  elixirDir: $(if ([string]::IsNullOrWhiteSpace($elixirDir)) { "not_required" } else { $elixirDir })"
+  Write-Host "  assetsDir: $(if ([string]::IsNullOrWhiteSpace($assetsDir)) { "not_required" } else { $assetsDir })"
   Write-Host "  runtimeMode: $validationRuntimeMode"
   Write-Host "  artifactStatus: $($artifactProbe.status)"
   Write-Host "  artifactDetail: $($artifactProbe.detail)"
@@ -3574,6 +3611,11 @@ if ($ValidateOnly) {
 $elixirSetupTimeout = Get-EnvInteger "SYMPP_ELIXIR_SETUP_TIMEOUT_SEC" 300 1 1800
 $bridgeMode = Get-EnvMode "SYMPP_MCP_BRIDGE_MODE" "http" @("http", "direct_stdio")
 if ($bridgeMode -eq "direct_stdio") {
+  if ([string]::IsNullOrWhiteSpace($repoRoot)) {
+    $repoRoot = Resolve-RepoRoot
+    $elixirDir = Join-Path $repoRoot "elixir"
+    $assetsDir = Join-Path $elixirDir "assets"
+  }
   $artifactSelection = Resolve-LaunchArtifactSelection $pluginRoot $repoRoot $artifactProbe $expectedSourceRevision $expectedContractFingerprint $artifactRuntimeAllowed $sourceFallbackAllowed
   $artifactRuntime = $artifactSelection.artifact_runtime
   $runtimeMode = [string]$artifactSelection.runtime_mode
@@ -3709,7 +3751,7 @@ try {
       [string]::IsNullOrWhiteSpace($env:SYMPP_DASHBOARD_ORIGIN) -and
       ((-not $dashboardPortExplicit) -or $artifactDashboardPortMatchesBackend) -and
       ($backendPlan.should_start -or $backendPlan.reused)) {
-    $dashboardPlan = New-ReusedDashboardPlan "artifact_static" $backendPlan.url ($backendPlan.managed -eq $true) $backendPlan.pid
+    $dashboardPlan = New-ReusedDashboardPlan "artifact_static" $backendPlan.url $false $null
   } else {
     $dashboardBackendSourceRevision = if ($backendPlan.should_start) { $expectedSourceRevision } else { [string]$backendPlan.source_revision }
     $dashboardPlan = Resolve-DashboardPlan $dashboardPort $env:SYMPP_DASHBOARD_ORIGIN $backendPlan.url $dashboardBackendSourceRevision $runtimeState $dashboardPortExplicit $expectedSourceRevision $expectedContractFingerprint $allowRecordedDashboardReuse
@@ -3734,8 +3776,8 @@ try {
     $backendPlan.source_revision = $backendLaunch.source_revision
     $backendPlan.contract_fingerprint = $backendLaunch.contract_fingerprint
     if ($runtimeMode -eq "artifact" -and [string]$dashboardPlan.status -eq "artifact_static") {
-      $dashboardPlan.pid = $backendLaunch.pid
       if (-not (Test-HealthySymppDashboard $backendPlan.url) -or -not (Test-SymppDashboardMcpProxyMatches $backendPlan.url $expectedContractFingerprint)) {
+        [void](Stop-ManagedRuntimeEntry "backend" $backendPlan)
         throw "artifact_dashboard_unavailable: verified artifact backend started, but its dashboard route is not healthy for the expected MCP contract."
       }
     }
