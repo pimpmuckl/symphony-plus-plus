@@ -39,6 +39,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     Config,
     LocalArchitectGrantClaim,
     LocalClaimLeases,
+    LocalTrustedTools,
     PlannedSliceWorkerRevoke,
     Repository,
     Session,
@@ -1638,17 +1639,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     Enum.uniq_by(specs, & &1["name"])
   end
 
-  defp local_trusted_tool_specs(%__MODULE__{} = server) do
-    if local_trusted_tools_enabled?(server) do
-      ToolCatalog.bootstrap_tool_specs() ++ local_operator_tool_specs() ++ ToolCatalog.trusted_local_comment_tool_specs()
-    else
-      []
-    end
-  end
+  defp local_trusted_tool_specs(%__MODULE__{} = server), do: if(local_trusted_tools_enabled?(server), do: LocalTrustedTools.tool_specs(server.config), else: [])
 
   defp local_operator_tool_specs, do: ToolCatalog.local_operator_tool_specs()
 
-  defp local_trusted_tools_enabled?(%__MODULE__{} = server), do: authorize_trusted_local_tool_call(server, "tools/list") == :ok
+  defp local_trusted_tools_enabled?(%__MODULE__{} = server), do: LocalTrustedTools.enabled?(server)
 
   defp solo_tool_input_schema(name), do: ToolCatalog.solo_tool_input_schema(name)
   defp bootstrap_tool_input_schema(name), do: ToolCatalog.bootstrap_tool_input_schema(name)
@@ -1936,7 +1931,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          local_daemon_trusted: true,
          state_key_explicit: true
        }) do
-    require_local_operator_database(config)
+    LocalTrustedTools.require_database(config)
   end
 
   defp require_local_assignment_claim_mode(%__MODULE__{config: %Config{mode: :http}, state_key_explicit: false}),
@@ -2417,7 +2412,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_local_architect_assignment_claim_mode(%__MODULE__{config: config} = server) do
     with :ok <- require_local_assignment_claim_mode(server) do
-      require_local_operator_database(config)
+      LocalTrustedTools.require_database(config)
     end
   end
 
@@ -2978,59 +2973,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp authorize_local_operator_tool_call(%__MODULE__{} = server, tool), do: authorize_trusted_local_tool_call(server, tool)
 
-  defp authorize_trusted_local_tool_call(
-         %__MODULE__{
-           initialized: true,
-           config: %Config{mode: :http, local_daemon_trusted: true} = config,
-           local_daemon_trusted: true,
-           state_key_explicit: true
-         },
-         tool
-       ) do
-    case require_local_operator_database(config) do
-      :ok -> :ok
-      {:error, reason} -> {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => reason_text(reason)}}
-    end
-  end
-
-  defp authorize_trusted_local_tool_call(%__MODULE__{initialized: false}, tool) do
-    {:error, -32_000, "Server error", %{"tool" => tool, "reason" => "server_not_initialized"}}
-  end
-
-  defp authorize_trusted_local_tool_call(%__MODULE__{config: %Config{mode: :http}, state_key_explicit: false}, tool) do
-    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "local_mcp_session_required"}}
-  end
-
-  defp authorize_trusted_local_tool_call(%__MODULE__{config: %Config{mode: :http}}, tool) do
-    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "local_daemon_trust_required"}}
-  end
-
-  defp authorize_trusted_local_tool_call(%__MODULE__{}, tool) do
-    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "local_mcp_required"}}
-  end
-
-  defp require_local_operator_database(%Config{repo: repo, database: database}) do
-    case normalized_database(database) do
-      nil -> require_local_operator_live_database(repo)
-      database -> require_local_operator_configured_database(database)
-    end
-  end
-
-  defp require_local_operator_configured_database(database) do
-    cond do
-      Repo.memory_database?(database) -> {:error, :file_backed_database_required}
-      remote_database_identity?(database) -> {:error, :local_database_required}
-      true -> :ok
-    end
-  end
-
-  defp require_local_operator_live_database(repo) do
-    case live_main_database_path(repo) do
-      {:ok, _path} -> :ok
-      :memory -> {:error, :file_backed_database_required}
-      :error -> {:error, :database_required}
-    end
-  end
+  defp authorize_trusted_local_tool_call(%__MODULE__{} = server, tool), do: LocalTrustedTools.authorize(server, tool)
 
   defp prepare_mcp_repository(repo), do: Repository.ensure_migrated(repo)
 
@@ -3261,17 +3204,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp local_trusted_list_comments_tool(arguments, %__MODULE__{config: config}) do
-    with {:ok, target_kind} <- required_argument(arguments, "target_kind"),
-         :ok <- require_comment_target_kind(target_kind),
-         {:ok, target_id} <- required_argument(arguments, "target_id"),
-         :ok <- require_local_trusted_comment_target(config.repo, target_kind, target_id),
-         {:ok, comments} <- CommentService.list_for_target(config.repo, target_kind, target_id) do
-      {:ok,
-       tool_result(%{
-         "comments" => Enum.map(comments, &comment_payload/1),
-         "target" => %{"kind" => target_kind, "id" => target_id}
-       })}
-    else
+    case LocalTrustedTools.list_comments(config.repo, arguments, &comment_payload/1) do
+      {:ok, payload} -> {:ok, tool_result(payload)}
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "list_comments", "reason" => reason}}
       {:error, :not_found} -> not_found_error("list_comments")
       {:error, reason} -> architect_error(reason, "list_comments")
@@ -9182,7 +9116,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp chronological_progress_events(progress_events) do
     Enum.sort_by(progress_events, fn %ProgressEvent{created_at: created_at, sequence: sequence, id: id} ->
-      {created_at || DateTime.from_unix!(0), sequence || 0, id || ""}
+      {timestamp_sort_value(created_at), sequence || 0, id || ""}
     end)
   end
 
@@ -12466,29 +12400,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_comment_target_kind(target_kind) do
     if target_kind in Comment.target_kinds(), do: :ok, else: {:tool_error, "invalid_target_kind"}
   end
-
-  defp require_local_trusted_comment_target(repo, "work_request", target_id) do
-    case WorkRequestService.get(repo, target_id) do
-      {:ok, %WorkRequest{}} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp require_local_trusted_comment_target(repo, "planned_slice", target_id) do
-    case repo.get(PlannedSlice, target_id) do
-      %PlannedSlice{} -> :ok
-      nil -> {:error, :not_found}
-    end
-  end
-
-  defp require_local_trusted_comment_target(repo, "work_package", target_id) do
-    case WorkPackageRepository.get(repo, target_id) do
-      {:ok, %WorkPackage{}} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp require_local_trusted_comment_target(_repo, _target_kind, _target_id), do: {:tool_error, "invalid_target_kind"}
 
   defp comment_tool_result("add_comment", repo, %Session{} = session, arguments, source_type, author_name) do
     with {:ok, target_kind} <- required_argument(arguments, "target_kind"),

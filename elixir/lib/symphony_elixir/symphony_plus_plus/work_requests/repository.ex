@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.CompletionRecovery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
@@ -151,43 +152,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     now = DateTime.utc_now(:microsecond)
 
     repo.update_all(
-      clearable_completion_for_work_package_query(work_package_id),
+      CompletionRecovery.clearable_query(work_package_id),
       set: [completed_at: nil, completion_source: nil, archived_at: nil, archive_reason: nil, updated_at: now]
     )
 
     :ok
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
-  end
-
-  @spec completion_snapshots_for_work_package(repo(), String.t()) :: {:ok, [map()]} | {:error, error()}
-  def completion_snapshots_for_work_package(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
-    snapshots =
-      repo.all(
-        from(work_request in clearable_completion_for_work_package_query(work_package_id),
-          select: %{
-            id: work_request.id,
-            completed_at: work_request.completed_at,
-            completion_source: work_request.completion_source,
-            archived_at: work_request.archived_at,
-            archive_reason: work_request.archive_reason
-          }
-        )
-      )
-
-    {:ok, snapshots}
-  rescue
-    error in Exqlite.Error -> normalize_exqlite_error(error)
-  end
-
-  defp clearable_completion_for_work_package_query(work_package_id) do
-    from(work_request in WorkRequest,
-      join: planned_slice in PlannedSlice,
-      on: planned_slice.work_request_id == work_request.id,
-      where: planned_slice.work_package_id == ^work_package_id,
-      where: is_nil(work_request.completion_source) or work_request.completion_source != "operator",
-      where: not is_nil(work_request.completed_at) or not is_nil(work_request.archived_at)
-    )
   end
 
   @spec update(repo(), String.t(), map()) :: {:ok, WorkRequest.t()} | {:error, error()}
