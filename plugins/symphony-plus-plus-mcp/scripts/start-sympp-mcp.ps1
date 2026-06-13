@@ -1925,8 +1925,11 @@ function Invoke-SelfTest {
   }
 
   $marketplaceSelfTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) "sympp-plugin-marketplace-cache-$([guid]::NewGuid().ToString('N'))"
+  $oldSymppHome = [Environment]::GetEnvironmentVariable("SYMPP_HOME", "Process")
   try {
     $codexHome = Join-Path $marketplaceSelfTestRoot "codex"
+    $symppHome = Join-Path $marketplaceSelfTestRoot "sympp-home"
+    [Environment]::SetEnvironmentVariable("SYMPP_HOME", $symppHome, "Process")
     $pluginRoot = Join-Path $codexHome "plugins/cache/symphony-plus-plus/symphony-plus-plus-mcp/0.1.0"
     $sourceRoot = Join-Path $codexHome ".tmp/marketplaces/symphony-plus-plus"
     $sourcePluginRoot = Join-Path $sourceRoot "plugins/symphony-plus-plus-mcp"
@@ -1951,22 +1954,64 @@ function Invoke-SelfTest {
     }
 
     Set-Content -LiteralPath (Join-Path $pluginRoot "scripts/sympp-launcher-runtime.ps1") -Value "# stale installed payload" -NoNewline
-    $mismatchRejected = $false
-    try {
-      [void](Resolve-RepoRootFromMarketplaceCache $pluginRoot)
-    } catch {
-      $mismatchRejected = $_.Exception.Message -match "does not match the installed Symphony\+\+ MCP plugin cache"
-    }
-    if (-not $mismatchRejected) {
-      throw "Marketplace source discovery should reject mismatched installed plugin payloads."
+    if ($null -ne (Resolve-RepoRootFromMarketplaceCache $pluginRoot)) {
+      throw "Marketplace source discovery should ignore mismatched installed plugin payloads."
     }
 
-    $pinnedRevision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    $sourceCacheRoot = Join-Path $symppHome "source-cache/symphony-plus-plus-selftest"
+    $staleSourceCacheRoot = Join-Path $symppHome "source-cache/symphony-plus-plus-stale"
+    $sourceCachePluginRoot = Join-Path $sourceCacheRoot "plugins/symphony-plus-plus-mcp"
+    New-Item -ItemType Directory -Path (Join-Path $sourceCacheRoot "elixir") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $sourceCachePluginRoot ".codex-plugin") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $sourceCachePluginRoot "scripts") -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $sourceCacheRoot "elixir/mix.exs") -Value "# source-cache self-test" -NoNewline
+    foreach ($relativePath in @(".codex-plugin/plugin.json", "scripts/start-sympp-mcp.ps1", "scripts/sympp-launcher-runtime.ps1", "scripts/sympp-mcp-launcher-helpers.ps1")) {
+      $installedPayload = Get-Content -LiteralPath (Join-Path $pluginRoot $relativePath) -Raw
+      Set-Content -LiteralPath (Join-Path $sourceCachePluginRoot $relativePath) -Value $installedPayload -NoNewline
+    }
+
+    $git = Get-Command git -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $git) {
+      throw "Source-cache self-test requires git."
+    }
+
+    & $git.Source @("-C", $sourceCacheRoot, "init", "-q")
+    if ($LASTEXITCODE -ne 0) {
+      throw "Source-cache self-test failed to initialize git."
+    }
+
+    & $git.Source @("-C", $sourceCacheRoot, "add", ".")
+    if ($LASTEXITCODE -ne 0) {
+      throw "Source-cache self-test failed to stage git files."
+    }
+
+    & $git.Source @("-C", $sourceCacheRoot, "-c", "user.email=sympp-selftest@example.invalid", "-c", "user.name=Symphony Self Test", "commit", "-qm", "source-cache self-test")
+    if ($LASTEXITCODE -ne 0) {
+      throw "Source-cache self-test failed to commit git files."
+    }
+
+    $pinnedRevision = Resolve-SymppSourceRevision $sourceCacheRoot
+    if (-not $pinnedRevision) {
+      throw "Source-cache self-test failed to resolve the git revision."
+    }
+
     Set-Content -LiteralPath (Join-Path $pluginRoot ".sympp-source-revision") -Value "$pinnedRevision`n" -NoNewline
+    Copy-Item -LiteralPath $sourceCacheRoot -Destination $staleSourceCacheRoot -Recurse
+    $staleSourceCachePluginRoot = Join-Path $staleSourceCacheRoot "plugins/symphony-plus-plus-mcp"
+    Set-Content -LiteralPath (Join-Path $staleSourceCachePluginRoot "scripts/sympp-launcher-runtime.ps1") -Value "# stale source-cache payload" -NoNewline
+    (Get-Item -LiteralPath $staleSourceCacheRoot).LastWriteTime = (Get-Date).AddMinutes(1)
+    if ((Resolve-RepoRootFromSourceCache $pluginRoot) -ne ([System.IO.Path]::GetFullPath($sourceCacheRoot))) {
+      throw "Source-cache discovery should select a clean installed Symphony++ runtime source cache revision and payload."
+    }
+    if ((Resolve-RepoRootFromPluginRoot $pluginRoot) -ne ([System.IO.Path]::GetFullPath($sourceCacheRoot))) {
+      throw "Installed plugin discovery should prefer source-cache over a stale marketplace source clone."
+    }
+
     if ((Resolve-SymppSourceRevision (Join-Path $marketplaceSelfTestRoot "not-a-git-repo") $pluginRoot) -ne $pinnedRevision) {
       throw "Pinned installed source revision should be used when git and marketplace metadata are unavailable."
     }
   } finally {
+    [Environment]::SetEnvironmentVariable("SYMPP_HOME", $oldSymppHome, "Process")
     Remove-Item -LiteralPath $marketplaceSelfTestRoot -Recurse -Force -ErrorAction SilentlyContinue
   }
 

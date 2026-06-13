@@ -82,20 +82,91 @@ function Resolve-RepoRootFromMarketplaceCache([string]$PluginRoot) {
       (Test-Path -LiteralPath (Join-Path $candidate "plugins/symphony-plus-plus/.codex-plugin/plugin.json")) -and
       (Test-Path -LiteralPath (Join-Path $candidate "plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json"))) {
     if (-not (Test-InstalledPluginPayloadMatchesMarketplaceSource $versionRoot $candidate)) {
-      throw "Codex marketplace source clone does not match the installed Symphony++ MCP plugin cache. Run codex plugin marketplace upgrade before starting the MCP runtime: $candidate"
+      return $null
     }
 
     $installedRevision = Get-SymppPinnedSourceRevision $versionRoot
     $candidateRevision = Resolve-SymppSourceRevision $candidate
     if ($installedRevision -and $candidateRevision -and
         -not [System.StringComparer]::OrdinalIgnoreCase.Equals($installedRevision, $candidateRevision)) {
-      throw "Codex marketplace source clone revision $candidateRevision does not match installed Symphony++ MCP cache revision $installedRevision. Run codex plugin marketplace upgrade before starting the MCP runtime."
+      return $null
     }
 
     return $candidate
   }
 
   return $null
+}
+
+function Test-SymphonySourceTreeMatchesRevision([string]$Path, [string]$ExpectedRevision) {
+  $headRevision = Get-SymppGitHeadRevision $Path
+  if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($ExpectedRevision, $headRevision)) {
+    return $false
+  }
+
+  $git = Get-Command git -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $git) {
+    return $false
+  }
+
+  try {
+    $status = @(& $git.Source @("-C", $Path, "status", "--porcelain=v1", "--untracked-files=all") 2>$null)
+    return $LASTEXITCODE -eq 0 -and $status.Count -eq 0
+  } catch {
+    return $false
+  }
+}
+
+function Resolve-RepoRootFromSourceCache([string]$PluginRoot) {
+  $pluginRoot = [System.IO.Path]::GetFullPath($PluginRoot)
+  $installedRevision = Get-SymppPinnedSourceRevision $pluginRoot
+  if (-not $installedRevision) {
+    return $null
+  }
+
+  $sourceCacheRoot = [System.IO.Path]::GetFullPath((Join-Path (Resolve-SymppPluginHome) "source-cache"))
+  if (-not (Test-Path -LiteralPath $sourceCacheRoot)) {
+    return $null
+  }
+
+  $candidates = @(
+    Get-ChildItem -LiteralPath $sourceCacheRoot -Directory -Filter "symphony-plus-plus-*" -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending
+  )
+
+  foreach ($candidate in $candidates) {
+    $candidatePath = [System.IO.Path]::GetFullPath($candidate.FullName)
+    if (-not (Test-SymphonySourceRoot $candidatePath)) {
+      continue
+    }
+
+    if ((Test-SymphonySourceTreeMatchesRevision $candidatePath $installedRevision) -and
+        (Test-InstalledPluginPayloadMatchesMarketplaceSource $pluginRoot $candidatePath)) {
+      return $candidatePath
+    }
+  }
+
+  return $null
+}
+
+function Resolve-RepoRootFromPluginRoot([string]$PluginRoot) {
+  $pluginRoot = [System.IO.Path]::GetFullPath($PluginRoot)
+  $sourceCandidate = [System.IO.Path]::GetFullPath((Join-Path $pluginRoot "../.."))
+  if (Test-SymphonySourceRoot $sourceCandidate) {
+    return $sourceCandidate
+  }
+
+  $sourceCacheRoot = Resolve-RepoRootFromSourceCache $pluginRoot
+  if ($sourceCacheRoot) {
+    return $sourceCacheRoot
+  }
+
+  $marketplaceRoot = Resolve-RepoRootFromMarketplaceCache $pluginRoot
+  if ($marketplaceRoot) {
+    return $marketplaceRoot
+  }
+
+  throw "Cannot infer the Symphony++ runtime source. Run codex plugin marketplace upgrade, or set SYMPP_REPO_ROOT only for explicit developer validation."
 }
 
 function Resolve-RepoRoot {
@@ -109,17 +180,7 @@ function Resolve-RepoRoot {
   }
 
   $pluginRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-  $sourceCandidate = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../../.."))
-  if (Test-SymphonySourceRoot $sourceCandidate) {
-    return $sourceCandidate
-  }
-
-  $marketplaceRoot = Resolve-RepoRootFromMarketplaceCache $pluginRoot
-  if ($marketplaceRoot) {
-    return $marketplaceRoot
-  }
-
-  throw "Cannot infer the Symphony++ runtime source. Run codex plugin marketplace upgrade, or set SYMPP_REPO_ROOT only for explicit developer validation."
+  return Resolve-RepoRootFromPluginRoot $pluginRoot
 }
 
 function Resolve-SymppHome {
