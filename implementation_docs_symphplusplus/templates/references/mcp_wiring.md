@@ -75,13 +75,13 @@ Solo/cockpit handoff path instead.
 
 The opt-in MCP package reference is intentionally generic. It should not embed
 bearer tokens, access-grant verifiers, or operator-local secret material.
-Repo-local refresh scripts update installed
-caches only during final cutover or explicit manual cache maintenance; they
-write a non-secret source-root hint for the Solo wrapper and MCP launcher. The
-bundled MCP target itself is a local command-backed stdio-to-HTTP bridge, not a
-static URL.
-Do not refresh user-local plugin caches as part of normal feature-branch
-worker dispatch.
+Installed plugin caches are marketplace-owned. Use `codex plugin marketplace
+upgrade` during cutover; do not point the installed plugin at a developer
+checkout, worktree, or source-root hint. Repo-local refresh scripts are for
+isolated development Codex homes only. The bundled MCP target itself is a local
+command-backed stdio-to-HTTP bridge, not a static URL.
+Do not refresh user-local plugin caches as part of normal feature-branch worker
+dispatch.
 
 Plugin installation is not worker package dispatch. Normal planned-slice worker
 dispatch emits a `worker_bootstrap` payload with `type: ledger_claim`, `mode:

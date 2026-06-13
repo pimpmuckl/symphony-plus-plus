@@ -730,6 +730,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
 
     attach_tool(repo, session, "attach_branch", %{"branch" => branch, "head_sha" => head_sha})
+    put_review_suite_state!("rvw_other_missing_mixed", "orc-other-missing-mixed", head_sha, "normal")
 
     response =
       MCPHarness.request(
@@ -758,8 +759,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
 
     assert get_in(response, ["error", "data", "reason"]) == "review_suite_round_unavailable"
     assert get_in(response, ["error", "data", "round_id"]) == "rvw_missing_mixed"
-    assert "head_sha" in get_in(response, ["error", "data", "fallback_explicit_fields"])
-    assert "profile" in get_in(response, ["error", "data", "fallback_explicit_fields"])
+    assert ["head_sha", "profile"] -- get_in(response, ["error", "data", "fallback_explicit_fields"]) == []
   end
 
   test "minimal Review Suite round id rejects same-head identity mismatches", %{repo: repo} do

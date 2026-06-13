@@ -90,8 +90,27 @@ function Get-SymppStablePathKey([string]$Value) {
   }
 }
 
+function Test-SymppMiseLauncherAvailable([string]$ElixirDir, [string]$MiseCommand) {
+  if (-not (Test-Path -LiteralPath (Join-Path $ElixirDir "mise.toml"))) {
+    return $false
+  }
+  if (-not (Get-Command $MiseCommand -ErrorAction SilentlyContinue)) {
+    return $false
+  }
+
+  Push-Location -LiteralPath $ElixirDir
+  try {
+    & $MiseCommand @("exec", "--", "mix", "--version") *> $null
+    return $LASTEXITCODE -eq 0
+  } catch {
+    return $false
+  } finally {
+    Pop-Location
+  }
+}
+
 function Resolve-SymppDefaultLauncher([string]$ElixirDir, [string]$MiseCommand) {
-  if ((Test-Path -LiteralPath (Join-Path $ElixirDir "mise.toml")) -and (Get-Command $MiseCommand -ErrorAction SilentlyContinue)) {
+  if (Test-SymppMiseLauncherAvailable $ElixirDir $MiseCommand) {
     return "mise"
   }
 

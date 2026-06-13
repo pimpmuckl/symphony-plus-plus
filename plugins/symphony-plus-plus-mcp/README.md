@@ -74,7 +74,7 @@ next action:
 ```
 
 The doctor checks cache, config, command-backed launcher shape, and package
-fingerprints against the inferred source checkout. It cannot inspect tools
+fingerprints against the Codex marketplace snapshot. It cannot inspect tools
 already registered inside an open Codex model session; if the doctor is healthy
 but tools are still absent, restart or reload the dedicated MCP-enabled session.
 
@@ -83,8 +83,8 @@ Keep this companion out of generic worker, `worker_smart`, review-suite, and
 
 When an installed dedicated Codex session starts, the launcher prefers the
 compatible marketplace source clone that matches the installed MCP plugin
-payload, falling back to local refresh source-root hints only when marketplace
-source discovery is unavailable. When the launcher starts, it writes the actual backend
+payload. Installed plugin launchers ignore local source-root hints; use
+`codex plugin marketplace upgrade` to change the installed runtime payload. When the launcher starts, it writes the actual backend
 port, dashboard URL, process ids, and log paths to
 `%USERPROFILE%\.agents\splusplus\runtime\codex-plugin.json` by default.
 Override with `SYMPP_RUNTIME_FILE`, `SYMPP_BACKEND_PORT`,
