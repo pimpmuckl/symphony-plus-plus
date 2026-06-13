@@ -3372,9 +3372,11 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
   $companionArtifactFallbackAllowed = $null -ne $companionPackage -and
     $companionPackage.PSObject.Properties["runtime_artifact_source_fallback_allowed"] -and
     $companionPackage.runtime_artifact_source_fallback_allowed -eq $true
+  $companionArtifactMissingBlocksLaunch = $companionArtifactStatus -eq "artifact_missing" -and
+    ($companionArtifactDetail -ne "manifest_missing" -or -not $companionArtifactFallbackAllowed)
   $companionArtifactUnavailable =
     $companionArtifactStatus -in @("artifact_manifest_invalid", "artifact_verification_failed") -or
-    ($companionArtifactStatus -eq "artifact_missing" -and $companionArtifactDetail -ne "manifest_missing")
+    $companionArtifactMissingBlocksLaunch
   $companionArtifactBlocksLaunch = $companionArtifactUnavailable -and -not $companionArtifactFallbackAllowed
 
   $companionStatus = if (-not $configExists) {
