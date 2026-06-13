@@ -386,7 +386,7 @@ function Test-SymppArtifactContractMatches($Artifact, [string]$ExpectedContractF
   }
 
   if (-not $artifactContract) {
-    return $true
+    return [string]::IsNullOrWhiteSpace($ExpectedContractFingerprint)
   }
 
   return [System.StringComparer]::OrdinalIgnoreCase.Equals($artifactContract, $ExpectedContractFingerprint)
