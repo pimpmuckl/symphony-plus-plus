@@ -1421,8 +1421,52 @@ function Get-SymppMcpServerStatus($McpConfig) {
   return "ok"
 }
 
+function Test-DiagnosticWindowsPlatform {
+  return [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+}
+
+function Get-DiagnosticWindowsProcessorArchitecture {
+  $arch = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITEW6432", "Process")
+  if ([string]::IsNullOrWhiteSpace($arch)) {
+    $arch = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Process")
+  }
+  if (-not [string]::IsNullOrWhiteSpace($arch)) {
+    return $arch
+  }
+
+  try {
+    $runtimeArch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+    if (-not [string]::IsNullOrWhiteSpace($runtimeArch)) {
+      return $runtimeArch
+    }
+  } catch {
+  }
+
+  if ([IntPtr]::Size -eq 8) {
+    return "AMD64"
+  }
+
+  return "x86"
+}
+
+function Convert-DiagnosticProcessorArchitectureToTargetArch([string]$Architecture) {
+  if ([string]::IsNullOrWhiteSpace($Architecture)) {
+    return $null
+  }
+
+  switch ($Architecture.Trim().ToLowerInvariant()) {
+    "amd64" { return "x86_64" }
+    "x64" { return "x86_64" }
+    "arm64" { return "aarch64" }
+    "aarch64" { return "aarch64" }
+    "x86" { return "x86" }
+    "ia64" { return "ia64" }
+    default { return $null }
+  }
+}
+
 function Get-DiagnosticRuntimePlatformKey {
-  $os = if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
+  $os = if (Test-DiagnosticWindowsPlatform) {
     "windows"
   } elseif ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)) {
     "linux"
@@ -1432,19 +1476,16 @@ function Get-DiagnosticRuntimePlatformKey {
     $null
   }
 
-  $arch = try {
-    [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant()
-  } catch {
-    $null
+  $architecture = if (Test-DiagnosticWindowsPlatform) {
+    Get-DiagnosticWindowsProcessorArchitecture
+  } else {
+    try {
+      [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+    } catch {
+      $null
+    }
   }
-  $arch = switch ($arch) {
-    "x64" { "x86_64" }
-    "amd64" { "x86_64" }
-    "arm64" { "aarch64" }
-    "aarch64" { "aarch64" }
-    "x86" { "x86" }
-    default { $null }
-  }
+  $arch = Convert-DiagnosticProcessorArchitectureToTargetArch $architecture
 
   if ([string]::IsNullOrWhiteSpace($os) -or [string]::IsNullOrWhiteSpace($arch)) {
     return $null
@@ -1558,7 +1599,7 @@ function Assert-DiagnosticRelativeArtifactPath([string]$Path, [string]$Label) {
 function Resolve-DiagnosticRuntimeArtifactEntrypoint($Artifact) {
   $entrypoint = [string](Get-DiagnosticJsonPropertyValue $Artifact @("entrypoint", "backend_entrypoint", "command"))
   if ([string]::IsNullOrWhiteSpace($entrypoint)) {
-    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
+    if (Test-DiagnosticWindowsPlatform) {
       $entrypoint = "bin/symphony_elixir.bat"
     } else {
       $entrypoint = "bin/symphony_elixir"
@@ -1567,6 +1608,40 @@ function Resolve-DiagnosticRuntimeArtifactEntrypoint($Artifact) {
 
   Assert-DiagnosticRelativeArtifactPath $entrypoint "artifact entrypoint"
   return $entrypoint.Replace("\", "/")
+}
+
+function Resolve-DiagnosticRuntimeArtifactSourceUri($Artifact, [string]$ManifestPath) {
+  $value = [string](Get-DiagnosticJsonPropertyValue $Artifact @("url", "download_url", "uri", "path"))
+  if ([string]::IsNullOrWhiteSpace($value)) {
+    throw "artifact_missing: selected Symphony++ runtime artifact does not declare url, download_url, uri, or path."
+  }
+
+  if ([System.Uri]::IsWellFormedUriString($value, [System.UriKind]::Absolute)) {
+    return $value
+  }
+
+  $manifestDir = Split-Path -Parent $ManifestPath
+  return [System.IO.Path]::GetFullPath((Join-Path $manifestDir $value))
+}
+
+function Assert-DiagnosticRuntimeArtifactSourceUsable([string]$SourceUri) {
+  if ([System.Uri]::IsWellFormedUriString($SourceUri, [System.UriKind]::Absolute)) {
+    $uri = [System.Uri]$SourceUri
+    if ($uri.Scheme -eq "file") {
+      if (-not (Test-Path -LiteralPath $uri.LocalPath -PathType Leaf)) {
+        throw "artifact_missing: selected Symphony++ runtime artifact file does not exist: $($uri.LocalPath)"
+      }
+      return
+    }
+    if ($uri.Scheme -eq "https" -or ($uri.Scheme -eq "http" -and $uri.IsLoopback)) {
+      return
+    }
+    throw "artifact_download_blocked: Symphony++ runtime artifacts must use https, file, or loopback http URLs."
+  }
+
+  if (-not (Test-Path -LiteralPath $SourceUri -PathType Leaf)) {
+    throw "artifact_missing: selected Symphony++ runtime artifact file does not exist: $SourceUri"
+  }
 }
 
 function Test-DiagnosticRuntimeArtifactCacheReady([string]$CacheRoot, [string]$Entrypoint, [string]$Sha256) {
@@ -1750,6 +1825,8 @@ function Get-DiagnosticRuntimeArtifactStatus([string]$Root, [string]$ExpectedRev
   $sha256 = $sha256.Trim().ToLowerInvariant()
   try {
     $entrypoint = Resolve-DiagnosticRuntimeArtifactEntrypoint $artifact
+    $sourceUri = Resolve-DiagnosticRuntimeArtifactSourceUri $artifact $manifestPath
+    Assert-DiagnosticRuntimeArtifactSourceUsable $sourceUri
   } catch {
     return [pscustomobject]@{ status = "artifact_verification_failed"; detail = $_.Exception.Message; platform = $platform; manifest_path = $manifestPath }
   }
