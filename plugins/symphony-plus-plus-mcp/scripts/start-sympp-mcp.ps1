@@ -732,6 +732,10 @@ function Resolve-LaunchArtifactSelection(
     }
   } elseif ($ArtifactProbe.status -eq "artifact_unavailable" -and $SourceFallbackAllowed) {
     Write-Diagnostic "source_fallback_compiling: artifact probe failed under source fallback control. detail=$($ArtifactProbe.detail)"
+  } elseif (-not $SourceFallbackAllowed) {
+    Write-Diagnostic "$($ArtifactProbe.status): $($ArtifactProbe.detail)"
+    Write-Diagnostic "source_fallback_disabled: set SYMPP_SOURCE_FALLBACK=1 or SYMPP_DEVELOPER_MODE=1 to compile from a source checkout."
+    throw "source_fallback_disabled: no verified Symphony++ runtime artifact is ready for this installed launcher."
   }
 
   return [pscustomobject]@{
@@ -859,6 +863,14 @@ function Get-PowerShellHostCommandName {
   return "powershell"
 }
 
+function ConvertTo-CmdCommandArgument([string]$Argument) {
+  if ($null -eq $Argument) {
+    return '""'
+  }
+
+  return '"' + $Argument.Replace('"', '""') + '"'
+}
+
 function Get-StartProcessCommand([string]$FilePath, [string[]]$ArgumentList) {
   if ($FilePath.EndsWith(".ps1", [System.StringComparison]::OrdinalIgnoreCase)) {
     return [pscustomobject]@{
@@ -869,9 +881,11 @@ function Get-StartProcessCommand([string]$FilePath, [string[]]$ArgumentList) {
 
   if ($FilePath.EndsWith(".cmd", [System.StringComparison]::OrdinalIgnoreCase) -or
       $FilePath.EndsWith(".bat", [System.StringComparison]::OrdinalIgnoreCase)) {
+    $commandPayload = '"' + (((@($FilePath) + @($ArgumentList)) | ForEach-Object { ConvertTo-CmdCommandArgument $_ }) -join " ") + '"'
     return [pscustomobject]@{
       file = "cmd.exe"
-      args = @("/d", "/s", "/c", $FilePath) + @($ArgumentList)
+      argument_string = "/d /s /c $commandPayload"
+      args = @("/d", "/s", "/c", $commandPayload)
     }
   }
 
@@ -2315,6 +2329,11 @@ function Start-LoggedProcess([string]$FilePath, [string[]]$ArgumentList, [string
   $stdoutPath = Join-Path $LogDir "$LogPrefix-$stamp.out.log"
   $stderrPath = Join-Path $LogDir "$LogPrefix-$stamp.err.log"
   $startCommand = Get-StartProcessCommand $FilePath $ArgumentList
+  $startArgumentList = if ($null -ne $startCommand.PSObject.Properties["argument_string"]) {
+    [string]$startCommand.argument_string
+  } else {
+    Join-ProcessArgumentList @($startCommand.args)
+  }
 
   $oldEnvironment = @{}
   foreach ($key in @($Environment.Keys)) {
@@ -2325,7 +2344,7 @@ function Start-LoggedProcess([string]$FilePath, [string[]]$ArgumentList, [string
   try {
     $process = Start-Process `
       -FilePath $startCommand.file `
-      -ArgumentList (Join-ProcessArgumentList @($startCommand.args)) `
+      -ArgumentList $startArgumentList `
       -WorkingDirectory $WorkingDirectory `
       -RedirectStandardOutput $stdoutPath `
       -RedirectStandardError $stderrPath `
@@ -3061,9 +3080,41 @@ function Invoke-SelfTest {
     throw "Get-StartProcessCommand did not wrap PowerShell scripts for Start-Process."
   }
 
-  $wrappedBatch = Get-StartProcessCommand "C:\Tools\sympp-runtime.bat" @("sympp.cockpit")
-  if ($wrappedBatch.file -ne "cmd.exe" -or $wrappedBatch.args[0] -ne "/d" -or $wrappedBatch.args[3] -ne "C:\Tools\sympp-runtime.bat") {
+  $wrappedBatch = Get-StartProcessCommand "C:\Tools With Spaces\sympp-runtime.bat" @("sympp.cockpit", "--database", "C:\Data Files\sympp.sqlite3")
+  if ($wrappedBatch.file -ne "cmd.exe" -or
+      $wrappedBatch.args[0] -ne "/d" -or
+      $wrappedBatch.args[1] -ne "/s" -or
+      $wrappedBatch.args[2] -ne "/c" -or
+      $wrappedBatch.argument_string -notmatch '/d /s /c ""C:\\Tools With Spaces\\sympp-runtime\.bat"' -or
+      $wrappedBatch.argument_string -notmatch '"C:\\Data Files\\sympp\.sqlite3""$') {
     throw "Get-StartProcessCommand did not wrap Windows batch entrypoints for Start-Process."
+  }
+
+  if (Test-SymppWindowsPlatform) {
+    $batchSelfTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) "sympp batch selftest $([guid]::NewGuid().ToString('N'))"
+    try {
+      $batchLog = Join-Path $batchSelfTestRoot "batch args.log"
+      $batchLogDir = Join-Path $batchSelfTestRoot "logs"
+      $batchPath = Join-Path $batchSelfTestRoot "runtime entrypoint.bat"
+      New-Item -ItemType Directory -Force -Path $batchSelfTestRoot | Out-Null
+      Set-Content -LiteralPath $batchPath -Encoding ASCII -Value @(
+        "@echo off",
+        "echo %*>>""%SYMPP_BATCH_SELFTEST_LOG%""",
+        "exit /b 0"
+      )
+      $batchLaunch = Start-LoggedProcess $batchPath @("sympp.cockpit", "--database", "C:\Data Files\sympp.sqlite3") $batchSelfTestRoot @{ SYMPP_BATCH_SELFTEST_LOG = $batchLog } "batch-selftest" $batchLogDir
+      $batchCompleted = $batchLaunch.process.WaitForExit(10000)
+      $batchLaunch.process.Refresh()
+      if (-not $batchCompleted -or [int]$batchLaunch.process.ExitCode -ne 0) {
+        Stop-LoggedProcess $batchLaunch
+        throw "Start-LoggedProcess did not launch Windows batch entrypoint from a path with spaces."
+      }
+      if ((Get-Content -LiteralPath $batchLog -Raw) -notmatch 'C:\\Data Files\\sympp\.sqlite3') {
+        throw "Start-LoggedProcess did not preserve spaced arguments for Windows batch entrypoint."
+      }
+    } finally {
+      Remove-Item -LiteralPath $batchSelfTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
   }
 
   if ((Convert-SymppProcessorArchitectureToTargetArch "AMD64") -ne "x86_64" -or

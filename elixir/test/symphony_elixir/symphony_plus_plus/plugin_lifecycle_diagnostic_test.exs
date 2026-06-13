@@ -358,7 +358,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLifecycleDiagnosticTest do
   defp runtime_os_key do
     case :os.type() do
       {:win32, _} -> "windows"
-      {:unix, :darwin} -> "darwin"
+      {:unix, :darwin} -> "macos"
       {:unix, _} -> "linux"
     end
   end
