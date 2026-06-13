@@ -423,6 +423,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     end
   end
 
+  test "artifact metadata without contract fingerprint falls back to marketplace source" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-artifact-missing-contract-fallback")
+
+    if powershell do
+      fake_mix = fake_mix_executable(temp_codex_home)
+      marketplace_root = write_minimal_marketplace_source(temp_codex_home)
+      mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
+      sympp_home = Path.join(temp_codex_home, "sympp-home")
+      fake_mix_log = Path.join(temp_codex_home, "fake-mix.log")
+
+      try do
+        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        script_path = write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
+        write_runtime_artifact!(mcp_cache_root, source_revision: String.duplicate("b", 40), mcp_contract_fingerprint: :omit)
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            ["-NoProfile", "-File", script_path],
+            cd: Path.dirname(Path.dirname(script_path)),
+            stderr_to_stdout: true,
+            env: [
+              {"SYMPP_ELIXIR_SETUP_TIMEOUT_SEC", "5"},
+              {"SYMPP_FAKE_MIX_LOG", fake_mix_log},
+              {"SYMPP_HOME", sympp_home},
+              {"SYMPP_LAUNCHER", "direct"},
+              {"SYMPP_MCP_BRIDGE_MODE", "direct_stdio"},
+              {"SYMPP_MIX", fake_mix},
+              {"SYMPP_REPO_ROOT", ""}
+            ]
+          )
+
+        assert status == 0, output
+
+        assert normalize_path_fragment(File.read!(fake_mix_log)) =~
+                 "--repo-root #{normalize_path_fragment(marketplace_root)}"
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
   test "Solo wrapper keeps direct default for source checkouts without mise config" do
     powershell = System.find_executable("pwsh")
     temp_codex_home = unique_temp_path("sympp-plugin-marketplace-direct-default")
@@ -767,6 +810,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     artifact_build_root = Path.join(cache_root, "artifact-build")
     archive_path = Path.join(cache_root, "sympp-runtime.zip")
     entrypoint = "runtime.cmd"
+    artifact_contract_fingerprint = Keyword.get(opts, :mcp_contract_fingerprint, expected_mcp_contract_fingerprint())
+    manifest_contract_fingerprint = Keyword.get(opts, :manifest_contract_fingerprint)
     File.mkdir_p!(artifact_build_root)
 
     File.write!(Path.join(artifact_build_root, entrypoint), """
@@ -791,18 +836,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
         "entrypoint" => entrypoint
       }
       |> maybe_put("source_revision", Keyword.get(opts, :source_revision))
-      |> maybe_put("mcp_contract_fingerprint", Keyword.get(opts, :mcp_contract_fingerprint))
+      |> maybe_put_unless_omitted("mcp_contract_fingerprint", artifact_contract_fingerprint)
 
     manifest =
       %{"artifacts" => [artifact]}
       |> maybe_put("source_revision", Keyword.get(opts, :manifest_source_revision))
-      |> maybe_put("mcp_contract_fingerprint", Keyword.get(opts, :manifest_contract_fingerprint))
+      |> maybe_put_unless_omitted("mcp_contract_fingerprint", manifest_contract_fingerprint)
 
     File.write!(Path.join(cache_root, ".sympp-runtime-artifacts.json"), Jason.encode!(manifest))
   end
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+  defp maybe_put_unless_omitted(map, _key, :omit), do: map
+  defp maybe_put_unless_omitted(map, key, value), do: maybe_put(map, key, value)
 
   defp fake_mix_executable(temp_root) do
     path = Path.join(temp_root, if(windows?(), do: "mix.cmd", else: "mix"))
