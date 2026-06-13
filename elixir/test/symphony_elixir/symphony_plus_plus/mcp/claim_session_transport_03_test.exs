@@ -358,9 +358,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
     assert get_in(response, ["error", "data", "reason"]) =~ "forced_reclaim_audit_failure"
     assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, handoff.anchor_package.id)
 
-    assert {:ok, recovered_grant} = AccessGrantRepository.get(repo, handoff.grant.id)
-    assert recovered_grant.claimed_by == "Codex janitor"
-    assert recovered_grant.revoked_at == nil
+    assert {:ok, restored_grant} = AccessGrantRepository.get(repo, handoff.grant.id)
+    assert restored_grant.claimed_by == "Codex coordinator"
+    assert restored_grant.revoked_at == nil
   end
 
   test "claim_local_architect_assignment rolls back recovered owners when handoff validation fails", %{repo: repo} do

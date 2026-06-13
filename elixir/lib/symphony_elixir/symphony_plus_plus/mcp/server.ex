@@ -141,7 +141,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @plan_append_argument_keys ["body", "expected_version", "id", "status", "title", "work_package_id"]
   @plan_patch_argument_keys ["expected_version", "patch", "work_package_id"]
   @plan_node_patch_keys ["body", "id", "status", "title"]
-
   @enforce_keys [:config]
   defstruct [
     :config,
@@ -2526,6 +2525,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp rollback_failed_local_architect_assignment_claim(repo, %Session{} = session, %ClaimLease{} = lease, lease_action, grant_action, reason) do
+    LocalArchitectGrantClaim.rollback_failed_claim(repo, grant_action)
     release_failed_local_architect_assignment_lease(repo, lease, lease_action, reason)
     revoke_failed_local_architect_assignment_grant(repo, session, lease_action, grant_action)
   end
