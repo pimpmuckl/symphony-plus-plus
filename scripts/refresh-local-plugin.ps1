@@ -159,7 +159,8 @@ function Sync-ManagedDirectoryChildren([string]$Source, [string]$Target, [string
   }
 }
 
-function Sync-PluginPackageFiles([string]$SourceRoot, [string]$TargetRoot, [string]$TargetBoundary, [string]$RemovalReason) {
+function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [string]$RepoRoot) {
+  Assert-SafeCacheTarget $TargetRoot $pluginCacheRoot
   Assert-NotReparsePoint $TargetRoot
   Assert-NoReparsePointDescendants $TargetRoot
 
@@ -172,21 +173,11 @@ function Sync-PluginPackageFiles([string]$SourceRoot, [string]$TargetRoot, [stri
       Assert-NotReparsePoint $target
       Assert-NoReparsePointDescendants $target
       Copy-Item -LiteralPath $source -Destination $TargetRoot -Recurse -Force
-      Sync-ManagedDirectoryChildren $source $target $TargetBoundary
+      Sync-ManagedDirectoryChildren $source $target $TargetRoot
     } elseif (Test-Path -LiteralPath $target) {
-      Remove-ManagedCachePath $target $TargetBoundary $RemovalReason
+      Remove-ManagedCachePath $target $TargetRoot "Removed stale managed Symphony++ plugin cache item"
     }
   }
-}
-
-function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [string]$RepoRoot) {
-  Assert-SafeCacheTarget $TargetRoot $pluginCacheRoot
-
-  Sync-PluginPackageFiles `
-    $SourceRoot `
-    $TargetRoot `
-    $TargetRoot `
-    "Removed stale managed Symphony++ plugin cache item"
 
   $sourceRootHintPath = Join-Path $TargetRoot ".sympp-source-root"
   Assert-NotReparsePoint $sourceRootHintPath
