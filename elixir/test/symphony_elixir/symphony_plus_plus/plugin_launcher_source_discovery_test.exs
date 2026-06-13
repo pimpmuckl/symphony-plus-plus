@@ -630,6 +630,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
           |> File.read!()
           |> String.split("\n", trim: true)
           |> Enum.map(&String.trim/1)
+          |> Enum.map(&String.replace(&1, "\"", ""))
           |> Enum.filter(
             &(String.contains?(&1, "deps.get") or &1 == "compile" or
                 String.starts_with?(&1, "sympp.mcp "))
