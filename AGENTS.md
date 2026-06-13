@@ -43,6 +43,16 @@
   `codex plugin marketplace upgrade` plus a fresh session. Use `SYMPP_REPO_ROOT`
   only for explicit developer validation, never as the installed-agent runtime
   path.
+- Do not refresh, pin, or validate the installed Symphony++ MCP plugin cache
+  from `C:\Code\symphony-plus-plus` for an agent-ready runtime. That checkout is
+  a developer workspace and can diverge from the marketplace source clone under
+  `C:\Users\jonat\.codex\.tmp\marketplaces\symphony-plus-plus`. A mixed cache can
+  make fresh Codex sessions fail MCP startup with a closed `initialize` response,
+  for example when `.sympp-source-revision` in the installed cache says one commit
+  but the marketplace clone reports another. For installed-cache repair/cutover,
+  run the marketplace-backed upgrade/cutover/refresh path from the marketplace
+  source clone, or explicitly document that the session is checkout-backed debug
+  only.
 
 ## Security
 
