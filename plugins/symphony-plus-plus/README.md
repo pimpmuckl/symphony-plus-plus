@@ -110,6 +110,15 @@ plugin-based S++ MCP sessions can install the sibling
 alternate Codex home. Do not enable that opt-in MCP plugin in a generic/global
 config unless every session on that config should start S++ MCP.
 
+The target installed-runtime product contract for that opt-in companion lives in
+the source repository operator docs as `17_RUNTIME_ARTIFACT_CONTRACT.md`. It
+defines the future verified release-artifact flow, release-channel gating,
+manifest fields, static dashboard asset expectations, source-checkout fallback
+semantics, and operator diagnostics. Installed plugin cache copies of this
+README are self-contained: the current launcher still resolves a compatible
+source checkout or marketplace source clone and is documented below as today's
+behavior, not as the final artifact-backed install path.
+
 The preferred MCP runtime shape is a singleton local HTTP daemon, not one
 stdio Elixir tree per Codex session. A dogfood snapshot on Windows with the
 local cockpit already running showed the unbound `tools/list` response at about

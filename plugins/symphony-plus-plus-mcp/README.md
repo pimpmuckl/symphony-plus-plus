@@ -33,6 +33,14 @@ This plugin intentionally bundles:
   The launcher discovers the full Codex marketplace source clone automatically,
   so normal marketplace installs do not require users to set `SYMPP_REPO_ROOT`.
 
+The target installed-runtime contract lives in the source repository operator
+docs as `17_RUNTIME_ARTIFACT_CONTRACT.md`. It defines the future verified
+artifact path, release-channel gate, manifest fields, static dashboard
+expectations, source-checkout fallback semantics, and diagnostics. Installed
+plugin cache copies of this README are self-contained: until that launcher path
+is implemented, this README describes the current marketplace-source runtime
+behavior.
+
 The default `symphony-plus-plus` plugin must remain skill-only and should stay
 enabled broadly for non-MCP work. Dedicated MCP homes should enable this
 companion plugin instead of the default plugin so the session has the full MCP
