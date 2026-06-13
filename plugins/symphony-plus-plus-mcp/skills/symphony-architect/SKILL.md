@@ -66,7 +66,8 @@ another shape. Each slice needs:
 - Validation commands or blocked-validation owner.
 - Review profile/provider requirements.
 - PR-size or line-budget guidance; add slice-specific PR-size or line-budget
-  constraints when the default boundary is not enough.
+  constraints when the default boundary is not enough. These budgets should
+  always be used and split between implementation- and test work when possible.
 - Stop conditions and guidance routing.
 - Dependencies and recorded decisions needed to avoid scope drift.
 
