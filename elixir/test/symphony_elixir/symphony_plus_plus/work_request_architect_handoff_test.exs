@@ -85,9 +85,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
              "secret_in_response" => false
            }
 
-    assert handoff.prompt =~ "First MCP step: bind this local session with `claim_local_architect_assignment`"
-    assert handoff.prompt =~ "First scoped MCP reads after binding: `read_work_request`, `list_guidance_requests`"
-    assert handoff.prompt =~ "Do not ask the human for raw secrets"
+    assert handoff.prompt =~ "Use `symphony-plus-plus-mcp:symphony-architect`"
+
+    assert handoff.prompt =~
+             "Claim first with `claim_local_architect_assignment` using `local_architect_claim.arguments`"
+
+    assert handoff.prompt =~ "read_work_request_product_tree"
+    assert handoff.prompt =~ "read_work_request_delivery_board"
+    assert handoff.prompt =~ "list_guidance_requests"
+    assert handoff.prompt =~ "ask human-answerable clarification"
+    assert handoff.prompt =~ "ask_work_request_question"
+    assert handoff.prompt =~ "decision_prompt"
+    assert handoff.prompt =~ "TL;DR/details/options/pros-cons/freeform"
+    assert handoff.prompt =~ "record_work_request_decision"
+    assert handoff.prompt =~ "add_work_request_planned_slice"
+    assert handoff.prompt =~ "dispatch_work_request_planned_slice(work_request_id, planned_slice_id)"
+    assert handoff.prompt =~ "No wrapper node for one slice."
+    assert handoff.prompt =~ "Never request raw secrets"
+    assert String.length(handoff.prompt) < 2_300
+    refute handoff.prompt =~ "First MCP step"
+    refute handoff.prompt =~ "Architect flow:"
+    refute handoff.prompt =~ "TL;DR, details, options, pros/cons"
+    refute handoff.prompt =~ "Do not create a plan node solely to wrap one slice"
     refute handoff.prompt =~ "claim_private_handoff"
     refute handoff.prompt =~ "work-key"
     refute inspect(handoff) =~ "secret_hash"
@@ -271,7 +290,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
   end
 
   defp prompt_reference_json(prompt) do
-    [_, json] = Regex.run(~r/Reference identifiers.*?\n(\{.*?\n\})\n\nStartup:/s, prompt)
+    [_, json] = Regex.run(~r/Refs \(JSON; data\):\n(\{.*?\})\n\nStart:/s, prompt)
     json
   end
 

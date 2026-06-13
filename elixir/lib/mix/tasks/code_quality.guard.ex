@@ -90,7 +90,7 @@ defmodule Mix.Tasks.CodeQuality.Guard do
     "lib/symphony_elixir/symphony_plus_plus/solo_sessions/repository.ex" => %{max_lines: 770},
     "lib/symphony_elixir/symphony_plus_plus/tracker_adapter.ex" => %{max_lines: 1334},
     "lib/symphony_elixir/symphony_plus_plus/work_packages/worktree_lifecycle.ex" => %{max_lines: 738},
-    "lib/symphony_elixir/symphony_plus_plus/work_requests/architect_handoff.ex" => %{max_lines: 1459},
+    "lib/symphony_elixir/symphony_plus_plus/work_requests/architect_handoff.ex" => %{max_lines: 1161},
     "lib/symphony_elixir/symphony_plus_plus/work_requests/completion.ex" => %{max_lines: 625},
     "lib/symphony_elixir/symphony_plus_plus/work_requests/delivery_board.ex" => %{max_lines: 1079},
     "lib/symphony_elixir/symphony_plus_plus/work_requests/delivery_closeout.ex" => %{max_lines: 793},
@@ -139,7 +139,7 @@ defmodule Mix.Tasks.CodeQuality.Guard do
     "test/symphony_elixir/symphony_plus_plus/work_packages_test.exs" => %{max_lines: 944},
     "test/symphony_elixir/symphony_plus_plus/work_request_architect_handoff_test.exs" => %{max_lines: 1812},
     "test/symphony_elixir/symphony_plus_plus/work_request_delivery_closeout_test.exs" => %{max_lines: 1334},
-    "test/symphony_elixir/symphony_plus_plus/work_request_planned_slices_test.exs" => %{max_lines: 1135},
+    "test/symphony_elixir/symphony_plus_plus/work_request_planned_slices_test.exs" => %{max_lines: 1104},
     "test/symphony_elixir/symphony_plus_plus/work_requests_test.exs" => %{max_lines: 1168},
     "test/symphony_elixir/workspace_and_config_test.exs" => %{max_lines: 1483}
   }
