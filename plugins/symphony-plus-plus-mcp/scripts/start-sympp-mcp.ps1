@@ -1918,6 +1918,19 @@ function Test-RuntimeEntryEndpointMatches([string]$Role, $Entry, [string]$Endpoi
     $entryEndpoint.TrimEnd("/") -eq $Endpoint.TrimEnd("/")
 }
 
+function Test-ArtifactBackendProvidesDashboard($RuntimeState, $BackendPlan, [string]$RuntimeMode) {
+  if ($RuntimeMode -eq "artifact") {
+    return $true
+  }
+
+  return $BackendPlan.reused -eq $true -and
+    $BackendPlan.should_start -ne $true -and
+    $null -ne $RuntimeState -and
+    $RuntimeState.PSObject.Properties["runtime_kind"] -and
+    [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$RuntimeState.runtime_kind, "artifact") -and
+    (Test-RuntimeEntryEndpointMatches "backend" $RuntimeState.backend $BackendPlan.url)
+}
+
 function Test-ManagedRuntimeEntrySuperseded([string]$Role, $Entry, [string]$SelectedEndpoint) {
   if ($null -eq $Entry -or $Entry.managed -ne $true) {
     return $false
@@ -3208,6 +3221,20 @@ function Invoke-SelfTest {
   if ($reusedDashboard.pid -ne 1235 -or -not $reusedDashboard.managed -or $reusedDashboard.origin -ne "http://127.0.0.1:19999") {
     throw "Reusable dashboard plan should preserve managed process metadata."
   }
+  $sourceRuntimeState = [pscustomobject]@{
+    runtime_kind = "managed"
+    backend = [pscustomobject]@{ url = "http://127.0.0.1:19998" }
+  }
+  if (Test-ArtifactBackendProvidesDashboard $sourceRuntimeState $reusedBackend "source") {
+    throw "Reused source backends should not be treated as artifact static dashboard providers."
+  }
+  $artifactRuntimeState = [pscustomobject]@{
+    runtime_kind = "artifact"
+    backend = [pscustomobject]@{ url = "http://127.0.0.1:19998/" }
+  }
+  if (-not (Test-ArtifactBackendProvidesDashboard $artifactRuntimeState $reusedBackend "source")) {
+    throw "Recorded artifact backends should provide the artifact static dashboard when reused."
+  }
 
   $oldRuntimeKey = New-RuntimeKey "http://127.0.0.1:19998" "http://127.0.0.1:19999" $contractA
   $oldRuntimeState = [pscustomobject]@{
@@ -3591,7 +3618,7 @@ try {
 
   $allowRecordedDashboardReuse = $backendPlan.managed -eq $true -and [string]$backendPlan.status -eq "reused"
   $artifactDashboardPortMatchesBackend = $dashboardPortExplicit -and $dashboardPort -eq $backendPlan.port
-  $artifactBackendProvidesDashboard = $runtimeMode -eq "artifact" -or ($artifactRuntimeAllowed -and $backendPlan.reused -and -not $backendPlan.should_start)
+  $artifactBackendProvidesDashboard = Test-ArtifactBackendProvidesDashboard $runtimeState $backendPlan $runtimeMode
   if ($artifactBackendProvidesDashboard -and
       [string]::IsNullOrWhiteSpace($env:SYMPP_DASHBOARD_ORIGIN) -and
       ((-not $dashboardPortExplicit) -or $artifactDashboardPortMatchesBackend) -and
