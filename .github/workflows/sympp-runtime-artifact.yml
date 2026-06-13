@@ -1,0 +1,95 @@
+name: sympp-runtime-artifact
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  build-runtime-artifact:
+    name: Build runtime artifact (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64
+            shell: bash
+          - os: windows-latest
+            platform: windows-x64
+            shell: pwsh
+          - os: macos-latest
+            platform: macos-arm64
+            shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up mise tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        with:
+          install: true
+          cache: true
+          working_directory: elixir
+
+      - name: Build runtime artifact
+        if: matrix.shell == 'bash'
+        shell: bash
+        run: |
+          bash scripts/build-sympp-runtime-artifact.sh \
+            --revision "${GITHUB_SHA}" \
+            --platform "${{ matrix.platform }}" \
+            --output-dir artifacts/sympp-runtime
+
+      - name: Build runtime artifact
+        if: matrix.shell == 'pwsh'
+        shell: pwsh
+        run: |
+          ./scripts/build-sympp-runtime-artifact.ps1 `
+            -Revision "${env:GITHUB_SHA}" `
+            -Platform "${{ matrix.platform }}" `
+            -OutputDir "artifacts/sympp-runtime"
+
+      - name: Validate release-channel dry run
+        if: matrix.shell == 'bash'
+        shell: bash
+        run: |
+          manifest=""
+          for candidate in artifacts/sympp-runtime/*.manifest.json; do
+            [ -f "$candidate" ] || continue
+            if [ -n "$manifest" ]; then
+              echo "Expected exactly one runtime artifact manifest." >&2
+              exit 1
+            fi
+            manifest="$candidate"
+          done
+          if [ -z "$manifest" ]; then
+            echo "Runtime artifact manifest is missing." >&2
+            exit 1
+          fi
+          bash scripts/publish-sympp-runtime-artifact.sh --manifest "$manifest" --dry-run
+
+      - name: Validate release-channel dry run
+        if: matrix.shell == 'pwsh'
+        shell: pwsh
+        run: |
+          $manifest = Get-ChildItem -LiteralPath artifacts/sympp-runtime -Filter *.manifest.json | Select-Object -First 1
+          ./scripts/publish-sympp-runtime-artifact.ps1 -ManifestPath $manifest.FullName -DryRun
+
+      - name: Upload runtime artifact
+        id: upload-runtime-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sympp-runtime-${{ matrix.platform }}-${{ github.sha }}
+          path: |
+            artifacts/sympp-runtime/*.manifest.json
+            artifacts/sympp-runtime/*.tar.gz
+            artifacts/sympp-runtime/*.zip
+          if-no-files-found: error
+          retention-days: 30
