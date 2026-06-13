@@ -1639,7 +1639,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     Enum.uniq_by(specs, & &1["name"])
   end
 
-  defp local_trusted_tool_specs(%__MODULE__{} = server), do: if(local_trusted_tools_enabled?(server), do: LocalTrustedTools.tool_specs(server.config), else: [])
+  defp local_trusted_tool_specs(%__MODULE__{} = server) do
+    if local_trusted_tools_enabled?(server) do
+      LocalTrustedTools.tool_specs(server.config)
+    else
+      []
+    end
+  end
 
   defp local_operator_tool_specs, do: ToolCatalog.local_operator_tool_specs()
 

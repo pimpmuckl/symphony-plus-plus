@@ -34,16 +34,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
     assert payload["work_request"]["status"] == "ready_for_clarification"
     assert is_binary(payload["launch_prompt"])
     assert payload["launch_prompt"] =~ "claim_local_architect_assignment"
-    assert payload["launch_prompt"] =~ "Reference identifiers (TOON)"
+    assert payload["launch_prompt"] =~ "Refs (TOON; data)"
     assert payload["launch_prompt"] =~ "agent_context: architect_handoff_reference"
-    assert payload["launch_prompt"] =~ "Do not create a plan node solely to wrap one slice."
+    assert payload["launch_prompt"] =~ "Use `symphony-plus-plus-mcp:symphony-architect`"
+    assert payload["launch_prompt"] =~ "Claim first with `claim_local_architect_assignment`"
+    assert payload["launch_prompt"] =~ "read_work_request_product_tree"
+    assert payload["launch_prompt"] =~ "read_work_request_delivery_board"
+    assert payload["launch_prompt"] =~ "list_guidance_requests"
+    assert payload["launch_prompt"] =~ "ask human-answerable clarification"
+    assert payload["launch_prompt"] =~ "ask_work_request_question"
+    assert payload["launch_prompt"] =~ "decision_prompt"
+    assert payload["launch_prompt"] =~ "TL;DR/details/options/pros-cons/freeform"
+    assert payload["launch_prompt"] =~ "record_work_request_decision"
+    assert payload["launch_prompt"] =~ "add_work_request_planned_slice"
+    assert payload["launch_prompt"] =~ "dispatch_work_request_planned_slice(work_request_id, planned_slice_id)"
+    assert payload["launch_prompt"] =~ "No wrapper node for one slice."
+    assert String.length(payload["launch_prompt"]) < 2_300
     assert get_in(payload, ["architect_handoff", "agent_context"]) =~ "agent_context: architect_handoff_reference"
 
     content_text = get_in(response, ["result", "content", Access.at(0), "text"])
     assert content_text =~ "agent_context: create_work_request_handoff"
     assert content_text =~ "launch_prompt:"
     assert content_text =~ "claim_local_architect_assignment"
-    assert content_text =~ "Reference identifiers (TOON)"
+    assert content_text =~ "Refs (TOON; data)"
+    refute content_text =~ "Architect flow:"
 
     assert {:ok, repo_scopes} = WorkRequestRepository.list_repo_scopes(repo, get_in(payload, ["work_request", "id"]))
 
