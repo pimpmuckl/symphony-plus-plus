@@ -992,7 +992,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert status != 0
-        assert normalize_powershell_error(output) =~ "multiple enabled entries"
+        assert normalize_prose(output) =~ "multiple enabled entries"
         assert normalize_newlines(File.read!(Path.join(temp_codex_home, "config.toml"))) == normalize_newlines(config)
         assert config_backups(temp_codex_home) == []
       after
@@ -1030,9 +1030,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert status != 0
-
-        assert normalize_powershell_error(output) =~
-                 "Refusing to enable symphony-plus-plus-mcp in the default Codex home"
+        assert normalize_prose(output) =~ "Refusing to enable symphony-plus-plus-mcp in the default Codex home"
       after
         File.rm_rf(fake_home)
       end
@@ -1348,7 +1346,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert status != 0
-        assert normalize_powershell_error(output) =~ "Cannot enable symphony-plus-plus-mcp"
+        assert normalize_prose(output) =~ "Cannot enable symphony-plus-plus-mcp"
         assert normalize_newlines(File.read!(Path.join(temp_codex_home, "config.toml"))) == normalize_newlines(config)
         assert config_backups(temp_codex_home) == []
       after
@@ -1438,10 +1436,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
             )
 
           assert status != 0
-
-          assert normalize_powershell_error(output) =~
-                   "Codex config already contains [mcp_servers.symphony_plus_plus]"
-
+          assert normalize_prose(output) =~ "Codex config already contains [mcp_servers.symphony_plus_plus]"
           assert normalize_newlines(File.read!(Path.join(temp_codex_home, "config.toml"))) == normalize_newlines(config)
           assert config_backups(temp_codex_home) == []
         after
@@ -1580,10 +1575,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert enable_status != 0
-
-        assert normalize_powershell_error(enable_output) =~
-                 "Another symphony-plus-plus-mcp marketplace is already enabled"
-
+        assert normalize_prose(enable_output) =~ "Another symphony-plus-plus-mcp marketplace is already enabled"
         refute File.read!(Path.join(temp_codex_home, "config.toml")) =~ "symphony-plus-plus-mcp@jonat-local"
         assert config_backups(temp_codex_home) == []
       after
