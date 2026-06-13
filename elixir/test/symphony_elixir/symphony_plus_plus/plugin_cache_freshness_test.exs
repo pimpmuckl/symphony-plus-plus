@@ -65,7 +65,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginCacheFreshnessTest do
         readiness = doctor_output |> Jason.decode!() |> Map.fetch!("readiness")
         assert readiness["workrequest_mcp"]["cache_freshness"]["status"] == "content_mismatch"
         assert Enum.any?(readiness["warnings"], &(&1["code"] == "mcp_companion_cache_stale"))
-        assert Enum.any?(readiness["next_actions"], &(&1["code"] == "refresh_mcp_companion_cache"))
+
+        assert Enum.any?(
+                 readiness["next_actions"],
+                 &(&1["code"] == "upgrade_mcp_companion_cache" and
+                     &1["command"] =~ "codex plugin marketplace upgrade" and
+                     &1["command"] =~ @marketplace_name and
+                     &1["command"] =~ "CODEX_HOME")
+               )
       after
         File.rm_rf!(temp_codex_home)
       end

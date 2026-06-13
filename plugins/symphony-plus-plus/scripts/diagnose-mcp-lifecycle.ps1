@@ -568,19 +568,24 @@ function Resolve-ReadinessSourceCheckout([string]$PluginRoot, [string]$ProvidedR
   }
 
   if ($marketplaceSourceRoots.Count -gt 1) {
-    return New-SourceCheckoutStatus "ambiguous_codex_marketplace_source_clones" $null "Selected installed caches resolve to multiple Codex marketplace source clones; rerun this doctor with -RepoRoot <path-to-symphony-plus-plus-checkout>."
+    return New-SourceCheckoutStatus "ambiguous_codex_marketplace_source_clones" $null "Selected installed caches resolve to multiple Codex marketplace source clones; rerun with -MarketplaceName <marketplace> or pass -RepoRoot only for explicit developer validation."
   }
 
-  $preferredHintRoots = Get-UsableSourceHintRoots $PreferredPackages
-  if ($preferredHintRoots.Count -eq 1) {
-    return New-SourceCheckoutStatus "installed_cache_source_root_hint" (@($preferredHintRoots)[0])
+  return New-SourceCheckoutStatus "not_found" $null "No Codex marketplace source clone could be inferred. Run codex plugin marketplace upgrade, or pass -RepoRoot only for explicit developer validation."
+}
+
+function New-CodexMarketplaceUpgradeCommand([string]$CodexHomePath, [string]$MarketplaceName) {
+  $marketplaceArg = if ([string]::IsNullOrWhiteSpace($MarketplaceName) -or $MarketplaceName -eq "*") {
+    ""
+  } else {
+    " $(Quote-PowerShellLiteral $MarketplaceName)"
+  }
+  $upgradeCommand = "codex plugin marketplace upgrade$marketplaceArg"
+  if ([string]::IsNullOrWhiteSpace($CodexHomePath)) {
+    return $upgradeCommand
   }
 
-  if ($preferredHintRoots.Count -gt 1) {
-    return New-SourceCheckoutStatus "ambiguous_selected_installed_cache_source_root_hints" $null "Selected installed caches point at multiple usable source roots; rerun this doctor with -RepoRoot <path-to-symphony-plus-plus-checkout>."
-  }
-
-  return New-SourceCheckoutStatus "not_found" $null "No Symphony++ source checkout could be inferred; rerun this doctor with -RepoRoot <path-to-symphony-plus-plus-checkout>."
+  return "`$oldCodexHome = `$env:CODEX_HOME; try { `$env:CODEX_HOME = $(Quote-PowerShellLiteral $CodexHomePath); $upgradeCommand } finally { if (`$null -eq `$oldCodexHome) { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue } else { `$env:CODEX_HOME = `$oldCodexHome } }"
 }
 
 function New-SourceScriptCommand([string]$SourceCheckoutRoot, [string]$RelativeScript, [string]$Arguments = $null) {
@@ -1227,13 +1232,12 @@ enabled = true
     New-Item -ItemType Directory -Path $targetChildPath -Force | Out-Null
     $linkCreated = $false
 
-    try {
-      New-Item -ItemType Junction -Path $linkPath -Target $targetPath -Force | Out-Null
-      $linkCreated = $true
-    } catch {
+    $linkTypes = if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) { @("Junction", "SymbolicLink") } else { @("SymbolicLink") }
+    foreach ($linkType in $linkTypes) {
       try {
-        New-Item -ItemType SymbolicLink -Path $linkPath -Target $targetPath -Force | Out-Null
+        New-Item -ItemType $linkType -Path $linkPath -Target $targetPath -Force | Out-Null
         $linkCreated = $true
+        break
       } catch {
         $linkCreated = $false
       }
@@ -1517,9 +1521,9 @@ function Get-CompanionMcpSourcePackages([string]$DefaultPluginRoot) {
   $sameLabel = Split-Path $DefaultPluginRoot -Leaf
   $localManifestPath = Join-Path (Join-Path $companionCacheRoot "local") ".codex-plugin/plugin.json"
   $sameLabelManifestPath = Join-Path (Join-Path $companionCacheRoot $sameLabel) ".codex-plugin/plugin.json"
-  $defaultSourceHintPath = Join-Path $DefaultPluginRoot ".sympp-source-root"
+  $defaultGeneratedMarkerPath = Join-Path $DefaultPluginRoot ".sympp-generated-cache"
   $hasSameLabelCompanion = Test-Path -LiteralPath $sameLabelManifestPath
-  $hasGeneratedDefaultHint = Test-Path -LiteralPath $defaultSourceHintPath
+  $hasGeneratedDefaultMarker = Test-Path -LiteralPath $defaultGeneratedMarkerPath
   $hasLocalCompanion = Test-Path -LiteralPath $localManifestPath
   $localPackage = if ($hasLocalCompanion) {
     $candidatePackage = Get-PluginPackageSummary (Join-Path $companionCacheRoot "local") "source" "source"
@@ -1542,7 +1546,7 @@ function Get-CompanionMcpSourcePackages([string]$DefaultPluginRoot) {
     $null
   }
 
-  if ($null -eq $sameLabelPackage -and -not ($hasGeneratedDefaultHint -and $null -ne $localPackage)) {
+  if ($null -eq $sameLabelPackage -and -not ($hasGeneratedDefaultMarker -and $null -ne $localPackage)) {
     return @()
   }
 
@@ -2952,19 +2956,18 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
   $companionReady = $companionStructurallyReady -and -not $companionCacheStale
   $companionProvidesSoloSkills = $companionReady -and $companionEnabled -eq $true
   $refreshCodexHomeArg = if ([string]::IsNullOrWhiteSpace($CodexHomePath)) { "" } else { "-CodexHome $(Quote-PowerShellLiteral $CodexHomePath) " }
-  $defaultRefreshMarketplaceArg = if ([string]::IsNullOrWhiteSpace($defaultMarketplace)) { "" } else { "-MarketplaceName $(Quote-PowerShellLiteral $defaultMarketplace) " }
   $companionRefreshMarketplaceArg = if ([string]::IsNullOrWhiteSpace($companionMarketplace)) { "" } else { "-MarketplaceName $(Quote-PowerShellLiteral $companionMarketplace) " }
   $actions = @()
   $warnings = @()
 
   if ($defaultCacheStale) {
-    $warnings += New-ReadinessWarning "default_plugin_cache_stale" "$(Format-PackageFreshnessMessage $defaultFreshness) Refresh the installed cache before relying on newly merged skill or wrapper changes."
-    $actions += New-SourceCheckoutAction "refresh_default_plugin_cache" "solo_session" "Refresh the stale skill-only Symphony++ plugin cache." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($defaultRefreshMarketplaceArg)-PluginName symphony-plus-plus -ValidateInstalledCache")
+    $warnings += New-ReadinessWarning "default_plugin_cache_stale" "$(Format-PackageFreshnessMessage $defaultFreshness) Upgrade the Codex marketplace before relying on newly merged skill or wrapper changes."
+    $actions += New-ReadinessAction "upgrade_default_plugin_cache" "solo_session" "Upgrade the stale skill-only Symphony++ plugin from the configured marketplace." (New-CodexMarketplaceUpgradeCommand $CodexHomePath $defaultMarketplace)
   }
 
   if ($companionCacheStale) {
-    $warnings += New-ReadinessWarning "mcp_companion_cache_stale" "$(Format-PackageFreshnessMessage $companionFreshness) Refresh the installed cache before relying on MCP launcher, dashboard, or skill changes."
-    $actions += New-SourceCheckoutAction "refresh_mcp_companion_cache" "workrequest_mcp" "Refresh the stale opt-in MCP companion cache and validate its command-backed .mcp.json." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($companionRefreshMarketplaceArg)-PluginName symphony-plus-plus-mcp -ValidateInstalledCache")
+    $warnings += New-ReadinessWarning "mcp_companion_cache_stale" "$(Format-PackageFreshnessMessage $companionFreshness) Upgrade the Codex marketplace before relying on MCP launcher, dashboard, or skill changes."
+    $actions += New-ReadinessAction "upgrade_mcp_companion_cache" "workrequest_mcp" "Upgrade the stale opt-in MCP companion from the configured marketplace." (New-CodexMarketplaceUpgradeCommand $CodexHomePath $companionMarketplace)
   }
 
   if (-not $configExists) {
@@ -3002,7 +3005,7 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
   }
 
   if (-not $defaultMarketplaceAmbiguous -and -not $crossMarketplacePairingAmbiguous -and -not $defaultStructurallyReady -and -not $companionProvidesSoloSkills) {
-    $actions += New-SourceCheckoutAction "refresh_default_plugin_cache" "solo_session" "Refresh the skill-only Symphony++ plugin cache." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($defaultRefreshMarketplaceArg)-PluginName symphony-plus-plus -ValidateInstalledCache")
+    $actions += New-ReadinessAction "upgrade_default_plugin_cache" "solo_session" "Install or repair the skill-only Symphony++ plugin from the configured marketplace." (New-CodexMarketplaceUpgradeCommand $CodexHomePath $defaultMarketplace)
   } elseif (-not $defaultMarketplaceAmbiguous -and -not $crossMarketplacePairingAmbiguous -and $configExists -and $defaultEnabled -ne $true -and -not $companionProvidesSoloSkills) {
     $defaultConfigKey = Get-ActivationConfigKey "symphony-plus-plus" $defaultMarketplace
     $actions += New-ReadinessAction "enable_default_plugin" "solo_session" "Enable the default skill-only plugin for MCP-free Symphony++ planning: [plugins.`"$defaultConfigKey`"] enabled = true."
@@ -3035,7 +3038,7 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
   }
 
   if (-not $companionSelectionBlocked -and -not $companionStructurallyReady) {
-    $actions += New-SourceCheckoutAction "refresh_mcp_companion_cache" "workrequest_mcp" "Refresh the opt-in MCP companion cache and validate its command-backed .mcp.json." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($companionRefreshMarketplaceArg)-PluginName symphony-plus-plus-mcp -ValidateInstalledCache")
+    $actions += New-ReadinessAction "upgrade_mcp_companion_cache" "workrequest_mcp" "Install or repair the opt-in MCP companion from the configured marketplace." (New-CodexMarketplaceUpgradeCommand $CodexHomePath $companionMarketplace)
   } elseif (-not $companionSelectionBlocked -and $companionStructurallyReady -and $companionEnabled -ne $true -and $otherMarketplaceMcpCompanionEnabled) {
     $actions += New-ReadinessAction "resolve_mcp_companion_marketplace_conflict" "config" "Another symphony-plus-plus-mcp marketplace is already enabled in this Codex config; disable or relocate that entry before enabling $companionMarketplace."
   } elseif (-not $companionSelectionBlocked -and $companionStructurallyReady -and $companionEnabled -ne $true -and $defaultCodexHomeSelected) {
@@ -3304,11 +3307,7 @@ $cacheRepoRootFilters = @(
     )
   } |
   ForEach-Object {
-    $sourceRoot = Get-MarketplaceSourceRootFromCachePackage $_
-    if (-not $sourceRoot) {
-      $sourceRoot = Resolve-OptionalFullPath $_.source_root_hint
-    }
-    Normalize-ComparablePath $sourceRoot
+    Normalize-ComparablePath (Get-MarketplaceSourceRootFromCachePackage $_)
   } |
   Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
   Sort-Object -Unique
@@ -3323,9 +3322,9 @@ $processRepoRootFilters = if ($repoRootFilter) {
 $processScanScope = if ($repoRootFilter) {
   "repo_root_parameter"
 } elseif ($processRepoRootFilters.Count -gt 0) {
-  "installed_cache_source_root_hints"
+  "installed_cache_marketplace_source_clone"
 } elseif ($cacheRepoRootFilters.Count -gt 1) {
-  "skipped_ambiguous_cache_source_root_hints"
+  "skipped_ambiguous_marketplace_source_clones"
 } else {
   "skipped_no_repo_root_scope"
 }
@@ -3335,9 +3334,9 @@ $processScanNote = if ($SkipProcessScan) {
 } elseif (-not $processScanSupported) {
   "Win32_Process process inventory is only available on Windows."
 } elseif ($cacheRepoRootFilters.Count -gt 1 -and $processRepoRootFilters.Count -eq 0) {
-  "Skipped scoped live process scan because selected installed caches resolve to multiple source roots; pass -RepoRoot to audit one checkout."
+  "Skipped scoped live process scan because selected installed caches resolve to multiple Codex marketplace source clones; pass -RepoRoot only for explicit developer validation."
 } elseif ($processRepoRootFilters.Count -eq 0) {
-  "Skipped live process scan because no -RepoRoot value or installed-cache source root was available for the selected Codex home and marketplace."
+  "Skipped live process scan because no -RepoRoot value or Codex marketplace source clone was available for the selected Codex home and marketplace."
 } else {
   $null
 }

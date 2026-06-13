@@ -39,10 +39,20 @@
 - Do not create live Linear state unless the assigned package and operator explicitly require it.
 - For production-like Symphony++ MCP cutovers, the running plugin runtime must
   resolve from the installed plugin/marketplace cache, not from the local source
-  checkout. A `.sympp-source-root` hint pointed at `C:\Code\symphony-plus-plus`
-  is acceptable only for local debug validation; remove or replace it before
-  declaring the runtime ready for agents unless the operator explicitly asks for
-  checkout-backed testing.
+  checkout, worktree, or `.sympp-source-root` hint. Normal Codex plugin use is
+  `codex plugin marketplace upgrade` plus a fresh session. Use `SYMPP_REPO_ROOT`
+  only for explicit developer validation, never as the installed-agent runtime
+  path.
+- Do not refresh, pin, or validate the installed Symphony++ MCP plugin cache
+  from `C:\Code\symphony-plus-plus` for an agent-ready runtime. That checkout is
+  a developer workspace and can diverge from the marketplace source clone under
+  `C:\Users\jonat\.codex\.tmp\marketplaces\symphony-plus-plus`. A mixed cache can
+  make fresh Codex sessions fail MCP startup with a closed `initialize` response,
+  for example when `.sympp-source-revision` in the installed cache says one commit
+  but the marketplace clone reports another. For installed-cache repair/cutover,
+  run the marketplace-backed upgrade/cutover/refresh path from the marketplace
+  source clone, or explicitly document that the session is checkout-backed debug
+  only.
 
 ## Security
 

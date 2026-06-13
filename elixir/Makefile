@@ -36,7 +36,9 @@ define run_ci_step
 			printf 'ok  %s (log: %s)\n' "$(1)" "$$log"; \
 		else \
 			printf 'fail %s (exit %s, log: %s)\n' "$(1)" "$$status" "$$log"; \
+			printf '%s\n' "--- $(1) log start ---"; \
 			cat "$$log"; \
+			printf '%s\n' "--- $(1) log end ---"; \
 			exit $$status; \
 		fi; \
 	fi

@@ -11,14 +11,14 @@ function Write-Usage {
   Write-Host "Starts the generic Symphony++ MCP stdio server for the Codex plugin."
   Write-Host ""
   Write-Host "Environment:"
-  Write-Host "  SYMPP_REPO_ROOT   Optional repo checkout root. Required when the plugin runs from installed cache."
+  Write-Host "  SYMPP_REPO_ROOT   Explicit developer-only Symphony++ source checkout override."
   Write-Host "  SYMPP_DATABASE    Optional SQLite ledger override passed to mix sympp.mcp. When omitted, mix sympp.mcp prefers %USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3 and falls back under temp/relative .agents\splusplus if home is unavailable."
-  Write-Host "  SYMPP_LAUNCHER    Optional launcher: 'direct' or 'mise'. Defaults to 'mise' when elixir/mise.toml is present and mise is available; otherwise 'direct'."
+  Write-Host "  SYMPP_LAUNCHER    Optional launcher: 'direct' or 'mise'. Defaults to 'mise' when elixir/mise.toml can run through mise; otherwise 'direct'."
   Write-Host "  SYMPP_MIX         Optional mix executable path or name for direct launcher. Defaults to 'mix'."
   Write-Host "  SYMPP_MISE        Optional mise executable path or name for mise launcher. Defaults to 'mise'."
   Write-Host "  MIX_BUILD_ROOT    Optional Mix build-root override. Defaults under %USERPROFILE%\.agents\splusplus\build\mcp for plugin launcher runs."
   Write-Host ""
-  Write-Host "The local refresh script writes a non-secret .sympp-source-root hint into the installed cache."
+  Write-Host "Installed plugin source-root hints are ignored. Use the opt-in MCP companion for marketplace startup."
 }
 
 function Resolve-OptionalPath([string]$Path) {
@@ -39,24 +39,12 @@ function Resolve-RepoRoot {
     throw "SYMPP_REPO_ROOT does not look like a Symphony++ checkout with elixir/mix.exs: $configuredRoot"
   }
 
-  $pluginRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-  $sourceRootHintPath = Join-Path $pluginRoot ".sympp-source-root"
-  if (Test-Path -LiteralPath $sourceRootHintPath) {
-    $hintText = (Get-Content -LiteralPath $sourceRootHintPath -Raw).Trim().TrimStart([char]0xFEFF)
-    $hintedRoot = Resolve-OptionalPath $hintText
-    if ($hintedRoot -and (Test-Path -LiteralPath (Join-Path $hintedRoot "elixir/mix.exs"))) {
-      return $hintedRoot
-    }
-
-    throw "Installed plugin source-root hint is invalid. Refresh the plugin cache or set SYMPP_REPO_ROOT."
-  }
-
   $sourceCandidate = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../../.."))
   if (Test-Path -LiteralPath (Join-Path $sourceCandidate "elixir/mix.exs")) {
     return $sourceCandidate
   }
 
-  throw "Cannot infer the Symphony++ checkout. Run scripts/refresh-local-plugin.ps1 from the repo or set SYMPP_REPO_ROOT to the repository root before starting the plugin MCP server."
+  throw "Cannot infer the Symphony++ checkout. Use the opt-in MCP companion installed from the marketplace, or set SYMPP_REPO_ROOT only for explicit developer validation."
 }
 
 if ($Help) {

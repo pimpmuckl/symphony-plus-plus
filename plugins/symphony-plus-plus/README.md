@@ -40,36 +40,37 @@ Then enable the plugin with the active marketplace name:
 enabled = true
 ```
 
-After changing plugin-facing files, refresh the local plugin cache from the
-repository root:
+For normal installed use, update the Codex-managed marketplace and let Codex
+install the package from that snapshot:
 
 ```powershell
-.\scripts\refresh-local-plugin.ps1
+codex plugin marketplace upgrade
 ```
 
-By default this refreshes every Symphony++ package present in the repo
-marketplace, including the default `symphony-plus-plus` plugin and the opt-in
-`symphony-plus-plus-mcp` companion. Pass `-PluginName symphony-plus-plus` or
-`-PluginName symphony-plus-plus-mcp` only when intentionally refreshing one
-package.
+Do not point the installed plugin at a developer checkout or worktree. The
+local refresh helper is for isolated development Codex homes only; it refuses
+the default `~/.codex` cache unless explicitly overridden.
 
-To prove the installed cache entries are package-complete, MCP-free by default,
-and MCP-enabled only for the opt-in companion, run:
+To inspect installed cache readiness, use the lifecycle doctor from the
+installed package or a source checkout:
 
 ```powershell
-.\scripts\refresh-local-plugin.ps1 -ValidateInstalledCache
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName symphony-plus-plus -Doctor
 ```
 
-Restart or reload Codex so the refreshed skill list and manifest metadata are
-loaded. Existing Codex sessions can continue using already-loaded plugin
+Restart or reload Codex after a marketplace upgrade so the refreshed skill list
+and manifest metadata are loaded. Existing Codex sessions can continue using
+already-loaded plugin
 metadata.
 
-The refresh script writes the GitHub-marketplace-shaped manifest-version cache
-directory, for example
+For isolated development Codex homes, the refresh script writes a local
+Codex marketplace source snapshot under
+`<codex-home>/.tmp/marketplaces/<marketplace>` and the
+GitHub-marketplace-shaped manifest-version cache directory, for example
 `~/.codex/plugins/cache/<marketplace>/symphony-plus-plus/<version>`, and prunes the
 older generated `local` cache root when it carries the script's
-`.sympp-source-root` marker after the versioned cache has been written and, when
-requested, validated. Local refresh also writes a non-secret
+`.sympp-generated-cache` marker after the versioned cache has been written and,
+when requested, validated. Local refresh also writes a non-secret
 `.sympp-source-revision` marker so launchers can keep strict source matching
 when a future Codex host shell lacks `git` on `PATH`. Unmarked `local`
 directories stop refresh with a manual cleanup message instead of being deleted
@@ -134,18 +135,19 @@ Repo validation proves only the plugin package contract:
   commit, and lets older managed runtimes drain until their bridge leases exit.
   Explicit `SYMPP_BACKEND_URL` or `SYMPP_DASHBOARD_ORIGIN` targets are treated
   as operator-owned external processes.
-- `scripts/refresh-local-plugin.ps1` removes stale managed default-cache
+- `scripts/refresh-local-plugin.ps1` is limited to isolated development cache
+  refreshes by default. It removes stale managed default-cache
   `.mcp.json` files, strips stale manifest `mcpServers` from generated default
   cache entries, prunes removed managed skill directories, and writes a
-  non-secret `.sympp-source-root` hint for local developer cache refreshes.
+  `.sympp-generated-cache` marker for local developer cache refreshes.
 - `scripts/refresh-local-plugin.ps1 -ValidateInstalledCache` validates the
-  installed cache copies, confirms the default manifest remains skill-only,
+  isolated cache copies, confirms the default manifest remains skill-only,
   confirms default cache roots do not contain `.mcp.json`, checks the opt-in
   `symphony_plus_plus` command-backed launcher entry, and validates the Solo
   Session wrapper from each cache root.
 - `plugins/symphony-plus-plus/scripts/diagnose-mcp-lifecycle.ps1 -Doctor`
-  compares installed cache fingerprints with the inferred source checkout so a
-  same-version stale cache reports an explicit refresh action instead of a
+  compares installed cache fingerprints with the Codex marketplace snapshot so a
+  same-version stale cache reports an explicit marketplace upgrade action instead of a
   shape-only ready result.
 - `scripts/start-sympp-mcp.cmd -ValidateOnly` can resolve the checkout and
   launch through `pwsh.exe` or Windows PowerShell. Installed marketplace
@@ -199,8 +201,8 @@ plugin root:
 ```
 
 The diagnostic reports installed cache versions, manifest lifecycle status,
-root `.mcp.json` presence/shape, source-root hints, whether the plugin is
-enabled in Codex config, whether a global `[mcp_servers.symphony_plus_plus]`
+root `.mcp.json` presence/shape, legacy source-root hints when present, whether
+the plugin is enabled in Codex config, whether a global `[mcp_servers.symphony_plus_plus]`
 entry exists, whether opt-in cache `.mcp.json` defines the expected
 `symphony_plus_plus` command-backed launcher, and focused live process counts for
 `start-sympp-mcp.ps1`,
@@ -213,7 +215,7 @@ contain a root `.mcp.json` are reported as
 `missing_manifest`.
 Use it to distinguish stale installed caches, explicit MCP sessions, and
 host-managed eager startup from duplicated marketplace entries. If the default
-skill-only plugin is refreshed and a fresh Codex host still starts S++ MCP for
+skill-only plugin is upgraded and a fresh Codex host still starts S++ MCP for
 generic or review sessions, file a product issue for lazy or opt-in-only plugin
 MCP startup with the diagnostic JSON attached as evidence.
 Use `-Doctor` when the operator symptom is "I see the Symphony++ skill but no
@@ -239,16 +241,15 @@ unrelated plugin entries. It refuses the default `~/.codex` home; pass the
 dedicated Codex home used only for S++ MCP sessions. After it succeeds, restart
 or reload that dedicated session and keep generic workers, review-suite lanes,
 and `codex review` on the clean skill-only default.
-The doctor verifies source/cache/config plus local HTTP daemon readiness. It
+The doctor verifies marketplace/cache/config plus local HTTP daemon readiness. It
 cannot inspect the tool list already registered inside an open Codex model
 session, so after config/cache changes the final repair step is always to
 restart or reload the dedicated MCP-enabled session and verify the tools there.
-When source-only repair commands are needed, the doctor emits absolute commands
-against the supplied `-RepoRoot`, the current source checkout, the Codex
-marketplace source clone, or a single usable `.sympp-source-root` hint from the
-selected activation package caches. If no source checkout can be inferred, it
-omits the broken command and tells the operator to rerun with
-`-RepoRoot <path-to-symphony-plus-plus-checkout>`.
+For installed plugin cache repair, the doctor tells the operator to run
+`codex plugin marketplace upgrade`. It no longer uses `.sympp-source-root`
+hints as repair authority. Source checkouts are used only when explicitly
+provided with `-RepoRoot` or when the diagnostic itself is being run from a
+checkout for developer validation.
 If more than one Symphony++ marketplace cache is installed and no
 `-MarketplaceName` is supplied, the doctor does not emit package-specific repair
 commands; rerun it with the intended marketplace. If it reports
@@ -256,16 +257,15 @@ commands; rerun it with the intended marketplace. If it reports
 `[mcp_servers.symphony_plus_plus]` entry into a dedicated S++ config instead of
 leaving it in generic worker/review configs.
 Live process counts are scoped to `-RepoRoot` when supplied. Without
-`-RepoRoot`, the diagnostic uses installed-cache `.sympp-source-root` hints only
-from current usable cache entries: `local` and the source manifest-version
-directory. Those current entries may be opt-in MCP caches or stale default
-bundled-MCP caches, but any cache used for process scope must have a valid
-`symphony_plus_plus` entry and point at one checkout. Fresh MCP-free default
-caches do not provide implicit process scope. Superseded version directories,
-missing manifests, malformed manifests, and broken MCP entries are reported but
-do not provide implicit process scope. If no valid scope is available, or if
-usable current caches point at multiple checkouts, the scoped process scan is
-skipped instead of reporting machine-wide processes for the selected Codex home.
+`-RepoRoot`, the diagnostic scopes process scans only through the Codex
+marketplace source clone matching the selected installed cache. Legacy
+`.sympp-source-root` hints are reported but do not provide process-scan or
+repair authority. Fresh MCP-free default caches do not provide implicit process
+scope. Superseded version directories, missing manifests, malformed manifests,
+and broken MCP entries are reported but do not provide implicit process scope.
+If no valid marketplace scope is available, or if usable current caches point at
+multiple marketplace clones, the scoped process scan is skipped instead of
+reporting machine-wide processes for the selected Codex home.
 When `-RepoRoot` supplies an explicit checkout scope, unmatched
 `start-sympp-mcp.ps1` launchers are reported separately as unattributed so a
 wrapper stuck before `mix` starts is visible without assigning it to another
@@ -414,17 +414,16 @@ That wrapper prefers `pwsh.exe` and falls back to Windows PowerShell so hosts do
 not need a hard-coded PowerShell executable in Codex MCP config.
 When the plugin is executed from this source checkout, the wrapper can infer the
 repository root. When it runs from an installed plugin cache, the wrapper uses
-the Codex marketplace source clone first and falls back to non-secret
-`.sympp-source-root` hints from current S++ cache entries. Refresh the local
-cache with `scripts/refresh-local-plugin.ps1` if the cache fingerprint, source
-clone, or hints are stale. Set `SYMPP_REPO_ROOT` only as a temporary override to the
+the Codex marketplace source clone that matches the installed payload and
+ignores local source-root hints. Run `codex plugin marketplace upgrade` when the
+installed payload is stale. Set `SYMPP_REPO_ROOT` only as a temporary override to the
 Symphony++ source checkout containing `elixir/mix.exs`; it is not the
 caller/task repository root. Set `SYMPP_DATABASE` only when the MCP server
 should use a specific SQLite ledger instead of the runtime default.
 
 The wrapper defaults to `SYMPP_LAUNCHER=mise` when the resolved Symphony++
-checkout contains `elixir/mise.toml` and `mise` is available; otherwise it
-falls back to running `mix` directly from `PATH`. Explicit
+checkout contains `elixir/mise.toml` and `mise exec -- mix --version` succeeds;
+otherwise it falls back to running `mix` directly from `PATH`. Explicit
 `SYMPP_LAUNCHER=direct` still works when `mix` resolves to a real Elixir
 executable. If direct mode resolves to a mise shim, validation fails with
 guidance to set `SYMPP_MIX` to a non-mise Mix executable or use
@@ -446,8 +445,9 @@ Normal single-agent Codex work can use the plugin-installed
 memory without WorkRequest, WorkPackage, Linear, architect handoff, or worker
 dispatch semantics.
 
-That skill uses `scripts/sympp-solo.ps1`, which resolves the Symphony++ checkout
-from source or installed cache and passes commands through to `mix sympp.solo`
+That skill uses `scripts/sympp-solo.ps1`, which resolves Symphony++ from the
+source checkout during developer validation or from the Codex marketplace
+snapshot in installed use, then passes commands through to `mix sympp.solo`
 from the resolved `elixir/` directory. Use it to attach a local Solo Session,
 record `plan`, `finding`, `progress`, `blocker`, `decision`, and `validation`
 entries, read the ledger, and pause, resume, complete, or archive the session.

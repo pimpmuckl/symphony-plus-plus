@@ -18,15 +18,15 @@ function Write-Usage {
   Write-Host "  pwsh plugins/symphony-plus-plus/scripts/sympp-solo.ps1 <mix sympp.solo command> [options]"
   Write-Host ""
   Write-Host "Environment:"
-  Write-Host "  SYMPP_REPO_ROOT   Optional Symphony++ source checkout override; not the caller/task repo. Marketplace installs are discovered automatically."
+  Write-Host "  SYMPP_REPO_ROOT   Explicit developer-only Symphony++ source checkout override; not the caller/task repo. Marketplace installs are discovered automatically."
   Write-Host "  SYMPP_DATABASE    Optional SQLite ledger override passed to mix sympp.solo when --database is not already present. Relative paths resolve against the caller workspace. When omitted, mix sympp.solo prefers %USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3 and falls back under temp/relative .agents\splusplus if home is unavailable."
-  Write-Host "  SYMPP_LAUNCHER    Optional launcher: 'direct' or 'mise'. Defaults to 'mise' when elixir/mise.toml is present and mise is available; otherwise 'direct'."
+  Write-Host "  SYMPP_LAUNCHER    Optional launcher: 'direct' or 'mise'. Defaults to 'mise' when elixir/mise.toml can run through mise; otherwise 'direct'."
   Write-Host "  SYMPP_MIX         Optional mix executable path or name for direct launcher. Defaults to 'mix'."
   Write-Host "  SYMPP_MISE        Optional mise executable path or name for mise launcher. Defaults to 'mise'."
   Write-Host "  MIX_BUILD_ROOT    Optional Mix build-root override. Defaults under %USERPROFILE%\.agents\splusplus\build\solo for plugin wrapper runs."
   Write-Host ""
-  Write-Host "Solo repo identity comes from --repo and --workspace-path. SYMPP_REPO_ROOT only locates the Symphony++ wrapper source."
-  Write-Host "Installed plugins first use marketplace source discovery; local refresh may also write a non-secret .sympp-source-root hint."
+  Write-Host "Solo repo identity comes from --repo and --workspace-path. SYMPP_REPO_ROOT only locates the Symphony++ wrapper source for explicit developer validation."
+  Write-Host "Installed plugins resolve through the Codex marketplace snapshot. .sympp-source-root hints are ignored."
 }
 
 function Resolve-OptionalPath([string]$Path) {
@@ -39,57 +39,6 @@ function Resolve-OptionalPath([string]$Path) {
 
 function Test-SymphonySourceRoot([string]$Path) {
   return (-not [string]::IsNullOrWhiteSpace($Path)) -and (Test-Path -LiteralPath (Join-Path $Path "elixir/mix.exs"))
-}
-
-function Resolve-SourceHintRoot([string]$HintPath) {
-  $hintText = (Get-Content -LiteralPath $HintPath -Raw).Trim().TrimStart([char]0xFEFF)
-  $hintedRoot = Resolve-OptionalPath $hintText
-  if ($hintedRoot -and (Test-SymphonySourceRoot $hintedRoot)) {
-    return $hintedRoot
-  }
-
-  return $null
-}
-
-function Resolve-RepoRootFromCacheHints([string]$PluginRoot) {
-  $candidateHintPaths = @()
-  $versionsRoot = Split-Path -Parent $PluginRoot
-  $marketplaceRoot = Split-Path -Parent $versionsRoot
-
-  foreach ($packageName in @("symphony-plus-plus", "symphony-plus-plus-mcp")) {
-    $candidateVersionsRoot = Join-Path $marketplaceRoot $packageName
-    if (-not (Test-Path -LiteralPath $candidateVersionsRoot -PathType Container)) {
-      continue
-    }
-
-    foreach ($versionDir in @(Get-ChildItem -LiteralPath $candidateVersionsRoot -Directory -ErrorAction SilentlyContinue)) {
-      $hintPath = Join-Path $versionDir.FullName ".sympp-source-root"
-      if (Test-Path -LiteralPath $hintPath) {
-        $candidateHintPaths += $hintPath
-      }
-    }
-  }
-
-  $roots = @(
-    @(
-      foreach ($hintPath in $candidateHintPaths) {
-        $hintedRoot = Resolve-SourceHintRoot $hintPath
-        if ($hintedRoot) {
-          $hintedRoot
-        }
-      }
-    ) | Group-Object { $_.ToLowerInvariant() } | ForEach-Object { $_.Group[0] }
-  )
-
-  if ($roots.Count -eq 1) {
-    return $roots[0]
-  }
-
-  if ($roots.Count -gt 1) {
-    throw "Installed plugin cache has multiple valid Symphony++ source-root hints. Set SYMPP_REPO_ROOT to the Symphony++ source checkout root, not the caller/task repo."
-  }
-
-  return $null
 }
 
 function Resolve-RepoRootFromMarketplaceCache([string]$PluginRoot) {
@@ -137,27 +86,7 @@ function Resolve-RepoRoot {
     return $marketplaceRoot
   }
 
-  $sourceRootHintPath = Join-Path $pluginRoot ".sympp-source-root"
-  $invalidSourceRootHint = $false
-  if (Test-Path -LiteralPath $sourceRootHintPath) {
-    $hintedRoot = Resolve-SourceHintRoot $sourceRootHintPath
-    if ($hintedRoot) {
-      return $hintedRoot
-    }
-
-    $invalidSourceRootHint = $true
-  }
-
-  $cacheHintRoot = Resolve-RepoRootFromCacheHints $pluginRoot
-  if ($cacheHintRoot) {
-    return $cacheHintRoot
-  }
-
-  if ($invalidSourceRootHint) {
-    throw "Installed plugin source-root hint is invalid. Refresh the plugin cache; set SYMPP_REPO_ROOT only to the Symphony++ source checkout root if a temporary override is needed."
-  }
-
-  throw "Cannot infer the Symphony++ runtime source. Reinstall or refresh the Symphony++ marketplace, or set SYMPP_REPO_ROOT to that source checkout root. Do not set it to the caller/task repo; Solo identity comes from --repo and --workspace-path."
+  throw "Cannot infer the Symphony++ runtime source. Run codex plugin marketplace upgrade, or set SYMPP_REPO_ROOT only for explicit developer validation. Do not set it to the caller/task repo; Solo identity comes from --repo and --workspace-path."
 }
 
 function Resolve-CallerWorkspace {

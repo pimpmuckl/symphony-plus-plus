@@ -249,6 +249,176 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
     assert get_in(write_response, ["error", "data", "reason"]) == "not_found"
   end
 
+  test "claim_local_architect_assignment recovers old grant owner after the handoff lease was released", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-RELEASED-GRANT-OWNER",
+        status: "ready_for_clarification"
+      )
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               handoff_opts: handoff_opts(repo)
+             )
+
+    old_arguments = %{"work_request_id" => work_request.id, "claimed_by" => "Codex coordinator"}
+
+    {old_response, _old_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-old-claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => old_arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-architect-old-claim-state")
+      )
+
+    assert get_in(old_response, ["result", "structuredContent", "assignment", "claimed_by"]) == "Codex coordinator"
+    assert {:ok, old_lease} = ClaimLeaseService.current_for_work_package(repo, handoff.anchor_package.id)
+    assert {:ok, _released_lease} = ClaimLeaseService.release(repo, old_lease.id, reason: "operator_cleanup")
+
+    new_arguments = %{"work_request_id" => work_request.id, "claimed_by" => "Codex janitor"}
+
+    {response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-reclaim-released-grant-owner",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => new_arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-architect-reclaim-released-grant-owner-state")
+      )
+
+    assert get_in(response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert get_in(response, ["result", "structuredContent", "assignment", "grant_id"]) == handoff.grant.id
+    assert get_in(response, ["result", "structuredContent", "assignment", "claimed_by"]) == "Codex janitor"
+    assert get_in(response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "created"
+    assert Scope.work_request(work_request.id) in claimed_server.session.assignment.scopes
+
+    text = assert_toon_tool_text!(response)
+    assert text =~ "status: ok"
+    assert text =~ "role: architect"
+    refute text =~ "grant_id"
+    refute text =~ "claim_lease_id"
+    refute text =~ "caller_id"
+
+    assert {:ok, recovered_grant} = AccessGrantRepository.get(repo, handoff.grant.id)
+    assert recovered_grant.claimed_by == "Codex janitor"
+  end
+
+  test "claim_local_architect_assignment keeps recovered handoff grants live when reclaim audit fails", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-RECOVERED-AUDIT-FAILS",
+        status: "ready_for_clarification"
+      )
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               handoff_opts: handoff_opts(repo)
+             )
+
+    old_arguments = %{"work_request_id" => work_request.id, "claimed_by" => "Codex coordinator"}
+
+    {old_response, _old_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-old-claim-audit-fails",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => old_arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-architect-old-claim-audit-fails-state")
+      )
+
+    assert get_in(old_response, ["result", "structuredContent", "assignment", "claimed_by"]) == "Codex coordinator"
+    assert {:ok, old_lease} = ClaimLeaseService.current_for_work_package(repo, handoff.anchor_package.id)
+
+    old_lease
+    |> ClaimLease.update_changeset(%{last_seen_at: DateTime.add(DateTime.utc_now(:microsecond), -6, :minute)})
+    |> repo.update!()
+
+    new_arguments = %{"work_request_id" => work_request.id, "claimed_by" => "Codex janitor"}
+
+    {response, _failed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-recovered-audit-fails",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => new_arguments}
+        },
+        local_mcp_server(local_mcp_config(LocalClaimAuditFailureRepo), "local-architect-recovered-audit-fails-state")
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) =~ "forced_reclaim_audit_failure"
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, handoff.anchor_package.id)
+
+    assert {:ok, restored_grant} = AccessGrantRepository.get(repo, handoff.grant.id)
+    assert restored_grant.claimed_by == "Codex coordinator"
+    assert restored_grant.revoked_at == nil
+  end
+
+  test "claim_local_architect_assignment rolls back recovered owners when handoff validation fails", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-RECOVERY-VALIDATION-FAILS",
+        status: "ready_for_clarification"
+      )
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               handoff_opts: handoff_opts(repo)
+             )
+
+    old_arguments = %{"work_request_id" => work_request.id, "claimed_by" => "Codex coordinator"}
+
+    {old_response, _old_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-old-claim-validation-fails",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => old_arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-architect-old-claim-validation-fails-state")
+      )
+
+    assert get_in(old_response, ["result", "structuredContent", "assignment", "claimed_by"]) == "Codex coordinator"
+    assert {:ok, old_lease} = ClaimLeaseService.current_for_work_package(repo, handoff.anchor_package.id)
+
+    old_lease
+    |> ClaimLease.update_changeset(%{last_seen_at: DateTime.add(DateTime.utc_now(:microsecond), -6, :minute)})
+    |> repo.update!()
+
+    assert {:ok, _draft} = WorkRequestRepository.update_status(repo, work_request.id, "ready_for_clarification", "draft")
+
+    new_arguments = %{"work_request_id" => work_request.id, "claimed_by" => "Codex janitor"}
+
+    {response, _failed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-recovery-validation-fails",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_architect_assignment", "arguments" => new_arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-architect-recovery-validation-fails-state")
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "phase_scope_not_available"
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, handoff.anchor_package.id)
+
+    assert {:ok, old_owner_grant} = AccessGrantRepository.get(repo, handoff.grant.id)
+    assert old_owner_grant.claimed_by == "Codex coordinator"
+    assert old_owner_grant.revoked_at == nil
+  end
+
   test "claim_local_architect_assignment reports the current binding before rebinding", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-ARCHITECT-CLAIM-BOUND-WORKER", base_branch: "main")
     assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
