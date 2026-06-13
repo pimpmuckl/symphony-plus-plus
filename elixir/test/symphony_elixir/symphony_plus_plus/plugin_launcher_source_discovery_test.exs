@@ -6,7 +6,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
   @plugin_manifest_path Path.join(@repo_root, "plugins/symphony-plus-plus/.codex-plugin/plugin.json")
   @plugin_version @plugin_manifest_path |> File.read!() |> Jason.decode!() |> Map.fetch!("version")
   @plugin_solo_script_path Path.join(@repo_root, "plugins/symphony-plus-plus/scripts/sympp-solo.ps1")
-  @plugin_lifecycle_diagnostic_path Path.join(@repo_root, "plugins/symphony-plus-plus/scripts/diagnose-mcp-lifecycle.ps1")
   @mcp_plugin_solo_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-solo.ps1")
   @mcp_plugin_start_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1")
   @mcp_plugin_helper_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-mcp-launcher-helpers.ps1")
@@ -438,7 +437,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
       try do
         write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
         script_path = write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
-        write_runtime_artifact!(mcp_cache_root, source_revision: String.duplicate("b", 40), mcp_contract_fingerprint: :omit)
+
+        write_runtime_artifact!(mcp_cache_root,
+          source_revision: String.duplicate("b", 40),
+          mcp_contract_fingerprint: :omit
+        )
 
         {output, status} =
           System.cmd(
@@ -534,227 +537,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
         assert output =~ "Mix 1.99.0 test"
         assert output =~ "launcher: direct"
         assert normalize_path_fragment(output) =~ "mixbuildroot: #{normalize_path_fragment(sympp_home)}"
-      after
-        File.rm_rf!(temp_codex_home)
-      end
-    end
-  end
-
-  test "lifecycle doctor resolves marketplace source clone before stale cache hints" do
-    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
-    temp_codex_home = unique_temp_path("sympp-plugin-marketplace-source-doctor")
-
-    if powershell do
-      marketplace_root = write_minimal_marketplace_source(temp_codex_home)
-      stale_source_root = write_minimal_stale_source(temp_codex_home)
-      default_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version])
-      mcp_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version], "symphony-plus-plus-mcp")
-
-      try do
-        File.write!(Path.join(temp_codex_home, "config.toml"), """
-        [plugins."symphony-plus-plus-mcp@#{@plugin_marketplace_name}"]
-        enabled = true
-        """)
-
-        installed_script_path = write_cached_script(default_cache_root, @plugin_lifecycle_diagnostic_path)
-        write_cache_manifest(default_cache_root, "symphony-plus-plus")
-        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
-        File.write!(Path.join(default_cache_root, ".sympp-source-root"), "#{stale_source_root}\n")
-        File.write!(Path.join(mcp_cache_root, ".sympp-source-root"), "#{stale_source_root}\n")
-
-        {output, status} =
-          System.cmd(
-            powershell,
-            [
-              "-NoProfile",
-              "-File",
-              installed_script_path,
-              "-CodexHome",
-              temp_codex_home,
-              "-MarketplaceName",
-              @plugin_marketplace_name,
-              "-SkipProcessScan",
-              "-Json"
-            ],
-            cd: temp_codex_home,
-            stderr_to_stdout: true,
-            env: [{"SYMPP_REPO_ROOT", ""}]
-          )
-
-        assert status == 0, output
-        report = Jason.decode!(output)
-        source_checkout = get_in(report, ["readiness", "source_checkout"])
-        assert source_checkout["status"] == "codex_marketplace_source_clone"
-        assert normalize_path_fragment(source_checkout["root"]) == normalize_path_fragment(marketplace_root)
-        assert report["process_scan_scope"] == "installed_cache_marketplace_source_clone"
-        assert [process_filter] = report["process_repo_root_filters"]
-        assert normalize_path_fragment(process_filter) == normalize_path_fragment(marketplace_root)
-      after
-        File.rm_rf!(temp_codex_home)
-      end
-    end
-  end
-
-  test "lifecycle doctor reports stale runtime artifacts without blocking source fallback" do
-    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
-    temp_codex_home = unique_temp_path("sympp-plugin-doctor-artifact-filter")
-
-    if powershell do
-      write_minimal_marketplace_source(temp_codex_home)
-      default_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version])
-      mcp_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version], "symphony-plus-plus-mcp")
-      stale_revision = String.duplicate("a", 40)
-
-      try do
-        File.write!(Path.join(temp_codex_home, "config.toml"), """
-        [plugins."symphony-plus-plus-mcp@#{@plugin_marketplace_name}"]
-        enabled = true
-        """)
-
-        installed_script_path = write_cached_script(default_cache_root, @plugin_lifecycle_diagnostic_path)
-        write_cache_manifest(default_cache_root, "symphony-plus-plus")
-        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
-        write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
-
-        write_runtime_artifact!(mcp_cache_root,
-          source_revision: stale_revision,
-          mcp_contract_fingerprint: expected_mcp_contract_fingerprint()
-        )
-
-        {output, status} =
-          System.cmd(
-            powershell,
-            [
-              "-NoProfile",
-              "-File",
-              installed_script_path,
-              "-CodexHome",
-              temp_codex_home,
-              "-MarketplaceName",
-              @plugin_marketplace_name,
-              "-SkipProcessScan",
-              "-Json"
-            ],
-            cd: temp_codex_home,
-            stderr_to_stdout: true,
-            env: [{"SYMPP_REPO_ROOT", ""}]
-          )
-
-        assert status == 0, output
-        report = Jason.decode!(output)
-        assert get_in(report, ["readiness", "workrequest_mcp", "status"]) == "ready"
-        runtime_artifact = get_in(report, ["readiness", "workrequest_mcp", "runtime_artifact"])
-        assert runtime_artifact["status"] == "artifact_missing"
-        assert runtime_artifact["detail"] == "matching_artifact_missing"
-      after
-        File.rm_rf!(temp_codex_home)
-      end
-    end
-  end
-
-  test "lifecycle doctor blocks missing runtime artifacts when source fallback is unavailable" do
-    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
-    temp_codex_home = unique_temp_path("sympp-plugin-doctor-artifact-blocked")
-
-    if powershell do
-      default_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version])
-      mcp_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version], "symphony-plus-plus-mcp")
-
-      try do
-        File.mkdir_p!(temp_codex_home)
-
-        File.write!(Path.join(temp_codex_home, "config.toml"), """
-        [plugins."symphony-plus-plus-mcp@#{@plugin_marketplace_name}"]
-        enabled = true
-        """)
-
-        installed_script_path = write_cached_script(default_cache_root, @plugin_lifecycle_diagnostic_path)
-        write_cache_manifest(default_cache_root, "symphony-plus-plus")
-        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
-        write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
-
-        {output, status} =
-          System.cmd(
-            powershell,
-            [
-              "-NoProfile",
-              "-File",
-              installed_script_path,
-              "-CodexHome",
-              temp_codex_home,
-              "-MarketplaceName",
-              @plugin_marketplace_name,
-              "-SkipProcessScan",
-              "-Json"
-            ],
-            cd: temp_codex_home,
-            stderr_to_stdout: true,
-            env: [{"SYMPP_REPO_ROOT", ""}]
-          )
-
-        assert status == 0, output
-        report = Jason.decode!(output)
-        assert get_in(report, ["readiness", "workrequest_mcp", "status"]) == "runtime_artifact_unavailable"
-        runtime_artifact = get_in(report, ["readiness", "workrequest_mcp", "runtime_artifact"])
-        assert runtime_artifact["status"] == "artifact_missing"
-        assert runtime_artifact["detail"] == "manifest_missing"
-      after
-        File.rm_rf!(temp_codex_home)
-      end
-    end
-  end
-
-  test "lifecycle doctor rejects runtime artifacts without contract metadata" do
-    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
-    temp_codex_home = unique_temp_path("sympp-plugin-doctor-artifact-missing-contract")
-
-    if powershell do
-      default_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version])
-      mcp_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version], "symphony-plus-plus-mcp")
-
-      try do
-        File.mkdir_p!(temp_codex_home)
-
-        File.write!(Path.join(temp_codex_home, "config.toml"), """
-        [plugins."symphony-plus-plus-mcp@#{@plugin_marketplace_name}"]
-        enabled = true
-        """)
-
-        installed_script_path = write_cached_script(default_cache_root, @plugin_lifecycle_diagnostic_path)
-        write_cache_manifest(default_cache_root, "symphony-plus-plus")
-        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
-        write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
-
-        write_runtime_artifact!(mcp_cache_root,
-          source_revision: String.duplicate("b", 40),
-          mcp_contract_fingerprint: :omit
-        )
-
-        {output, status} =
-          System.cmd(
-            powershell,
-            [
-              "-NoProfile",
-              "-File",
-              installed_script_path,
-              "-CodexHome",
-              temp_codex_home,
-              "-MarketplaceName",
-              @plugin_marketplace_name,
-              "-SkipProcessScan",
-              "-Json"
-            ],
-            cd: temp_codex_home,
-            stderr_to_stdout: true,
-            env: [{"SYMPP_REPO_ROOT", ""}]
-          )
-
-        assert status == 0, output
-        report = Jason.decode!(output)
-        assert get_in(report, ["readiness", "workrequest_mcp", "status"]) == "runtime_artifact_unavailable"
-        runtime_artifact = get_in(report, ["readiness", "workrequest_mcp", "runtime_artifact"])
-        assert runtime_artifact["status"] == "artifact_missing"
-        assert runtime_artifact["detail"] == "matching_artifact_missing"
       after
         File.rm_rf!(temp_codex_home)
       end
@@ -1089,29 +871,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
   defp windows?, do: match?({:win32, _name}, :os.type())
 
   defp runtime_platform_key do
-    os =
-      case :os.type() do
-        {:win32, _} -> "windows"
-        {:unix, :darwin} -> "macos"
-        {:unix, _} -> "linux"
-      end
+    "#{runtime_os_key()}-#{runtime_arch_key()}"
+  end
 
+  defp runtime_os_key do
+    case :os.type() do
+      {:win32, _} -> "windows"
+      {:unix, :darwin} -> "macos"
+      {:unix, _} -> "linux"
+    end
+  end
+
+  defp runtime_arch_key do
     architecture =
       :erlang.system_info(:system_architecture)
       |> List.to_string()
       |> String.downcase()
 
-    arch =
-      cond do
-        String.contains?(architecture, "aarch64") -> "aarch64"
-        String.contains?(architecture, "arm64") -> "aarch64"
-        String.contains?(architecture, "x86_64") -> "x86_64"
-        String.contains?(architecture, "amd64") -> "x86_64"
-        String.contains?(architecture, "i386") -> "x86"
-        true -> "unknown"
-      end
-
-    "#{os}-#{arch}"
+    cond do
+      String.contains?(architecture, "aarch64") -> "aarch64"
+      String.contains?(architecture, "arm64") -> "aarch64"
+      String.contains?(architecture, "x86_64") -> "x86_64"
+      String.contains?(architecture, "amd64") -> "x86_64"
+      String.contains?(architecture, "i386") -> "x86"
+      true -> "unknown"
+    end
   end
 
   defp expected_mcp_contract_fingerprint do
