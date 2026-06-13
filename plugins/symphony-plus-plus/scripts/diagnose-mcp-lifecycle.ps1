@@ -1211,13 +1211,12 @@ enabled = true
     New-Item -ItemType Directory -Path $targetChildPath -Force | Out-Null
     $linkCreated = $false
 
-    try {
-      New-Item -ItemType Junction -Path $linkPath -Target $targetPath -Force | Out-Null
-      $linkCreated = $true
-    } catch {
+    $linkTypes = if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) { @("Junction", "SymbolicLink") } else { @("SymbolicLink") }
+    foreach ($linkType in $linkTypes) {
       try {
-        New-Item -ItemType SymbolicLink -Path $linkPath -Target $targetPath -Force | Out-Null
+        New-Item -ItemType $linkType -Path $linkPath -Target $targetPath -Force | Out-Null
         $linkCreated = $true
+        break
       } catch {
         $linkCreated = $false
       }

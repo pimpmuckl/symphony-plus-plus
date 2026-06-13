@@ -916,7 +916,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert status != 0
-        assert output =~ "Target plugin inline table contains no supported enabled = true/false entry"
+        assert normalize_shell_output(output) =~ "Target plugin inline table contains no supported enabled = true/false entry"
         assert normalize_newlines(File.read!(Path.join(temp_codex_home, "config.toml"))) == normalize_newlines(config)
         assert config_backups(temp_codex_home) == []
       after
@@ -1062,7 +1062,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert status != 0
-        assert output =~ "without an explicit -CodexHome"
+        assert normalize_shell_output(output) =~ "without an explicit -CodexHome"
         assert normalize_newlines(File.read!(Path.join(temp_codex_home, "config.toml"))) == normalize_newlines(config)
         assert config_backups(temp_codex_home) == []
       after
@@ -1633,7 +1633,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert enable_status != 0
-        assert enable_output =~ "resolve to different marketplaces"
+        assert normalize_shell_output(enable_output) =~ "resolve to different marketplaces"
         refute File.read!(Path.join(temp_codex_home, "config.toml")) =~ "symphony-plus-plus-mcp"
         assert config_backups(temp_codex_home) == []
       after
@@ -2130,6 +2130,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-#{System.unique_integer([:positive])}")
 
     if powershell do
+      repo_one = fixture_repo_root("repo-one")
+      repo_two = fixture_repo_root("repo-two")
+      repo_three = fixture_repo_root("repo-three")
+      repo_four = fixture_repo_root("repo-four")
       stale_manifest_path = plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"])
       stale_mcp_path = plugin_cache_path(temp_codex_home, ["local", ".mcp.json"])
       stale_hint_path = plugin_cache_path(temp_codex_home, ["local", ".sympp-source-root"])
@@ -2186,11 +2190,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         })
       )
 
-      File.write!(stale_hint_path, "C:/sympp/repo-one\n")
-      File.write!(superseded_hint_path, "C:/sympp/repo-two\n")
-      File.write!(broken_hint_path, "C:/sympp/repo-two\n")
+      write_source_hint!(stale_hint_path, repo_one)
+      write_source_hint!(superseded_hint_path, repo_two)
+      write_source_hint!(broken_hint_path, repo_two)
       File.write!(malformed_manifest_path, "{")
-      File.write!(malformed_hint_path, "C:/sympp/repo-three\n")
+      write_source_hint!(malformed_hint_path, repo_three)
 
       File.write!(
         bad_reference_manifest_path,
@@ -2212,7 +2216,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         })
       )
 
-      File.write!(bad_reference_hint_path, "C:/sympp/repo-four\n")
+      write_source_hint!(bad_reference_hint_path, repo_four)
 
       File.write!(
         malformed_mcp_path,
@@ -2296,8 +2300,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         assert report["process_scan_scope"] == "installed_cache_source_root_hints"
         assert report["process_scan_performed"] == false
         assert report["process_scan_note"] =~ "-SkipProcessScan"
-        assert [repo_filter] = report["process_repo_root_filters"]
-        assert String.replace(repo_filter, "\\", "/") == "c:/sympp/repo-one"
+        assert_repo_filter!(report, repo_one)
         assert report["live_process_counts"]["erl_sympp_mcp"] == 0
         assert report["live_process_counts"]["start_sympp_mcp_pwsh_unattributed"] == 0
       after
@@ -2557,6 +2560,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-local-only-#{System.unique_integer([:positive])}")
 
     if powershell do
+      local_repo_root = fixture_repo_root("local")
       default_manifest_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".codex-plugin", "plugin.json"])
       default_hint_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".sympp-source-root"])
       diagnostic_path = plugin_cache_path(temp_codex_home, ["1.0.0", "scripts", "diagnose-mcp-lifecycle.ps1"])
@@ -2570,7 +2574,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         File.cp!(@plugin_lifecycle_diagnostic_path, diagnostic_path)
         File.mkdir_p!(Path.dirname(default_manifest_path))
         File.write!(default_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "1.0.0"}))
-        File.write!(default_hint_path, "C:/sympp/default\n")
+        write_source_hint!(default_hint_path, fixture_repo_root("default"))
         File.mkdir_p!(Path.dirname(opt_in_manifest_path))
 
         File.write!(
@@ -2580,7 +2584,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         File.write!(opt_in_mcp_path, command_mcp_config_json())
 
-        File.write!(opt_in_hint_path, "C:/sympp/local\n")
+        write_source_hint!(opt_in_hint_path, local_repo_root)
         refute File.exists?(plugin_cache_path(temp_codex_home, ["1.0.0", ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp"))
 
         {output, status} =
@@ -2604,8 +2608,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         report = Jason.decode!(output)
         assert report["process_scan_scope"] == "installed_cache_source_root_hints"
-        assert [repo_filter] = report["process_repo_root_filters"]
-        assert String.replace(repo_filter, "\\", "/") == "c:/sympp/local"
+        assert_repo_filter!(report, local_repo_root)
       after
         File.rm_rf(temp_codex_home)
       end
@@ -2617,6 +2620,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-stale-local-versioned-#{System.unique_integer([:positive])}")
 
     if powershell do
+      current_versioned_repo_root = fixture_repo_root("current-versioned")
       default_manifest_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".codex-plugin", "plugin.json"])
       default_hint_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".sympp-source-root"])
       diagnostic_path = plugin_cache_path(temp_codex_home, ["1.0.0", "scripts", "diagnose-mcp-lifecycle.ps1"])
@@ -2635,11 +2639,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         File.cp!(@plugin_lifecycle_diagnostic_path, diagnostic_path)
         File.mkdir_p!(Path.dirname(default_manifest_path))
         File.write!(default_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "1.0.0"}))
-        File.write!(default_hint_path, "C:/sympp/default\n")
+        write_source_hint!(default_hint_path, fixture_repo_root("default"))
 
         for {manifest_path, mcp_path, hint_path, version, repo_root} <- [
-              {local_manifest_path, local_mcp_path, local_hint_path, "0.0.1", "C:/sympp/stale-local"},
-              {versioned_manifest_path, versioned_mcp_path, versioned_hint_path, "1.0.0", "C:/sympp/current-versioned"}
+              {local_manifest_path, local_mcp_path, local_hint_path, "0.0.1", fixture_repo_root("stale-local")},
+              {versioned_manifest_path, versioned_mcp_path, versioned_hint_path, "1.0.0", current_versioned_repo_root}
             ] do
           File.mkdir_p!(Path.dirname(manifest_path))
 
@@ -2673,8 +2677,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         report = Jason.decode!(output)
         assert report["process_scan_scope"] == "installed_cache_source_root_hints"
-        assert [repo_filter] = report["process_repo_root_filters"]
-        assert String.replace(repo_filter, "\\", "/") == "c:/sympp/current-versioned"
+        assert_repo_filter!(report, current_versioned_repo_root)
       after
         File.rm_rf(temp_codex_home)
       end
@@ -2689,7 +2692,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       mcp_config = command_mcp_config_json()
 
       try do
-        for {label, repo_root} <- [{"local", "C:/sympp/local"}, {@plugin_version, "C:/sympp/versioned"}] do
+        for {label, repo_root} <- [{"local", fixture_repo_root("local")}, {@plugin_version, fixture_repo_root("versioned")}] do
           manifest_path = plugin_cache_path(temp_codex_home, [label, ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
           mcp_path = plugin_cache_path(temp_codex_home, [label, ".mcp.json"], "symphony-plus-plus-mcp")
           hint_path = plugin_cache_path(temp_codex_home, [label, ".sympp-source-root"], "symphony-plus-plus-mcp")
@@ -2789,6 +2792,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-local-precedence-#{System.unique_integer([:positive])}")
 
     if powershell do
+      local_repo_root = fixture_repo_root("local")
       default_manifest_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".codex-plugin", "plugin.json"])
       diagnostic_path = plugin_cache_path(temp_codex_home, ["1.0.0", "scripts", "diagnose-mcp-lifecycle.ps1"])
 
@@ -2808,8 +2812,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         File.write!(default_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "1.0.0"}))
 
         for {manifest_path, mcp_path, hint_path, version, repo_root} <- [
-              {versioned_manifest_path, versioned_mcp_path, versioned_hint_path, "1.0.0", "C:/sympp/versioned"},
-              {local_manifest_path, local_mcp_path, local_hint_path, "2.0.0", "C:/sympp/local"}
+              {versioned_manifest_path, versioned_mcp_path, versioned_hint_path, "1.0.0", fixture_repo_root("versioned")},
+              {local_manifest_path, local_mcp_path, local_hint_path, "2.0.0", local_repo_root}
             ] do
           File.mkdir_p!(Path.dirname(manifest_path))
 
@@ -2843,8 +2847,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         report = Jason.decode!(output)
         assert report["process_scan_scope"] == "installed_cache_source_root_hints"
-        assert [repo_filter] = report["process_repo_root_filters"]
-        assert String.replace(repo_filter, "\\", "/") == "c:/sympp/local"
+        assert_repo_filter!(report, local_repo_root)
       after
         File.rm_rf(temp_codex_home)
       end
@@ -2858,9 +2861,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     if powershell do
       current_version = @plugin_version
       stale_version = "0.0.1"
+      current_repo_root = fixture_repo_root("repo-one")
 
       try do
-        for {version, repo_root} <- [{current_version, "C:/sympp/repo-one"}, {stale_version, "C:/sympp/old-repo"}] do
+        for {version, repo_root} <- [{current_version, current_repo_root}, {stale_version, fixture_repo_root("old-repo")}] do
           manifest_path = plugin_cache_path(temp_codex_home, [version, ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
           mcp_path = plugin_cache_path(temp_codex_home, [version, ".mcp.json"], "symphony-plus-plus-mcp")
           hint_path = plugin_cache_path(temp_codex_home, [version, ".sympp-source-root"], "symphony-plus-plus-mcp")
@@ -2897,8 +2901,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         report = Jason.decode!(output)
         assert report["process_scan_scope"] == "installed_cache_source_root_hints"
-        assert [repo_filter] = report["process_repo_root_filters"]
-        assert String.replace(repo_filter, "\\", "/") == "c:/sympp/repo-one"
+        assert_repo_filter!(report, current_repo_root)
       after
         File.rm_rf(temp_codex_home)
       end
@@ -2916,7 +2919,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       try do
         File.mkdir_p!(Path.dirname(default_manifest_path))
         File.write!(default_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => @plugin_version}))
-        File.write!(default_hint_path, "C:/sympp/repo-one\n")
+        write_source_hint!(default_hint_path, fixture_repo_root("repo-one"))
 
         {output, status} =
           System.cmd(
@@ -2950,6 +2953,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-opt-in-precedence-#{System.unique_integer([:positive])}")
 
     if powershell do
+      repo_two = fixture_repo_root("repo-two")
       default_manifest_path = plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"])
       default_hint_path = plugin_cache_path(temp_codex_home, ["local", ".sympp-source-root"])
 
@@ -2962,7 +2966,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       try do
         File.mkdir_p!(Path.dirname(default_manifest_path))
         File.write!(default_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => @plugin_version}))
-        File.write!(default_hint_path, "C:/sympp/repo-one\n")
+        write_source_hint!(default_hint_path, fixture_repo_root("repo-one"))
 
         File.mkdir_p!(Path.dirname(opt_in_manifest_path))
 
@@ -2973,7 +2977,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         File.write!(opt_in_mcp_path, command_mcp_config_json())
 
-        File.write!(opt_in_hint_path, "C:/sympp/repo-two\n")
+        write_source_hint!(opt_in_hint_path, repo_two)
 
         {output, status} =
           System.cmd(
@@ -2996,8 +3000,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         report = Jason.decode!(output)
         assert report["process_scan_scope"] == "installed_cache_source_root_hints"
-        assert [repo_filter] = report["process_repo_root_filters"]
-        assert String.replace(repo_filter, "\\", "/") == "c:/sympp/repo-two"
+        assert_repo_filter!(report, repo_two)
       after
         File.rm_rf(temp_codex_home)
       end
@@ -3765,6 +3768,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     value
     |> normalize_newlines()
     |> String.replace(~r/\s+/, " ")
+  end
+
+  defp normalize_shell_output(value) do
+    value
+    |> normalize_newlines()
+    |> String.replace(~r/\e\[[0-9;]*m/, "")
+    |> String.replace(~r/\s+/, " ")
+  end
+
+  defp fixture_repo_root(name) do
+    if windows?(), do: "C:/sympp/#{name}", else: Path.join(System.tmp_dir!(), "sympp-fixtures/#{name}")
+  end
+
+  defp write_source_hint!(path, repo_root) do
+    File.write!(path, "#{repo_root}\n")
+  end
+
+  defp assert_repo_filter!(report, expected_repo_root) do
+    assert [repo_filter] = report["process_repo_root_filters"]
+    assert normalize_path_fragment(repo_filter) == normalize_path_fragment(expected_repo_root)
   end
 
   defp fake_mix_executable(temp_root) do

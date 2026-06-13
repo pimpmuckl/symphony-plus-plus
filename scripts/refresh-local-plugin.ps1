@@ -23,6 +23,10 @@ function Get-AvailablePowerShellCommandName {
   return "powershell"
 }
 
+function Test-RefreshWindowsPlatform {
+  return [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+}
+
 function Resolve-StrictPath([string]$Path) {
   return [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Path).Path)
 }
@@ -428,13 +432,21 @@ function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [s
   try {
     $powershell = Get-AvailablePowerShellCommandName
     if ($PluginName -eq "symphony-plus-plus-mcp") {
-      & cmd.exe @("/d", "/s", "/c", "scripts\start-sympp-mcp.cmd -SelfTest")
+      if (Test-RefreshWindowsPlatform) {
+        & cmd.exe @("/d", "/s", "/c", "scripts\start-sympp-mcp.cmd -SelfTest")
+      } else {
+        & $powershell @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/start-sympp-mcp.ps1", "-SelfTest")
+      }
       if ($LASTEXITCODE -ne 0) {
         throw "Installed plugin MCP launcher self-test failed for $Label cache with exit code $LASTEXITCODE."
       }
 
       $env:SYMPP_REPO_ROOT = $ValidationRepoRoot
-      & cmd.exe @("/d", "/s", "/c", "scripts\start-sympp-mcp.cmd -ValidateOnly")
+      if (Test-RefreshWindowsPlatform) {
+        & cmd.exe @("/d", "/s", "/c", "scripts\start-sympp-mcp.cmd -ValidateOnly")
+      } else {
+        & $powershell @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/start-sympp-mcp.ps1", "-ValidateOnly")
+      }
       if ($LASTEXITCODE -ne 0) {
         throw "Installed plugin MCP launcher validation failed for $Label cache with exit code $LASTEXITCODE."
       }

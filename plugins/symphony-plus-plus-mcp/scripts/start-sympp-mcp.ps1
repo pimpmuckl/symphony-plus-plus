@@ -1301,14 +1301,14 @@ function Start-LoggedProcess([string]$FilePath, [string[]]$ArgumentList, [string
   }
 
   try {
-    $process = Start-Process `
-      -FilePath $startCommand.file `
-      -ArgumentList (Join-ProcessArgumentList @($startCommand.args)) `
-      -WorkingDirectory $WorkingDirectory `
-      -RedirectStandardOutput $stdoutPath `
-      -RedirectStandardError $stderrPath `
-      -WindowStyle Hidden `
-      -PassThru
+    $startArgs = @{
+      FilePath = $startCommand.file
+      ArgumentList = (Join-ProcessArgumentList @($startCommand.args))
+      WorkingDirectory = $WorkingDirectory
+      RedirectStandardOutput = $stdoutPath; RedirectStandardError = $stderrPath; PassThru = $true
+    }
+    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) { $startArgs["WindowStyle"] = "Hidden" }
+    $process = Start-Process @startArgs
   } finally {
     foreach ($key in @($Environment.Keys)) {
       [Environment]::SetEnvironmentVariable([string]$key, $oldEnvironment[$key], "Process")
