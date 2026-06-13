@@ -10,8 +10,17 @@ defmodule Mix.Tasks.CodeQuality.Guard do
   """
   @shortdoc "Fails when source files grow past code quality ratchets"
 
-  @source_extensions [".ex", ".exs", ".js", ".jsx", ".ts", ".tsx"]
-  @default_paths ["lib", "test", "assets/src", "assets/__tests__"]
+  @source_extensions [".cmd", ".ex", ".exs", ".js", ".jsx", ".ps1", ".psm1", ".ts", ".tsx"]
+  @default_paths [
+    "lib",
+    "test",
+    "assets/src",
+    "assets/__tests__",
+    "../plugins/symphony-plus-plus/scripts",
+    "../plugins/symphony-plus-plus-mcp/scripts",
+    "../scripts/refresh-local-plugin.ps1",
+    "../scripts/smoke-sympp-mcp-http.ps1"
+  ]
   @function_kinds [:def, :defp, :defmacro, :defmacrop]
   @owner_kinds [:defimpl, :defmodule, :defprotocol]
   @complexity_nodes [:case, :cond, :for, :if, :receive, :try, :unless, :with]
@@ -24,6 +33,9 @@ defmodule Mix.Tasks.CodeQuality.Guard do
   @legacy_ratchets %{
     "assets/src/App.tsx" => %{max_lines: 7263},
     "assets/src/types/dashboard.ts" => %{max_lines: 624},
+    "../plugins/symphony-plus-plus/scripts/diagnose-mcp-lifecycle.ps1" => %{max_lines: 3508},
+    "../plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1" => %{max_lines: 2674},
+    "../scripts/smoke-sympp-mcp-http.ps1" => %{max_lines: 1652},
     "lib/mix/tasks/sympp.cockpit.ex" => %{max_lines: 676},
     "lib/mix/tasks/sympp.demo_ledger.ex" => %{
       functions: %{"work_package_evidence/0" => %{max_function_lines: 141}},
@@ -72,7 +84,7 @@ defmodule Mix.Tasks.CodeQuality.Guard do
         "invalid_params_error/2" => %{max_complexity: 21, max_function_lines: 204},
         "worker_tool/3" => %{max_complexity: 69, max_function_lines: 245}
       },
-      max_lines: 14_230
+      max_lines: 14_008
     },
     "lib/symphony_elixir/symphony_plus_plus/planning/repository.ex" => %{max_lines: 981},
     "lib/symphony_elixir/symphony_plus_plus/solo_sessions/repository.ex" => %{max_lines: 770},
@@ -432,11 +444,40 @@ defmodule Mix.Tasks.CodeQuality.Guard do
   end
 
   defp relative_path(path) do
+    expanded = normalize_path(path)
+    cwd = normalize_path(File.cwd!())
+    repo_root = normalize_path(Path.expand("..", cwd))
+
+    cond do
+      path_within?(expanded, cwd) ->
+        relative_path_from(expanded, cwd)
+
+      path_within?(expanded, repo_root) ->
+        "../" <> relative_path_from(expanded, repo_root)
+
+      true ->
+        expanded
+    end
+  end
+
+  defp normalize_path(path) do
     path
     |> Path.expand()
-    |> Path.relative_to(File.cwd!())
-    |> Path.split()
-    |> Enum.join("/")
+    |> String.replace("\\", "/")
+    |> String.replace(~r{/+}, "/")
+  end
+
+  defp path_within?(path, root) do
+    path_key = path |> String.downcase()
+    root_key = root |> String.trim_trailing("/") |> String.downcase()
+
+    path_key == root_key or String.starts_with?(path_key, root_key <> "/")
+  end
+
+  defp relative_path_from(path, root) do
+    root = String.trim_trailing(root, "/")
+    offset = String.length(root) + 1
+    String.slice(path, offset..-1//1)
   end
 
   defp finding(path, line, check, subject, actual, limit) do
