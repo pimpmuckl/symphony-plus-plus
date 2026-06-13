@@ -3786,8 +3786,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     value
     |> normalize_newlines()
     |> String.replace(~r/\e\[[0-9;]*m/, "")
-    |> String.replace(~r/\s+\|\s+/, " ")
-    |> String.replace(~r/\s+/, " ")
+    |> String.replace(~r/\s+\|\s+|\s+/, " ")
   end
 
   defp fixture_repo_root(name), do: if(windows?(), do: "C:/sympp/#{name}", else: Path.join(System.tmp_dir!(), "sympp-fixtures/#{name}"))
