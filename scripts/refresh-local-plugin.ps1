@@ -3,7 +3,8 @@ param(
   [string]$MarketplaceName,
   [string]$CodexHome = $(if ($env:CODEX_HOME) { $env:CODEX_HOME } else { "$HOME/.codex" }),
   [string]$PluginName = "all",
-  [switch]$ValidateInstalledCache
+  [switch]$ValidateInstalledCache,
+  [switch]$AllowDefaultCodexHomeRefresh
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,6 +30,20 @@ function Test-RefreshWindowsPlatform {
 
 function Resolve-StrictPath([string]$Path) {
   return [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Path).Path)
+}
+
+function Resolve-FullPathLenient([string]$Path) {
+  return [System.IO.Path]::GetFullPath($Path)
+}
+
+function Get-DefaultCodexHomePath {
+  return Resolve-FullPathLenient (Join-Path $HOME ".codex")
+}
+
+function Test-SamePath([string]$Left, [string]$Right) {
+  $leftFull = Resolve-FullPathLenient $Left
+  $rightFull = Resolve-FullPathLenient $Right
+  return $leftFull.TrimEnd("\", "/").Equals($rightFull.TrimEnd("\", "/"), [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Normalize-SourceRevision([string]$Revision) {
@@ -148,6 +163,8 @@ function Remove-ManagedCachePath([string]$Target, [string]$TargetRoot, [string]$
   Write-Host "$Reason`: $resolvedTarget"
 }
 
+. (Join-Path $PSScriptRoot "refresh-local-plugin-snapshot.ps1")
+
 function Sync-ManagedDirectoryChildren([string]$Source, [string]$Target, [string]$TargetRoot) {
   if (-not (Test-Path -LiteralPath $Source -PathType Container) -or -not (Test-Path -LiteralPath $Target -PathType Container)) {
     return
@@ -183,10 +200,15 @@ function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [strin
     }
   }
 
-  $sourceRootHintPath = Join-Path $TargetRoot ".sympp-source-root"
-  Assert-NotReparsePoint $sourceRootHintPath
   $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-  [System.IO.File]::WriteAllText($sourceRootHintPath, "$RepoRoot`n", $utf8NoBom)
+  $generatedMarkerPath = Join-Path $TargetRoot ".sympp-generated-cache"
+  Assert-NotReparsePoint $generatedMarkerPath
+  [System.IO.File]::WriteAllText($generatedMarkerPath, "generated_by=refresh-local-plugin.ps1`nsource=developer_checkout`n", $utf8NoBom)
+
+  $legacySourceRootHintPath = Join-Path $TargetRoot ".sympp-source-root"
+  if (Test-Path -LiteralPath $legacySourceRootHintPath) {
+    Remove-ManagedCachePath $legacySourceRootHintPath $TargetRoot "Removed stale Symphony++ source-root cache hint"
+  }
 
   $sourceRevisionPath = Join-Path $TargetRoot ".sympp-source-revision"
   Assert-NotReparsePoint $sourceRevisionPath
@@ -271,7 +293,8 @@ function Write-JsonFileNoBom([string]$Path, $Value) {
 }
 
 function Test-GeneratedDefaultPluginCache([string]$CacheEntryRoot) {
-  return Test-Path -LiteralPath (Join-Path $CacheEntryRoot ".sympp-source-root")
+  return (Test-Path -LiteralPath (Join-Path $CacheEntryRoot ".sympp-generated-cache")) -or
+    (Test-Path -LiteralPath (Join-Path $CacheEntryRoot ".sympp-source-root"))
 }
 
 function Test-IncompatibleDefaultPluginCache([string]$CacheEntryRoot) {
@@ -424,13 +447,14 @@ function Assert-CachePluginConfig([string]$TargetRoot, [string]$ExpectedVersion)
   }
 }
 
-function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [string]$ExpectedVersion, [string]$ValidationRepoRoot) {
+function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [string]$ExpectedVersion) {
   Assert-CachePluginConfig $TargetRoot $ExpectedVersion
 
   Push-Location -LiteralPath $TargetRoot
   $oldRepoRoot = $env:SYMPP_REPO_ROOT
   try {
     $powershell = Get-AvailablePowerShellCommandName
+    Remove-Item Env:SYMPP_REPO_ROOT -ErrorAction SilentlyContinue
     if ($PluginName -eq "symphony-plus-plus-mcp") {
       if (Test-RefreshWindowsPlatform) {
         & cmd.exe @("/d", "/s", "/c", "scripts\start-sympp-mcp.cmd -SelfTest")
@@ -441,7 +465,6 @@ function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [s
         throw "Installed plugin MCP launcher self-test failed for $Label cache with exit code $LASTEXITCODE."
       }
 
-      $env:SYMPP_REPO_ROOT = $ValidationRepoRoot
       if (Test-RefreshWindowsPlatform) {
         & cmd.exe @("/d", "/s", "/c", "scripts\start-sympp-mcp.cmd -ValidateOnly")
       } else {
@@ -461,7 +484,11 @@ function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [s
       throw "Installed plugin Solo Session wrapper validation failed for $Label cache with exit code $LASTEXITCODE."
     }
   } finally {
-    $env:SYMPP_REPO_ROOT = $oldRepoRoot
+    if ($null -eq $oldRepoRoot) {
+      Remove-Item Env:SYMPP_REPO_ROOT -ErrorAction SilentlyContinue
+    } else {
+      $env:SYMPP_REPO_ROOT = $oldRepoRoot
+    }
     Pop-Location
   }
 
@@ -495,11 +522,13 @@ if ($PluginName -in @("all", "*")) {
   }
 
   foreach ($selectedPluginName in $selectedPluginNames) {
-    if ($ValidateInstalledCache) {
-      & $PSCommandPath -MarketplacePath $marketplaceFile -MarketplaceName $marketplaceName -CodexHome $CodexHome -PluginName $selectedPluginName -ValidateInstalledCache
-    } else {
-      & $PSCommandPath -MarketplacePath $marketplaceFile -MarketplaceName $marketplaceName -CodexHome $CodexHome -PluginName $selectedPluginName
-    }
+    & $PSCommandPath `
+      -MarketplacePath $marketplaceFile `
+      -MarketplaceName $marketplaceName `
+      -CodexHome $CodexHome `
+      -PluginName $selectedPluginName `
+      -ValidateInstalledCache:$ValidateInstalledCache `
+      -AllowDefaultCodexHomeRefresh:$AllowDefaultCodexHomeRefresh
   }
 
   exit 0
@@ -532,6 +561,9 @@ $manifestVersion = [string]$manifest.version
 Assert-SafeVersionSegment $manifestVersion
 
 $codexHomePath = [System.IO.Path]::GetFullPath($CodexHome)
+if (-not $AllowDefaultCodexHomeRefresh -and (Test-SamePath $codexHomePath (Get-DefaultCodexHomePath))) {
+  throw "Refusing to refresh the default Codex plugin cache from a developer checkout. Run 'codex plugin marketplace upgrade' for installed plugins, or pass -CodexHome <isolated-dev-home>. Use -AllowDefaultCodexHomeRefresh only for an intentional local development cache."
+}
 $pluginsRoot = Join-And-Normalize $codexHomePath @("plugins")
 $cacheRoot = Join-And-Normalize $codexHomePath @("plugins", "cache")
 $marketplaceCacheRoot = Join-And-Normalize $cacheRoot @($marketplaceName)
@@ -540,6 +572,7 @@ $defaultPluginCacheRoot = Join-And-Normalize $cacheRoot @($marketplaceName, "sym
 Assert-PathInside $pluginCacheRoot $cacheRoot "Resolved plugin cache path is outside Codex plugin cache"
 Assert-PathInside $defaultPluginCacheRoot $cacheRoot "Resolved default plugin cache path is outside Codex plugin cache"
 Assert-ExistingCachePathNotReparsePoint @($codexHomePath, $pluginsRoot, $cacheRoot, $marketplaceCacheRoot, $pluginCacheRoot)
+Sync-MarketplaceSourceSnapshot $codexHomePath $marketplaceName $repoRoot
 
 $versionTargetRoot = Join-And-Normalize $pluginCacheRoot @($manifestVersion)
 
@@ -549,7 +582,7 @@ Repair-IncompatibleDefaultPluginCacheEntries $defaultPluginCacheRoot
 Copy-PluginCacheTarget $versionTargetRoot $sourceRoot $repoRoot
 
 if ($ValidateInstalledCache) {
-  Invoke-InstalledCacheValidation $versionTargetRoot $manifestVersion $manifestVersion $repoRoot
+  Invoke-InstalledCacheValidation $versionTargetRoot $manifestVersion $manifestVersion
 }
 
 Remove-GeneratedLocalCacheEntry $pluginCacheRoot

@@ -24,9 +24,9 @@ function Write-Usage {
   Write-Host "  - Bridge Codex stdio MCP traffic into the HTTP backend /mcp endpoint."
   Write-Host ""
   Write-Host "Environment:"
-  Write-Host "  SYMPP_REPO_ROOT              Optional Symphony++ source checkout override. Marketplace installs are discovered automatically."
+  Write-Host "  SYMPP_REPO_ROOT              Explicit developer-only Symphony++ source checkout override. Marketplace installs are discovered automatically."
   Write-Host "  SYMPP_DATABASE               Optional SQLite ledger override passed to mix sympp.cockpit and mix sympp.mcp direct fallback."
-  Write-Host "  SYMPP_LAUNCHER               Optional launcher: 'direct' or 'mise'. Defaults to 'mise' when elixir/mise.toml is present and mise is available; otherwise 'direct'."
+  Write-Host "  SYMPP_LAUNCHER               Optional launcher: 'direct' or 'mise'. Defaults to 'mise' when elixir/mise.toml can run through mise; otherwise 'direct'."
   Write-Host "  SYMPP_MIX                    Optional mix executable path or name for direct launcher. Defaults to 'mix'."
   Write-Host "  SYMPP_MISE                   Optional mise executable path or name for mise launcher. Defaults to 'mise'."
   Write-Host "  MIX_BUILD_ROOT               Optional Mix build-root override. Defaults under %USERPROFILE%\.agents\splusplus\build\mcp for plugin launcher runs."
@@ -48,7 +48,7 @@ function Write-Usage {
   Write-Host "  SYMPP_MCP_HTTP_TIMEOUT_SEC           Per-request bridge timeout. Defaults to 300."
   Write-Host "  SYMPP_STARTUP_LOCK_TIMEOUT_SEC       Local startup lock wait. Defaults to the configured startup waits plus 30 seconds, with a 120-second floor."
   Write-Host ""
-  Write-Host "Installed plugins prefer a compatible marketplace source clone; local refresh .sympp-source-root hints are a fallback."
+  Write-Host "Installed plugins resolve through the Codex marketplace snapshot. .sympp-source-root hints are ignored."
 }
 
 function Write-Diagnostic([string]$Message) {
@@ -1924,29 +1924,6 @@ function Invoke-SelfTest {
     throw "Test-EnvDisabled should treat missing variables as enabled/default."
   }
 
-  $hintSelfTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) "sympp-plugin-source-hint-$([guid]::NewGuid().ToString('N'))"
-  try {
-    $hintRepoRoot = Join-Path $hintSelfTestRoot "repo"
-    $hintPluginRoot = Join-Path $hintSelfTestRoot "plugin"
-    New-Item -ItemType Directory -Path (Join-Path $hintRepoRoot "elixir") -Force | Out-Null
-    New-Item -ItemType Directory -Path $hintPluginRoot -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $hintRepoRoot "elixir/mix.exs") -Value "# self-test" -NoNewline
-    Set-Content -LiteralPath (Join-Path $hintPluginRoot ".sympp-source-root") -Value "$hintRepoRoot`n" -NoNewline
-
-    $sourceHint = Resolve-RepoRootFromSourceHint $hintPluginRoot
-    if (-not $sourceHint.valid -or $sourceHint.root -ne ([System.IO.Path]::GetFullPath($hintRepoRoot))) {
-      throw "Installed plugin source-root hint should resolve to a valid Symphony++ checkout."
-    }
-
-    Set-Content -LiteralPath (Join-Path $hintPluginRoot ".sympp-source-root") -Value (Join-Path $hintSelfTestRoot "missing") -NoNewline
-    $invalidSourceHint = Resolve-RepoRootFromSourceHint $hintPluginRoot
-    if (-not $invalidSourceHint.found -or $invalidSourceHint.valid) {
-      throw "Installed plugin source-root hint should fail closed when the hinted checkout is invalid."
-    }
-  } finally {
-    Remove-Item -LiteralPath $hintSelfTestRoot -Recurse -Force -ErrorAction SilentlyContinue
-  }
-
   $marketplaceSelfTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) "sympp-plugin-marketplace-cache-$([guid]::NewGuid().ToString('N'))"
   try {
     $codexHome = Join-Path $marketplaceSelfTestRoot "codex"
@@ -1967,9 +1944,10 @@ function Invoke-SelfTest {
       Set-Content -LiteralPath (Join-Path $sourcePluginRoot $relativePath) -Value "# matching payload" -NoNewline
       Set-Content -LiteralPath (Join-Path $pluginRoot $relativePath) -Value "# matching payload" -NoNewline
     }
+    Set-Content -LiteralPath (Join-Path $pluginRoot ".sympp-source-root") -Value (Join-Path $marketplaceSelfTestRoot "stale-dev-checkout") -NoNewline
 
     if ((Resolve-RepoRootFromMarketplaceCache $pluginRoot) -ne ([System.IO.Path]::GetFullPath($sourceRoot))) {
-      throw "Marketplace source discovery should accept a source clone that matches the installed plugin payload."
+      throw "Marketplace source discovery should accept a source clone that matches the installed plugin payload and ignore stale source-root hints."
     }
 
     Set-Content -LiteralPath (Join-Path $pluginRoot "scripts/sympp-launcher-runtime.ps1") -Value "# stale installed payload" -NoNewline

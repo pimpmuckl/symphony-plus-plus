@@ -126,6 +126,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     end
   end
 
+  test "installed launchers fall back to direct when mise config cannot run" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-marketplace-mise-probe-fails")
+
+    if powershell do
+      fake_mix = fake_mix_executable(temp_codex_home)
+      fake_mise = fake_failing_mise_executable(temp_codex_home)
+      marketplace_root = write_minimal_marketplace_source(temp_codex_home)
+      File.write!(Path.join(marketplace_root, "elixir/mise.toml"), "[tools]\nelixir = \"1.19.5-otp-28\"\n")
+      mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
+      sympp_home = Path.join(temp_codex_home, "sympp-home")
+
+      try do
+        script_path = write_cached_script(mcp_cache_root, @mcp_plugin_solo_script_path)
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            ["-NoProfile", "-File", script_path, "-ValidateOnly"],
+            cd: Path.dirname(Path.dirname(script_path)),
+            stderr_to_stdout: true,
+            env: [
+              {"SYMPP_MISE", fake_mise},
+              {"SYMPP_MIX", fake_mix},
+              {"SYMPP_REPO_ROOT", ""},
+              {"SYMPP_HOME", sympp_home}
+            ]
+          )
+
+        assert status == 0, output
+        assert output =~ "Symphony++ Solo Session wrapper validation passed."
+        assert output =~ "Mix 1.99.0 test"
+        assert output =~ "launcher: direct"
+        assert normalize_path_fragment(output) =~ "mixbuildroot: #{normalize_path_fragment(sympp_home)}"
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
   test "lifecycle doctor resolves marketplace source clone before stale cache hints" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-marketplace-source-doctor")
@@ -167,7 +207,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
         source_checkout = get_in(report, ["readiness", "source_checkout"])
         assert source_checkout["status"] == "codex_marketplace_source_clone"
         assert normalize_path_fragment(source_checkout["root"]) == normalize_path_fragment(marketplace_root)
-        assert report["process_scan_scope"] == "installed_cache_source_root_hints"
+        assert report["process_scan_scope"] == "installed_cache_marketplace_source_clone"
         assert [process_filter] = report["process_repo_root_filters"]
         assert normalize_path_fragment(process_filter) == normalize_path_fragment(marketplace_root)
       after
@@ -350,6 +390,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     path
   end
 
+  defp fake_failing_mise_executable(temp_root) do
+    path = Path.join(temp_root, if(windows?(), do: "failing-mise.cmd", else: "failing-mise"))
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, fake_failing_mise_script())
+
+    unless windows?() do
+      File.chmod!(path, 0o755)
+    end
+
+    path
+  end
+
   defp fake_mix_script do
     if windows?() do
       """
@@ -423,6 +475,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
         exit 0
       fi
       echo "unexpected mise args: $*" >&2
+      exit 2
+      """
+    end
+  end
+
+  defp fake_failing_mise_script do
+    if windows?() do
+      """
+      @echo off
+      echo failing mise args: %* 1>&2
+      exit /b 2
+      """
+    else
+      """
+      #!/usr/bin/env sh
+      echo "failing mise args: $*" >&2
       exit 2
       """
     end

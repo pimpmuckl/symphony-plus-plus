@@ -82,35 +82,20 @@ function Resolve-RepoRootFromMarketplaceCache([string]$PluginRoot) {
       (Test-Path -LiteralPath (Join-Path $candidate "plugins/symphony-plus-plus/.codex-plugin/plugin.json")) -and
       (Test-Path -LiteralPath (Join-Path $candidate "plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json"))) {
     if (-not (Test-InstalledPluginPayloadMatchesMarketplaceSource $versionRoot $candidate)) {
-      throw "Codex marketplace source clone does not match the installed Symphony++ MCP plugin cache. Run codex plugin marketplace upgrade or refresh the installed cache before starting the MCP runtime: $candidate"
+      throw "Codex marketplace source clone does not match the installed Symphony++ MCP plugin cache. Run codex plugin marketplace upgrade before starting the MCP runtime: $candidate"
     }
 
     $installedRevision = Get-SymppPinnedSourceRevision $versionRoot
     $candidateRevision = Resolve-SymppSourceRevision $candidate
     if ($installedRevision -and $candidateRevision -and
         -not [System.StringComparer]::OrdinalIgnoreCase.Equals($installedRevision, $candidateRevision)) {
-      throw "Codex marketplace source clone revision $candidateRevision does not match installed Symphony++ MCP cache revision $installedRevision. Refresh the installed plugin cache before starting the MCP runtime."
+      throw "Codex marketplace source clone revision $candidateRevision does not match installed Symphony++ MCP cache revision $installedRevision. Run codex plugin marketplace upgrade before starting the MCP runtime."
     }
 
     return $candidate
   }
 
   return $null
-}
-
-function Resolve-RepoRootFromSourceHint([string]$PluginRoot) {
-  $sourceRootHintPath = Join-Path $PluginRoot ".sympp-source-root"
-  if (-not (Test-Path -LiteralPath $sourceRootHintPath)) {
-    return [pscustomobject]@{ found = $false; valid = $false; root = $null }
-  }
-
-  $hintText = (Get-Content -LiteralPath $sourceRootHintPath -Raw).Trim().TrimStart([char]0xFEFF)
-  $hintedRoot = Resolve-OptionalPath $hintText
-  if ($hintedRoot -and (Test-SymphonySourceRoot $hintedRoot)) {
-    return [pscustomobject]@{ found = $true; valid = $true; root = $hintedRoot }
-  }
-
-  return [pscustomobject]@{ found = $true; valid = $false; root = $null }
 }
 
 function Resolve-RepoRoot {
@@ -134,15 +119,7 @@ function Resolve-RepoRoot {
     return $marketplaceRoot
   }
 
-  $sourceRootHint = Resolve-RepoRootFromSourceHint $pluginRoot
-  if ($sourceRootHint.valid) {
-    return $sourceRootHint.root
-  }
-  if ($sourceRootHint.found) {
-    throw "Installed plugin source-root hint is invalid. Refresh the plugin cache or set SYMPP_REPO_ROOT."
-  }
-
-  throw "Cannot infer the Symphony++ runtime source. Reinstall or refresh the Symphony++ marketplace, or set SYMPP_REPO_ROOT to the source checkout root before starting the plugin MCP server."
+  throw "Cannot infer the Symphony++ runtime source. Run codex plugin marketplace upgrade, or set SYMPP_REPO_ROOT only for explicit developer validation."
 }
 
 function Resolve-SymppHome {
