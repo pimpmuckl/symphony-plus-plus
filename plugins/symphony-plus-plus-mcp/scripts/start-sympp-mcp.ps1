@@ -867,6 +867,14 @@ function Get-StartProcessCommand([string]$FilePath, [string[]]$ArgumentList) {
     }
   }
 
+  if ($FilePath.EndsWith(".cmd", [System.StringComparison]::OrdinalIgnoreCase) -or
+      $FilePath.EndsWith(".bat", [System.StringComparison]::OrdinalIgnoreCase)) {
+    return [pscustomobject]@{
+      file = "cmd.exe"
+      args = @("/d", "/s", "/c", $FilePath) + @($ArgumentList)
+    }
+  }
+
   return [pscustomobject]@{
     file = $FilePath
     args = @($ArgumentList)
@@ -3051,6 +3059,11 @@ function Invoke-SelfTest {
   $wrapped = Get-StartProcessCommand "C:\Tools\mix.ps1" @("sympp.cockpit")
   if ($wrapped.file -notmatch "^(pwsh|powershell(\.exe)?)$" -or $wrapped.args[4] -ne "C:\Tools\mix.ps1") {
     throw "Get-StartProcessCommand did not wrap PowerShell scripts for Start-Process."
+  }
+
+  $wrappedBatch = Get-StartProcessCommand "C:\Tools\sympp-runtime.bat" @("sympp.cockpit")
+  if ($wrappedBatch.file -ne "cmd.exe" -or $wrappedBatch.args[0] -ne "/d" -or $wrappedBatch.args[3] -ne "C:\Tools\sympp-runtime.bat") {
+    throw "Get-StartProcessCommand did not wrap Windows batch entrypoints for Start-Process."
   }
 
   if ((Convert-SymppProcessorArchitectureToTargetArch "AMD64") -ne "x86_64" -or
