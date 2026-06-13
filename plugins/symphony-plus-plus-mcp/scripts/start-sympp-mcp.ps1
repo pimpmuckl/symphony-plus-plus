@@ -620,15 +620,17 @@ function Resolve-SymppPreparedArtifactRuntime([string]$PluginRoot, [string]$Expe
     if (Test-SymppArtifactCacheReady $extractRoot $entrypoint $sha256) {
       Write-Diagnostic "ready: reusing verified Symphony++ runtime artifact at $extractRoot."
     } else {
-      $sourceUri = Resolve-SymppArtifactSourceUri $artifact $manifest.manifest_path
-      Assert-SymppArtifactSourceUsable $sourceUri
       if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
+        $sourceUri = Resolve-SymppArtifactSourceUri $artifact $manifest.manifest_path
+        Assert-SymppArtifactSourceUsable $sourceUri
         Write-Diagnostic "artifact_downloading: downloading Symphony++ runtime artifact for $platform."
         Copy-SymppArtifactArchive $sourceUri $archivePath
       }
       try {
         Assert-SymppArtifactArchiveVerified $archivePath $sha256
       } catch {
+        $sourceUri = Resolve-SymppArtifactSourceUri $artifact $manifest.manifest_path
+        Assert-SymppArtifactSourceUsable $sourceUri
         Write-Diagnostic "artifact_redownloading: cached Symphony++ runtime artifact failed verification; downloading again. detail=$($_.Exception.Message)"
         Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
         Copy-SymppArtifactArchive $sourceUri $archivePath
