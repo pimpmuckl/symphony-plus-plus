@@ -34,6 +34,32 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-${{ hashFiles('elixir/mise.toml') }}-
 
+      - name: Stabilize PowerShell diagnostic output
+        run: |
+          mkdir -p ../.ci-bin
+          cat > ../.ci-bin/pwsh <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          real_pwsh="/usr/bin/pwsh"
+          args=("$@")
+
+          for ((i = 0; i < ${#args[@]}; i++)); do
+            lower="$(printf '%s' "${args[$i]}" | tr '[:upper:]' '[:lower:]')"
+            if [[ "$lower" == "-file" && $((i + 1)) -lt ${#args[@]} ]]; then
+              script="${args[$((i + 1))]}"
+              script_args=("${args[@]:$((i + 2))}")
+              exec "$real_pwsh" -NoProfile -Command '$PSStyle.OutputRendering = "PlainText"; $ErrorView = "NormalView"; $script = $args[0]; $scriptArgs = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }; & $script @scriptArgs; if ($null -ne $global:LASTEXITCODE) { exit $global:LASTEXITCODE }' "$script" "${script_args[@]}"
+            fi
+          done
+
+          exec "$real_pwsh" "$@"
+          EOF
+          chmod +x ../.ci-bin/pwsh
+          ln -sf pwsh ../.ci-bin/powershell
+          ln -sf pwsh ../.ci-bin/powershell.exe
+          echo "$PWD/../.ci-bin" >> "$GITHUB_PATH"
+
       - name: Verify make all
         run: make all
 
