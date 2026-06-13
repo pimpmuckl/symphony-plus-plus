@@ -598,11 +598,13 @@ function Resolve-SymppPreparedArtifactRuntime([string]$PluginRoot, [string]$Expe
   $cacheRoot = Resolve-SymppArtifactCacheRoot $platform $ExpectedSourceRevision $pluginVersion $sha256
   $extractRoot = Join-Path $cacheRoot "runtime"
   $archivePath = Join-Path $cacheRoot "artifact.zip"
-  $sourceUri = Resolve-SymppArtifactSourceUri $artifact $manifest.manifest_path
-  Assert-SymppArtifactSourceUsable $sourceUri
 
   if ($ValidateOnly) {
     $ready = Test-SymppArtifactCacheReady $extractRoot $entrypoint $sha256
+    if (-not $ready) {
+      $sourceUri = Resolve-SymppArtifactSourceUri $artifact $manifest.manifest_path
+      Assert-SymppArtifactSourceUsable $sourceUri
+    }
     return [pscustomobject]@{
       status = $(if ($ready) { "ready" } else { "artifact_selected" })
       detail = $(if ($ready) { "cache_ready" } else { "download_required" })
@@ -618,6 +620,8 @@ function Resolve-SymppPreparedArtifactRuntime([string]$PluginRoot, [string]$Expe
     if (Test-SymppArtifactCacheReady $extractRoot $entrypoint $sha256) {
       Write-Diagnostic "ready: reusing verified Symphony++ runtime artifact at $extractRoot."
     } else {
+      $sourceUri = Resolve-SymppArtifactSourceUri $artifact $manifest.manifest_path
+      Assert-SymppArtifactSourceUsable $sourceUri
       if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
         Write-Diagnostic "artifact_downloading: downloading Symphony++ runtime artifact for $platform."
         Copy-SymppArtifactArchive $sourceUri $archivePath
