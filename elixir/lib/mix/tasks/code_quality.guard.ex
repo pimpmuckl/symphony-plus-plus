@@ -131,7 +131,7 @@ defmodule Mix.Tasks.CodeQuality.Guard do
     "test/symphony_elixir/symphony_plus_plus/mcp/claim_session_transport_04_test.exs" => %{max_lines: 1012},
     "test/symphony_elixir/symphony_plus_plus/mcp/solo_schema_01_test.exs" => %{max_lines: 1388},
     "test/symphony_elixir/symphony_plus_plus/mcp/work_request_tools_02_test.exs" => %{max_lines: 1633},
-    "test/symphony_elixir/symphony_plus_plus/mcp/worker_tools_06_test.exs" => %{max_lines: 1898},
+    "test/symphony_elixir/symphony_plus_plus/mcp/worker_tools_06_test.exs" => %{max_lines: 1660},
     "test/symphony_elixir/symphony_plus_plus/mcp_http_endpoint_test.exs" => %{max_lines: 1310},
     "test/symphony_elixir/symphony_plus_plus/mcp_test.exs" => %{max_lines: 19_703},
     "test/symphony_elixir/symphony_plus_plus/mcp_delivery_tools_test.exs" => %{max_lines: 933},
