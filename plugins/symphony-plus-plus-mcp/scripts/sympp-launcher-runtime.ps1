@@ -164,6 +164,46 @@ function Convert-SymppProcessorArchitectureToTargetArch([string]$Architecture) {
   }
 }
 
+function Get-SymppRuntimeOsKey {
+  if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
+    return "windows"
+  }
+  if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)) {
+    return "linux"
+  }
+  if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)) {
+    return "macos"
+  }
+
+  return $null
+}
+
+function Get-SymppRuntimeArchKey {
+  $architecture = $null
+  try {
+    $architecture = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+  } catch {
+    $architecture = Get-SymppWindowsProcessorArchitecture
+  }
+
+  $targetArch = Convert-SymppProcessorArchitectureToTargetArch $architecture
+  if (-not [string]::IsNullOrWhiteSpace($targetArch)) {
+    return $targetArch
+  }
+
+  return $null
+}
+
+function Get-SymppRuntimePlatformKey {
+  $os = Get-SymppRuntimeOsKey
+  $arch = Get-SymppRuntimeArchKey
+  if ([string]::IsNullOrWhiteSpace($os) -or [string]::IsNullOrWhiteSpace($arch)) {
+    return $null
+  }
+
+  return "$os-$arch"
+}
+
 function Set-SymppWindowsNativeTargetEnvironment {
   if (-not (Test-SymppWindowsPlatform)) {
     return
