@@ -69,7 +69,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
   setup_all do
     database_path = WorkPackageFactory.database_path()
 
-    start_supervised!({Repo, database: database_path, pool_size: 5})
+    start_supervised!({Repo, database: database_path, pool_size: 8})
     assert :ok = Repository.migrate(Repo)
 
     on_exit(fn -> File.rm(database_path) end)

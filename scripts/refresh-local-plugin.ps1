@@ -459,7 +459,7 @@ function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [s
       if (Test-RefreshWindowsPlatform) {
         & cmd.exe @("/d", "/s", "/c", "scripts\start-sympp-mcp.cmd -SelfTest")
       } else {
-        & $powershell @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/start-sympp-mcp.ps1", "-SelfTest")
+        & $powershell @("-NoProfile", "-File", "scripts/start-sympp-mcp.ps1", "-SelfTest")
       }
       if ($LASTEXITCODE -ne 0) {
         throw "Installed plugin MCP launcher self-test failed for $Label cache with exit code $LASTEXITCODE."
@@ -468,7 +468,7 @@ function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [s
       if (Test-RefreshWindowsPlatform) {
         & cmd.exe @("/d", "/s", "/c", "scripts\start-sympp-mcp.cmd -ValidateOnly")
       } else {
-        & $powershell @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/start-sympp-mcp.ps1", "-ValidateOnly")
+        & $powershell @("-NoProfile", "-File", "scripts/start-sympp-mcp.ps1", "-ValidateOnly")
       }
       if ($LASTEXITCODE -ne 0) {
         throw "Installed plugin MCP launcher validation failed for $Label cache with exit code $LASTEXITCODE."

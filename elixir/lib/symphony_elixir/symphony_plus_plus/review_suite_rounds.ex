@@ -9,6 +9,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds do
 
   @spec resolve(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def resolve(round_id, opts \\ []) do
+    requested_round_id = text(round_id)
+
     with {:ok, round_id} <- required_text(round_id, :round_id),
          {:ok, state_dir} <- review_suite_state_dir(Keyword.get(opts, :state_dir)),
          {:ok, cycle, source} <- load_cycle_for_round_id(state_dir, round_id),
@@ -34,6 +36,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewSuiteRounds do
        |> put_if_present("repo", text(get_in(cycle, ["identity", "repo"])))
        |> put_if_present("base_branch", text(get_in(cycle, ["identity", "base"])))
        |> put_if_present("branch", text(get_in(cycle, ["identity", "branch"])))}
+    else
+      {:error, {:review_suite_round_unavailable, "local_state", missing, fallback_fields}}
+      when is_binary(requested_round_id) and requested_round_id != "" ->
+        {:error, {:review_suite_round_unavailable, requested_round_id, missing, fallback_fields}}
+
+      error ->
+        error
     end
   end
 
