@@ -1840,19 +1840,21 @@ function Get-DiagnosticRuntimeArtifactStatus([string]$Root, [string]$ExpectedRev
     return [pscustomobject]@{ status = "ready"; detail = "cache_ready"; platform = $platform; manifest_path = $manifestPath; cache_root = $cacheRoot }
   }
 
-  try {
-    $sourceUri = Resolve-DiagnosticRuntimeArtifactSourceUri $artifact $manifestPath
-    Assert-DiagnosticRuntimeArtifactSourceUsable $sourceUri
-  } catch {
-    return [pscustomobject]@{ status = "artifact_verification_failed"; detail = $_.Exception.Message; platform = $platform; manifest_path = $manifestPath; cache_root = $cacheRoot }
-  }
-
   $archivePath = Join-Path $cacheRoot "artifact.zip"
   if (Test-Path -LiteralPath $archivePath -PathType Leaf) {
     $actual = Get-FileSha256Hex $archivePath
     if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($actual, $sha256)) {
       return [pscustomobject]@{ status = "artifact_verification_failed"; detail = "cached_archive_sha256_mismatch"; platform = $platform; manifest_path = $manifestPath; cache_root = $cacheRoot }
     }
+
+    return [pscustomobject]@{ status = "artifact_selected"; detail = "archive_cached"; platform = $platform; manifest_path = $manifestPath; cache_root = $cacheRoot }
+  }
+
+  try {
+    $sourceUri = Resolve-DiagnosticRuntimeArtifactSourceUri $artifact $manifestPath
+    Assert-DiagnosticRuntimeArtifactSourceUsable $sourceUri
+  } catch {
+    return [pscustomobject]@{ status = "artifact_verification_failed"; detail = $_.Exception.Message; platform = $platform; manifest_path = $manifestPath; cache_root = $cacheRoot }
   }
 
   return [pscustomobject]@{ status = "artifact_selected"; detail = "download_required"; platform = $platform; manifest_path = $manifestPath; cache_root = $cacheRoot }
