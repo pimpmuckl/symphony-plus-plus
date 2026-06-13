@@ -159,8 +159,7 @@ function Sync-ManagedDirectoryChildren([string]$Source, [string]$Target, [string
   }
 }
 
-function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [string]$RepoRoot) {
-  Assert-SafeCacheTarget $TargetRoot $pluginCacheRoot
+function Sync-PluginPackageFiles([string]$SourceRoot, [string]$TargetRoot, [string]$TargetBoundary, [string]$RemovalReason) {
   Assert-NotReparsePoint $TargetRoot
   Assert-NoReparsePointDescendants $TargetRoot
 
@@ -173,11 +172,21 @@ function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [strin
       Assert-NotReparsePoint $target
       Assert-NoReparsePointDescendants $target
       Copy-Item -LiteralPath $source -Destination $TargetRoot -Recurse -Force
-      Sync-ManagedDirectoryChildren $source $target $TargetRoot
+      Sync-ManagedDirectoryChildren $source $target $TargetBoundary
     } elseif (Test-Path -LiteralPath $target) {
-      Remove-ManagedCachePath $target $TargetRoot "Removed stale managed Symphony++ plugin cache item"
+      Remove-ManagedCachePath $target $TargetBoundary $RemovalReason
     }
   }
+}
+
+function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [string]$RepoRoot) {
+  Assert-SafeCacheTarget $TargetRoot $pluginCacheRoot
+
+  Sync-PluginPackageFiles `
+    $SourceRoot `
+    $TargetRoot `
+    $TargetRoot `
+    "Removed stale managed Symphony++ plugin cache item"
 
   $sourceRootHintPath = Join-Path $TargetRoot ".sympp-source-root"
   Assert-NotReparsePoint $sourceRootHintPath
@@ -420,13 +429,20 @@ function Assert-CachePluginConfig([string]$TargetRoot, [string]$ExpectedVersion)
   }
 }
 
-function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [string]$ExpectedVersion) {
+function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [string]$ExpectedVersion, [string]$ValidationRepoRoot) {
   Assert-CachePluginConfig $TargetRoot $ExpectedVersion
 
   Push-Location -LiteralPath $TargetRoot
+  $oldRepoRoot = $env:SYMPP_REPO_ROOT
   try {
     $powershell = Get-AvailablePowerShellCommandName
     if ($PluginName -eq "symphony-plus-plus-mcp") {
+      & cmd.exe @("/d", "/s", "/c", "scripts\start-sympp-mcp.cmd -SelfTest")
+      if ($LASTEXITCODE -ne 0) {
+        throw "Installed plugin MCP launcher self-test failed for $Label cache with exit code $LASTEXITCODE."
+      }
+
+      $env:SYMPP_REPO_ROOT = $ValidationRepoRoot
       & cmd.exe @("/d", "/s", "/c", "scripts\start-sympp-mcp.cmd -ValidateOnly")
       if ($LASTEXITCODE -ne 0) {
         throw "Installed plugin MCP launcher validation failed for $Label cache with exit code $LASTEXITCODE."
@@ -442,6 +458,7 @@ function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [s
       throw "Installed plugin Solo Session wrapper validation failed for $Label cache with exit code $LASTEXITCODE."
     }
   } finally {
+    $env:SYMPP_REPO_ROOT = $oldRepoRoot
     Pop-Location
   }
 
@@ -529,7 +546,7 @@ Repair-IncompatibleDefaultPluginCacheEntries $defaultPluginCacheRoot
 Copy-PluginCacheTarget $versionTargetRoot $sourceRoot $repoRoot
 
 if ($ValidateInstalledCache) {
-  Invoke-InstalledCacheValidation $versionTargetRoot $manifestVersion $manifestVersion
+  Invoke-InstalledCacheValidation $versionTargetRoot $manifestVersion $manifestVersion $repoRoot
 }
 
 Remove-GeneratedLocalCacheEntry $pluginCacheRoot

@@ -9,6 +9,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
   @plugin_lifecycle_diagnostic_path Path.join(@repo_root, "plugins/symphony-plus-plus/scripts/diagnose-mcp-lifecycle.ps1")
   @mcp_plugin_solo_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-solo.ps1")
   @mcp_plugin_start_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1")
+  @mcp_plugin_helper_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-mcp-launcher-helpers.ps1")
 
   test "installed launchers resolve marketplace source clone despite missing or stale cache hints" do
     powershell = System.find_executable("pwsh")
@@ -240,13 +241,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
 
   defp write_cached_script(cache_root, source_script_path) do
     target = Path.join([cache_root, "scripts", Path.basename(source_script_path)])
-    helper_target = Path.join(Path.dirname(target), "sympp-launcher-runtime.ps1")
-    source_helper = Path.join(Path.dirname(source_script_path), "sympp-launcher-runtime.ps1")
     File.mkdir_p!(Path.dirname(target))
     File.cp!(source_script_path, target)
 
-    if File.exists?(source_helper) do
-      File.cp!(source_helper, helper_target)
+    for helper_name <- ~w(sympp-launcher-runtime.ps1 sympp-mcp-launcher-helpers.ps1) do
+      source_helper = Path.join(Path.dirname(source_script_path), helper_name)
+
+      if File.exists?(source_helper) do
+        File.cp!(source_helper, Path.join(Path.dirname(target), helper_name))
+      end
     end
 
     target
@@ -299,6 +302,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     File.cp!(
       Path.join(Path.dirname(@mcp_plugin_start_script_path), "sympp-launcher-runtime.ps1"),
       Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-launcher-runtime.ps1")
+    )
+
+    File.cp!(
+      @mcp_plugin_helper_path,
+      Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-mcp-launcher-helpers.ps1")
     )
 
     for plugin_name <- ~w(symphony-plus-plus symphony-plus-plus-mcp) do

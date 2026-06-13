@@ -28,6 +28,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   @mcp_plugin_architect_skill_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/skills/symphony-architect/SKILL.md")
   @mcp_plugin_start_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1")
   @mcp_plugin_start_cmd_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.cmd")
+  @mcp_plugin_helper_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-mcp-launcher-helpers.ps1")
   @mcp_plugin_solo_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-solo.ps1")
   @marketplace_path Path.join(@repo_root, ".agents/plugins/marketplace.json")
   @plugin_marketplace_name "symphony-plus-plus"
@@ -516,6 +517,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@mcp_plugin_readme_path) =~ "agent-facing MCP\ncontract fingerprint"
 
     assert File.read!(@mcp_plugin_start_script_path) =~ "sympp.mcp"
+    assert File.read!(@mcp_plugin_start_script_path) =~ "sympp-mcp-launcher-helpers.ps1"
+    assert File.exists?(@mcp_plugin_helper_path)
     assert File.read!(@mcp_plugin_start_cmd_path) =~ "start-sympp-mcp.ps1"
     assert File.read!(@mcp_plugin_start_cmd_path) =~ "powershell.exe"
     assert File.read!(@mcp_plugin_start_cmd_path) =~ "goto :run_pwsh"
