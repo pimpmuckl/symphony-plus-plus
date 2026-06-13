@@ -185,11 +185,14 @@ done
 [[ "$port" =~ ^[0-9]+$ ]] || { echo "--port must be a non-negative integer." >&2; exit 2; }
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+release_tmp="$logs_root/release-tmp"
+mkdir -p "$logs_root" "$release_tmp"
 export SYMPP_RUNTIME_ARTIFACT=1
 export SYMPP_RUNTIME_ARTIFACT_ACKNOWLEDGED=1
 export SYMPP_WORKFLOW_FILE="$workflow"
 export SYMPP_LOGS_ROOT="$logs_root"
 export SYMPP_BACKEND_PORT="$port"
+export RELEASE_TMP="$release_tmp"
 export PHX_SERVER=true
 exec "$script_dir/runtime/bin/symphony_elixir" start
 SH
@@ -232,11 +235,15 @@ if ($Port -lt 0) {
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$releaseTmp = Join-Path $LogsRoot "release-tmp"
+New-Item -ItemType Directory -Force -Path $LogsRoot | Out-Null
+New-Item -ItemType Directory -Force -Path $releaseTmp | Out-Null
 $env:SYMPP_RUNTIME_ARTIFACT = "1"
 $env:SYMPP_RUNTIME_ARTIFACT_ACKNOWLEDGED = "1"
 $env:SYMPP_WORKFLOW_FILE = $Workflow
 $env:SYMPP_LOGS_ROOT = $LogsRoot
 $env:SYMPP_BACKEND_PORT = [string]$Port
+$env:RELEASE_TMP = $releaseTmp
 $env:PHX_SERVER = "true"
 & (Join-Path $scriptDir "runtime\bin\symphony_elixir.bat") start
 exit $LASTEXITCODE
