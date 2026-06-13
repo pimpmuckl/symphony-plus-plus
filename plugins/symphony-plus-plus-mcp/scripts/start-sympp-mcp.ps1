@@ -1965,6 +1965,15 @@ if ((-not $explicitBackendReuseConfigured) -and
     throw
   }
 }
+if ($null -ne $artifactProbeError -and $explicitBackendReuseConfigured) {
+  $artifactProbe = [pscustomobject]@{
+    status = "artifact_unavailable"
+    detail = $artifactProbeError.Exception.Message
+    platform = Get-SymppRuntimePlatformKey
+    runtime = $null
+  }
+  $artifactProbeError = $null
+}
 if ($null -ne $artifactProbeError) {
   throw $artifactProbeError
 }
@@ -1979,6 +1988,8 @@ if ($artifactValidationLaunchable -and
       $expectedSourceRevision = Resolve-SymppSourceRevision $repoRoot $pluginRoot
     }
     $sourceFallbackAllowed = $sourceFallbackAllowed -or (Test-SymphonySourceRoot $repoRoot)
+    $artifactProbe = Resolve-SymppArtifactProbe $pluginRoot $expectedSourceRevision $expectedContractFingerprint $artifactRuntimeAllowed $sourceFallbackAllowed -ValidateOnly
+    $artifactValidationLaunchable = @("ready", "artifact_selected") -contains $artifactProbe.status
   } catch {
     $repoRoot = $null
   }
@@ -2202,11 +2213,11 @@ try {
     $dashboardBackendSourceRevision = if ($backendPlan.should_start) { $expectedSourceRevision } else { [string]$backendPlan.source_revision }
     $dashboardPlan = Resolve-DashboardPlan $dashboardPort $env:SYMPP_DASHBOARD_ORIGIN $backendPlan.url $dashboardBackendSourceRevision $runtimeState $dashboardPortExplicit $expectedSourceRevision $expectedContractFingerprint $allowRecordedDashboardReuse
   }
-  if ($runtimeMode -eq "artifact" -and $dashboardPortExplicit -and $dashboardPlan.should_start -and -not (Test-Path -LiteralPath $assetsDir -PathType Container)) {
-    throw "SYMPP_DASHBOARD_PORT requires source dashboard assets when artifact mode must start a separate dashboard. Set SYMPP_DASHBOARD_ORIGIN to reuse an operator-owned dashboard, or clear SYMPP_DASHBOARD_PORT to use the artifact backend dashboard."
-  }
   if ($dashboardPlan.should_start -and -not $autostartFrontend) {
     $dashboardPlan = New-DisabledDashboardPlan "disabled" "frontend_autostart_disabled"
+  }
+  if ($runtimeMode -eq "artifact" -and $dashboardPortExplicit -and $dashboardPlan.should_start -and -not (Test-Path -LiteralPath $assetsDir -PathType Container)) {
+    throw "SYMPP_DASHBOARD_PORT requires source dashboard assets when artifact mode must start a separate dashboard. Set SYMPP_DASHBOARD_ORIGIN to reuse an operator-owned dashboard, or clear SYMPP_DASHBOARD_PORT to use the artifact backend dashboard."
   }
 
   $supersededStates = Merge-SupersededRuntimeStates (Get-SupersededRuntimeStates $runtimeState) (New-SupersededRuntimeState $runtimeState $backendPlan $dashboardPlan)

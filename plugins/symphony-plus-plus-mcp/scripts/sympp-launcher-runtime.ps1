@@ -88,6 +88,11 @@ function Get-SymppPinnedSourceRevision([string]$Root) {
 }
 
 function Resolve-SymppSourceRevision([string]$RepoRoot, [string]$PluginRoot = $null) {
+  $pinnedRevision = Get-SymppPinnedSourceRevision $PluginRoot
+  if ($pinnedRevision) {
+    return $pinnedRevision
+  }
+
   $gitRevision = Get-SymppGitHeadRevision $RepoRoot
   if ($gitRevision) {
     return $gitRevision
@@ -98,7 +103,7 @@ function Resolve-SymppSourceRevision([string]$RepoRoot, [string]$PluginRoot = $n
     return $installRevision
   }
 
-  return Get-SymppPinnedSourceRevision $PluginRoot
+  return $null
 }
 
 function Get-SymppStablePathKey([string]$Value) {

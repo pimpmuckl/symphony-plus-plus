@@ -64,20 +64,6 @@ function Get-SymppPluginVersion([string]$PluginRoot) {
   return $null
 }
 
-function Resolve-ExpectedSourceRevision([string]$PluginRoot) {
-  $pinnedRevision = Get-SymppPinnedSourceRevision $PluginRoot
-  if ($pinnedRevision) {
-    return $pinnedRevision
-  }
-
-  $sourceCandidate = [System.IO.Path]::GetFullPath((Join-Path $PluginRoot "../.."))
-  if (Test-SymphonySourceRoot $sourceCandidate) {
-    return Resolve-SymppSourceRevision $sourceCandidate $PluginRoot
-  }
-
-  return $null
-}
-
 function Get-SymppArtifactManifestPath([string]$PluginRoot) {
   foreach ($relativePath in @(".sympp-runtime-artifacts.json", "assets/sympp-runtime-artifacts.json")) {
     $candidate = Join-Path $PluginRoot $relativePath
@@ -134,17 +120,26 @@ function Test-SymppArtifactPlatformMatches($Artifact, [string]$Platform) {
 }
 
 function Test-SymppArtifactRevisionMatches($Artifact, [string]$ExpectedSourceRevision, [string]$ManifestSourceRevision) {
-  if ([string]::IsNullOrWhiteSpace($ExpectedSourceRevision)) {
-    return $true
-  }
-
   $artifactRevision = Normalize-SymppSourceRevision ([string](Get-JsonPropertyValue $Artifact @("source_revision", "revision", "git_revision")))
   if (-not $artifactRevision) {
     $artifactRevision = Normalize-SymppSourceRevision $ManifestSourceRevision
   }
 
+  if ([string]::IsNullOrWhiteSpace($ExpectedSourceRevision)) {
+    return $null -ne $artifactRevision
+  }
+
   return $artifactRevision -and
     [System.StringComparer]::OrdinalIgnoreCase.Equals($artifactRevision, $ExpectedSourceRevision)
+}
+
+function Resolve-SymppArtifactSourceRevision($Artifact, [string]$ManifestSourceRevision) {
+  $artifactRevision = Normalize-SymppSourceRevision ([string](Get-JsonPropertyValue $Artifact @("source_revision", "revision", "git_revision")))
+  if ($artifactRevision) {
+    return $artifactRevision
+  }
+
+  return Normalize-SymppSourceRevision $ManifestSourceRevision
 }
 
 function Test-SymppArtifactContractMatches($Artifact, [string]$ExpectedContractFingerprint, [string]$ManifestContractFingerprint) {
@@ -356,6 +351,12 @@ function Resolve-SymppPreparedArtifactRuntime([string]$PluginRoot, [string]$Expe
     return [pscustomobject]@{ status = "artifact_missing"; detail = "matching_artifact_missing"; platform = $platform; manifest_path = $manifest.manifest_path; runtime = $null }
   }
 
+  $manifestSourceRevision = Normalize-SymppSourceRevision ([string](Get-JsonPropertyValue $manifest @("source_revision", "revision", "git_revision")))
+  $sourceRevision = if ([string]::IsNullOrWhiteSpace($ExpectedSourceRevision)) { Resolve-SymppArtifactSourceRevision $artifact $manifestSourceRevision } else { $ExpectedSourceRevision }
+  if ([string]::IsNullOrWhiteSpace($sourceRevision)) {
+    return [pscustomobject]@{ status = "artifact_missing"; detail = "source_revision_missing"; platform = $platform; manifest_path = $manifest.manifest_path; runtime = $null }
+  }
+
   $sha256 = Normalize-SymppSha256 ([string](Get-JsonPropertyValue $artifact @("sha256", "sha256sum", "digest")))
   if (-not $sha256) {
     throw "artifact_verification_failed: selected Symphony++ runtime artifact does not declare a valid sha256."
@@ -363,7 +364,7 @@ function Resolve-SymppPreparedArtifactRuntime([string]$PluginRoot, [string]$Expe
 
   $pluginVersion = Get-SymppPluginVersion $PluginRoot
   $entrypoint = Resolve-SymppArtifactEntrypoint $artifact
-  $cacheRoot = Resolve-SymppArtifactCacheRoot $platform $ExpectedSourceRevision $pluginVersion $sha256
+  $cacheRoot = Resolve-SymppArtifactCacheRoot $platform $sourceRevision $pluginVersion $sha256
   $extractRoot = Join-Path $cacheRoot "runtime"
   $archivePath = Join-Path $cacheRoot "artifact.zip"
 
@@ -413,7 +414,7 @@ function Resolve-SymppPreparedArtifactRuntime([string]$PluginRoot, [string]$Expe
         Copy-SymppArtifactArchive $sourceUri $archivePath
       }
       Assert-SymppArtifactArchiveVerified $archivePath $sha256
-      Expand-SymppArtifactArchive $archivePath $extractRoot $entrypoint $sha256 $platform $ExpectedSourceRevision $pluginVersion $manifest.manifest_path
+      Expand-SymppArtifactArchive $archivePath $extractRoot $entrypoint $sha256 $platform $sourceRevision $pluginVersion $manifest.manifest_path
     }
   } finally {
     Exit-FileLock $lock
@@ -430,7 +431,7 @@ function Resolve-SymppPreparedArtifactRuntime([string]$PluginRoot, [string]$Expe
       entrypoint = [System.IO.Path]::GetFullPath((Join-Path $extractRoot $entrypoint))
       sha256 = $sha256
       platform = $platform
-      source_revision = $ExpectedSourceRevision
+      source_revision = $sourceRevision
       plugin_version = $pluginVersion
       manifest_path = $manifest.manifest_path
     }
