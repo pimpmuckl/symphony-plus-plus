@@ -601,13 +601,22 @@ function Resolve-SymppPreparedArtifactRuntime([string]$PluginRoot, [string]$Expe
 
   if ($ValidateOnly) {
     $ready = Test-SymppArtifactCacheReady $extractRoot $entrypoint $sha256
-    if (-not $ready) {
+    $archiveReady = $false
+    if (-not $ready -and (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
+      try {
+        Assert-SymppArtifactArchiveVerified $archivePath $sha256
+        $archiveReady = $true
+      } catch {
+        $archiveReady = $false
+      }
+    }
+    if (-not $ready -and -not $archiveReady) {
       $sourceUri = Resolve-SymppArtifactSourceUri $artifact $manifest.manifest_path
       Assert-SymppArtifactSourceUsable $sourceUri
     }
     return [pscustomobject]@{
       status = $(if ($ready) { "ready" } else { "artifact_selected" })
-      detail = $(if ($ready) { "cache_ready" } else { "download_required" })
+      detail = $(if ($ready) { "cache_ready" } elseif ($archiveReady) { "archive_cached" } else { "download_required" })
       platform = $platform
       manifest_path = $manifest.manifest_path
       cache_root = $cacheRoot
