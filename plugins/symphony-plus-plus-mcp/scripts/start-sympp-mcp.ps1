@@ -725,7 +725,7 @@ function Resolve-LaunchArtifactSelection(
         throw
       }
       Write-Diagnostic "source_fallback_compiling: artifact startup failed under explicit source fallback control. detail=$($_.Exception.Message)"
-      if ([string]::IsNullOrWhiteSpace($sourceRevision)) {
+      if ([string]::IsNullOrWhiteSpace($sourceRevision) -and -not [string]::IsNullOrWhiteSpace($RepoRoot)) {
         $sourceRevision = Resolve-SymppSourceRevision $RepoRoot $PluginRoot
         Set-SymppSourceRevisionEnvironment $sourceRevision
       }
@@ -2929,7 +2929,10 @@ function Invoke-HttpMcpBridge([string]$McpUrl, [int]$TimeoutSec) {
 }
 
 function Invoke-DirectStdioMcp([string]$RepoRoot, [string]$ElixirDir, [string]$Launcher, [string]$MixCommand, [string]$MiseCommand, $ArtifactRuntime = $null) {
-  $mcpArgs = @("sympp.mcp", "--mode", "stdio", "--repo-root", $RepoRoot)
+  $mcpArgs = @("sympp.mcp", "--mode", "stdio")
+  if (-not [string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $mcpArgs += @("--repo-root", $RepoRoot)
+  }
   if (-not [string]::IsNullOrWhiteSpace($env:SYMPP_DATABASE)) {
     $mcpArgs += @("--database", ([System.IO.Path]::GetFullPath($env:SYMPP_DATABASE)))
   }
@@ -3587,16 +3590,20 @@ if ($ValidateOnly) {
 $elixirSetupTimeout = Get-EnvInteger "SYMPP_ELIXIR_SETUP_TIMEOUT_SEC" 300 1 1800
 $bridgeMode = Get-EnvMode "SYMPP_MCP_BRIDGE_MODE" "http" @("http", "direct_stdio")
 if ($bridgeMode -eq "direct_stdio") {
-  if ([string]::IsNullOrWhiteSpace($repoRoot)) {
-    $repoRoot = Resolve-RepoRoot
-    $elixirDir = Join-Path $repoRoot "elixir"
-    $assetsDir = Join-Path $elixirDir "assets"
-  }
   $artifactSelection = Resolve-LaunchArtifactSelection $pluginRoot $repoRoot $artifactProbe $expectedSourceRevision $expectedContractFingerprint $artifactRuntimeAllowed $sourceFallbackAllowed
   $artifactRuntime = $artifactSelection.artifact_runtime
   $runtimeMode = [string]$artifactSelection.runtime_mode
   $expectedSourceRevision = [string]$artifactSelection.expected_source_revision
   if ($runtimeMode -eq "source") {
+    if ([string]::IsNullOrWhiteSpace($repoRoot)) {
+      $repoRoot = Resolve-RepoRoot
+      $elixirDir = Join-Path $repoRoot "elixir"
+      $assetsDir = Join-Path $elixirDir "assets"
+    }
+    if ([string]::IsNullOrWhiteSpace($expectedSourceRevision)) {
+      $expectedSourceRevision = Resolve-SymppSourceRevision $repoRoot $pluginRoot
+      Set-SymppSourceRevisionEnvironment $expectedSourceRevision
+    }
     [void](Initialize-ElixirRuntime $elixirDir $launcher $mix $mise $logDir $elixirSetupTimeout)
   }
   Invoke-DirectStdioMcp $repoRoot $elixirDir $launcher $mix $mise $artifactRuntime
