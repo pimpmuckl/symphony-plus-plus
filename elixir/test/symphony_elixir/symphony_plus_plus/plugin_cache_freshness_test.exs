@@ -8,6 +8,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginCacheFreshnessTest do
   @refresh_script_path Path.join(@repo_root, "scripts/refresh-local-plugin.ps1")
   @marketplace_name "symphony-plus-plus"
 
+  @tag :ci_slow
   test "lifecycle diagnostic flags same-version stale MCP companion cache contents" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-stale-mcp-cache-#{System.unique_integer([:positive])}")

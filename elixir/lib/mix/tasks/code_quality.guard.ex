@@ -34,7 +34,7 @@ defmodule Mix.Tasks.CodeQuality.Guard do
     "assets/src/App.tsx" => %{max_lines: 7263},
     "assets/src/types/dashboard.ts" => %{max_lines: 624},
     "../plugins/symphony-plus-plus/scripts/diagnose-mcp-lifecycle.ps1" => %{max_lines: 3508},
-    "../plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1" => %{max_lines: 2674},
+    "../plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1" => %{max_lines: 2173},
     "../scripts/smoke-sympp-mcp-http.ps1" => %{max_lines: 1652},
     "lib/mix/tasks/sympp.cockpit.ex" => %{max_lines: 676},
     "lib/mix/tasks/sympp.demo_ledger.ex" => %{
@@ -124,7 +124,7 @@ defmodule Mix.Tasks.CodeQuality.Guard do
     "test/symphony_elixir/core_test.exs" => %{max_lines: 1877},
     "test/symphony_elixir/orchestrator_status_test.exs" => %{max_lines: 1674},
     "test/symphony_elixir/symphony_plus_plus/access_grants_test.exs" => %{max_lines: 1443},
-    "test/symphony_elixir/symphony_plus_plus/codex_skill_package_test.exs" => %{max_lines: 3913},
+    "test/symphony_elixir/symphony_plus_plus/codex_skill_package_test.exs" => %{max_lines: 3901},
     "test/symphony_elixir/symphony_plus_plus/create_work_test.exs" => %{max_lines: 1103},
     "test/symphony_elixir/symphony_plus_plus/dashboard_api_test.exs" => %{max_lines: 7247},
     "test/symphony_elixir/symphony_plus_plus/mcp/claim_session_transport_03_test.exs" => %{max_lines: 1055},

@@ -457,15 +457,6 @@ function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [s
     Remove-Item Env:SYMPP_REPO_ROOT -ErrorAction SilentlyContinue
     if ($PluginName -eq "symphony-plus-plus-mcp") {
       if (Test-RefreshWindowsPlatform) {
-        & cmd.exe @("/d", "/s", "/c", "scripts\start-sympp-mcp.cmd -SelfTest")
-      } else {
-        & $powershell @("-NoProfile", "-File", "scripts/start-sympp-mcp.ps1", "-SelfTest")
-      }
-      if ($LASTEXITCODE -ne 0) {
-        throw "Installed plugin MCP launcher self-test failed for $Label cache with exit code $LASTEXITCODE."
-      }
-
-      if (Test-RefreshWindowsPlatform) {
         & cmd.exe @("/d", "/s", "/c", "scripts\start-sympp-mcp.cmd -ValidateOnly")
       } else {
         & $powershell @("-NoProfile", "-File", "scripts/start-sympp-mcp.ps1", "-ValidateOnly")

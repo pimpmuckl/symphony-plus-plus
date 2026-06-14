@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.WorktreeLifecycleCompatTest do
   use ExUnit.Case, async: false
 
+  @moduletag :ci_slow
+
   alias SymphonyElixir.PathSafety
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository

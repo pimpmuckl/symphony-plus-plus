@@ -51,7 +51,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.LocalClaimLeases do
   @spec actor_hash(iodata()) :: String.t()
   def actor_hash(material), do: Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
 
-  @spec claim_worker_grant(module(), String.t(), map(), ClaimLease.t(), :created | :heartbeat | :reclaimed, [String.t()], DateTime.t()) ::
+  @spec claim_worker_grant(
+          module(),
+          String.t(),
+          map(),
+          ClaimLease.t(),
+          :created | :heartbeat | :reclaimed,
+          [String.t()],
+          DateTime.t()
+        ) ::
           {:ok, AccessGrant.t(), grant_action()} | {:error, term()}
   def claim_worker_grant(repo, work_package_id, claim, %ClaimLease{} = lease, lease_action, existing_grant_ids, %DateTime{} = claim_now)
       when is_atom(repo) and is_binary(work_package_id) and is_map(claim) and
@@ -95,7 +103,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.LocalClaimLeases do
   defp recover_worker_grant_owner(repo, work_package_id, claim, %ClaimLease{} = lease, %DateTime{} = claim_now) do
     repo.transaction(fn ->
       with {:ok, previous_owner} <- previous_worker_claim_owner(repo, work_package_id, lease),
-           %AccessGrant{} = recovered_owner <- recoverable_worker_grant(repo, work_package_id, previous_owner, claim, claim_now),
+           %AccessGrant{} = recovered_owner <-
+             recoverable_worker_grant(repo, work_package_id, previous_owner, claim, claim_now),
            {:ok, %AccessGrant{} = grant} <- recover_worker_grant_owner(repo, recovered_owner, claim, claim_now) do
         {:ok, grant, {:recovered, worker_recovery(recovered_owner, claim)}}
       else
@@ -112,9 +121,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.LocalClaimLeases do
   defp previous_worker_claim_owner(repo, work_package_id, %ClaimLease{previous_claim_id: previous_claim_id})
        when is_binary(previous_claim_id) do
     case repo.get(ClaimLease, previous_claim_id) do
-      %ClaimLease{work_package_id: ^work_package_id, actor_display_name: owner} when is_binary(owner) and owner != "" -> {:ok, owner}
-      %ClaimLease{} -> {:error, :already_claimed}
-      nil -> {:error, :already_claimed}
+      %ClaimLease{work_package_id: ^work_package_id, actor_display_name: owner}
+      when is_binary(owner) and owner != "" ->
+        {:ok, owner}
+
+      %ClaimLease{} ->
+        {:error, :already_claimed}
+
+      nil ->
+        {:error, :already_claimed}
     end
   end
 
