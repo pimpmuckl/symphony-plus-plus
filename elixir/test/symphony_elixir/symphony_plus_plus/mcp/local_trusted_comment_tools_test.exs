@@ -292,6 +292,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.LocalTrustedCommentToolsTest do
 
     assert Map.has_key?(refresh_required_tools, "add_work_request_comment")
     assert Map.has_key?(refresh_required_tools, "record_work_request_operator_decision")
+    assert Map.has_key?(refresh_required_tools, "create_work_request")
     assert Map.has_key?(refresh_required_tools, "list_comments")
 
     refresh_required_response =

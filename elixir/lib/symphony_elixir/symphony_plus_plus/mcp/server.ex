@@ -88,6 +88,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @agent_text_mime_type "text/vnd.toon"
   @solo_tools ToolCatalog.solo_tools()
   @assignment_release_tool ToolCatalog.assignment_release_tool()
+  @bootstrap_tools ToolCatalog.bootstrap_tools()
   @local_operator_tools ToolCatalog.local_operator_tools()
   @local_trusted_work_request_read_tools [
     "list_work_requests",
@@ -1101,8 +1102,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "tool_sets" => %{
         "architect" => architect_session_tool_specs(),
         "claimable" => claimable_tool_specs(config),
-        "local_operator" => local_operator_tool_specs(),
-        "unbound" => unbound_tool_specs_for_config(config),
+        "local_operator" => LocalTrustedTools.tool_specs(config),
+        "unbound" => hide_trusted_local_tool_specs(unbound_tool_specs_for_config(config)),
         "worker" => worker_session_tool_specs()
       }
     }
@@ -1631,8 +1632,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp tool_specs_for_server(%__MODULE__{config: config, session: session} = server) do
     with {:ok, specs} <- tool_specs_for_session(config, session) do
-      {:ok, dedupe_tool_specs(specs ++ local_trusted_tool_specs(server))}
+      {:ok, dedupe_tool_specs(advertised_tool_specs(specs, server) ++ local_trusted_tool_specs(server))}
     end
+  end
+
+  defp advertised_tool_specs(specs, %__MODULE__{} = server) do
+    if local_trusted_tools_enabled?(server) do
+      specs
+    else
+      hide_trusted_local_tool_specs(specs)
+    end
+  end
+
+  defp hide_trusted_local_tool_specs(specs) do
+    Enum.reject(specs, &(&1["name"] in @bootstrap_tools))
   end
 
   defp dedupe_tool_specs(specs) do
@@ -1646,8 +1659,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       []
     end
   end
-
-  defp local_operator_tool_specs, do: ToolCatalog.local_operator_tool_specs()
 
   defp local_trusted_tools_enabled?(%__MODULE__{} = server), do: LocalTrustedTools.enabled?(server)
 
@@ -2964,20 +2975,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp authorize_bootstrap_tool_call(%__MODULE__{session: nil}, _tool), do: :ok
-
-  defp authorize_bootstrap_tool_call(%__MODULE__{} = server, tool) do
-    case authorize_trusted_local_tool_call(server, tool) do
-      :ok ->
-        :ok
-
-      {:error, -32_001, "Unauthorized", _data} ->
-        {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "bootstrap_tools_require_unbound_or_trusted_local_session"}}
-
-      error ->
-        error
-    end
-  end
+  defp authorize_bootstrap_tool_call(%__MODULE__{} = server, tool), do: authorize_trusted_local_tool_call(server, tool)
 
   defp authorize_local_trusted_work_request_read_tool_call(%__MODULE__{} = server, tool) do
     authorize_local_operator_tool_call(server, tool)
