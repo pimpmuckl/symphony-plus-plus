@@ -65,7 +65,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLifecycleDiagnosticTest do
     end
   end
 
-  test "lifecycle doctor reports stale runtime artifacts as unavailable without explicit source fallback" do
+  test "lifecycle doctor accepts matching-contract artifacts with stale source revision" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-doctor-artifact-filter")
 
@@ -113,10 +113,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLifecycleDiagnosticTest do
 
         assert status == 0, output
         report = Jason.decode!(output)
-        assert get_in(report, ["readiness", "workrequest_mcp", "status"]) == "runtime_artifact_unavailable"
+        assert get_in(report, ["readiness", "workrequest_mcp", "status"]) == "ready"
         runtime_artifact = get_in(report, ["readiness", "workrequest_mcp", "runtime_artifact"])
-        assert runtime_artifact["status"] == "artifact_missing"
-        assert runtime_artifact["detail"] == "matching_artifact_missing"
+        assert runtime_artifact["status"] == "artifact_selected"
+        assert runtime_artifact["detail"] == "download_required"
+
+        assert normalize_path_fragment(runtime_artifact["cache_root"]) =~
+                 "/#{String.slice(stale_revision, 0, 12)}/"
       after
         File.rm_rf!(temp_codex_home)
       end
@@ -285,7 +288,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLifecycleDiagnosticTest do
         assert get_in(report, ["readiness", "workrequest_mcp", "status"]) == "runtime_artifact_unavailable"
         runtime_artifact = get_in(report, ["readiness", "workrequest_mcp", "runtime_artifact"])
         assert runtime_artifact["status"] == "artifact_missing"
-        assert runtime_artifact["detail"] == "matching_artifact_missing"
+        assert runtime_artifact["detail"] == "contract_mismatch"
       after
         File.rm_rf!(temp_codex_home)
       end
@@ -411,7 +414,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLifecycleDiagnosticTest do
       |> maybe_put("source_revision", Keyword.get(opts, :source_revision))
       |> maybe_put_unless_omitted("mcp_contract_fingerprint", artifact_contract_fingerprint)
 
-    File.write!(Path.join(cache_root, ".sympp-runtime-artifacts.json"), Jason.encode!(%{"artifacts" => [artifact]}))
+    manifest =
+      %{
+        "plugin" => %{
+          "marketplace" => @plugin_marketplace_name,
+          "name" => "symphony-plus-plus-mcp",
+          "version" => @plugin_version,
+          "packages" => ["symphony-plus-plus", "symphony-plus-plus-mcp"]
+        },
+        "artifacts" => [artifact]
+      }
+
+    File.write!(Path.join(cache_root, ".sympp-runtime-artifacts.json"), Jason.encode!(manifest))
   end
 
   defp write_pinned_source_revision!(cache_root, revision) do

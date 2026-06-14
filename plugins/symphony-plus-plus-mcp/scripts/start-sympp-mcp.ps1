@@ -1775,7 +1775,7 @@ if (-not $artifactValidationLaunchable -and $sourceFallbackAllowed -and [string]
 if ($ValidateOnly) {
   $validationRuntimeMode = if ($artifactValidationLaunchable) { "artifact" } elseif ($sourceFallbackAllowed) { "source" } else { "blocked" }
   if ($validationRuntimeMode -eq "blocked") {
-    throw "Symphony++ MCP launcher validation failed: no verified runtime artifact is launchable and source fallback is unavailable."
+    throw "Symphony++ MCP launcher validation failed: no verified runtime artifact is launchable and source fallback is unavailable. artifactStatus=$($artifactProbe.status) artifactDetail=$($artifactProbe.detail)."
   }
 
   if ($sourceFallbackAllowed -and -not $artifactValidationLaunchable) {

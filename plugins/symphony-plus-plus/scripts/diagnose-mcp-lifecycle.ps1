@@ -2437,7 +2437,7 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     $companionPackage.runtime_artifact_source_fallback_allowed -eq $true
   $companionArtifactMissingBlocksLaunch = $companionArtifactStatus -eq "artifact_missing" -and
     ($companionArtifactDetail -ne "manifest_missing" -or -not $companionArtifactFallbackAllowed)
-  $companionArtifactSelectedBlocksLaunch = $companionArtifactStatus -eq "artifact_selected" -and -not $companionArtifactFallbackAllowed
+  $companionArtifactSelectedBlocksLaunch = $false
   $companionArtifactUnavailable =
     $companionArtifactStatus -in @("artifact_manifest_invalid", "artifact_verification_failed", "artifact_unavailable") -or
     $companionArtifactMissingBlocksLaunch -or
@@ -2500,7 +2500,7 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     $actions += New-SourceCheckoutAction "start_cockpit" "workrequest_mcp" "Start the local Symphony++ cockpit/HTTP MCP daemon." $SourceCheckout (New-CockpitCommand $sourceRoot)
     $actions += New-SourceCheckoutAction "verify_http_mcp" "workrequest_mcp" "Verify the local HTTP MCP daemon source revision independently of Codex plugin loading." $SourceCheckout (New-VerifyHttpMcpCommand $sourceRoot)
   } elseif (-not $companionSelectionBlocked -and $companionStatus -eq "runtime_artifact_unavailable") {
-    $actions += New-SourceCheckoutAction "refresh_mcp_companion_cache" "workrequest_mcp" "Refresh the opt-in MCP companion cache so its runtime artifact manifest matches the launcher revision and MCP contract." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($companionRefreshMarketplaceArg)-PluginName symphony-plus-plus-mcp -ValidateInstalledCache")
+    $actions += New-SourceCheckoutAction "refresh_mcp_companion_cache" "workrequest_mcp" "Refresh the opt-in MCP companion cache so its runtime artifact manifest matches the plugin version and MCP contract." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($companionRefreshMarketplaceArg)-PluginName symphony-plus-plus-mcp -ValidateInstalledCache")
   } elseif (-not $companionSelectionBlocked -and $companionStatus -eq "ready") {
     $actions += New-SourceCheckoutAction "verify_http_mcp" "workrequest_mcp" "Verify the local HTTP MCP daemon source revision independently of Codex plugin loading." $SourceCheckout (New-VerifyHttpMcpCommand $sourceRoot)
     $actions += New-ReadinessAction "verify_codex_session" "workrequest_mcp" "If the current Codex session still lacks symphony_plus_plus tools, restart or reload the dedicated MCP-enabled session; this doctor verifies config, cache, and daemon reachability, not the already-open model tool list."
