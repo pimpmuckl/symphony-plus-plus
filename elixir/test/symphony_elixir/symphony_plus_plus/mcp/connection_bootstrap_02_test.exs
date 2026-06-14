@@ -106,7 +106,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     for tool <- [
           "claim_local_assignment",
           "claim_local_architect_assignment",
-          "create_work_request",
           "solo_attach",
           "solo_list",
           "solo_record_task_plan",
@@ -126,6 +125,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
       assert Map.has_key?(unbound_tools_by_name, tool)
     end
 
+    refute Map.has_key?(unbound_tools_by_name, "create_work_request")
+
+    trusted_local_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "trusted-local-tools", "method" => "tools/list", "params" => %{}},
+        local_mcp_server(local_mcp_config(repo), "trusted-local-tools-state")
+      )
+
+    trusted_local_tools_by_name =
+      trusted_local_response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    assert Map.has_key?(trusted_local_tools_by_name, "create_work_request")
+
     for tool <- @architect_tool_names do
       assert Map.has_key?(unbound_tools_by_name, tool)
     end
@@ -142,20 +156,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     assert get_in(unbound_tools_by_name, ["release_current_assignment", "inputSchema", "properties", "reason", "type"]) == "string"
     assert get_in(unbound_tools_by_name, ["solo_append_progress", "inputSchema", "properties", "body", "description"]) =~ "Markdown"
 
-    assert get_in(unbound_tools_by_name, ["create_work_request", "inputSchema", "required"]) == [
+    assert get_in(trusted_local_tools_by_name, ["create_work_request", "inputSchema", "required"]) == [
              "repo",
              "base_branch",
              "title",
              "request_kind"
            ]
 
-    assert get_in(unbound_tools_by_name, ["create_work_request", "inputSchema", "then", "anyOf"]) == [
+    assert get_in(trusted_local_tools_by_name, ["create_work_request", "inputSchema", "then", "anyOf"]) == [
              %{"required" => ["description"]},
              %{"required" => ["human_description"]}
            ]
 
-    assert get_in(unbound_tools_by_name, ["create_work_request", "inputSchema", "properties", "description", "description"]) =~ "Markdown"
-    assert get_in(unbound_tools_by_name, ["create_work_request", "inputSchema", "properties", "human_description", "description"]) =~ "Markdown"
+    assert get_in(trusted_local_tools_by_name, ["create_work_request", "inputSchema", "properties", "description", "description"]) =~ "Markdown"
+    assert get_in(trusted_local_tools_by_name, ["create_work_request", "inputSchema", "properties", "human_description", "description"]) =~ "Markdown"
     assert get_in(unbound_tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
     assert get_in(unbound_tools_by_name, ["append_progress", "inputSchema", "required"]) == ["summary", "idempotency_key"]
 

@@ -22,8 +22,7 @@
       "solo_complete",
       "solo_archive",
       "claim_local_assignment",
-      "claim_local_architect_assignment",
-      "create_work_request"
+      "claim_local_architect_assignment"
     ],
     "unbound_schema_sets": {
       "architect_tools": [
@@ -95,6 +94,7 @@
       ]
     },
     "trusted_local_http_extra_tools": [
+      "create_work_request",
       "add_work_request_comment",
       "record_work_request_operator_decision"
     ],

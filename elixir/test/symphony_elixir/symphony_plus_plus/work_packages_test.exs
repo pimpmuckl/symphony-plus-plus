@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
   use ExUnit.Case, async: false
-
+  @moduletag :ci_slow
   alias Ecto.Adapters.SQL
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository

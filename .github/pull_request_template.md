@@ -19,4 +19,5 @@
 #### Test Plan
 
 - [ ] `make -C elixir all`
+- [ ] `make -C elixir ci-full` when release/full validation is required
 - [ ] <!-- Additional targeted checks (list below) -->

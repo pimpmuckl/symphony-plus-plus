@@ -105,9 +105,10 @@ defmodule SymphonyElixir.MixProject do
     [
       setup: ["deps.get"],
       build: ["escript.build"],
-      static: ["format --check-formatted", "lint", "dialyzer --format short"],
+      static: ["format --check-formatted", "lint"],
       "sympp.integration": ["test test/symphony_elixir/symphony_plus_plus/integration_harness_test.exs"],
-      lint: ["specs.check", "code_quality.guard", "credo --strict"]
+      lint: ["specs.check", "credo --strict"],
+      hygiene: ["code_quality.guard"]
     ]
   end
 
