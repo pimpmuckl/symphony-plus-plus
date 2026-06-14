@@ -126,12 +126,14 @@ export function BlockerDetailContent({
   loading,
   error,
   onClearWorkPackageBlocker,
+  canMutateOperatorActions,
 }: {
   selection: Extract<CardDetailSelection, { kind: "blocker" }>;
   detailPayload: WorkPackageDetailPayload | null;
   loading: boolean;
   error: string | null;
   onClearWorkPackageBlocker: WorkPackageBlockerClearMutation;
+  canMutateOperatorActions: boolean;
 }) {
   const [pending, setPending] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
@@ -193,14 +195,16 @@ export function BlockerDetailContent({
             ]}
           />
         </DetailSection>
-        <div className="flex flex-col items-start gap-2 border-t border-destructive/20 pt-4">
-          <Button type="button" size="sm" variant="destructive" onClick={() => void clearBlocker()} disabled={pending || !workPackageId || !blockerId}>
-            {pending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-            Clear
-          </Button>
-          {clearError ? <p className="text-xs text-destructive">{clearError}</p> : null}
-          {!workPackageId || !blockerId ? <p className="text-xs text-destructive">Blocker cannot be cleared because its package or blocker id is missing.</p> : null}
-        </div>
+        {canMutateOperatorActions ? (
+          <div className="flex flex-col items-start gap-2 border-t border-destructive/20 pt-4">
+            <Button type="button" size="sm" variant="destructive" onClick={() => void clearBlocker()} disabled={pending || !workPackageId || !blockerId}>
+              {pending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+              Clear
+            </Button>
+            {clearError ? <p className="text-xs text-destructive">{clearError}</p> : null}
+            {!workPackageId || !blockerId ? <p className="text-xs text-destructive">Blocker cannot be cleared because its package or blocker id is missing.</p> : null}
+          </div>
+        ) : null}
       </div>
     </>
   );
@@ -251,6 +255,7 @@ export function PackageDetailContent({
   error,
   onChangeWorkPackageState,
   onArchiveWorkPackage,
+  canMutateOperatorActions,
   linkedWorkPackageIds,
   onSubmitComment,
   onResolveComment,
@@ -262,6 +267,7 @@ export function PackageDetailContent({
   error: string | null;
   onChangeWorkPackageState: WorkPackageStateMutation;
   onArchiveWorkPackage: WorkPackageArchiveMutation;
+  canMutateOperatorActions: boolean;
   linkedWorkPackageIds: Set<string>;
   onSubmitComment: SubmitContextComment;
   onResolveComment: ResolveContextComment;
@@ -300,9 +306,9 @@ export function PackageDetailContent({
       })
     : "";
   const currentCommentStats = targetCommentStats(summary || pkg, detailPayload?.comments || [], packageComments);
-  const canMarkMerged = !isFinishedBoardStatus(operational?.key || pkg.status);
+  const canMarkMerged = canMutateOperatorActions && !isFinishedBoardStatus(operational?.key || pkg.status);
   const isLinkedPackage = linkedWorkPackageIds.has(pkg.id);
-  const canArchiveUnlinked = !isLinkedPackage && ["merged", "merged_into_phase", "closed"].includes(pkg.status || "");
+  const canArchiveUnlinked = canMutateOperatorActions && !isLinkedPackage && ["merged", "merged_into_phase", "closed"].includes(pkg.status || "");
   const canCloseWithEvidence = Boolean(isLinkedPackage && canMarkMerged);
   const stateActions: Array<{ value: WorkPackageStateAction; label: string }> = isLinkedPackage
     ? [

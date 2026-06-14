@@ -27,6 +27,7 @@ export function WorkstreamsPane({
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
+  canMutateOperatorActions,
   showWorkstreamContextBar,
   updateAnimations,
 }: {
@@ -38,6 +39,7 @@ export function WorkstreamsPane({
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
+  canMutateOperatorActions: boolean;
   showWorkstreamContextBar: boolean;
   updateAnimations: DashboardUpdateAnimations;
 }) {
@@ -83,6 +85,7 @@ export function WorkstreamsPane({
           onSelectGuidance={onSelectGuidance}
           onSelectCard={onSelectCard}
           onCopyArchitectHandoff={onCopyArchitectHandoff}
+          canMutateOperatorActions={canMutateOperatorActions}
           showWorkstreamContextBar={showWorkstreamContextBar}
           updateAnimations={updateAnimations}
         />

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
 
-import { blockerDetailWorkPackageId, scopedBlockerDetailPayload } from "./package-detail";
+import { Dialog } from "@/components/ui/dialog";
+import { BlockerDetailContent, blockerDetailWorkPackageId, scopedBlockerDetailPayload } from "./package-detail";
 import type { CardDetailSelection } from "./runtime";
 import type { WorkPackageDetailPayload } from "@/types/dashboard";
 
@@ -40,5 +42,39 @@ describe("package detail blocker modal", () => {
     };
 
     expect(blockerDetailWorkPackageId(selection, null)).toBeNull();
+  });
+
+  it("hides blocker clearing outside local operator mode", () => {
+    const selection: Extract<CardDetailSelection, { kind: "blocker" }> = {
+      kind: "blocker",
+      pkg: { id: "pkg-selected", title: "Selected package", status: "blocked" },
+      blocker: {
+        id: "edge-selected",
+        blocker_id: "scope-blocker",
+        from: { kind: "work_package", id: "pkg-source" },
+        to: { kind: "work_package", id: "pkg-selected" },
+        summary: "Selected blocker",
+        body: "Selected body",
+        work_package_id: "pkg-selected",
+      },
+    };
+    const content = (canMutateOperatorActions: boolean) => (
+      <Dialog open>
+        <BlockerDetailContent
+          selection={selection}
+          detailPayload={null}
+          loading={false}
+          error={null}
+          onClearWorkPackageBlocker={async () => undefined}
+          canMutateOperatorActions={canMutateOperatorActions}
+        />
+      </Dialog>
+    );
+
+    const readOnlyMarkup = renderToStaticMarkup(content(false));
+    const operatorMarkup = renderToStaticMarkup(content(true));
+
+    expect(readOnlyMarkup).not.toContain(">Clear<");
+    expect(operatorMarkup).toContain(">Clear<");
   });
 });

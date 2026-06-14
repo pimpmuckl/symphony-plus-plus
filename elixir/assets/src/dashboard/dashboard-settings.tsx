@@ -174,6 +174,7 @@ function RetentionCutoffSetting({
 
 export function DashboardSettingsDialog({
   archiveAfterDays,
+  canUpdateRetentionSettings,
   hideEmptyWorkstreams,
   hiddenWorkstreamCount,
   showWorkstreamContextBar,
@@ -184,6 +185,7 @@ export function DashboardSettingsDialog({
   onShowWorkstreamContextBarChange,
 }: {
   archiveAfterDays: number;
+  canUpdateRetentionSettings: boolean;
   hideEmptyWorkstreams: boolean;
   hiddenWorkstreamCount: number;
   showWorkstreamContextBar: boolean;
@@ -236,37 +238,41 @@ export function DashboardSettingsDialog({
           </DialogHeader>
 
           <div ref={initialFocusRef} tabIndex={-1} className="grid gap-3 outline-none">
-            <RetentionCutoffSetting
-              description={`Delivered WorkRequests and inactive Solo Sessions archive after ${archiveAfterDays} days.`}
-              inputLabel="Archive cutoff days"
-              label="Archive cutoff"
-              value={archiveAfterDays}
-              onSave={onArchiveAfterDaysChange}
+            {canUpdateRetentionSettings ? (
+              <>
+                <RetentionCutoffSetting
+                  description={`Delivered WorkRequests and inactive Solo Sessions archive after ${archiveAfterDays} days.`}
+                  inputLabel="Archive cutoff days"
+                  label="Archive cutoff"
+                  value={archiveAfterDays}
+                  onSave={onArchiveAfterDaysChange}
+                />
+                <RetentionCutoffSetting
+                  description={`Archived Solo Sessions delete after ${soloSessionDeleteAfterDays} days.`}
+                  inputLabel="Deletion cutoff days"
+                  label="Deletion cutoff"
+                  value={soloSessionDeleteAfterDays}
+                  onSave={onSoloSessionDeleteAfterDaysChange}
+                />
+              </>
+            ) : null}
+
+            <SettingsSwitch
+              ariaLabel="Hide empty repositories"
+              checked={hideEmptyWorkstreams}
+              description={visibilityLabel}
+              label="Hide empty repositories"
+              onChange={onHideEmptyWorkstreamsChange}
             />
-            <RetentionCutoffSetting
-              description={`Archived Solo Sessions delete after ${soloSessionDeleteAfterDays} days.`}
-              inputLabel="Deletion cutoff days"
-              label="Deletion cutoff"
-              value={soloSessionDeleteAfterDays}
-              onSave={onSoloSessionDeleteAfterDaysChange}
+
+            <SettingsSwitch
+              ariaLabel="Show board context bar"
+              checked={showWorkstreamContextBar}
+              description={contextBarLabel}
+              label="Board context bar"
+              onChange={onShowWorkstreamContextBarChange}
             />
           </div>
-
-          <SettingsSwitch
-            ariaLabel="Hide empty repositories"
-            checked={hideEmptyWorkstreams}
-            description={visibilityLabel}
-            label="Hide empty repositories"
-            onChange={onHideEmptyWorkstreamsChange}
-          />
-
-          <SettingsSwitch
-            ariaLabel="Show board context bar"
-            checked={showWorkstreamContextBar}
-            description={contextBarLabel}
-            label="Board context bar"
-            onChange={onShowWorkstreamContextBarChange}
-          />
         </DialogContent>
       </Dialog>
     </>
@@ -278,7 +284,15 @@ function workstreamHiddenSummary(hiddenWorkstreamCount: number) {
   return hiddenWorkstreamCount === 1 ? "1 empty repo hidden" : `${hiddenWorkstreamCount} empty repos hidden`;
 }
 
-export function ArchivedRequestsDialog({ requests, onRestoreWorkRequest }: { requests: WorkRequestCard[]; onRestoreWorkRequest: WorkRequestMutation }) {
+export function ArchivedRequestsDialog({
+  canRestoreWorkRequest,
+  requests,
+  onRestoreWorkRequest,
+}: {
+  canRestoreWorkRequest: boolean;
+  requests: WorkRequestCard[];
+  onRestoreWorkRequest: WorkRequestMutation;
+}) {
   const [open, setOpen] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -349,16 +363,18 @@ export function ArchivedRequestsDialog({ requests, onRestoreWorkRequest }: { req
                         {repoDisplayName(request)} / {request.base_branch || "main"} / archived {detailDate(request.archived_at)}
                       </span>
                     </div>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={pendingId === request.id}
-                      onClick={() => void restoreRequest(request.id)}
-                    >
-                      {pendingId === request.id ? <Loader2 className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
-                      Restore
-                    </Button>
+                    {canRestoreWorkRequest ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={pendingId === request.id}
+                        onClick={() => void restoreRequest(request.id)}
+                      >
+                        {pendingId === request.id ? <Loader2 className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
+                        Restore
+                      </Button>
+                    ) : null}
                   </div>
                 ))}
               </div>

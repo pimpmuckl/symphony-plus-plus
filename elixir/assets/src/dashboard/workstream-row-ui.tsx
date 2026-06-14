@@ -139,6 +139,7 @@ export function RequestHeaderActions({
   progressLabel,
   onSelectCard,
   onCopyArchitectHandoff,
+  canMutateOperatorActions,
 }: {
   detail: WorkRequestDetail;
   progress: number;
@@ -147,12 +148,13 @@ export function RequestHeaderActions({
   progressLabel: string;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
+  canMutateOperatorActions: boolean;
 }) {
   const [copying, setCopying] = useState(false);
   const [copyToastVisible, setCopyToastVisible] = useState(false);
   const copyToastTimerRef = useRef<number | null>(null);
   const request = detail.work_request;
-  const canCopyHandoff = architectHandoffEligibleRequest(request);
+  const canCopyHandoff = canMutateOperatorActions && architectHandoffEligibleRequest(request);
   const showCopyToast = useCallback(() => {
     if (copyToastTimerRef.current !== null) {
       window.clearTimeout(copyToastTimerRef.current);

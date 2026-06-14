@@ -42,6 +42,7 @@ export function DashboardShell({
   hiddenWorkstreamCount,
   linkedWorkPackageIds,
   loading,
+  canMutateOperatorActions,
   onArchiveWorkPackage,
   onArchiveWorkRequest,
   onClearWorkPackageBlocker,
@@ -86,6 +87,7 @@ export function DashboardShell({
   hiddenWorkstreamCount: number;
   linkedWorkPackageIds: Set<string>;
   loading: boolean;
+  canMutateOperatorActions: boolean;
   onArchiveWorkPackage: WorkPackageArchiveMutation;
   onArchiveWorkRequest: WorkRequestMutation;
   onClearWorkPackageBlocker: WorkPackageBlockerClearMutation;
@@ -149,6 +151,7 @@ export function DashboardShell({
               <ThemeToggle theme={theme} onToggle={toggleTheme} />
               <DashboardSettingsDialog
                 archiveAfterDays={archiveAfterDays}
+                canUpdateRetentionSettings={canMutateOperatorActions}
                 soloSessionDeleteAfterDays={soloSessionDeleteAfterDays}
                 hideEmptyWorkstreams={hideEmptyWorkstreams}
                 hiddenWorkstreamCount={hiddenWorkstreamCount}
@@ -158,19 +161,21 @@ export function DashboardShell({
                 onHideEmptyWorkstreamsChange={onHideEmptyWorkstreamsChange}
                 onShowWorkstreamContextBarChange={onShowWorkstreamContextBarChange}
               />
-              <ArchivedRequestsDialog requests={archivedRequests} onRestoreWorkRequest={onRestoreWorkRequest} />
+              <ArchivedRequestsDialog canRestoreWorkRequest={canMutateOperatorActions} requests={archivedRequests} onRestoreWorkRequest={onRestoreWorkRequest} />
               <Button variant="outline" size="sm" onClick={() => void onRefreshDashboard()} disabled={refreshing} className="button-lift">
                 {refreshing ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                 Refresh
               </Button>
-              <NewRequestDialog
-                canCopyArchitectHandoff={architectHandoffEligibleRequest}
-                onCopyArchitectHandoff={copyArchitectHandoff}
-                onCreateRequest={createWorkRequest}
-                open={dialogState.newRequestOpen}
-                onOpenChange={onSetNewRequestOpen}
-                repos={repos}
-              />
+              {canMutateOperatorActions ? (
+                <NewRequestDialog
+                  canCopyArchitectHandoff={architectHandoffEligibleRequest}
+                  onCopyArchitectHandoff={copyArchitectHandoff}
+                  onCreateRequest={createWorkRequest}
+                  open={dialogState.newRequestOpen}
+                  onOpenChange={onSetNewRequestOpen}
+                  repos={repos}
+                />
+              ) : null}
             </div>
           </div>
         </header>
@@ -235,6 +240,7 @@ export function DashboardShell({
         </div>
 
         <GuidanceDialog
+          canSubmitAnswer={canMutateOperatorActions}
           item={dialogState.selectedGuidance}
           onOpenChange={(open) => {
             if (!open) onSelectGuidance(null);
@@ -253,6 +259,7 @@ export function DashboardShell({
           onChangeWorkPackageState={changeWorkPackageState}
           onArchiveWorkPackage={onArchiveWorkPackage}
           onClearWorkPackageBlocker={onClearWorkPackageBlocker}
+          canMutateOperatorActions={canMutateOperatorActions}
           linkedWorkPackageIds={linkedWorkPackageIds}
           onSubmitComment={onSubmitComment}
           onResolveComment={onResolveComment}

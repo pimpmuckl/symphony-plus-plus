@@ -24,6 +24,7 @@ export function RequestDetailContent({
   onCopyArchitectHandoff,
   onArchiveWorkRequest,
   onChangeWorkRequestState,
+  canMutateOperatorActions,
   onSubmitComment,
   onResolveComment,
   canMutateComments,
@@ -33,6 +34,7 @@ export function RequestDetailContent({
   onCopyArchitectHandoff: CopyArchitectHandoff;
   onArchiveWorkRequest: WorkRequestMutation;
   onChangeWorkRequestState: WorkRequestStateMutation;
+  canMutateOperatorActions: boolean;
   onSubmitComment: SubmitContextComment;
   onResolveComment: ResolveContextComment;
   canMutateComments: boolean;
@@ -50,11 +52,11 @@ export function RequestDetailContent({
   const sliceCounts = requestSliceCounts(detail);
   const currentCommentStats = requestCommentStats(detail, requestComments);
   const requestOnlyCommentStats = commentStats(requestComments);
-  const handoffEligible = !detailFinished && architectHandoffEligibleRequest(request);
+  const handoffEligible = canMutateOperatorActions && !detailFinished && architectHandoffEligibleRequest(request);
   const handoffHasOpenQuestions = (openQuestions.length || request.open_question_count || 0) > 0;
   const handoffIdentity = `${handoffHasOpenQuestions}:${request.id}:${request.status || ""}:${request.updated_at || ""}`;
-  const canManualArchive = canArchiveWorkRequest(request);
-  const canMarkDelivered = !detailFinished;
+  const canManualArchive = canMutateOperatorActions && canArchiveWorkRequest(request);
+  const canMarkDelivered = canMutateOperatorActions && !detailFinished;
   const {
     cachedHandoff,
     error: handoffError,

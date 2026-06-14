@@ -22,6 +22,7 @@ export function RepoWorkstream({
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
+  canMutateOperatorActions,
   showWorkstreamContextBar,
   updateAnimations,
 }: {
@@ -32,6 +33,7 @@ export function RepoWorkstream({
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
+  canMutateOperatorActions: boolean;
   showWorkstreamContextBar: boolean;
   updateAnimations: DashboardUpdateAnimations;
 }) {
@@ -137,6 +139,7 @@ export function RepoWorkstream({
               onSelectGuidance={onSelectGuidance}
               onSelectCard={onSelectCard}
               onCopyArchitectHandoff={onCopyArchitectHandoff}
+              canMutateOperatorActions={canMutateOperatorActions}
               expandedFinishedRequests={expandedFinishedRequests}
               finishedRequestScopeKey={stateKey}
               onSetFinishedRequestChildrenOpen={setFinishedRequestChildrenOpen}

@@ -48,6 +48,7 @@ export function WorkstreamBoard({
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
+  canMutateOperatorActions,
   expandedFinishedRequests,
   finishedRequestScopeKey,
   onSetFinishedRequestChildrenOpen,
@@ -63,6 +64,7 @@ export function WorkstreamBoard({
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
+  canMutateOperatorActions: boolean;
   expandedFinishedRequests: Record<string, boolean>;
   finishedRequestScopeKey: string;
   onSetFinishedRequestChildrenOpen: (workRequestId: string, open: boolean) => void;
@@ -100,6 +102,7 @@ export function WorkstreamBoard({
               onSelectGuidance={onSelectGuidance}
               onSelectCard={onSelectCard}
               onCopyArchitectHandoff={onCopyArchitectHandoff}
+              canMutateOperatorActions={canMutateOperatorActions}
               updateAnimations={updateAnimations}
             />
           );
@@ -145,6 +148,7 @@ function ProductRequestRow({
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
+  canMutateOperatorActions,
   updateAnimations,
 }: {
   detail: WorkRequestDetail;
@@ -160,6 +164,7 @@ function ProductRequestRow({
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
+  canMutateOperatorActions: boolean;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const request = detail.work_request;
@@ -210,6 +215,7 @@ function ProductRequestRow({
           progressLabel={requestLabel}
           onSelectCard={onSelectCard}
           onCopyArchitectHandoff={onCopyArchitectHandoff}
+          canMutateOperatorActions={canMutateOperatorActions}
         />
         <button type="button" className="v3-request-main" aria-expanded={expanded} onClick={() => onSetOpen(!expanded)}>
           <span className="v3-request-title-group">

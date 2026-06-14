@@ -16,7 +16,7 @@ import {
 } from "./dashboard-data";
 import { appDialogReducer, appStateReducer, createInitialAppState, initialAppDialogState } from "./dashboard-state";
 import { applyDashboardTheme, repoWorkstreamHasWorkItems, shouldShowUpdateSimulationControls, writeDashboardUiStateValue, writeStoredTheme } from "./dashboard-persistence";
-import { canMutateDashboardComments } from "./detail-utils";
+import { canMutateDashboardComments, canMutateDashboardOperatorActions } from "./detail-utils";
 import { packageSelectionIndex, requestDetailsByRepoKey } from "./workstream-data";
 import { useDashboardUpdateAnimations } from "./update-animations";
 
@@ -32,6 +32,7 @@ function useDashboardController() {
   const [connectionIssue, setConnectionIssue] = useState<DashboardConnectionIssue | null>(null);
   const showUpdateSimulationControls = useMemo(() => shouldShowUpdateSimulationControls(), []);
   const [runtimeConfig, setRuntimeConfig] = useState<DashboardRuntimeConfig | undefined>(() => dashboardRuntimeConfig);
+  const canMutateOperatorActions = canMutateDashboardOperatorActions(runtimeConfig);
   const dashboardRef = useRef<DashboardPayload | null>(dashboard);
   const initialDashboardFingerprint = useMemo(() => dashboardContentFingerprint(dashboard), [dashboard]);
   const dashboardFingerprintRef = useRef(initialDashboardFingerprint);
@@ -422,7 +423,7 @@ function useDashboardController() {
       }
 
       const now = Date.now();
-      if (now - lastPrSyncAtRef.current >= PR_SYNC_INTERVAL_MS) {
+      if (canMutateOperatorActions && now - lastPrSyncAtRef.current >= PR_SYNC_INTERVAL_MS) {
         lastPrSyncAtRef.current = now;
         void syncPullRequests();
       } else {
@@ -431,7 +432,7 @@ function useDashboardController() {
     }, DASHBOARD_POLL_INTERVAL_MS);
 
     return () => window.clearInterval(interval);
-  }, [loadDashboard, syncPullRequests]);
+  }, [canMutateOperatorActions, loadDashboard, syncPullRequests]);
 
   useEffect(() => {
     writeDashboardUiStateValue("workspaceTab", workspaceTab);
@@ -500,6 +501,7 @@ function useDashboardController() {
           onSelectGuidance={setSelectedGuidance}
           onSelectCard={setSelectedCardDetail}
           onCopyArchitectHandoff={copyArchitectHandoff}
+          canMutateOperatorActions={canMutateOperatorActions}
           showWorkstreamContextBar={showWorkstreamContextBar}
           updateAnimations={updateAnimations}
         />
@@ -508,6 +510,7 @@ function useDashboardController() {
     }),
     [
       copyArchitectHandoff,
+      canMutateOperatorActions,
       dashboard?.active_blocking_edges,
       guidanceItems,
       hiddenWorkstreamCount,
@@ -526,6 +529,7 @@ function useDashboardController() {
     archivedRequests,
     blockerItems,
     canMutateComments: canMutateDashboardComments(runtimeConfig),
+    canMutateOperatorActions,
     changeWorkPackageState,
     changeWorkRequestState,
     connectionIssue,

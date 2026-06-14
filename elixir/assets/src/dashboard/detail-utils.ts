@@ -93,8 +93,12 @@ export function requestCommentStats(detail: WorkRequestDetail, requestComments: 
   };
 }
 
-export function canMutateDashboardComments(config?: DashboardRuntimeConfig) {
+export function canMutateDashboardOperatorActions(config?: DashboardRuntimeConfig) {
   return config?.operatorMode === true;
+}
+
+export function canMutateDashboardComments(config?: DashboardRuntimeConfig) {
+  return canMutateDashboardOperatorActions(config);
 }
 
 export function requestProgressText(detail: WorkRequestDetail) {
