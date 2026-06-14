@@ -25,8 +25,10 @@ This plugin intentionally bundles:
   reports the same exact `source_revision` as the launcher-resolved commit,
   starts a new managed runtime for a new commit, and lets older managed
   runtimes drain until their bridge leases exit. The launcher installs
-  dashboard npm dependencies into the selected source tree when Vite is missing,
+  dashboard npm dependencies into the selected source tree when Vite is needed,
   then bridges Codex stdio MCP traffic into the backend HTTP `/mcp` endpoint.
+  Installed artifact runtimes serve the packaged dashboard from the backend
+  origin by default.
 - The same `assets/splusplus-logo.png` icon used by the default Symphony++ plugin.
 - `assets/sympp-runtime-artifacts.json`, a stable release-channel pointer for
   prebuilt installed-runtime artifacts.
@@ -95,10 +97,12 @@ incompatible MCP contract, the launcher starts a new managed runtime and records
 new leases against that runtime key. When the last bridge lease for a runtime
 key exits, the launcher stops only managed backend/frontend PIDs for that key
 that it can still verify as Symphony++ processes. A healthy default-port
-backend/dashboard pair on
-`127.0.0.1:19998` and `127.0.0.1:19999` that reports the same agent-facing MCP
-contract fingerprint as the launcher is recorded as `external_loopback` when it
-was not started by the bridge. The source revision remains in health and
+backend on `127.0.0.1:19998` that reports the same agent-facing MCP contract
+fingerprint as the launcher is recorded as `external_loopback` when it was not
+started by the bridge. In artifact mode, the dashboard URL is normally
+`http://127.0.0.1:19998/sympp/board`; a separate `19999` listener is only
+expected for explicit source/Vite dashboard runs or a custom
+`SYMPP_DASHBOARD_ORIGIN`. The source revision remains in health and
 runtime-state diagnostics, but it is not the reuse boundary when the MCP
 contract is compatible. That mode is intentionally attach-only: bridge exits
 must not stop the backend or dashboard, but later launches may reuse it quickly

@@ -4715,6 +4715,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
           |> ReactDashboardController.index(%{})
 
         assert html_response(shell_conn, 200) =~ "operatorMode"
+        refute html_response(shell_conn, 200) =~ "csrfToken"
         refute SymppDashboardApiController.local_operator_session?(shell_conn.private.plug_session)
 
         conn =
@@ -5814,7 +5815,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       assert html =~ "window.SYMPP_DASHBOARD_CONFIG"
       assert html =~ ~s("apiBase":"/app/api/v1/sympp/operator")
       assert html =~ ~s("logoUrl":"/app/splusplus-logo.png")
-      assert html =~ ~s("csrfToken":)
+      refute html =~ ~s("csrfToken":)
     end)
   end
 

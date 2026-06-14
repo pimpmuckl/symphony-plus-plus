@@ -32,9 +32,12 @@ The helper inventories `19998`, `19999`, and `20000-20120`, shows the exact S++
 launcher/cockpit/Vite PIDs it would stop, leaves unrelated listeners alone,
 checks whether the installed plugin cache matches the marketplace snapshot,
 runs `codex plugin marketplace upgrade`, validates the installed MCP launcher,
-starts the singleton backend/dashboard from the marketplace cache on
-`19998/19999`, refreshes contract-keyed runtime state, runs the MCP HTTP smoke,
-checks the dashboard route, and prints both stopped and left-running PIDs.
+starts the singleton backend/dashboard from the marketplace cache, refreshes
+contract-keyed runtime state, runs the MCP HTTP smoke, checks the dashboard
+route, and prints both stopped and left-running PIDs. Installed artifact
+runtimes normally serve both MCP and the packaged dashboard from `19998`;
+`19999` is only expected for explicit source/Vite dashboard runs or custom
+dashboard-origin setups.
 
 If `codex plugin marketplace upgrade` cannot move the old installed cache out
 of the way, the helper can still recover when the marketplace source snapshot is

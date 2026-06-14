@@ -46,7 +46,7 @@ runtime.
 Open the dashboard at:
 
 ```text
-http://127.0.0.1:19999/sympp/board
+http://127.0.0.1:19998/sympp/board
 ```
 
 The MCP endpoint is:
@@ -54,6 +54,10 @@ The MCP endpoint is:
 ```text
 http://127.0.0.1:19998/mcp
 ```
+
+Installed artifact runtimes serve the packaged dashboard from the backend on
+`19998`. A separate `19999` dashboard listener is only expected for explicit
+source/Vite development runs or custom `SYMPP_DASHBOARD_ORIGIN` setups.
 
 If the default ports are busy, the launcher records the actual URLs here:
 

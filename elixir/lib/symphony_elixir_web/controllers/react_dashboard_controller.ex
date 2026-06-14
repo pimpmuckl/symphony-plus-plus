@@ -75,17 +75,26 @@ defmodule SymphonyElixirWeb.ReactDashboardController do
   end
 
   defp inject_dashboard_config(body, conn) do
-    config = %{
-      "apiBase" => prefixed_path(conn, "/api/v1/sympp/operator"),
-      "basePath" => script_name_prefix(conn),
-      "csrfToken" => Plug.CSRFProtection.get_csrf_token(),
-      "logoUrl" => prefixed_path(conn, "/splusplus-logo.png"),
-      "operatorMode" => SymppDashboardApiController.local_operator_browser?(conn)
-    }
+    config =
+      %{
+        "apiBase" => prefixed_path(conn, "/api/v1/sympp/operator"),
+        "basePath" => script_name_prefix(conn),
+        "logoUrl" => prefixed_path(conn, "/splusplus-logo.png"),
+        "operatorMode" => SymppDashboardApiController.local_operator_browser?(conn)
+      }
+      |> maybe_put_operator_csrf_token(conn)
 
     script = ~s(<script>window.SYMPP_DASHBOARD_CONFIG = #{Jason.encode!(config)};</script>)
 
     String.replace(body, "</head>", "    #{script}\n  </head>", global: false)
+  end
+
+  defp maybe_put_operator_csrf_token(config, conn) do
+    if SymppDashboardApiController.local_operator_session?(conn.private.plug_session) do
+      Map.put(config, "csrfToken", Plug.CSRFProtection.get_csrf_token())
+    else
+      config
+    end
   end
 
   defp prefixed_path(%Conn{} = conn, path) when is_binary(path) do
