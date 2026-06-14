@@ -11,7 +11,21 @@ install state.
 
 ## Install
 
-Point a Codex marketplace entry at this directory:
+For normal use, install and update Symphony++ through the Codex marketplace:
+
+```powershell
+codex plugin marketplace add https://github.com/Pimpmuckl/symphony-plus-plus --ref main
+codex plugin marketplace upgrade
+```
+
+Then install the default skill-only plugin with the active marketplace name:
+
+```powershell
+codex plugin add symphony-plus-plus@symphony-plus-plus
+```
+
+Do not point an installed plugin at a developer checkout or worktree. Use the
+local source path below only for isolated plugin development:
 
 ```json
 {
@@ -32,24 +46,8 @@ The committed repo marketplace at `.agents/plugins/marketplace.json` uses the
 repo-root-relative source path `./plugins/symphony-plus-plus` for the default
 skill-only plugin and also exposes the opt-in MCP companion at
 `./plugins/symphony-plus-plus-mcp`.
-
-Then enable the plugin with the active marketplace name:
-
-```toml
-[plugins."symphony-plus-plus@symphony-plus-plus"]
-enabled = true
-```
-
-For normal installed use, update the Codex-managed marketplace and let Codex
-install the package from that snapshot:
-
-```powershell
-codex plugin marketplace upgrade
-```
-
-Do not point the installed plugin at a developer checkout or worktree. The
-local refresh helper is for isolated development Codex homes only; it refuses
-the default `~/.codex` cache unless explicitly overridden.
+The local refresh helper is for isolated development Codex homes only; it
+refuses the default `~/.codex` cache unless explicitly overridden.
 
 To inspect installed cache readiness, use the lifecycle doctor from the
 installed package or a source checkout:
@@ -232,24 +230,18 @@ Use `-Doctor` when the operator symptom is "I see the Symphony++ skill but no
 separates default Solo Session readiness from WorkRequest MCP readiness. The
 common healthy-default/missing-tools state is
 `solo_ready_mcp_companion_not_enabled`: the skill-only
-`symphony-plus-plus@<marketplace>` plugin is enabled, the
-`symphony-plus-plus-mcp@<marketplace>` companion is installed, but that
-companion is not enabled for the current Codex config/session. The next action
-is to run the explicit enable command against the dedicated S++ MCP Codex home:
+`symphony-plus-plus@<marketplace>` plugin is installed, but the
+`symphony-plus-plus-mcp@<marketplace>` companion is not installed for the
+current Codex session. The next action is to install the companion from the
+dedicated S++ MCP Codex home:
 
 ```powershell
-.\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName symphony-plus-plus -EnableMcpCompanion
+codex plugin add symphony-plus-plus-mcp@symphony-plus-plus
 ```
 
-That command validates the installed companion cache and manifest, writes only
-the `[plugins."symphony-plus-plus-mcp@<marketplace>"] enabled = true` table in
-the selected `config.toml`, and creates a timestamped
-`config.toml.sympp-backup-*` backup before changing an existing config. It does
-not write `[mcp_servers.*]`, generic worker profiles, review-suite config, or
-unrelated plugin entries. It refuses the default `~/.codex` home; pass the
-dedicated Codex home used only for S++ MCP sessions. After it succeeds, restart
-or reload that dedicated session and keep generic workers, review-suite lanes,
-and `codex review` on the clean skill-only default.
+After it succeeds, restart or reload that dedicated session and keep generic
+workers, review-suite lanes, and `codex review` on the clean skill-only
+default.
 The doctor verifies marketplace/cache/config plus local HTTP daemon readiness. It
 cannot inspect the tool list already registered inside an open Codex model
 session, so after config/cache changes the final repair step is always to

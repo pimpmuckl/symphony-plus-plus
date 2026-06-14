@@ -53,21 +53,11 @@ directory instead of streaming through every MCP call.
 
 ## Activation
 
-Enable this package only in the config/Codex home used for dedicated
-Symphony++ WorkRequest or WorkPackage sessions:
+Install this package only from the Codex home used for dedicated Symphony++
+WorkRequest or WorkPackage sessions:
 
 ```powershell
-.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName symphony-plus-plus -EnableMcpCompanion
-```
-
-The command validates that the installed companion package carries the expected
-command-backed MCP manifest, creates a timestamped backup before changing an existing
-`config.toml`, refuses the default `~/.codex` home, and writes only the
-companion plugin table:
-
-```toml
-[plugins."symphony-plus-plus-mcp@symphony-plus-plus"]
-enabled = true
+codex plugin add symphony-plus-plus-mcp@symphony-plus-plus
 ```
 
 Then restart or reload that dedicated Codex session. Plugin MCP tools are
