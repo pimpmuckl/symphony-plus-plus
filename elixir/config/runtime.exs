@@ -40,7 +40,7 @@ if config_env() == :prod do
     config :symphony_elixir, :workflow_file_path, Path.expand(workflow_file)
     config :symphony_elixir, :log_file, Path.join(Path.expand(logs_root), "log/symphony.log")
     config :symphony_elixir, :server_port_override, parse_port!.("SYMPP_BACKEND_PORT")
-    config :symphony_elixir, SymphonyElixirWeb.Endpoint, server: true
+    config :symphony_elixir, SymphonyElixirWeb.Endpoint, server: true, sympp_local_operator: true
   else
     case System.get_env("SYMPP_BACKEND_PORT") do
       nil ->
