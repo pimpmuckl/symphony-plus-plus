@@ -85,10 +85,12 @@ function initialGuidanceDialogStateWithChoice(selectedChoice: string): GuidanceD
 }
 
 export function GuidanceDialog({
+  canSubmitAnswer,
   item,
   onOpenChange,
   onSubmitAnswer,
 }: {
+  canSubmitAnswer: boolean;
   item: GuidanceItem | null;
   onOpenChange: (open: boolean) => void;
   onSubmitAnswer: (item: GuidanceItem, submission: GuidanceAnswerSubmission) => Promise<void>;
@@ -96,17 +98,27 @@ export function GuidanceDialog({
   return (
     <Dialog open={Boolean(item)} onOpenChange={onOpenChange}>
       <DialogContent className="dashboard-dialog-content">
-        {item ? <GuidanceDialogBody key={guidanceDialogStateKey(item)} item={item} onOpenChange={onOpenChange} onSubmitAnswer={onSubmitAnswer} /> : null}
+        {item ? (
+          <GuidanceDialogBody
+            key={guidanceDialogStateKey(item)}
+            canSubmitAnswer={canSubmitAnswer}
+            item={item}
+            onOpenChange={onOpenChange}
+            onSubmitAnswer={onSubmitAnswer}
+          />
+        ) : null}
       </DialogContent>
     </Dialog>
   );
 }
 
-function GuidanceDialogBody({
+export function GuidanceDialogBody({
+  canSubmitAnswer,
   item,
   onOpenChange,
   onSubmitAnswer,
 }: {
+  canSubmitAnswer: boolean;
   item: GuidanceItem;
   onOpenChange: (open: boolean) => void;
   onSubmitAnswer: (item: GuidanceItem, submission: GuidanceAnswerSubmission) => Promise<void>;
@@ -251,12 +263,20 @@ function GuidanceDialogBody({
         <Button variant="outline" onClick={() => onOpenChange(false)}>
           Cancel
         </Button>
-        <Button onClick={submitAnswer} disabled={state.submitting || (state.selectedChoice === CUSTOM_CHOICE && !state.notes[state.selectedChoice]?.trim())}>
-          {state.submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-          Answer
-        </Button>
+        <GuidanceSubmitButton canSubmitAnswer={canSubmitAnswer} state={state} onSubmit={submitAnswer} />
       </DialogFooter>
     </>
+  );
+}
+
+function GuidanceSubmitButton({ canSubmitAnswer, state, onSubmit }: { canSubmitAnswer: boolean; state: GuidanceDialogState; onSubmit: () => void }) {
+  if (!canSubmitAnswer) return null;
+
+  return (
+    <Button onClick={onSubmit} disabled={state.submitting || (state.selectedChoice === CUSTOM_CHOICE && !state.notes[state.selectedChoice]?.trim())}>
+      {state.submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+      Answer
+    </Button>
   );
 }
 

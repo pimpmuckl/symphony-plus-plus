@@ -95,6 +95,7 @@ export function CardDetailDialog({
   onChangeWorkPackageState,
   onArchiveWorkPackage,
   onClearWorkPackageBlocker,
+  canMutateOperatorActions,
   linkedWorkPackageIds,
   onSubmitComment,
   onResolveComment,
@@ -109,6 +110,7 @@ export function CardDetailDialog({
   onChangeWorkPackageState: WorkPackageStateMutation;
   onArchiveWorkPackage: WorkPackageArchiveMutation;
   onClearWorkPackageBlocker: WorkPackageBlockerClearMutation;
+  canMutateOperatorActions: boolean;
   linkedWorkPackageIds: Set<string>;
   onSubmitComment: SubmitContextComment;
   onResolveComment: ResolveContextComment;
@@ -253,6 +255,7 @@ export function CardDetailDialog({
               onChangeWorkPackageState={onChangeWorkPackageState}
               onArchiveWorkPackage={onArchiveWorkPackage}
               onClearWorkPackageBlocker={onClearWorkPackageBlocker}
+              canMutateOperatorActions={canMutateOperatorActions}
               linkedWorkPackageIds={linkedWorkPackageIds}
               onSubmitComment={onSubmitComment}
               onResolveComment={onResolveComment}
@@ -275,6 +278,7 @@ function CardDetailReadyContent({
   onChangeWorkPackageState,
   onArchiveWorkPackage,
   onClearWorkPackageBlocker,
+  canMutateOperatorActions,
   linkedWorkPackageIds,
   onSubmitComment,
   onResolveComment,
@@ -289,6 +293,7 @@ function CardDetailReadyContent({
   onChangeWorkPackageState: WorkPackageStateMutation;
   onArchiveWorkPackage: WorkPackageArchiveMutation;
   onClearWorkPackageBlocker: WorkPackageBlockerClearMutation;
+  canMutateOperatorActions: boolean;
   linkedWorkPackageIds: Set<string>;
   onSubmitComment: SubmitContextComment;
   onResolveComment: ResolveContextComment;
@@ -305,6 +310,7 @@ function CardDetailReadyContent({
           onCopyArchitectHandoff={onCopyArchitectHandoff}
           onArchiveWorkRequest={onArchiveWorkRequest}
           onChangeWorkRequestState={onChangeWorkRequestState}
+          canMutateOperatorActions={canMutateOperatorActions}
           onSubmitComment={onSubmitComment}
           onResolveComment={onResolveComment}
           canMutateComments={canMutateComments}
@@ -321,6 +327,7 @@ function CardDetailReadyContent({
           error={state.package.error}
           onChangeWorkPackageState={onChangeWorkPackageState}
           onArchiveWorkPackage={onArchiveWorkPackage}
+          canMutateOperatorActions={canMutateOperatorActions}
           linkedWorkPackageIds={linkedWorkPackageIds}
           onSubmitComment={onSubmitComment}
           onResolveComment={onResolveComment}
@@ -328,7 +335,7 @@ function CardDetailReadyContent({
         />
       );
     case "blocker":
-      return <BlockerDetailContent selection={selection} detailPayload={state.package.payload} loading={!state.package.payload && !state.package.error} error={state.package.error} onClearWorkPackageBlocker={onClearWorkPackageBlocker} />;
+      return <BlockerDetailContent selection={selection} detailPayload={state.package.payload} loading={!state.package.payload && !state.package.error} error={state.package.error} onClearWorkPackageBlocker={onClearWorkPackageBlocker} canMutateOperatorActions={canMutateOperatorActions} />;
     case "solo":
       return <SoloSessionDetailContent session={selection.session} detailPayload={state.solo.payload} loading={!state.solo.payload && !state.solo.error ? true : state.solo.loading} error={state.solo.error} />;
   }
