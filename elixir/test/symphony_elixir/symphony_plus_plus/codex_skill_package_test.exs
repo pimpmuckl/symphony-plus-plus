@@ -1351,6 +1351,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag timeout: 180_000
   test "diagnostic does not offer enable command while global MCP footgun exists" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
 

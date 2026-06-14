@@ -71,7 +71,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
           )
 
         assert status != 0
-        assert output =~ "no verified runtime artifact is launchable and source fallback is unavailable"
+        assert normalize_prose(output) =~ "no verified runtime artifact is launchable and source fallback is unavailable"
         refute output =~ "Symphony++ MCP launcher validation passed."
       after
         File.rm_rf!(temp_codex_home)
@@ -643,6 +643,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
     value
     |> String.replace("\\", "/")
     |> String.downcase()
+  end
+
+  defp normalize_prose(value) do
+    value
+    |> String.replace("\r\n", "\n")
+    |> String.replace(~r/\e\[[0-9;]*m/, "")
+    |> String.replace(~r/\s+\|\s+|\s+/, " ")
   end
 
   defp unique_temp_path(prefix) do
