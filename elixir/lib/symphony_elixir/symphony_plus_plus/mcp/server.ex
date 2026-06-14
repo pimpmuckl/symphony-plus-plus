@@ -1102,8 +1102,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "tool_sets" => %{
         "architect" => architect_session_tool_specs(),
         "claimable" => claimable_tool_specs(config),
-        "local_operator" => local_operator_tool_specs(),
-        "unbound" => unbound_tool_specs_for_config(config),
+        "local_operator" => LocalTrustedTools.tool_specs(config),
+        "unbound" => hide_trusted_local_tool_specs(unbound_tool_specs_for_config(config)),
         "worker" => worker_session_tool_specs()
       }
     }
@@ -1640,8 +1640,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if local_trusted_tools_enabled?(server) do
       specs
     else
-      Enum.reject(specs, &(&1["name"] in @bootstrap_tools))
+      hide_trusted_local_tool_specs(specs)
     end
+  end
+
+  defp hide_trusted_local_tool_specs(specs) do
+    Enum.reject(specs, &(&1["name"] in @bootstrap_tools))
   end
 
   defp dedupe_tool_specs(specs) do
@@ -1655,8 +1659,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       []
     end
   end
-
-  defp local_operator_tool_specs, do: ToolCatalog.local_operator_tool_specs()
 
   defp local_trusted_tools_enabled?(%__MODULE__{} = server), do: LocalTrustedTools.enabled?(server)
 
