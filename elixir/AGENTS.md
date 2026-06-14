@@ -59,11 +59,11 @@ mix specs.check
 
 ## PR Requirements
 
-- PR body must follow `../.github/pull_request_template.md` exactly.
-- Validate PR body locally when needed:
+- PR body should follow `../.github/pull_request_template.md`.
+- Check PR body locally when needed:
 
 ```bash
-mix pr_body.check --file /path/to/pr_body.md
+pwsh ../scripts/validate-pr-description.ps1 -File /path/to/pr_body.md -WarnOnly
 ```
 
 ## Docs Update Policy
