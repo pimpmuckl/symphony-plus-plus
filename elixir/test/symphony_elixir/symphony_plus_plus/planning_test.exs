@@ -10,6 +10,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.State
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -700,6 +701,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert phase_child_markdown =~ "Policy template: `phase_child`"
     assert phase_child_markdown =~ "package_acceptance"
     assert phase_child_markdown =~ "- Optional: deep"
+  end
+
+  test "renders resolved review suite profiles when state provides them", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo, id: "SYMPP-RENDER-RESOLVED-REVIEW", kind: "mcp", policy_template: "mcp")
+
+    state = %State{work_package: work_package, review_suite_required_profiles: ["deep", "raw_secret_review_lane"]}
+
+    assert {:ok, markdown} = Renderer.render_state(state, "review_suite.md")
+    assert markdown =~ "- Required: deep, [REDACTED]"
+    refute markdown =~ "- Required: normal"
+    refute markdown =~ "raw_secret_review_lane"
   end
 
   test "rendering does not mutate canonical planning state", %{repo: repo} do

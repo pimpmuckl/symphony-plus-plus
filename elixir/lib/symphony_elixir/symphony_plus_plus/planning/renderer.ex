@@ -143,7 +143,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     |> flatten_join()
   end
 
-  defp review_suite_markdown(%State{work_package: work_package}) do
+  defp review_suite_markdown(%State{work_package: work_package} = state) do
     case Templates.expand(policy_key(work_package)) do
       {:ok, template} ->
         [
@@ -159,7 +159,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
           list_or_empty(template.readiness_requirements),
           "## Review Profiles",
           "",
-          "- Required: #{inline_list(template.review_suite.required)}",
+          "- Required: #{inline_list(review_suite_required_profiles(state, template))}",
           "- Optional: #{inline_list(template.review_suite.optional)}"
         ]
         |> flatten_join()
@@ -173,6 +173,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
         |> flatten_join()
     end
   end
+
+  defp review_suite_required_profiles(%State{review_suite_required_profiles: profiles}, _template) when is_list(profiles), do: Redactor.redact_output(profiles)
+  defp review_suite_required_profiles(%State{}, template), do: template.review_suite.required
 
   defp handoff_markdown(%State{} = state) do
     [

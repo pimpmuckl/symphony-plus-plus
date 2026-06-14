@@ -17,7 +17,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.State do
           plan_nodes_omitted_count: non_neg_integer() | nil,
           findings_omitted_count: non_neg_integer() | nil,
           progress_events_omitted_count: non_neg_integer() | nil,
-          artifacts_omitted_count: non_neg_integer() | nil
+          artifacts_omitted_count: non_neg_integer() | nil,
+          review_suite_required_profiles: [String.t()] | nil
         }
 
   defstruct work_package: nil,
@@ -29,5 +30,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.State do
             plan_nodes_omitted_count: nil,
             findings_omitted_count: nil,
             progress_events_omitted_count: nil,
-            artifacts_omitted_count: nil
+            artifacts_omitted_count: nil,
+            review_suite_required_profiles: nil
 end

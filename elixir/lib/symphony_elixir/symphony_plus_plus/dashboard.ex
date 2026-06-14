@@ -28,6 +28,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
   alias SymphonyElixir.SymphonyPlusPlus.ProductTree
+  alias SymphonyElixir.SymphonyPlusPlus.Readiness.ReviewLanes
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
   alias SymphonyElixir.SymphonyPlusPlus.RepoIdentity
   alias SymphonyElixir.SymphonyPlusPlus.ReviewProfiles
@@ -766,7 +767,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            grants: Enum.map(grants, &grant/1),
            agent_runs: Enum.map(agent_runs, &agent_run/1),
            metadata: metadata(state.progress_events, state.artifacts, state.work_package.id),
-           alert_indicators: alert_indicators(state, summary.runtime)
+           alert_indicators: alert_indicators(repo, state, summary.runtime)
          }}
       end
     end)
@@ -852,6 +853,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
       readiness_context =
         readiness_context(
+          repo,
           work_package,
           status_summary.plan_nodes,
           progress_events,
@@ -2454,6 +2456,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     agent_runs_by_id = grouped_agent_runs(repo, work_package_ids)
     grants_by_id = grouped_access_grants(repo, work_package_ids)
     lineages_by_id = package_lineages(repo, work_packages)
+    planned_slice_review_lanes_by_id = grouped_planned_slice_review_lanes(repo, work_package_ids)
 
     Map.new(work_packages, fn %WorkPackage{} = work_package ->
       progress_events = Map.get(progress_events_by_id, work_package.id, [])
@@ -2465,7 +2468,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       blockers = blockers(progress_events)
       runtime = runtime_summary(agent_runs)
       metadata = metadata(progress_events, artifacts, work_package.id)
-      readiness_context = readiness_context(work_package, plan_nodes, progress_events, artifacts, findings)
+      planned_slice_review_lanes = Map.get(planned_slice_review_lanes_by_id, work_package.id)
+
+      readiness_context =
+        readiness_context(
+          repo,
+          work_package,
+          plan_nodes,
+          progress_events,
+          artifacts,
+          findings,
+          planned_slice_review_lanes
+        )
+
       lineage = Map.get(lineages_by_id, work_package.id, empty_lineage(work_package.id))
 
       operational_state =
@@ -2549,6 +2564,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       )
     end)
   end
+
+  defp grouped_planned_slice_review_lanes(repo, work_package_ids) do
+    {:ok, planned_slices_by_work_package_id} = linked_planned_slices_by_work_package_id(repo, work_package_ids)
+
+    Map.new(planned_slices_by_work_package_id, fn {work_package_id, planned_slice} ->
+      {work_package_id, planned_slice_review_lanes(planned_slice)}
+    end)
+  end
+
+  defp planned_slice_review_lanes(%PlannedSlice{} = planned_slice), do: planned_slice.review_lanes || []
+  defp planned_slice_review_lanes(_planned_slice), do: []
 
   defp chunked_records_by_work_package_id(work_package_ids, list_fun) do
     work_package_ids
@@ -3342,9 +3368,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     }
   end
 
-  defp alert_indicators(%State{} = state, runtime) do
+  defp alert_indicators(repo, %State{} = state, runtime) do
     state
-    |> readiness_context(length(state.artifacts), length(state.findings))
+    |> readiness_context(repo, length(state.artifacts), length(state.findings))
     |> alert_indicators(blockers(state.progress_events), runtime)
   end
 
@@ -3453,17 +3479,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp missing_detail([]), do: "No missing evidence detected"
   defp missing_detail(missing), do: Enum.join(missing, ", ")
 
-  defp readiness_context(%State{} = state, _artifact_count, _finding_count) do
-    readiness_context(state.work_package, state.plan_nodes, state.progress_events, state.artifacts, state.findings)
+  defp readiness_context(%State{} = state, repo, _artifact_count, _finding_count) do
+    readiness_context(
+      repo,
+      state.work_package,
+      state.plan_nodes,
+      state.progress_events,
+      state.artifacts,
+      state.findings
+    )
   end
 
-  defp readiness_context(%WorkPackage{} = work_package, plan_nodes, progress_events, artifacts, findings) do
+  defp readiness_context(repo, %WorkPackage{} = work_package, plan_nodes, progress_events, artifacts, findings) do
+    readiness_context(repo, work_package, plan_nodes, progress_events, artifacts, findings, :load)
+  end
+
+  defp readiness_context(
+         repo,
+         %WorkPackage{} = work_package,
+         plan_nodes,
+         progress_events,
+         artifacts,
+         findings,
+         planned_slice_review_lanes
+       ) do
     %{
+      repo: repo,
       work_package: work_package,
       plan_nodes: plan_nodes,
       progress_events: chronological_progress_events(progress_events),
       artifacts: artifacts,
       findings: findings,
+      planned_slice_review_lanes: planned_slice_review_lanes,
       artifact_count: length(artifacts),
       finding_count: length(findings)
     }
@@ -3483,6 +3530,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp readiness_failure_reasons(%{work_package: %WorkPackage{}} = context) do
+    required_review_lanes = required_review_lanes(context)
+
     [
       {active_blocker?(context.progress_events), "no_active_blockers"},
       {incomplete_plan?(context), "plan_complete"},
@@ -3493,9 +3542,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       {current_pr_state_missing?(context), "current_pr_state"},
       {review_suite_result_missing?(context), "review_suite_result"},
       {ScopeGuard.missing?(context.work_package, context.progress_events), @scope_guard_gate},
-      {review_package_missing?(context), "review_package_submitted"},
-      {review_artifacts_missing?(context), "review_artifacts_attached"},
-      {review_lanes_missing?(context), "review_lanes_complete"},
+      {review_package_missing?(context, required_review_lanes), "review_package_submitted"},
+      {review_artifacts_missing?(context, required_review_lanes), "review_artifacts_attached"},
+      {review_lanes_missing?(context, required_review_lanes), "review_lanes_complete"},
       {investigation_findings_missing?(context), "findings_documented"},
       {investigation_recommendation_missing?(context), "recommendation_artifact_recorded"}
     ]
@@ -3568,23 +3617,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
-  defp review_package_missing?(context) do
+  defp review_package_missing?(context, required_lanes) do
     readiness_head_sha = review_head_sha_for_readiness(context)
-    required_lanes = required_review_lanes(context.work_package)
 
     merge_required?(context.work_package) and review_lanes_required?(required_lanes) and
       current_head_review_package_events(context.progress_events, readiness_head_sha) == []
   end
 
-  defp review_artifacts_missing?(context) do
-    required_lanes = required_review_lanes(context.work_package)
-
+  defp review_artifacts_missing?(context, required_lanes) do
     merge_required?(context.work_package) and review_lanes_required?(required_lanes) and
       not review_artifacts_present?(context.progress_events, context.artifacts, context.work_package.id)
   end
 
-  defp review_lanes_missing?(context) do
-    required_lanes = required_review_lanes(context.work_package)
+  defp review_lanes_missing?(context, required_lanes) do
     review_lanes_required?(required_lanes) and not review_lanes_present?(context, required_lanes)
   end
 
@@ -3636,15 +3681,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
-  defp required_review_lanes(%WorkPackage{} = work_package) do
-    case policy_for(work_package) do
-      {:ok, policy} ->
-        policy
-        |> get_in([:review_suite, :required])
-        |> ReviewProfiles.normalize_profiles()
+  defp required_review_lanes(%{work_package: %WorkPackage{} = work_package} = context) do
+    case Map.get(context, :planned_slice_review_lanes, :load) do
+      :load ->
+        case ReviewLanes.required(Map.get(context, :repo), work_package) do
+          {:ok, {required_lanes, _warnings}} -> required_lanes
+          {:error, _reason} -> ReviewLanes.policy_required(work_package)
+        end
 
-      {:error, _reason} ->
-        []
+      planned_slice_review_lanes ->
+        {required_lanes, _warnings} =
+          ReviewLanes.required_from_planned_slice_lanes(work_package, planned_slice_review_lanes)
+
+        required_lanes
     end
   end
 

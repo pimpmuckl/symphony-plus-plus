@@ -126,7 +126,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.WorkerContext do
     payload =
       state
       |> base_payload("review_suite.md", opts)
-      |> Map.put("review_suite", review_suite_payload(state.work_package))
+      |> Map.put("review_suite", review_suite_payload(state))
 
     {:ok, payload}
   end
@@ -177,14 +177,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.WorkerContext do
     }
   end
 
-  defp review_suite_payload(%WorkPackage{} = work_package) do
+  defp review_suite_payload(%State{work_package: %WorkPackage{} = work_package} = state) do
     case Templates.expand(policy_key(work_package)) do
       {:ok, template} ->
         %{
           "policy_template" => template.template,
           "required_gates" => template.required_gates,
           "readiness_requirements" => template.readiness_requirements,
-          "required_review_profiles" => template.review_suite.required,
+          "required_review_profiles" => review_suite_required_profiles(state, template),
           "optional_review_profiles" => template.review_suite.optional
         }
 
@@ -192,6 +192,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.WorkerContext do
         %{"policy_template" => policy_key(work_package), "error" => "unknown_policy_template"}
     end
   end
+
+  defp review_suite_required_profiles(%State{review_suite_required_profiles: profiles}, _template) when is_list(profiles), do: redacted_profiles(profiles)
+  defp review_suite_required_profiles(%State{}, template), do: template.review_suite.required
+
+  defp redacted_profiles(profiles), do: Redactor.redact_output(profiles)
 
   defp plan_node_payload(%PlanNode{} = plan_node) do
     %{
