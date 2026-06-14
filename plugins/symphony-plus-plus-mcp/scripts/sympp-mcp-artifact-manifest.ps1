@@ -274,6 +274,11 @@ function Test-SymppArtifactRevisionMatches($Artifact, [string]$ExpectedSourceRev
   return $true
 }
 
+function Test-SymppArtifactHasSourceRevision($Artifact, [string]$ManifestSourceRevision) {
+  $revisions = @(Get-SymppArtifactSourceRevisions $Artifact $ManifestSourceRevision)
+  return $revisions.Count -gt 0
+}
+
 function Test-SymppArtifactContractMatches($Artifact, [string]$ExpectedContractFingerprint, [string]$ManifestContractFingerprint) {
   $artifactContract = Normalize-McpContractFingerprint ([string](Get-JsonFirstPathValue $Artifact @(
       @("mcp_contract_fingerprint"),
@@ -305,7 +310,6 @@ function Test-SymppArtifactManifestPluginMatches($Manifest, [string]$ExpectedPlu
 
   $name = [string](Get-JsonPathValue $plugin @("name"))
   $version = [string](Get-JsonPathValue $plugin @("version"))
-  $sourceRevision = Normalize-SymppSourceRevision ([string](Get-JsonPathValue $plugin @("source_revision")))
   if (-not [string]::IsNullOrWhiteSpace($name)) {
     if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($name.Trim(), $ExpectedPluginName)) {
       return $false
@@ -316,10 +320,6 @@ function Test-SymppArtifactManifestPluginMatches($Manifest, [string]$ExpectedPlu
     if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($version.Trim(), $ExpectedPluginVersion)) {
       return $false
     }
-    if ($RequireSourceRevision -and $sourceRevision -and -not [System.StringComparer]::OrdinalIgnoreCase.Equals($sourceRevision, $ExpectedSourceRevision)) {
-      return $false
-    }
-
     return $true
   }
 
@@ -417,18 +417,24 @@ function Resolve-SymppArtifactSelection($Manifest, [string]$Platform, [string]$E
   }
 
   $matches = $contractMatches
+  $detail = "selected"
   if ($RequireSourceRevision) {
-    if (-not $manifestRevisionResult.matches) {
-      return [pscustomobject]@{ artifact = $null; detail = "source_revision_mismatch" }
-    }
-    $matches = @($contractMatches | Where-Object { Test-SymppArtifactRevisionMatches $_ $ExpectedSourceRevision $manifestRevisionResult.revision $RequireSourceRevision })
-    if ($matches.Count -eq 0) {
+    $sourceMatches = @($contractMatches | Where-Object { Test-SymppArtifactRevisionMatches $_ $ExpectedSourceRevision $manifestRevisionResult.revision $RequireSourceRevision })
+    if ($sourceMatches.Count -gt 0) {
+      $matches = $sourceMatches
+    } elseif (-not [string]::IsNullOrWhiteSpace($ExpectedContractFingerprint)) {
+      $matches = @($contractMatches | Where-Object { Test-SymppArtifactHasSourceRevision $_ $manifestRevisionResult.revision })
+      if ($matches.Count -eq 0) {
+        return [pscustomobject]@{ artifact = $null; detail = "source_revision_mismatch" }
+      }
+      $detail = "compatible_source_revision_fallback"
+    } else {
       return [pscustomobject]@{ artifact = $null; detail = "source_revision_mismatch" }
     }
   }
 
   if ($matches.Count -eq 1) {
-    return [pscustomobject]@{ artifact = $matches[0]; detail = "selected" }
+    return [pscustomobject]@{ artifact = $matches[0]; detail = $detail }
   }
   if ($matches.Count -gt 1) {
     throw "artifact_manifest_invalid: Symphony++ runtime artifact manifest contains multiple matching artifacts for platform $Platform."
