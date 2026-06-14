@@ -43,7 +43,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
               ["-NoProfile", "-File", script_path, "-ValidateOnly"],
               cd: Path.dirname(Path.dirname(script_path)),
               stderr_to_stdout: true,
-              env: [{"SYMPP_LAUNCHER", "direct"}, {"SYMPP_MIX", fake_mix}, {"SYMPP_REPO_ROOT", ""}]
+              env: [
+                {"SYMPP_LAUNCHER", "direct"},
+                {"SYMPP_MIX", fake_mix},
+                {"SYMPP_REPO_ROOT", ""},
+                {"SYMPP_SOURCE_FALLBACK", "1"}
+              ]
             )
 
           assert status == 0, output
@@ -80,7 +85,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
               ["-NoProfile", "-File", script_path, "-ValidateOnly"],
               cd: Path.dirname(Path.dirname(script_path)),
               stderr_to_stdout: true,
-              env: [{"SYMPP_MISE", fake_mise}, {"SYMPP_REPO_ROOT", ""}, {"SYMPP_HOME", sympp_home}]
+              env: [
+                {"SYMPP_MISE", fake_mise},
+                {"SYMPP_REPO_ROOT", ""},
+                {"SYMPP_HOME", sympp_home},
+                {"SYMPP_SOURCE_FALLBACK", "1"}
+              ]
             )
 
           assert status == 0, output
@@ -253,7 +263,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
               {"SYMPP_LOG_DIR", log_dir},
               {"SYMPP_MCP_BRIDGE_MODE", "direct_stdio"},
               {"SYMPP_MIX", fake_mix},
-              {"SYMPP_REPO_ROOT", ""}
+              {"SYMPP_REPO_ROOT", ""},
+              {"SYMPP_SOURCE_FALLBACK", "1"}
             ]
           )
 
@@ -286,7 +297,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     File.mkdir_p!(Path.dirname(target))
     File.cp!(source_script_path, target)
 
-    for helper_name <- ~w(sympp-launcher-runtime.ps1 sympp-mcp-launcher-helpers.ps1) do
+    for helper_name <-
+          ~w(sympp-launcher-runtime.ps1 sympp-mcp-launcher-helpers.ps1 sympp-mcp-artifact-manifest.ps1 sympp-mcp-artifact-channel.ps1 sympp-mcp-artifact-runtime.ps1 sympp-mcp-process-runtime.ps1) do
       source_helper = Path.join(Path.dirname(source_script_path), helper_name)
 
       if File.exists?(source_helper) do
@@ -344,6 +356,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     File.cp!(
       Path.join(Path.dirname(@mcp_plugin_start_script_path), "sympp-launcher-runtime.ps1"),
       Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-launcher-runtime.ps1")
+    )
+
+    File.cp!(
+      Path.join(Path.dirname(@mcp_plugin_start_script_path), "sympp-mcp-artifact-manifest.ps1"),
+      Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-mcp-artifact-manifest.ps1")
+    )
+
+    File.cp!(
+      Path.join(Path.dirname(@mcp_plugin_start_script_path), "sympp-mcp-artifact-channel.ps1"),
+      Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-mcp-artifact-channel.ps1")
+    )
+
+    File.cp!(
+      Path.join(Path.dirname(@mcp_plugin_start_script_path), "sympp-mcp-artifact-runtime.ps1"),
+      Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-mcp-artifact-runtime.ps1")
+    )
+
+    File.cp!(
+      Path.join(Path.dirname(@mcp_plugin_start_script_path), "sympp-mcp-process-runtime.ps1"),
+      Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-mcp-process-runtime.ps1")
     )
 
     File.cp!(

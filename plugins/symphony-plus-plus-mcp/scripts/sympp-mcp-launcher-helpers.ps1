@@ -39,6 +39,9 @@ function Test-InstalledPluginPayloadMatchesMarketplaceSource([string]$PluginRoot
     ".mcp.json",
     "scripts/start-sympp-mcp.ps1",
     "scripts/sympp-launcher-runtime.ps1",
+    "scripts/sympp-mcp-artifact-manifest.ps1",
+    "scripts/sympp-mcp-artifact-runtime.ps1",
+    "scripts/sympp-mcp-process-runtime.ps1",
     "scripts/sympp-mcp-launcher-helpers.ps1"
   )
   $checked = 0

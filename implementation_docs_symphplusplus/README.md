@@ -36,6 +36,7 @@ WorkPackages, MCP resources, and package-specific scope.
 - WorkRequest and planned-slice product contract: `docs/13_WORKREQUEST_CONTRACT.md`
 - Solo Session product contract: `docs/14_SOLO_SESSION_CONTRACT.md`
 - Target permission redesign contract: `docs/16_PERMISSION_REDESIGN_CONTRACT.md`
+- Marketplace runtime artifact contract: `docs/17_RUNTIME_ARTIFACT_CONTRACT.md`
 - Execution Atlas brainstorm/design context: `docs/execution_atlas/README.md`
 - Role-oriented walkthrough: `docs/12_OPERATOR_TRAINING.md`
 - Short command-flow runbook: `docs/09_OPERATIONAL_RUNBOOK.md`
