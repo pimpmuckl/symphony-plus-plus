@@ -108,8 +108,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactRuntimeTest do
           )
 
         assert status != 0
-        assert output =~ "direct_stdio_unsupported"
-        assert output =~ "no verified runtime artifact is launchable"
+        assert_shell_output_contains(output, "direct_stdio_unsupported")
+        assert_shell_output_contains(output, "no verified runtime artifact is launchable")
       after
         File.rm_rf!(temp_root)
       end
@@ -140,7 +140,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactRuntimeTest do
           )
 
         assert status != 0
-        assert output =~ "no verified runtime artifact is launchable"
+        assert_shell_output_contains(output, "no verified runtime artifact is launchable")
       after
         File.rm_rf!(temp_root)
       end
@@ -172,7 +172,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactRuntimeTest do
           )
 
         assert status != 0
-        assert output =~ "no verified runtime artifact is launchable"
+        assert_shell_output_contains(output, "no verified runtime artifact is launchable")
       after
         File.rm_rf!(temp_root)
       end
@@ -204,7 +204,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactRuntimeTest do
           )
 
         assert status != 0
-        assert output =~ "no verified runtime artifact is launchable"
+        assert_shell_output_contains(output, "no verified runtime artifact is launchable")
       after
         File.rm_rf!(temp_root)
       end
@@ -236,7 +236,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactRuntimeTest do
           )
 
         assert status != 0
-        assert output =~ "multiple archive locations"
+        assert_shell_output_contains(output, "multiple archive locations")
       after
         File.rm_rf!(temp_root)
       end
@@ -268,7 +268,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactRuntimeTest do
           )
 
         assert status != 0
-        assert output =~ "multiple matching artifacts"
+        assert_shell_output_contains(output, "multiple matching artifacts")
       after
         File.rm_rf!(temp_root)
       end
@@ -296,7 +296,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactRuntimeTest do
           )
 
         assert status != 0
-        assert output =~ "no verified runtime artifact is launchable"
+        assert_shell_output_contains(output, "no verified runtime artifact is launchable")
       after
         File.rm_rf!(temp_root)
       end
@@ -328,7 +328,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactRuntimeTest do
           )
 
         assert status != 0
-        assert output =~ "no verified runtime artifact is launchable"
+        assert_shell_output_contains(output, "no verified runtime artifact is launchable")
       after
         File.rm_rf!(temp_root)
       end
@@ -441,7 +441,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactRuntimeTest do
           )
 
         assert status != 0
-        assert output =~ "did not contain entrypoint"
+        assert_shell_output_contains(output, "did not contain entrypoint")
       after
         File.rm_rf!(temp_root)
       end
@@ -881,6 +881,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactRuntimeTest do
     value
     |> String.replace("\\", "/")
     |> String.downcase()
+  end
+
+  defp assert_shell_output_contains(output, expected) do
+    assert normalize_shell_output(output) =~ expected
+  end
+
+  defp normalize_shell_output(output) do
+    output
+    |> String.replace(~r/\e\[[0-9;]*m/, "")
+    |> String.replace(~r/\s+/, " ")
   end
 
   defp unique_temp_path(prefix) do

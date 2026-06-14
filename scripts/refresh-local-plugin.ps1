@@ -447,7 +447,7 @@ function Assert-CachePluginConfig([string]$TargetRoot, [string]$ExpectedVersion)
   }
 }
 
-function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [string]$ExpectedVersion) {
+function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [string]$ExpectedVersion, [string]$ValidationSourceRoot) {
   Assert-CachePluginConfig $TargetRoot $ExpectedVersion
 
   Push-Location -LiteralPath $TargetRoot
@@ -456,6 +456,10 @@ function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [s
     $powershell = Get-AvailablePowerShellCommandName
     Remove-Item Env:SYMPP_REPO_ROOT -ErrorAction SilentlyContinue
     if ($PluginName -eq "symphony-plus-plus-mcp") {
+      if (-not [string]::IsNullOrWhiteSpace($ValidationSourceRoot)) {
+        $env:SYMPP_REPO_ROOT = $ValidationSourceRoot
+      }
+
       if (Test-RefreshWindowsPlatform) {
         & cmd.exe @("/d", "/s", "/c", "scripts\start-sympp-mcp.cmd -ValidateOnly")
       } else {
@@ -573,7 +577,7 @@ Repair-IncompatibleDefaultPluginCacheEntries $defaultPluginCacheRoot
 Copy-PluginCacheTarget $versionTargetRoot $sourceRoot $repoRoot
 
 if ($ValidateInstalledCache) {
-  Invoke-InstalledCacheValidation $versionTargetRoot $manifestVersion $manifestVersion
+  Invoke-InstalledCacheValidation $versionTargetRoot $manifestVersion $manifestVersion $repoRoot
 }
 
 Remove-GeneratedLocalCacheEntry $pluginCacheRoot
