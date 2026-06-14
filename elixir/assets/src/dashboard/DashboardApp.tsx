@@ -307,16 +307,26 @@ function useDashboardController() {
     }
   }, [setDashboard]);
 
-  const updateArchiveAfterDays = useCallback(async (archiveAfterDays: number) => {
+  const updateRetentionSetting = useCallback(async (payload: { work_request_archive_after_days?: number; solo_session_delete_after_days?: number }) => {
     await withLocalOperatorReconnect(async () => {
       const response = await operatorFetch(operatorApiUrl("/settings"), {
         method: "POST",
         headers: await mutationHeaders(),
-        body: JSON.stringify({ work_request_archive_after_days: archiveAfterDays }),
+        body: JSON.stringify(payload),
       });
       await applyDashboardResponse(response, "Settings were not saved", dashboardFromEnvelope);
     });
   }, [applyDashboardResponse]);
+
+  const updateArchiveAfterDays = useCallback(
+    (archiveAfterDays: number) => updateRetentionSetting({ work_request_archive_after_days: archiveAfterDays }),
+    [updateRetentionSetting],
+  );
+
+  const updateSoloSessionDeleteAfterDays = useCallback(
+    (deleteAfterDays: number) => updateRetentionSetting({ solo_session_delete_after_days: deleteAfterDays }),
+    [updateRetentionSetting],
+  );
 
   const archiveWorkRequest = useCallback<WorkRequestMutation>(async (workRequestId) => {
     await withLocalOperatorReconnect(async () => {
@@ -453,6 +463,7 @@ function useDashboardController() {
   const requestDetailsByRepo = useMemo(() => requestDetailsByRepoKey(requestDetails), [requestDetails]);
   const packageSelections = useMemo(() => packageSelectionIndex(requestDetails, packages), [packages, requestDetails]);
   const archiveAfterDays = dashboard?.settings?.work_request_archive_after_days ?? 14;
+  const soloSessionDeleteAfterDays = dashboard?.settings?.solo_session_delete_after_days ?? 30;
   const guidanceItems = useMemo(() => allGuidanceItems(dashboard), [dashboard]);
   const blockerItems = useMemo(() => activeBlockerItems(packages, packageSelections, dashboard?.active_blocking_edges ?? []), [dashboard?.active_blocking_edges, packages, packageSelections]);
   const soloSessions = useMemo(() => dashboard?.solo_sessions?.solo_sessions ?? [], [dashboard]);
@@ -543,10 +554,12 @@ function useDashboardController() {
     onSubmitComment: submitComment,
     onSubmitGuidanceAnswer: submitGuidanceAnswer,
     onUpdateArchiveAfterDays: updateArchiveAfterDays,
+    onUpdateSoloSessionDeleteAfterDays: updateSoloSessionDeleteAfterDays,
     onWorkspaceTabChange: setWorkspaceTab,
     refreshing,
     repos,
     showUpdateSimulationControls,
+    soloSessionDeleteAfterDays,
     theme,
     toggleTheme,
     updateAnimations,

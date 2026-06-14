@@ -237,6 +237,7 @@ export type CreateWorkRequestPayload = {
 
 export type DashboardSettings = {
   work_request_archive_after_days?: number;
+  solo_session_delete_after_days?: number;
   hidden_work_package_ids?: string[];
 };
 

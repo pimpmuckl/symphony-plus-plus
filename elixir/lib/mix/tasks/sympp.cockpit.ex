@@ -7,6 +7,7 @@ defmodule Mix.Tasks.Sympp.Cockpit do
   alias SymphonyElixir.SymphonyPlusPlus.MCP.Config, as: MCPConfig
   alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Service, as: OperatorSettingsService
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service, as: SoloSessionService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixirWeb.Endpoint
@@ -389,17 +390,27 @@ defmodule Mix.Tasks.Sympp.Cockpit do
 
   defp run_work_request_retention_pass do
     with {:ok, settings} <- OperatorSettingsService.get(Repo),
-         {:ok, _summary} <-
-           WorkRequestService.retention_pass(Repo,
-             archive_after_days: settings.work_request_archive_after_days
-           ) do
+         :ok <- run_operator_retention(settings) do
       :ok
     else
-      {:error, reason} -> skip_work_request_retention(reason)
+      {:error, reason} -> skip_operator_retention(reason)
     end
   end
 
-  defp skip_work_request_retention(reason) do
+  defp run_operator_retention(settings) do
+    now = DateTime.utc_now(:microsecond)
+
+    with {:ok, _work_request_summary} <-
+           WorkRequestService.retention_pass(Repo,
+             archive_after_days: settings.work_request_archive_after_days
+           ),
+         {:ok, _solo_archived_count} <- SoloSessionService.archive_stale(Repo, now, settings.work_request_archive_after_days),
+         {:ok, _solo_deleted_count} <- SoloSessionService.delete_archived(Repo, now, settings.solo_session_delete_after_days) do
+      :ok
+    end
+  end
+
+  defp skip_operator_retention(reason) do
     Mix.shell().info("Symphony++ cockpit retention skipped: #{inspect(reason)}")
     :ok
   end

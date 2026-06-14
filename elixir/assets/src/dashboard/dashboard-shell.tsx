@@ -57,10 +57,12 @@ export function DashboardShell({
   onSubmitComment,
   onSubmitGuidanceAnswer,
   onUpdateArchiveAfterDays,
+  onUpdateSoloSessionDeleteAfterDays,
   onWorkspaceTabChange,
   refreshing,
   repos,
   showUpdateSimulationControls,
+  soloSessionDeleteAfterDays,
   theme,
   toggleTheme,
   updateAnimations,
@@ -99,10 +101,12 @@ export function DashboardShell({
   onSubmitComment: SubmitContextComment;
   onSubmitGuidanceAnswer: (item: GuidanceItem, submission: GuidanceAnswerSubmission) => Promise<void>;
   onUpdateArchiveAfterDays: (archiveAfterDays: number) => Promise<void>;
+  onUpdateSoloSessionDeleteAfterDays: (deleteAfterDays: number) => Promise<void>;
   onWorkspaceTabChange: (tab: WorkspaceTab) => void;
   refreshing: boolean;
   repos: RepoSummary[];
   showUpdateSimulationControls: boolean;
+  soloSessionDeleteAfterDays: number;
   theme: DashboardTheme;
   toggleTheme: () => void;
   updateAnimations: DashboardUpdateAnimations;
@@ -145,10 +149,12 @@ export function DashboardShell({
               <ThemeToggle theme={theme} onToggle={toggleTheme} />
               <DashboardSettingsDialog
                 archiveAfterDays={archiveAfterDays}
+                soloSessionDeleteAfterDays={soloSessionDeleteAfterDays}
                 hideEmptyWorkstreams={hideEmptyWorkstreams}
                 hiddenWorkstreamCount={hiddenWorkstreamCount}
                 showWorkstreamContextBar={showWorkstreamContextBar}
                 onArchiveAfterDaysChange={onUpdateArchiveAfterDays}
+                onSoloSessionDeleteAfterDaysChange={onUpdateSoloSessionDeleteAfterDays}
                 onHideEmptyWorkstreamsChange={onHideEmptyWorkstreamsChange}
                 onShowWorkstreamContextBarChange={onShowWorkstreamContextBarChange}
               />

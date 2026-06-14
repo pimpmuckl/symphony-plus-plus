@@ -28,6 +28,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service, as: SoloSessionService
   alias SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -722,10 +723,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   def operator_update_settings(conn, params) do
     send_local_operator_response(conn, :dangerous_override, Target.ledger(), :operator_update_settings, fn repo ->
       with {:ok, settings} <- OperatorSettingsService.update(repo, operator_settings_attrs(params)),
-           {:ok, _summary} <-
-             WorkRequestService.retention_pass(repo,
-               archive_after_days: settings.work_request_archive_after_days
-             ),
+           :ok <- run_operator_retention(repo, settings),
            {:ok, dashboard} <- operator_dashboard_payload(repo) do
         json(conn, %{settings: operator_settings_payload(settings), dashboard: dashboard})
       end
@@ -1111,10 +1109,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp operator_dashboard_payload(repo) do
     with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo),
          {:ok, settings} <- OperatorSettingsService.get(repo),
-         {:ok, _retention} <-
-           WorkRequestService.retention_pass(repo,
-             archive_after_days: settings.work_request_archive_after_days
-           ),
+         :ok <- run_operator_retention(repo, settings),
          {:ok, linked_work_package_id_sets} <- linked_work_package_id_sets(repo),
          {:ok, architect_handoff_anchor_work_package_ids} <- architect_handoff_anchor_work_package_ids(repo),
          {:ok, settings} <- dedupe_hidden_work_package_ids_for_local_operator(repo, settings),
@@ -1310,21 +1305,48 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp operator_settings_attrs(params) do
-    archive_after_days =
-      Map.get(params, "work_request_archive_after_days") ||
-        Map.get(params, :work_request_archive_after_days) ||
-        OperatorSettings.default_work_request_archive_after_days()
+    %{}
+    |> put_settings_param(params, "work_request_archive_after_days")
+    |> put_settings_param(params, "solo_session_delete_after_days")
+  end
 
-    %{
-      "work_request_archive_after_days" => archive_after_days
-    }
+  defp put_settings_param(attrs, params, key) do
+    case Map.fetch(params, key) do
+      {:ok, value} -> Map.put(attrs, key, value)
+      :error -> put_atom_settings_param(attrs, params, key)
+    end
+  end
+
+  defp put_atom_settings_param(attrs, params, key) do
+    atom_key = String.to_existing_atom(key)
+
+    case Map.fetch(params, atom_key) do
+      {:ok, value} -> Map.put(attrs, key, value)
+      :error -> attrs
+    end
   end
 
   defp operator_settings_payload(%OperatorSettings{} = settings) do
     %{
       work_request_archive_after_days: settings.work_request_archive_after_days,
+      solo_session_delete_after_days: settings.solo_session_delete_after_days,
       hidden_work_package_ids: settings.hidden_work_package_ids
     }
+  end
+
+  defp run_operator_retention(repo, %OperatorSettings{} = settings) do
+    now = DateTime.utc_now(:microsecond)
+
+    with {:ok, _work_request_summary} <-
+           WorkRequestService.retention_pass(repo,
+             archive_after_days: settings.work_request_archive_after_days
+           ),
+         {:ok, _solo_archived_count} <-
+           SoloSessionService.archive_stale(repo, now, settings.work_request_archive_after_days),
+         {:ok, _solo_deleted_count} <-
+           SoloSessionService.delete_archived(repo, now, settings.solo_session_delete_after_days) do
+      :ok
+    end
   end
 
   defp archived_work_request_payload(work_request) do

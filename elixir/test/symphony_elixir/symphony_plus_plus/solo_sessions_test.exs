@@ -288,6 +288,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessionsTest do
     assert completed.status == "completed"
   end
 
+  test "delete_archived deletes only archived sessions strictly older than threshold", %{repo: repo} do
+    now = ~U[2026-05-15 12:00:00.000000Z]
+    cutoff = DateTime.add(now, -30 * 24 * 60 * 60, :second)
+    older = DateTime.add(cutoff, -1, :second)
+    fresh = DateTime.add(cutoff, 1, :second)
+
+    assert {:ok, stale} = Service.create_or_attach_current(repo, session_attrs(caller_id: "stale-archived"))
+    assert {:ok, entry} = Service.append_progress(repo, stale.id, %{summary: "Old note"})
+    assert {:ok, stale} = Service.archive(repo, stale.id, "active")
+    stale = set_archived_at!(repo, stale, older)
+
+    assert {:ok, boundary} = Service.create_or_attach_current(repo, session_attrs(caller_id: "boundary-archived"))
+    assert {:ok, boundary} = Service.archive(repo, boundary.id, "active")
+    boundary = set_archived_at!(repo, boundary, cutoff)
+
+    assert {:ok, recent} = Service.create_or_attach_current(repo, session_attrs(caller_id: "recent-archived"))
+    assert {:ok, recent} = Service.archive(repo, recent.id, "active")
+    recent = set_archived_at!(repo, recent, fresh)
+
+    assert {:ok, active_old} = Service.create_or_attach_current(repo, session_attrs(caller_id: "active-old"))
+    active_old = set_last_activity!(repo, active_old, older)
+
+    assert {:ok, 1} = Service.delete_archived(repo, now, 30)
+    assert {:error, :invalid_delete_after_days} = Service.delete_archived(repo, now, 0)
+
+    assert {:error, :not_found} = Service.get(repo, stale.id)
+    refute Enum.any?(repo.all(SoloSessionEntry), &(&1.id == entry.id))
+
+    assert {:ok, ^boundary} = Service.get(repo, boundary.id)
+    assert {:ok, ^recent} = Service.get(repo, recent.id)
+    assert {:ok, ^active_old} = Service.get(repo, active_old.id)
+  end
+
   test "read and list do not advance activity", %{repo: repo} do
     assert {:ok, session} = Service.create_or_attach_current(repo, session_attrs())
     Process.sleep(5)
@@ -854,6 +887,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessionsTest do
   defp set_last_activity!(repo, %SoloSession{} = session, timestamp) do
     session
     |> Changeset.change(last_activity_at: timestamp, updated_at: timestamp)
+    |> repo.update!()
+  end
+
+  defp set_archived_at!(repo, %SoloSession{} = session, timestamp) do
+    session
+    |> Changeset.change(archived_at: timestamp, updated_at: timestamp)
     |> repo.update!()
   end
 

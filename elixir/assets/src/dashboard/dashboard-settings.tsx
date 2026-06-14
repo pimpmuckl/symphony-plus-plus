@@ -90,75 +90,117 @@ function SettingsSwitch({
   );
 }
 
+function RetentionCutoffSetting({
+  description,
+  inputLabel,
+  label,
+  onSave,
+  value,
+}: {
+  description: string;
+  inputLabel: string;
+  label: string;
+  onSave: (value: number) => Promise<void>;
+  value: number;
+}) {
+  const [draftState, setDraftState] = useState({
+    source: value,
+    value: String(value),
+  });
+  const [pending, setPending] = useState(false);
+  const [errorState, setErrorState] = useState<{ source: number; message: string | null }>({
+    source: value,
+    message: null,
+  });
+  const draft = draftState.source === value ? draftState.value : String(value);
+  const error = errorState.source === value ? errorState.message : null;
+  const draftValue = draft.trim();
+  const cutoffValue = Number(draftValue);
+  const valid = /^\d+$/.test(draftValue) && Number.isInteger(cutoffValue) && cutoffValue >= 1 && cutoffValue <= 3650;
+  const changed = valid && cutoffValue !== value;
+
+  function setDraft(nextValue: string) {
+    setDraftState({ source: value, value: nextValue });
+  }
+
+  function setError(message: string | null) {
+    setErrorState({ source: value, message });
+  }
+
+  async function save(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!valid) {
+      setError("Use a whole number from 1 to 3650.");
+      return;
+    }
+
+    setPending(true);
+    setError(null);
+
+    try {
+      await onSave(cutoffValue);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Setting was not saved");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="grid gap-3 rounded-md border bg-card/60 p-3">
+      <div>
+        <span className="block text-sm font-medium">{label}</span>
+        <span className="mt-1 block text-xs text-muted-foreground">{description}</span>
+      </div>
+      <form className="flex items-start gap-2" onSubmit={(event) => void save(event)}>
+        <Input
+          aria-label={inputLabel}
+          min={1}
+          max={3650}
+          step={1}
+          type="number"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+        />
+        <Button type="submit" size="sm" disabled={pending || !changed}>
+          {pending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+          Save
+        </Button>
+      </form>
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+    </div>
+  );
+}
+
 export function DashboardSettingsDialog({
   archiveAfterDays,
   hideEmptyWorkstreams,
   hiddenWorkstreamCount,
   showWorkstreamContextBar,
+  soloSessionDeleteAfterDays,
   onArchiveAfterDaysChange,
   onHideEmptyWorkstreamsChange,
+  onSoloSessionDeleteAfterDaysChange,
   onShowWorkstreamContextBarChange,
 }: {
   archiveAfterDays: number;
   hideEmptyWorkstreams: boolean;
   hiddenWorkstreamCount: number;
   showWorkstreamContextBar: boolean;
+  soloSessionDeleteAfterDays: number;
   onArchiveAfterDaysChange: (value: number) => Promise<void>;
   onHideEmptyWorkstreamsChange: (value: boolean) => void;
+  onSoloSessionDeleteAfterDaysChange: (value: number) => Promise<void>;
   onShowWorkstreamContextBarChange: (value: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
   const initialFocusRef = useRef<HTMLDivElement | null>(null);
-  const [archiveDaysDraftState, setArchiveDaysDraftState] = useState({
-    source: archiveAfterDays,
-    value: String(archiveAfterDays),
-  });
-  const [archiveDaysPending, setArchiveDaysPending] = useState(false);
-  const [archiveDaysErrorState, setArchiveDaysErrorState] = useState<{ source: number; message: string | null }>({
-    source: archiveAfterDays,
-    message: null,
-  });
   const visibilityLabel = hideEmptyWorkstreams
     ? workstreamHiddenSummary(hiddenWorkstreamCount)
     : "Showing repos even when they have no requests, plan nodes, or slices.";
   const contextBarLabel = showWorkstreamContextBar
     ? "Shows the sticky repo, WR, and plan-node path while scrolling."
     : "Board rows scroll without the sticky context path.";
-  const archiveDaysDraft =
-    archiveDaysDraftState.source === archiveAfterDays ? archiveDaysDraftState.value : String(archiveAfterDays);
-  const archiveDaysError = archiveDaysErrorState.source === archiveAfterDays ? archiveDaysErrorState.message : null;
-  const archiveDaysDraftValue = archiveDaysDraft.trim();
-  const archiveDaysValue = Number(archiveDaysDraftValue);
-  const archiveDaysValid =
-    /^\d+$/.test(archiveDaysDraftValue) && Number.isInteger(archiveDaysValue) && archiveDaysValue >= 1 && archiveDaysValue <= 3650;
-  const archiveDaysChanged = archiveDaysValid && archiveDaysValue !== archiveAfterDays;
-
-  function setArchiveDaysDraft(value: string) {
-    setArchiveDaysDraftState({ source: archiveAfterDays, value });
-  }
-
-  function setArchiveDaysError(message: string | null) {
-    setArchiveDaysErrorState({ source: archiveAfterDays, message });
-  }
-
-  async function saveArchiveDays(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!archiveDaysValid) {
-      setArchiveDaysError("Use a whole number from 1 to 3650.");
-      return;
-    }
-
-    setArchiveDaysPending(true);
-    setArchiveDaysError(null);
-
-    try {
-      await onArchiveAfterDaysChange(archiveDaysValue);
-    } catch (caught) {
-      setArchiveDaysError(caught instanceof Error ? caught.message : "Archive cutoff was not saved");
-    } finally {
-      setArchiveDaysPending(false);
-    }
-  }
 
   return (
     <>
@@ -171,7 +213,6 @@ export function DashboardSettingsDialog({
             className="button-lift"
             aria-label="Dashboard settings"
             onClick={() => {
-              setArchiveDaysError(null);
               setOpen(true);
             }}
           >
@@ -194,27 +235,21 @@ export function DashboardSettingsDialog({
             <DialogDescription>Dashboard display preferences</DialogDescription>
           </DialogHeader>
 
-          <div ref={initialFocusRef} tabIndex={-1} className="grid gap-3 rounded-md border bg-card/60 p-3 outline-none">
-            <div>
-              <span className="block text-sm font-medium">Archive cutoff</span>
-              <span className="mt-1 block text-xs text-muted-foreground">Delivered WorkRequests auto-archive after {archiveAfterDays} days.</span>
-            </div>
-            <form className="flex items-start gap-2" onSubmit={(event) => void saveArchiveDays(event)}>
-              <Input
-                aria-label="Archive cutoff days"
-                min={1}
-                max={3650}
-                step={1}
-                type="number"
-                value={archiveDaysDraft}
-                onChange={(event) => setArchiveDaysDraft(event.target.value)}
-              />
-              <Button type="submit" size="sm" disabled={archiveDaysPending || !archiveDaysChanged}>
-                {archiveDaysPending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-                Save
-              </Button>
-            </form>
-            {archiveDaysError ? <p className="text-xs text-destructive">{archiveDaysError}</p> : null}
+          <div ref={initialFocusRef} tabIndex={-1} className="grid gap-3 outline-none">
+            <RetentionCutoffSetting
+              description={`Delivered WorkRequests and inactive Solo Sessions archive after ${archiveAfterDays} days.`}
+              inputLabel="Archive cutoff days"
+              label="Archive cutoff"
+              value={archiveAfterDays}
+              onSave={onArchiveAfterDaysChange}
+            />
+            <RetentionCutoffSetting
+              description={`Archived Solo Sessions delete after ${soloSessionDeleteAfterDays} days.`}
+              inputLabel="Deletion cutoff days"
+              label="Deletion cutoff"
+              value={soloSessionDeleteAfterDays}
+              onSave={onSoloSessionDeleteAfterDaysChange}
+            />
           </div>
 
           <SettingsSwitch

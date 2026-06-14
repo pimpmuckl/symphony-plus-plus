@@ -9,12 +9,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings do
 
   @settings_id "local_operator"
   @default_work_request_archive_after_days 14
+  @default_solo_session_delete_after_days 30
   @max_work_request_archive_after_days 3650
 
   @primary_key {:id, :string, autogenerate: false}
   @type t :: %__MODULE__{
           id: String.t(),
           work_request_archive_after_days: pos_integer(),
+          solo_session_delete_after_days: pos_integer(),
           hidden_work_package_ids: [String.t()],
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
@@ -22,6 +24,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings do
 
   schema "sympp_operator_settings" do
     field(:work_request_archive_after_days, :integer, default: @default_work_request_archive_after_days)
+    field(:solo_session_delete_after_days, :integer, default: @default_solo_session_delete_after_days)
     field(:hidden_work_package_ids, StringList, default: [])
 
     timestamps(type: :utc_datetime_usec)
@@ -33,11 +36,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings do
   @spec default_work_request_archive_after_days() :: pos_integer()
   def default_work_request_archive_after_days, do: @default_work_request_archive_after_days
 
+  @spec default_solo_session_delete_after_days() :: pos_integer()
+  def default_solo_session_delete_after_days, do: @default_solo_session_delete_after_days
+
   @spec default() :: t()
   def default do
     %__MODULE__{
       id: @settings_id,
       work_request_archive_after_days: @default_work_request_archive_after_days,
+      solo_session_delete_after_days: @default_solo_session_delete_after_days,
       hidden_work_package_ids: []
     }
   end
@@ -56,9 +63,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings do
 
   defp changeset(settings, attrs) do
     settings
-    |> cast(attrs, [:id, :work_request_archive_after_days, :hidden_work_package_ids])
-    |> validate_required([:id, :work_request_archive_after_days])
+    |> cast(attrs, [:id, :work_request_archive_after_days, :solo_session_delete_after_days, :hidden_work_package_ids])
+    |> validate_required([:id, :work_request_archive_after_days, :solo_session_delete_after_days])
     |> validate_number(:work_request_archive_after_days,
+      greater_than_or_equal_to: 1,
+      less_than_or_equal_to: @max_work_request_archive_after_days
+    )
+    |> validate_number(:solo_session_delete_after_days,
       greater_than_or_equal_to: 1,
       less_than_or_equal_to: @max_work_request_archive_after_days
     )

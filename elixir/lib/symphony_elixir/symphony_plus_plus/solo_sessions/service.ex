@@ -73,6 +73,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service do
   @spec archive_stale(Repository.repo(), DateTime.t(), pos_integer()) :: {:ok, non_neg_integer()} | {:error, error()}
   def archive_stale(repo, now, stale_after_days), do: Repository.archive_stale(repo, now, stale_after_days)
 
+  @spec delete_archived(Repository.repo()) :: {:ok, non_neg_integer()} | {:error, error()}
+  def delete_archived(repo), do: Repository.delete_archived(repo)
+
+  @spec delete_archived(Repository.repo(), DateTime.t()) :: {:ok, non_neg_integer()} | {:error, error()}
+  def delete_archived(repo, now), do: Repository.delete_archived(repo, now)
+
+  @spec delete_archived(Repository.repo(), DateTime.t(), pos_integer()) :: {:ok, non_neg_integer()} | {:error, error()}
+  def delete_archived(repo, now, delete_after_days), do: Repository.delete_archived(repo, now, delete_after_days)
+
   @spec append_entry(Repository.repo(), String.t(), map()) :: {:ok, SoloSessionEntry.t()} | {:error, error()}
   def append_entry(repo, solo_session_id, attrs), do: Repository.append_entry(repo, solo_session_id, attrs)
 

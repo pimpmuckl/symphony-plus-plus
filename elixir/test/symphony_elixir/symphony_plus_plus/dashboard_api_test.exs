@@ -5215,6 +5215,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         |> json_response(200)
 
       assert dashboard_payload["settings"]["work_request_archive_after_days"] == 14
+      assert dashboard_payload["settings"]["solo_session_delete_after_days"] == 30
       assert Enum.any?(dashboard_payload["work_requests"]["work_requests"], &(&1["id"] == request.id))
       assert dashboard_payload["archived_work_requests"]["work_requests"] == []
 
@@ -5224,6 +5225,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         |> json_response(200)
 
       assert archive_payload["settings"]["work_request_archive_after_days"] == 1
+      assert archive_payload["settings"]["solo_session_delete_after_days"] == 30
       refute Enum.any?(archive_payload["dashboard"]["work_requests"]["work_requests"], &(&1["id"] == request.id))
       assert [%{"id" => "WR-LOCAL-ARCHIVE-SETTINGS", "archived_at" => archived_at}] = archive_payload["dashboard"]["archived_work_requests"]["work_requests"]
       assert is_binary(archived_at)
@@ -5236,6 +5238,55 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       assert Enum.any?(restore_payload["dashboard"]["work_requests"]["work_requests"], &(&1["id"] == request.id))
       refute Enum.any?(restore_payload["dashboard"]["archived_work_requests"]["work_requests"], &(&1["id"] == request.id))
       assert get_in(restore_payload, ["work_request", "work_request", "archived_at"]) == nil
+    end)
+  end
+
+  test "local operator dashboard retention archives and deletes Solo Sessions", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      assert {:ok, _settings} =
+               OperatorSettingsService.update(repo, %{
+                 "work_request_archive_after_days" => 1,
+                 "solo_session_delete_after_days" => 1
+               })
+
+      stale_at = DateTime.add(DateTime.utc_now(:microsecond), -2 * 24 * 60 * 60, :second)
+      fresh_at = DateTime.utc_now(:microsecond)
+
+      stale_active =
+        repo
+        |> create_solo_session!("solo-retention-stale-active")
+        |> set_solo_session_last_activity!(repo, stale_at)
+
+      old_archived = create_solo_session!(repo, "solo-retention-old-archived")
+
+      assert {:ok, old_entry} = SoloSessionsService.append_progress(repo, old_archived.id, %{summary: "Old archived note"})
+
+      old_archived =
+        old_archived
+        |> archive_solo_session!(repo)
+        |> set_solo_session_archived_at!(repo, stale_at)
+
+      recent_archived =
+        repo
+        |> create_solo_session!("solo-retention-recent-archived")
+        |> archive_solo_session!(repo)
+        |> set_solo_session_archived_at!(repo, fresh_at)
+
+      payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      solo_sessions = get_in(payload, ["solo_sessions", "solo_sessions"])
+      stale_active_card = Enum.find(solo_sessions, &(&1["id"] == stale_active.id))
+
+      assert stale_active_card["status"] == "archived"
+      assert {:error, :not_found} = SoloSessionsService.get(repo, old_archived.id)
+      refute Enum.any?(solo_sessions, &(&1["id"] == old_archived.id))
+      refute Enum.any?(repo.all(SoloSessionEntry), &(&1.id == old_entry.id))
+      assert Enum.any?(solo_sessions, &(&1["id"] == recent_archived.id and &1["status"] == "archived"))
+      assert payload["settings"]["work_request_archive_after_days"] == 1
+      assert payload["settings"]["solo_session_delete_after_days"] == 1
     end)
   end
 
@@ -6327,6 +6378,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   defp set_work_package_updated_at!(%WorkPackage{} = work_package, repo, %DateTime{} = updated_at) do
     work_package
     |> Ecto.Changeset.change(updated_at: updated_at)
+    |> repo.update!()
+  end
+
+  defp create_solo_session!(repo, caller_id) do
+    assert {:ok, session} =
+             SoloSessionsService.create_or_attach_current(repo, %{
+               repo: "symphony-plus-plus",
+               base_branch: "main",
+               workspace_path: Path.join(@repo_root, "solo-retention-#{caller_id}"),
+               caller_id: caller_id,
+               title: caller_id
+             })
+
+    session
+  end
+
+  defp archive_solo_session!(%SoloSession{} = session, repo) do
+    assert {:ok, archived} = SoloSessionsService.archive(repo, session.id, session.status)
+    archived
+  end
+
+  defp set_solo_session_last_activity!(%SoloSession{} = session, repo, %DateTime{} = timestamp) do
+    session
+    |> Ecto.Changeset.change(last_activity_at: timestamp, updated_at: timestamp)
+    |> repo.update!()
+  end
+
+  defp set_solo_session_archived_at!(%SoloSession{} = session, repo, %DateTime{} = timestamp) do
+    session
+    |> Ecto.Changeset.change(archived_at: timestamp, updated_at: timestamp)
     |> repo.update!()
   end
 
