@@ -57,6 +57,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
   alias SymphonyElixir.SymphonyPlusPlus.ProductTree
   alias SymphonyElixir.SymphonyPlusPlus.ProductTree.{Node, SliceLink}
+  alias SymphonyElixir.SymphonyPlusPlus.Readiness.ReviewLanes
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.RepoIdentity
@@ -7403,9 +7404,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_child_status(%WorkPackage{}, _status, reason), do: {:tool_error, reason}
 
   defp child_ready_approval_gates(repo, state) do
-    required_review_lanes = required_review_lanes(state.work_package)
-
-    with {:ok, reasons} <- readiness_failure_reasons(repo, state, required_review_lanes) do
+    with {:ok, {required_review_lanes, _warnings}} <- ReviewLanes.required(repo, state.work_package),
+         {:ok, reasons} <- readiness_failure_reasons(repo, state, required_review_lanes) do
       reasons = Enum.reject(reasons, &(Map.get(&1, "gate") in ["status_ci_waiting", "status_reviewing"]))
       missing = missing_readiness_gates(reasons)
 
@@ -8861,11 +8861,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- Auth.require_session(session, config.repo),
          :ok <- require_worker_assignment(session.assignment),
          {:ok, blocker_closeout_plan} <- prepare_scoped_blocker_closeout(config.repo, session, [Session.work_package_id(session)], arguments, "mark_ready"),
-         {:ok, {work_package, blocker_closeout}} <- mark_ready_transaction(config.repo, session, blocker_closeout_plan) do
-      {:ok, tool_result(%{"work_package" => work_package_payload(work_package), "ready" => true, "blocker_closeout" => blocker_closeout})}
+         {:ok, {work_package, blocker_closeout, warnings}} <- mark_ready_transaction(config.repo, session, blocker_closeout_plan) do
+      {:ok,
+       tool_result(
+         %{"work_package" => work_package_payload(work_package), "ready" => true, "blocker_closeout" => blocker_closeout}
+         |> maybe_put_readiness_warnings(warnings)
+       )}
     else
       {:tool_error, reason} ->
         invalid_params_error("mark_ready", reason)
+
+      {:error, {:readiness_failed, missing, reasons, warnings}} ->
+        {:error, -32_602, "Invalid params",
+         %{"tool" => "mark_ready", "reason" => "readiness_failed", "missing" => missing, "reasons" => reasons}
+         |> maybe_put_readiness_warnings(warnings)}
 
       {:error, {:readiness_failed, missing, reasons}} ->
         {:error, -32_602, "Invalid params", %{"tool" => "mark_ready", "reason" => "readiness_failed", "missing" => missing, "reasons" => reasons}}
@@ -9235,11 +9244,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            :ok <- lock_work_package(repo, Session.work_package_id(session)),
            {:ok, blocker_closeout} <- apply_prepared_blocker_closeout(repo, session, blocker_closeout_plan),
            {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
-           :ok <- readiness_gates(repo, state),
+           {:ok, readiness_warnings} <- readiness_gates(repo, state),
            ready_status = StateMachine.terminal_readiness_status(state.work_package),
            :ok <- StateMachine.validate_ready_transition(state.work_package, ready_status, actor(session)),
            {:ok, work_package} <- WorkPackageRepository.update_status(repo, state.work_package.id, state.work_package.status, ready_status) do
-        {:ok, {work_package, blocker_closeout}}
+        {:ok, {work_package, blocker_closeout, readiness_warnings}}
       end
     end)
   end
@@ -11282,12 +11291,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp scoped_progress_idempotency_key(tool, idempotency_key, %Session{}), do: tool <> ":" <> idempotency_key
 
   defp readiness_gates(repo, state) do
-    required_review_lanes = required_review_lanes(state.work_package)
-
-    with {:ok, reasons} <- readiness_failure_reasons(repo, state, required_review_lanes) do
+    with {:ok, {required_review_lanes, warnings}} <- ReviewLanes.required(repo, state.work_package),
+         {:ok, reasons} <- readiness_failure_reasons(repo, state, required_review_lanes) do
       missing = missing_readiness_gates(reasons)
 
-      if missing == [], do: :ok, else: {:error, {:readiness_failed, missing, reasons}}
+      if missing == [], do: {:ok, warnings}, else: {:error, {:readiness_failed, missing, reasons, warnings}}
     end
   end
 
@@ -11393,24 +11401,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "review_lanes_complete"
     |> readiness_failure_reason()
     |> Map.merge(%{
-      "required_lanes" => required_lanes,
-      "accepted_lane_aliases" => ReviewProfiles.accepted_lane_aliases(required_lanes),
+      "required_lanes" => redacted_review_lanes(required_lanes),
+      "accepted_lane_aliases" => redacted_accepted_lane_aliases(required_lanes),
       "accepted_verdicts" => ReviewProfiles.passing_verdicts(),
       "latest_attached_review_round" => latest_review_suite_round_summary(state)
     })
     |> drop_nil_values()
   end
 
-  defp readiness_failure_message("status_ci_waiting"), do: "Work package must be in ci_waiting before mark_ready."
-  defp readiness_failure_message("status_reviewing"), do: "Work package must be in reviewing before mark_ready when CI is not required."
-  defp readiness_failure_message("no_active_blockers"), do: "Active blockers must be resolved before mark_ready."
+  defp redacted_review_lanes(lanes), do: Redactor.redact_output(lanes)
+
+  defp redacted_accepted_lane_aliases(required_lanes) do
+    required_lanes
+    |> ReviewProfiles.accepted_lane_aliases()
+    |> Map.new(fn {lane, aliases} -> {Redactor.redact_text(lane), redacted_review_lanes(aliases)} end)
+  end
+
+  defp readiness_failure_message("status_ci_waiting"), do: "Package must be waiting on validation."
+  defp readiness_failure_message("status_reviewing"), do: "Package must be in review or validation."
+  defp readiness_failure_message("no_active_blockers"), do: "Active blockers must be resolved."
   defp readiness_failure_message("plan_complete"), do: "Required package plan nodes must be complete."
   defp readiness_failure_message("acceptance_criteria_met"), do: "Acceptance criteria evidence is missing."
   defp readiness_failure_message("tests_passed"), do: "Focused test evidence is missing."
   defp readiness_failure_message("branch_attached"), do: "Current branch metadata is missing."
   defp readiness_failure_message("pr_attached"), do: "Current PR metadata is missing."
   defp readiness_failure_message("current_pr_state"), do: "Current synced PR state is missing."
-  defp readiness_failure_message("review_suite_result"), do: "Current-head review-suite result evidence is missing."
+  defp readiness_failure_message("review_suite_result"), do: "Current-head Review Suite result is missing."
   defp readiness_failure_message("review_package_submitted"), do: "Current-head review package is missing."
   defp readiness_failure_message("review_artifacts_attached"), do: "Current-head review artifacts are missing."
 
@@ -11498,17 +11514,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       not recommendation_artifact_recorded?(state.artifacts, state.work_package.id)
   end
 
-  defp required_review_lanes(%WorkPackage{} = work_package) do
-    case LifecycleService.policy_for(work_package) do
-      {:ok, policy} ->
-        policy
-        |> get_in([:review_suite, :required])
-        |> ReviewProfiles.normalize_profiles()
-
-      {:error, _reason} ->
-        []
-    end
-  end
+  defp maybe_put_readiness_warnings(payload, []), do: payload
+  defp maybe_put_readiness_warnings(payload, warnings), do: Map.put(payload, "warnings", warnings)
 
   defp merge_required?(%WorkPackage{} = work_package) do
     work_package.kind in ["hotfix", "adapter", "mcp", "skill", "hooks", "phase_child"]

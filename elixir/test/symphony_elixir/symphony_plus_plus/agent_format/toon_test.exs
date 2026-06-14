@@ -4,7 +4,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.ToonTest do
   use ExUnit.Case, async: true
 
   alias SymphonyElixir.SymphonyPlusPlus.AgentFormat.Toon
+  alias SymphonyElixir.SymphonyPlusPlus.AgentFormat.WorkerContext
   alias SymphonyElixir.SymphonyPlusPlus.AgentFormatFixtures
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.State
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.WorkPackageFactory
 
   test "encodes the README tabular array shape" do
     assert Toon.encode(%{"users" => [%{"id" => 1, "name" => "Ada"}, %{"id" => 2, "name" => "Linus"}]}) == """
@@ -162,6 +166,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.ToonTest do
            """
 
     assert byte_size(toon) < byte_size(Jason.encode!(payload))
+  end
+
+  test "review suite payload uses resolved review profiles from state" do
+    work_package =
+      struct(
+        WorkPackage,
+        WorkPackageFactory.attrs(id: "SYMPP-TOON-REVIEW", kind: "mcp", status: "ci_waiting", policy_template: "mcp")
+      )
+
+    state = %State{work_package: work_package, review_suite_required_profiles: ["deep", "raw_secret_review_lane"]}
+
+    assert {:ok, payload} = WorkerContext.virtual_file_payload(state, "review_suite.md", [])
+    assert get_in(payload, ["review_suite", "required_review_profiles"]) == ["deep", "[REDACTED]"]
   end
 
   test "falls back for non-uniform rows and shows when compact JSON can be preferable" do

@@ -2407,6 +2407,113 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert "review_package_submitted" in missing["missing"]
   end
 
+  test "ready package detail follows linked planned-slice review lanes", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-DASH-BRIEF-READY", status: "ready_for_slicing")
+
+    assert {:ok, planned} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(
+                 id: "WRS-DASH-BRIEF-READY",
+                 title: "Brief review dashboard readiness",
+                 review_lanes: ["brief"]
+               )
+             )
+
+    assert {:ok, approved} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+
+    work_package =
+      create_matching_work_package!(repo, work_request, approved,
+        id: "SYMPP-DASH-BRIEF-READY",
+        status: "ready_for_human_merge",
+        policy_template: "mcp"
+      )
+
+    assert {:ok, _linked} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", work_package.id)
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    append_ready_evidence_with_review_artifacts(repo, work_package, ["review-brief-log.txt"])
+
+    append_review_package(
+      repo,
+      work_package,
+      ["review-brief-log.txt"],
+      ~U[2026-05-05 00:00:05Z],
+      "abc123",
+      [%{lane: "brief", verdict: "green"}]
+    )
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert missing["active"] == false
+    refute "review_package_submitted" in missing["missing"]
+    refute "review_lanes_complete" in missing["missing"]
+  end
+
+  test "work request detail falls back to policy lanes for duplicate linked planned slices", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-DASH-DUPLICATE-LINK-READY", status: "ready_for_slicing")
+
+    assert {:ok, first_planned} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-DASH-DUPLICATE-LINK-A", review_lanes: ["brief"])
+             )
+
+    assert {:ok, first_approved} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, first_planned.id, "planned")
+
+    assert {:ok, second_planned} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-DASH-DUPLICATE-LINK-B", review_lanes: ["normal"])
+             )
+
+    work_package =
+      create_matching_work_package!(repo, work_request, first_approved,
+        id: "SYMPP-DASH-DUPLICATE-LINK-READY",
+        status: "ready_for_human_merge",
+        policy_template: "mcp"
+      )
+
+    assert {:ok, _linked} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, first_approved.id, "approved", work_package.id)
+
+    append_ready_evidence_with_review_artifacts(repo, work_package, ["review-brief-log.txt"])
+
+    append_review_package(
+      repo,
+      work_package,
+      ["review-brief-log.txt"],
+      ~U[2026-05-05 00:00:05Z],
+      "abc123",
+      [%{lane: "brief", verdict: "green"}]
+    )
+
+    drop_planned_slice_work_package_unique_index!(repo)
+
+    try do
+      repo.query!(
+        "UPDATE sympp_work_request_planned_slices SET work_package_id = ? WHERE id = ?",
+        [work_package.id, second_planned.id]
+      )
+
+      assert {:ok, payload} = Dashboard.work_request_detail(repo, work_request.id)
+      [first_slice, second_slice] = payload.planned_slices
+
+      assert first_slice.operational_state.key in ["merge_ready", "needs_attention"]
+      assert second_slice.operational_state.key in ["merge_ready", "needs_attention"]
+    after
+      repo.query!(
+        "UPDATE sympp_work_request_planned_slices SET work_package_id = NULL WHERE id = ?",
+        [second_planned.id]
+      )
+
+      create_planned_slice_work_package_unique_index!(repo)
+    end
+  end
+
   test "ready packages with in-progress plan nodes flag missing plan evidence", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
@@ -6248,6 +6355,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     create_work_package!(repo, attrs)
   end
 
+  defp drop_planned_slice_work_package_unique_index!(repo) do
+    repo.query!("DROP INDEX IF EXISTS sympp_work_request_planned_slices_work_package_id_unique_index")
+  end
+
+  defp create_planned_slice_work_package_unique_index!(repo) do
+    repo.query!("""
+    CREATE UNIQUE INDEX IF NOT EXISTS sympp_work_request_planned_slices_work_package_id_unique_index
+    ON sympp_work_request_planned_slices (work_package_id)
+    WHERE work_package_id IS NOT NULL
+    """)
+  end
+
   defp append_blocker_event!(repo, work_package_id, blocker_id, active, overrides) do
     attrs =
       [
@@ -6541,6 +6660,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   end
 
   defp append_review_package(repo, work_package, artifacts, created_at, head_sha) do
+    append_review_package(repo, work_package, artifacts, created_at, head_sha, [
+      %{lane: "brief", verdict: "green"},
+      %{lane: "normal", verdict: "green"}
+    ])
+  end
+
+  defp append_review_package(repo, work_package, artifacts, created_at, head_sha, reviews) do
     assert {:ok, _review_event} =
              PlanningRepository.append_progress_event(repo, %{
                work_package_id: work_package.id,
@@ -6552,10 +6678,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  acceptance_criteria_met: true,
                  tests: ["mix test test/symphony_elixir/symphony_plus_plus"],
                  artifacts: artifacts,
-                 reviews: [
-                   %{lane: "brief", verdict: "green"},
-                   %{lane: "normal", verdict: "green"}
-                 ],
+                 reviews: reviews,
                  head_sha: head_sha
                },
                created_at: created_at

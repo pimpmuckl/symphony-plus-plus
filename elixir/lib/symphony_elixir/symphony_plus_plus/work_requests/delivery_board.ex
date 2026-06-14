@@ -28,14 +28,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   }
 
   @attention_details %{
-    "active_blocker" => {"Active Blocker", "critical", "Linked WorkPackage has an active blocker."},
-    "active_runtime" => {"Active Runtime", "info", "Linked WorkPackage has an active worker or runtime."},
-    "linked_package_active_after_delivery" => {"Active After Delivery", "warning", "Linked WorkPackage still has active runtime evidence after terminal delivery was recorded."},
-    "linked_package_blocked_after_delivery" => {"Blocked After Delivery", "warning", "Linked WorkPackage still has active blocker evidence after terminal delivery was recorded."},
-    "linked_package_status_stale_after_delivery" => {"Stale Package Status", "warning", "Linked WorkPackage raw status does not match the recorded terminal delivery outcome."},
-    "missing_linked_work_package" => {"Missing Linked WorkPackage", "warning", "Slice is marked dispatched without a visible linked WorkPackage."},
-    "pr_merged_without_delivery_outcome" => {"Missing Delivery Closeout", "warning", "Linked WorkPackage has merged PR metadata but no planned-slice delivery outcome."},
-    "terminal_package_without_delivery_outcome" => {"Missing Delivery Closeout", "warning", "Linked WorkPackage is terminal but no planned-slice delivery outcome is recorded."}
+    "active_blocker" => {"Blocker", "critical", "Active blocker."},
+    "active_runtime" => {"Active", "info", "Worker activity is still current."},
+    "linked_package_active_after_delivery" => {"Active After Delivery", "warning", "Worker activity remains after delivery closeout."},
+    "linked_package_blocked_after_delivery" => {"Blocked After Delivery", "warning", "A blocker remains after delivery closeout."},
+    "linked_package_status_stale_after_delivery" => {"Status Needs Repair", "warning", "Package status does not match the delivery outcome."},
+    "missing_linked_work_package" => {"Missing Package", "warning", "Dispatched slice has no visible package."},
+    "pr_merged_without_delivery_outcome" => {"Needs Closeout", "warning", "Merged PR needs delivery closeout."},
+    "terminal_package_without_delivery_outcome" => {"Needs Closeout", "warning", "Terminal package needs delivery closeout."}
   }
 
   @type repo :: module()
@@ -802,7 +802,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   end
 
   defp no_delivery_operational_state(%PlannedSlice{status: "approved"} = planned_slice, nil) do
-    state("ready_for_worker", "Ready For Worker", "neutral", "Approved slice has no linked WorkPackage.", planned_slice.status, nil, nil, [])
+    state("ready_for_worker", "Ready", "neutral", "Approved slice has no linked package.", planned_slice.status, nil, nil, [])
   end
 
   defp no_delivery_operational_state(%PlannedSlice{status: "skipped"} = planned_slice, nil) do
@@ -847,7 +847,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
           "needs_closeout",
           "Needs Closeout",
           "warning",
-          "Linked WorkPackage has merged PR metadata but no planned-slice delivery outcome.",
+          "Merged PR needs delivery closeout.",
           ["pr_merged_without_delivery_outcome"]
         }
 
@@ -856,7 +856,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
           "needs_closeout",
           "Needs Closeout",
           "warning",
-          "Linked WorkPackage is terminal but no planned-slice delivery outcome is recorded.",
+          "Terminal package needs delivery closeout.",
           ["terminal_package_without_delivery_outcome"]
         }
 
@@ -868,10 +868,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   defp active_work_package_state(work_package) do
     cond do
       active_blocker?(work_package) ->
-        {"blocked", "Blocked", "critical", "Linked WorkPackage has an active blocker.", ["active_blocker"]}
+        {"blocked", "Blocked", "critical", "Active blocker.", ["active_blocker"]}
 
       active_runtime?(work_package) ->
-        {"active", "Active", "info", "Linked WorkPackage has active runtime evidence.", ["active_runtime"]}
+        {"active", "Active", "info", "Worker activity is current.", ["active_runtime"]}
 
       true ->
         status_work_package_state(work_package)
@@ -879,24 +879,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   end
 
   defp status_work_package_state(%{raw_status: raw_status}) when raw_status in @ready_statuses do
-    {"merge_ready", "Ready For Merge", "success", "Linked WorkPackage is ready for merge.", []}
+    {"merge_ready", "Ready", "success", "Ready for merge.", []}
   end
 
   defp status_work_package_state(%{raw_status: "reviewing"}) do
-    {"reviewing", "Reviewing", "info", "Linked WorkPackage is in review.", []}
+    {"reviewing", "Reviewing", "info", "Review in progress.", []}
   end
 
   defp status_work_package_state(%{raw_status: "ci_waiting"}) do
-    {"ci_waiting", "CI Waiting", "info", "Linked WorkPackage is waiting on validation or CI.", []}
+    {"ci_waiting", "Validating", "info", "Waiting on validation.", []}
   end
 
   defp status_work_package_state(%{raw_status: "ready_for_worker"}) do
-    {"ready_for_worker", "Ready For Worker", "neutral", "Linked WorkPackage is ready for worker pickup.", []}
+    {"ready_for_worker", "Ready", "neutral", "Ready for worker pickup.", []}
   end
 
   defp status_work_package_state(work_package) do
     key = work_package.raw_status || "unknown"
-    {key, status_label(key), "neutral", "Linked WorkPackage raw status is #{key}.", []}
+    {key, status_label(key), "neutral", "Package status: #{key}.", []}
   end
 
   defp terminal_delivery_attention_codes(%PlannedSliceDelivery{} = delivery, work_package) do
