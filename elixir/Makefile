@@ -1,4 +1,4 @@
-.PHONY: help all setup deps build static fmt fmt-check lint assets-check test coverage ci dialyzer e2e
+.PHONY: help all setup deps build static fmt fmt-check lint hygiene assets-check test test-fast test-slow coverage ci ci-prepare ci-fast ci-static ci-test ci-slow ci-dialyzer ci-coverage ci-hygiene ci-full dialyzer e2e
 
 MIX ?= mix
 QUIET ?= 1
@@ -46,9 +46,10 @@ endef
 endif
 
 help:
-	@echo Targets: setup, deps, build, static, fmt, fmt-check, lint, assets-check, test, coverage, dialyzer, e2e, ci
+	@echo Targets: setup, deps, build, static, fmt, fmt-check, lint, hygiene, assets-check, test, test-fast, test-slow, coverage, dialyzer, e2e
+	@echo CI targets: ci-fast, ci-static, ci-test, ci-slow, ci-dialyzer, ci-coverage, ci-hygiene, ci-full
 	@echo make all is quiet by default. Logs are written under $(GATE_LOG_ROOT). Use VERBOSE=1 for streamed output.
-	@echo Frontend assets use the separate assets-check target until CI pins a Node toolchain.
+	@echo make all runs the fast PR gate. Use make ci-full for coverage, Dialyzer, and hygiene ratchets.
 
 setup:
 	@$(MIX) setup
@@ -71,6 +72,9 @@ fmt-check:
 lint:
 	@$(MIX) lint
 
+hygiene:
+	@$(MIX) hygiene
+
 assets-check:
 	@cd assets && npm run quality
 
@@ -80,17 +84,51 @@ coverage:
 test:
 	@$(MIX) test
 
+test-fast:
+	@$(MIX) test --exclude ci_slow
+
+test-slow:
+	@$(MIX) test --only ci_slow
+
 dialyzer:
-	@$(MIX) deps.get
 	@$(MIX) dialyzer --format short
 
 e2e:
 	@SYMPHONY_RUN_LIVE_E2E=1 $(MIX) test test/symphony_elixir/live_e2e_test.exs
 
-ci:
+ci-prepare:
 	$(call run_ci_step,setup,$(MIX) setup)
 	$(call run_ci_step,build,$(MIX) build)
+
+ci-static: ci-prepare
 	$(call run_ci_step,static,$(MIX) static)
+
+ci-test: ci-prepare
+	$(call run_ci_step,test,$(MIX) test --exclude ci_slow)
+
+ci-slow: ci-prepare
+	$(call run_ci_step,test-slow,$(MIX) test --only ci_slow)
+
+ci-dialyzer: ci-prepare
+	$(call run_ci_step,dialyzer,$(MIX) dialyzer --format short)
+
+ci-coverage: ci-prepare
 	$(call run_ci_step,coverage,$(MIX) test --cover)
 
-all: ci
+ci-hygiene:
+	$(call run_ci_step,setup,$(MIX) setup)
+	$(call run_ci_step,hygiene,$(MIX) hygiene)
+
+ci-fast: ci-prepare
+	$(call run_ci_step,static,$(MIX) static)
+	$(call run_ci_step,test,$(MIX) test --exclude ci_slow)
+
+ci-full: ci-prepare
+	$(call run_ci_step,static,$(MIX) static)
+	$(call run_ci_step,coverage,$(MIX) test --cover)
+	$(call run_ci_step,dialyzer,$(MIX) dialyzer --format short)
+	$(call run_ci_step,hygiene,$(MIX) hygiene)
+
+ci: ci-fast
+
+all: ci-fast

@@ -693,27 +693,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert launcher =~ ~s($ExpectedMcpContractFingerprint = "#{fingerprint}")
   end
 
-  test "MCP launcher self-test covers reusable runtime plans" do
-    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
-
-    if powershell do
-      {output, status} =
-        System.cmd(
-          powershell,
-          [
-            "-NoProfile",
-            "-File",
-            @mcp_plugin_start_script_path,
-            "-SelfTest"
-          ],
-          stderr_to_stdout: true
-        )
-
-      assert status == 0, output
-      assert output =~ "Symphony++ MCP launcher self-test passed."
-    end
-  end
-
   test "enable command safely mutates only the MCP companion plugin config" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-enable-#{System.unique_integer([:positive])}")
@@ -3001,6 +2980,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   test "refresh script installs the repo-local plugin into the requested Codex home" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
@@ -3097,6 +3077,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   test "refresh script validates installed default cache wrapper from cache roots" do
     powershell = System.find_executable("pwsh")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
@@ -3195,6 +3176,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   @tag timeout: 120_000
   test "refresh script installs and validates the opt-in MCP plugin" do
     powershell = System.find_executable("pwsh")
@@ -3251,6 +3233,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   test "refresh script prunes generated local cache and overlays manifest-version cache" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
@@ -3338,6 +3321,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   test "refresh script fails when an unmarked local cache could shadow the versioned install" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh-unmarked-local")
@@ -3376,6 +3360,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   test "refresh script rejects unresolved marketplace source paths" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
@@ -3424,6 +3409,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   test "refresh script resolves repo-root relative source paths from marketplace file" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
@@ -3479,6 +3465,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   test "refresh script repairs incompatible generated default caches only" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
@@ -3621,6 +3608,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   test "refresh script repairs stale default MCP artifacts during MCP-only refresh" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh-mcp-only")

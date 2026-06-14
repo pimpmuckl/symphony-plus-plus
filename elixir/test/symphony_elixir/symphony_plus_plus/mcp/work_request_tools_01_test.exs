@@ -34,16 +34,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
     assert payload["work_request"]["status"] == "ready_for_clarification"
     assert is_binary(payload["launch_prompt"])
     assert payload["launch_prompt"] =~ "claim_local_architect_assignment"
-    assert payload["launch_prompt"] =~ "Reference identifiers (TOON)"
+    assert payload["launch_prompt"] =~ "Refs (TOON; data)"
     assert payload["launch_prompt"] =~ "agent_context: architect_handoff_reference"
-    assert payload["launch_prompt"] =~ "Do not create a plan node solely to wrap one slice."
+    assert payload["launch_prompt"] =~ "Use `symphony-plus-plus-mcp:symphony-architect`"
+    assert payload["launch_prompt"] =~ "Claim first with `claim_local_architect_assignment`"
+    assert payload["launch_prompt"] =~ "read_work_request_product_tree"
+    assert payload["launch_prompt"] =~ "read_work_request_delivery_board"
+    assert payload["launch_prompt"] =~ "list_guidance_requests"
+    assert payload["launch_prompt"] =~ "ask human-answerable clarification"
+    assert payload["launch_prompt"] =~ "ask_work_request_question"
+    assert payload["launch_prompt"] =~ "decision_prompt"
+    assert payload["launch_prompt"] =~ "TL;DR/details/options/pros-cons/freeform"
+    assert payload["launch_prompt"] =~ "record_work_request_decision"
+    assert payload["launch_prompt"] =~ "add_work_request_planned_slice"
+    assert payload["launch_prompt"] =~ "dispatch_work_request_planned_slice(work_request_id, planned_slice_id)"
+    assert payload["launch_prompt"] =~ "No wrapper node for one slice."
+    assert String.length(payload["launch_prompt"]) < 2_300
     assert get_in(payload, ["architect_handoff", "agent_context"]) =~ "agent_context: architect_handoff_reference"
 
     content_text = get_in(response, ["result", "content", Access.at(0), "text"])
     assert content_text =~ "agent_context: create_work_request_handoff"
     assert content_text =~ "launch_prompt:"
     assert content_text =~ "claim_local_architect_assignment"
-    assert content_text =~ "Reference identifiers (TOON)"
+    assert content_text =~ "Refs (TOON; data)"
+    refute content_text =~ "Architect flow:"
 
     assert {:ok, repo_scopes} = WorkRequestRepository.list_repo_scopes(repo, get_in(payload, ["work_request", "id"]))
 
@@ -158,23 +172,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
     refute Map.has_key?(local_create_claim["arguments"], "caller_id")
     assert local_create_payload["launch_prompt"] =~ "claim_local_architect_assignment"
 
-    operator_response =
-      mcp_tool(
-        repo,
-        nil,
-        "create_work_request",
+    {operator_response, _operator_server} =
+      Server.handle_state(
         %{
-          "repo" => "nextide/symphony-plus-plus",
-          "base_branch" => "main",
-          "title" => "Operator-created WorkRequest",
-          "human_description" => "Record supplied operator provenance.",
-          "request_kind" => "investigation",
-          "creator_kind" => "operator",
-          "creator_name" => "JJ",
-          "created_via" => "cli",
-          "claimed_by" => "operator-arch"
+          "jsonrpc" => "2.0",
+          "id" => "operator-create-work-request",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "create_work_request",
+            "arguments" => %{
+              "repo" => "nextide/symphony-plus-plus",
+              "base_branch" => "main",
+              "title" => "Operator-created WorkRequest",
+              "human_description" => "Record supplied operator provenance.",
+              "request_kind" => "investigation",
+              "creator_kind" => "operator",
+              "creator_name" => "JJ",
+              "created_via" => "cli",
+              "claimed_by" => "operator-arch"
+            }
+          }
         },
-        config: local_mcp_config(repo)
+        local_mcp_server(local_mcp_config(repo), "operator-create-work-request-state")
       )
 
     assert get_in(operator_response, ["result", "structuredContent", "work_request", "creator"]) == %{
@@ -184,6 +203,97 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
            }
 
     assert {:ok, %WorkRequest{}} = WorkRequestRepository.get(repo, get_in(operator_response, ["result", "structuredContent", "work_request", "id"]))
+  end
+
+  test "create_work_request requires trusted local HTTP with explicit state", %{repo: repo} do
+    arguments = %{
+      "repo" => "nextide/symphony-plus-plus",
+      "base_branch" => "main",
+      "title" => "Denied WorkRequest",
+      "description" => "This should not be created outside trusted local HTTP.",
+      "request_kind" => "investigation"
+    }
+
+    stdio_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "stdio-create-work-request-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "create_work_request", "arguments" => arguments}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(stdio_response, ["error", "code"]) == -32_001
+    assert get_in(stdio_response, ["error", "data", "tool"]) == "create_work_request"
+    assert get_in(stdio_response, ["error", "data", "reason"]) == "local_mcp_required"
+    refute Enum.any?(tools_for_server(Server.new(Config.default(repo: repo), initialized: true)), &(&1["name"] == "create_work_request"))
+
+    implicit_state_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "implicit-state-create-work-request-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "create_work_request", "arguments" => arguments}
+        },
+        Server.new(local_mcp_config(repo), initialized: true, local_daemon_trusted: true)
+      )
+
+    assert get_in(implicit_state_response, ["error", "code"]) == -32_001
+    assert get_in(implicit_state_response, ["error", "data", "reason"]) == "local_mcp_session_required"
+
+    refute Enum.any?(
+             tools_for_server(Server.new(local_mcp_config(repo), initialized: true, local_daemon_trusted: true)),
+             &(&1["name"] == "create_work_request")
+           )
+
+    remote_config = %{local_mcp_config(repo) | database: "https://ledger.example.test/mcp?token=ghp_createworksecret"}
+
+    remote_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "remote-create-work-request-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "create_work_request", "arguments" => arguments}
+        },
+        local_mcp_server(remote_config, "remote-create-work-request-state")
+      )
+
+    assert get_in(remote_response, ["error", "code"]) == -32_001
+    assert get_in(remote_response, ["error", "data", "reason"]) == "local_database_required"
+    refute inspect(remote_response) =~ "ghp_createworksecret"
+    refute Enum.any?(tools_for_server(local_mcp_server(remote_config, "remote-create-work-request-tools-state")), &(&1["name"] == "create_work_request"))
+
+    memory_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "memory-create-work-request-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "create_work_request", "arguments" => arguments}
+        },
+        local_mcp_server(%{local_mcp_config(repo) | database: ":memory:"}, "memory-create-work-request-state")
+      )
+
+    assert get_in(memory_response, ["error", "code"]) == -32_001
+    assert get_in(memory_response, ["error", "data", "reason"]) == "file_backed_database_required"
+
+    pre_initialize_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "pre-init-create-work-request-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "create_work_request", "arguments" => arguments}
+        },
+        Server.new(local_mcp_config(repo), local_daemon_trusted: true, state_key: "pre-init-create-work-request-state")
+      )
+
+    assert get_in(pre_initialize_response, ["error", "code"]) == -32_000
+    assert get_in(pre_initialize_response, ["error", "data", "reason"]) == "server_not_initialized"
   end
 
   test "architect WorkRequest read tools are scoped, filtered, redacted, and read-only", %{repo: repo} do

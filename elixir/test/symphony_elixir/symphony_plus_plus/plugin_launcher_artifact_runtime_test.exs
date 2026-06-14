@@ -1,11 +1,13 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactRuntimeTest do
   use ExUnit.Case, async: true
 
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.Server
+
   @repo_root Path.expand("../../../../", __DIR__)
   @plugin_manifest_path Path.join(@repo_root, "plugins/symphony-plus-plus/.codex-plugin/plugin.json")
   @plugin_version @plugin_manifest_path |> File.read!() |> Jason.decode!() |> Map.fetch!("version")
   @start_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1")
-  @contract_fingerprint "7111fb1508842226fc973a7f5b4a575326fc8729fd68263401fe7bdeb8124980"
+  @contract_fingerprint Server.mcp_contract_identity()["fingerprint"]
   @source_revision "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
   test "installed MCP launcher validates against a matching runtime artifact without source fallback" do

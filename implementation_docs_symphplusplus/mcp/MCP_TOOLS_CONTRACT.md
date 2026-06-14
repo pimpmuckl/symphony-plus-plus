@@ -17,7 +17,7 @@ Agents claim existing ledger records by id:
 |---|---|---|---|
 | `claim_local_assignment` | `work_package_id` | `claimed_by`, `work_request_id`, `repo`, `base_branch`, `branch`, `worktree_path`, `caller_id` | Bind the current session to one WorkPackage. Runtime metadata is validation context only; the WorkPackage id is the normal claim coordinate. |
 | `claim_local_architect_assignment` | `work_request_id` | `claimed_by`, `architect_anchor_work_package_id`, `repo`, `base_branch`, `phase_id`, `caller_id` | Bind the current session to the architect grant for one WorkRequest. |
-| `create_work_request` | `repo`, `base_branch`, `title`, `request_kind`, plus `description` or `human_description` | status/workflow/creator fields | Create a WorkRequest and return a ledger claim bootstrap for the architect. |
+| `create_work_request` | `repo`, `base_branch`, `title`, `request_kind`, plus `description` or `human_description` | status/workflow/creator fields | In a trusted local HTTP session, create a WorkRequest and return a ledger claim bootstrap for the architect. |
 
 Dispatch and mint responses return non-secret `worker_bootstrap` metadata:
 
@@ -70,11 +70,12 @@ approve scope, merge PRs, advance phases, or close WorkRequest delivery.
 ## Health, Solo, And Local Operator Tools
 
 Unbound sessions expose `sympp.health`, `release_current_assignment`, Solo
-Session tools, scoped worker/architect schemas, the local claim tools, and
-`create_work_request`. Trusted local HTTP sessions with explicit state-key
-continuity and a file-backed ledger also expose safe local operator tools:
+Session tools, scoped worker/architect schemas, and the local claim tools.
+Trusted local HTTP sessions with explicit state-key continuity and a
+file-backed ledger also expose safe local bootstrap/operator tools:
 
 ```text
+create_work_request
 add_work_request_comment
 list_comments
 record_work_request_operator_decision
@@ -140,10 +141,12 @@ secret handoff options.
 ## Discovery And Authorization
 
 `tools/list` is schema discovery, not authorization. Healthy unbound sessions
-show health, Solo tools, scoped schemas, local claim tools, and
-`create_work_request`. Bound worker sessions show worker tools plus trusted
-local bootstrap/operator tools when available. Bound architect sessions show
-architect tools plus trusted local bootstrap/operator tools when available.
+show health, Solo tools, scoped schemas, and local claim tools. Trusted local
+HTTP sessions with explicit state also show `create_work_request` and safe local
+operator tools when a file-backed local ledger is available. Bound worker
+sessions show worker tools plus trusted local bootstrap/operator tools when
+available. Bound architect sessions show architect tools plus trusted local
+bootstrap/operator tools when available.
 Calls still enforce live session role, capabilities, grant scope, lifecycle
 state, local daemon trust, and handler-specific checks.
 

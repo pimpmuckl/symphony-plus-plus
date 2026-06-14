@@ -3,6 +3,8 @@ Code.require_file("../../../support/symphony_plus_plus/mcp_case.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile02Test do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
+  @moduletag :ci_slow
+
   test "WorkPackage worktree MCP tools fail closed outside linked WorkRequest scope", %{repo: repo} do
     {anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-WORKTREE-SCOPE", [
