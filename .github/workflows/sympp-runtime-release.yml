@@ -137,10 +137,13 @@ jobs:
               package.extractall(target)
           PY
 
-          chmod +x "$smoke_root/start-runtime.sh" "$smoke_root/runtime/bin/symphony_elixir" || true
+          test ! -e "$smoke_root/WORKFLOW.md"
+          workflow_file="$GITHUB_WORKSPACE/elixir/WORKFLOW.md"
+          test -f "$workflow_file"
+          chmod +x "$smoke_root/start-runtime.sh" || true
           "$smoke_root/start-runtime.sh" \
             --i-understand-that-this-will-be-running-without-the-usual-guardrails \
-            --workflow "$smoke_root/WORKFLOW.md" \
+            --workflow "$workflow_file" \
             --logs-root "$logs_root" \
             --port 19998 &
           runtime_pid="$!"
@@ -180,9 +183,15 @@ jobs:
           Remove-Item -LiteralPath $smokeRoot, $logsRoot -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $smokeRoot, $logsRoot | Out-Null
           Expand-Archive -LiteralPath $archive.FullName -DestinationPath $smokeRoot -Force
+          if (Test-Path -LiteralPath (Join-Path $smokeRoot "WORKFLOW.md")) {
+            throw "Release artifact must not include placeholder WORKFLOW.md"
+          }
 
           $entrypoint = Join-Path $smokeRoot "start-runtime.ps1"
-          $workflow = Join-Path $smokeRoot "WORKFLOW.md"
+          $workflow = Join-Path $env:GITHUB_WORKSPACE "elixir/WORKFLOW.md"
+          if (-not (Test-Path -LiteralPath $workflow -PathType Leaf)) {
+            throw "Runtime smoke workflow is missing: $workflow"
+          }
           $process = Start-Process `
             -FilePath "pwsh" `
             -ArgumentList @(

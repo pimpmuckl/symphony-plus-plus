@@ -54,7 +54,6 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 elixir_dir="$repo_root/elixir"
 assets_dir="$elixir_dir/assets"
-workflow_template_path="$repo_root/implementation_docs_symphplusplus/templates/WORKFLOW.symfony_pp.md"
 
 if [[ -z "${revision// }" ]] && command -v git >/dev/null 2>&1; then
   revision="$(git -C "$repo_root" rev-parse --verify HEAD 2>/dev/null || true)"
@@ -63,6 +62,15 @@ fi
 revision="$(printf '%s' "$revision" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
 if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
   echo "Missing or invalid Symphony++ source revision. Set SYMPP_SOURCE_REVISION or run from a Git checkout." >&2
+  exit 1
+fi
+
+plugin_manifest_path="$repo_root/plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json"
+[[ -f "$plugin_manifest_path" ]] || { echo "MCP plugin manifest is missing: $plugin_manifest_path" >&2; exit 1; }
+plugin_name="$(grep -E '"name"[[:space:]]*:[[:space:]]*"[^"]+"' "$plugin_manifest_path" | head -n 1 | sed -E 's/.*"name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
+plugin_version="$(grep -E '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$plugin_manifest_path" | head -n 1 | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
+if [[ -z "${plugin_name// }" || -z "${plugin_version// }" ]]; then
+  echo "MCP plugin manifest must declare name and version." >&2
   exit 1
 fi
 
@@ -97,7 +105,6 @@ manifest_path="$output_root/$package_base.manifest.json"
 [[ -d "$elixir_dir" ]] || { echo "Elixir project directory is missing: $elixir_dir" >&2; exit 1; }
 [[ -f "$elixir_dir/mix.exs" ]] || { echo "Mix project is missing: $elixir_dir/mix.exs" >&2; exit 1; }
 [[ -d "$assets_dir" ]] || { echo "Dashboard assets directory is missing: $assets_dir" >&2; exit 1; }
-[[ -f "$workflow_template_path" ]] || { echo "Runtime artifact workflow template is missing: $workflow_template_path" >&2; exit 1; }
 
 if [[ "$dry_run" -eq 1 ]]; then
   echo "Dry run: revision=$revision platform=$platform output=$output_root"
@@ -168,7 +175,6 @@ rm -rf "$staging_dir" "$archive_path" "$manifest_path"
 mkdir -p "$staging_dir"
 cp -R "$release_dir" "$staging_dir/runtime"
 cp -R "$source_static_dir" "$staging_dir/dashboard-static"
-cp "$workflow_template_path" "$staging_dir/WORKFLOW.md"
 cat > "$staging_dir/start-runtime.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -222,7 +228,7 @@ done
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 runtime_bin="$script_dir/runtime/bin/symphony_elixir"
-chmod +x "$runtime_bin" 2>/dev/null || true
+chmod +x "$runtime_bin" "$script_dir"/runtime/bin/* "$script_dir"/runtime/erts-*/bin/* 2>/dev/null || true
 release_tmp="$logs_root/release-tmp"
 mkdir -p "$logs_root" "$release_tmp"
 export SYMPP_RUNTIME_ARTIFACT=1
@@ -287,17 +293,19 @@ $env:PHX_SERVER = "true"
 exit $LASTEXITCODE
 PS1
 
-PYTHON_BIN="$python_bin" "$python_bin" - "$payload_manifest_path" "$revision" "$platform" "$dashboard_fingerprint" "$mcp_contract_fingerprint" <<'PY'
+PYTHON_BIN="$python_bin" "$python_bin" - "$payload_manifest_path" "$revision" "$platform" "$dashboard_fingerprint" "$mcp_contract_fingerprint" "$plugin_name" "$plugin_version" <<'PY'
 import datetime
 import json
 import sys
 
-path, revision, platform, dashboard_fingerprint, mcp_contract_fingerprint = sys.argv[1:6]
+path, revision, platform, dashboard_fingerprint, mcp_contract_fingerprint, plugin_name, plugin_version = sys.argv[1:8]
 now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 payload = {
     "schema_version": 1,
     "plugin": {
         "marketplace": "symphony-plus-plus",
+        "name": plugin_name,
+        "version": plugin_version,
         "packages": ["symphony-plus-plus", "symphony-plus-plus-mcp"],
     },
     "source_revision": revision,
@@ -323,7 +331,7 @@ payload = {
         "manifest": "sympp-runtime-artifact",
         "version": 1,
         "mcp_contract_fingerprint": mcp_contract_fingerprint,
-        "workflow": "WORKFLOW.md",
+        "contract_fingerprint": mcp_contract_fingerprint,
     },
 }
 with open(path, "w", encoding="utf-8", newline="\n") as handle:
@@ -374,6 +382,7 @@ now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00",
 manifest = {
     "schema_version": 1,
     "status": "built",
+    "plugin": payload["plugin"],
     "source_revision": revision,
     "platform": platform,
     "created_at": now,

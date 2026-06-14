@@ -72,7 +72,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RuntimeArtifactReleaseChannelTest do
         assert linux["dashboard"]["asset_root"] == "dashboard-static"
         assert linux["dashboard"]["fingerprint"] == dashboard_fingerprint
         assert linux["runtime"]["command"] == "start-runtime.sh"
-        assert linux["runtime"]["workflow"] == "WORKFLOW.md"
+        refute Map.has_key?(linux["runtime"], "workflow")
 
         assert_launcher_selects!(powershell, output_path, revision)
       after
@@ -118,6 +118,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RuntimeArtifactReleaseChannelTest do
     end
   end
 
+  test "build scripts do not package the explicit-copy workflow template" do
+    for script <- [
+          Path.join(@repo_root, "scripts/build-sympp-runtime-artifact.ps1"),
+          Path.join(@repo_root, "scripts/build-sympp-runtime-artifact.sh")
+        ] do
+      body = File.read!(script)
+
+      refute body =~ "WORKFLOW.symfony_pp.md"
+      refute body =~ "workflowTemplatePath"
+      refute body =~ "workflow_template_path"
+      assert body =~ "runtime/erts-*/bin/*"
+      assert body =~ "runtime/bin/*"
+      assert body =~ "pluginIdentity.name" or body =~ "plugin_name"
+      assert body =~ "pluginIdentity.version" or body =~ "plugin_version"
+    end
+  end
+
   defp write_built_manifest!(root, revision, platform, dashboard_fingerprint) do
     extension = ".zip"
     archive_file = "sympp-runtime-#{revision}-#{platform}#{extension}"
@@ -128,7 +145,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RuntimeArtifactReleaseChannelTest do
     manifest = %{
       "schema_version" => 1,
       "status" => "built",
+      "plugin" => %{
+        "marketplace" => "symphony-plus-plus",
+        "name" => "symphony-plus-plus-mcp",
+        "version" => plugin_version(),
+        "packages" => ["symphony-plus-plus", "symphony-plus-plus-mcp"]
+      },
       "source_revision" => revision,
+      "mcp_contract_fingerprint" => expected_mcp_contract_fingerprint(),
+      "contract_fingerprint" => expected_mcp_contract_fingerprint(),
       "platform" => platform,
       "created_at" => "2026-06-14T00:00:00Z",
       "artifact" => %{

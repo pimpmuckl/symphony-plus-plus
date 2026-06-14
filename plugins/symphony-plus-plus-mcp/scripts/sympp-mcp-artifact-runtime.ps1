@@ -268,15 +268,14 @@ function Resolve-SymppPreparedArtifactRuntime([string]$PluginRoot, [string]$Expe
   if ($null -eq $manifest) {
     return [pscustomobject]@{ status = "artifact_missing"; detail = "manifest_missing"; platform = $platform; runtime = $null }
   }
-  if ([string]::IsNullOrWhiteSpace($ExpectedSourceRevision)) {
-    return [pscustomobject]@{ status = "artifact_missing"; detail = "source_revision_missing"; platform = $platform; manifest_path = $manifest.manifest_path; runtime = $null }
-  }
 
   $pluginName = Get-SymppPluginName $PluginRoot
   $pluginVersion = Get-SymppPluginVersion $PluginRoot
-  $artifact = Select-SymppArtifact $manifest $platform $ExpectedSourceRevision $ExpectedContractFingerprint $pluginName $pluginVersion
+  $requireSourceRevision = Test-SourceCheckoutLaunch $PluginRoot
+  $artifact = Select-SymppArtifact $manifest $platform $ExpectedSourceRevision $ExpectedContractFingerprint $pluginName $pluginVersion $requireSourceRevision
   if ($null -eq $artifact) {
-    return [pscustomobject]@{ status = "artifact_missing"; detail = "matching_artifact_missing"; platform = $platform; manifest_path = $manifest.manifest_path; runtime = $null }
+    $detail = Get-SymppArtifactSelectionMissDetail $manifest $platform $ExpectedSourceRevision $ExpectedContractFingerprint $pluginName $pluginVersion $requireSourceRevision
+    return [pscustomobject]@{ status = "artifact_missing"; detail = $detail; platform = $platform; manifest_path = $manifest.manifest_path; runtime = $null }
   }
 
   $sha256 = Get-SymppArtifactSha256 $artifact
@@ -292,10 +291,11 @@ function Resolve-SymppPreparedArtifactRuntime([string]$PluginRoot, [string]$Expe
     throw "artifact_manifest_invalid: selected Symphony++ runtime artifact must declare dashboard asset_root."
   }
   $runtimeArgs = Resolve-SymppArtifactRuntimeArgs $artifact
-  $cacheRoot = Resolve-SymppArtifactCacheRoot $platform $ExpectedSourceRevision $pluginVersion $sha256
+  $cacheSourceRevision = Resolve-SymppArtifactCacheSourceRevision $manifest $artifact $ExpectedSourceRevision $requireSourceRevision
+  $cacheRoot = Resolve-SymppArtifactCacheRoot $platform $cacheSourceRevision $pluginVersion $sha256
   $extractRoot = Join-Path $cacheRoot "runtime"
   $archivePath = Join-Path $cacheRoot "artifact.zip"
-  $runtimeDescriptor = New-SymppArtifactRuntimeDescriptor $extractRoot $entrypoint $workflow $runtimeArgs $sha256 $platform $ExpectedSourceRevision $pluginVersion $manifest.manifest_path $dashboardRoot $dashboardFingerprint
+  $runtimeDescriptor = New-SymppArtifactRuntimeDescriptor $extractRoot $entrypoint $workflow $runtimeArgs $sha256 $platform $cacheSourceRevision $pluginVersion $manifest.manifest_path $dashboardRoot $dashboardFingerprint
 
   if ($ValidateOnly) {
     if (-not $PrepareArtifact) {
@@ -309,7 +309,7 @@ function Resolve-SymppPreparedArtifactRuntime([string]$PluginRoot, [string]$Expe
       }
     }
 
-    $prepareDetail = Ensure-SymppArtifactPrepared $artifact $manifest.manifest_path $cacheRoot $archivePath $extractRoot $entrypoint $sha256 $platform $ExpectedSourceRevision $pluginVersion $dashboardRoot $dashboardFingerprint
+    $prepareDetail = Ensure-SymppArtifactPrepared $artifact $manifest.manifest_path $cacheRoot $archivePath $extractRoot $entrypoint $sha256 $platform $cacheSourceRevision $pluginVersion $dashboardRoot $dashboardFingerprint
     return [pscustomobject]@{
       status = "artifact_selected"
       detail = $prepareDetail
@@ -320,7 +320,7 @@ function Resolve-SymppPreparedArtifactRuntime([string]$PluginRoot, [string]$Expe
     }
   }
 
-  $prepareDetail = Ensure-SymppArtifactPrepared $artifact $manifest.manifest_path $cacheRoot $archivePath $extractRoot $entrypoint $sha256 $platform $ExpectedSourceRevision $pluginVersion $dashboardRoot $dashboardFingerprint
+  $prepareDetail = Ensure-SymppArtifactPrepared $artifact $manifest.manifest_path $cacheRoot $archivePath $extractRoot $entrypoint $sha256 $platform $cacheSourceRevision $pluginVersion $dashboardRoot $dashboardFingerprint
   if ($prepareDetail -eq "cache_ready") {
     Write-Diagnostic "ready: reusing verified Symphony++ runtime artifact at $extractRoot."
   }
@@ -380,6 +380,8 @@ function Resolve-LaunchArtifactSelection(
       if ($preparedArtifact.status -eq "ready" -and $preparedArtifact.runtime) {
         $artifactRuntime = $preparedArtifact.runtime
         $runtimeMode = "artifact"
+        $sourceRevision = [string]$artifactRuntime.source_revision
+        Set-SymppSourceRevisionEnvironment $sourceRevision
         Write-Diagnostic "ready: verified Symphony++ runtime artifact selected for $($artifactRuntime.platform)."
       } elseif (-not $SourceFallbackAllowed) {
         Write-Diagnostic "$($preparedArtifact.status): $($preparedArtifact.detail)"

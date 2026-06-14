@@ -200,6 +200,58 @@ def normalize_platform(platform):
     abi = parts[2] if len(parts) >= 3 else ("msvc" if parts[0] == "windows" else None)
     return {"key": f"{parts[0]}-{parts[1]}", "os": parts[0], "arch": arch, "abi": abi}
 
+def normalize_mcp_contract_fingerprint(value):
+    value = str(value or "").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", value):
+        return value
+    return ""
+
+def resolve_mcp_contract_fingerprint(manifest):
+    for key in ("mcp_contract_fingerprint", "contract_fingerprint"):
+        fingerprint = normalize_mcp_contract_fingerprint(manifest.get(key))
+        if fingerprint:
+            return fingerprint
+    launcher_contract = manifest.get("launcher_contract") or {}
+    for key in ("mcp_contract_fingerprint", "contract_fingerprint"):
+        fingerprint = normalize_mcp_contract_fingerprint(launcher_contract.get(key))
+        if fingerprint:
+            return fingerprint
+    return ""
+
+def launcher_contract_with_fingerprint(manifest, fingerprint):
+    launcher_contract = {
+        key: value
+        for key, value in dict(manifest.get("launcher_contract") or {}).items()
+        if key not in {"workflow", "workflow_path"}
+    }
+    launcher_contract["mcp_contract_fingerprint"] = fingerprint
+    launcher_contract["contract_fingerprint"] = fingerprint
+    return launcher_contract
+
+def resolve_plugin_identity(manifest, source_revision):
+    plugin = require(manifest, "plugin", "Artifact manifest")
+    name = str(require(plugin, "name", "Artifact manifest plugin")).strip()
+    version = str(require(plugin, "version", "Artifact manifest plugin")).strip()
+    if not name or not version:
+        fail("Artifact manifest plugin must declare name and version.")
+    identity = {"name": name, "version": version}
+    if plugin.get("marketplace"):
+        identity["marketplace"] = str(plugin.get("marketplace"))
+    if "packages" in plugin:
+        identity["packages"] = list(plugin.get("packages") or [])
+    identity["source_revision"] = source_revision
+    return identity
+
+def plugin_identity_key(plugin):
+    return "|".join(
+        [
+            str(plugin.get("marketplace", "")),
+            str(plugin.get("name", "")),
+            str(plugin.get("version", "")),
+            ",".join(plugin.get("packages", [])),
+        ]
+    )
+
 def read_json(path):
     with open(path, "r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -233,10 +285,10 @@ def read_built_manifest(path):
     dashboard_fingerprint = str(require(dashboard, "fingerprint", "Artifact manifest dashboard"))
     if not re.fullmatch(r"[0-9a-f]{64}", dashboard_fingerprint):
         fail(f"Artifact manifest dashboard.fingerprint must be a SHA256 hex digest: {full_path}")
-    launcher_contract = require(manifest, "launcher_contract", "Artifact manifest")
-    contract_fingerprint = str(require(launcher_contract, "mcp_contract_fingerprint", "Artifact manifest launcher_contract")).lower()
-    if not re.fullmatch(r"[0-9a-f]{64}", contract_fingerprint):
-        fail(f"Artifact manifest launcher_contract.mcp_contract_fingerprint must be a SHA256 hex digest: {full_path}")
+    contract_fingerprint = resolve_mcp_contract_fingerprint(manifest)
+    if not contract_fingerprint:
+        fail(f"Artifact manifest must declare mcp_contract_fingerprint or contract_fingerprint: {full_path}")
+    plugin_identity = resolve_plugin_identity(manifest, revision)
     return {
         "path": full_path,
         "manifest": manifest,
@@ -248,15 +300,9 @@ def read_built_manifest(path):
         "artifact_sha256": expected_sha,
         "artifact_size": os.path.getsize(artifact_path),
         "contract_fingerprint": contract_fingerprint,
-    }
-
-def plugin_metadata(source_revision):
-    plugin = read_json(os.path.join(repo_root, "plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json"))
-    return {
-        "name": plugin["name"],
-        "version": plugin["version"],
-        "marketplace": "symphony-plus-plus",
-        "source_revision": source_revision,
+        "launcher_contract": launcher_contract_with_fingerprint(manifest, contract_fingerprint),
+        "plugin": plugin_identity,
+        "plugin_key": plugin_identity_key(plugin_identity),
     }
 
 def asset_url(base_url, filename):
@@ -279,17 +325,22 @@ if len(records) == 1 and not published_base_url.strip():
         "channel": channel,
         "advanced_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
         "source_revision": record["revision"],
+        "plugin": record["plugin"],
+        "mcp_contract_fingerprint": record["contract_fingerprint"],
+        "contract_fingerprint": record["contract_fingerprint"],
         "platform": record["platform"]["key"],
         "artifact": {
             "url": published_artifact_url,
             "sha256": record["artifact_sha256"],
             "size_bytes": record["artifact_size"],
+            "mcp_contract_fingerprint": record["contract_fingerprint"],
+            "contract_fingerprint": record["contract_fingerprint"],
         },
         "manifest": {
             "url": published_manifest_url,
             "sha256": record["manifest_sha256"],
         },
-        "launcher_contract": record["manifest"].get("launcher_contract"),
+        "launcher_contract": record["launcher_contract"],
     }
     output_path = channel_output_path if os.path.isabs(channel_output_path) else os.path.join(repo_root, channel_output_path)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -321,6 +372,11 @@ contract_fingerprints = sorted({record["contract_fingerprint"] for record in rec
 if len(contract_fingerprints) != 1:
     fail(f"Release-channel artifacts must share one MCP contract fingerprint; found {', '.join(contract_fingerprints)}.")
 contract_fingerprint = contract_fingerprints[0]
+plugin_keys = sorted({record["plugin_key"] for record in records})
+if len(plugin_keys) != 1:
+    fail("Release-channel artifacts must share one plugin identity.")
+plugin = dict(records[0]["plugin"])
+plugin["source_revision"] = source_revision
 manifest_version_value = manifest_version or release_tag or source_revision[:12]
 artifacts = []
 for record in sorted(records, key=lambda item: item["platform"]["key"]):
@@ -330,6 +386,7 @@ for record in sorted(records, key=lambda item: item["platform"]["key"]):
         "platform": {"os": platform["os"], "arch": platform["arch"], "abi": platform["abi"]},
         "source_revision": source_revision,
         "mcp_contract_fingerprint": contract_fingerprint,
+        "contract_fingerprint": contract_fingerprint,
         "archive": {
             "url": asset_url(published_base_url, record["artifact_file"]),
             "sha256": record["artifact_sha256"],
@@ -341,7 +398,6 @@ for record in sorted(records, key=lambda item: item["platform"]["key"]):
         },
         "runtime": {
             "command": entrypoint,
-            "workflow": "WORKFLOW.md",
             "args": [],
             "mcp_path": "/mcp",
             "health_path": "/health",
@@ -362,7 +418,7 @@ for record in sorted(records, key=lambda item: item["platform"]["key"]):
 
 aggregate = {
     "schema_version": 1,
-    "plugin": plugin_metadata(source_revision),
+    "plugin": plugin,
     "release": {
         "channel": channel,
         "manifest_version": manifest_version_value,
@@ -377,10 +433,12 @@ aggregate = {
     },
     "source_revision": source_revision,
     "mcp_contract_fingerprint": contract_fingerprint,
+    "contract_fingerprint": contract_fingerprint,
     "launcher_contract": {
         "manifest": "sympp-runtime-artifact",
         "version": 1,
         "mcp_contract_fingerprint": contract_fingerprint,
+        "contract_fingerprint": contract_fingerprint,
     },
     "artifacts": artifacts,
 }

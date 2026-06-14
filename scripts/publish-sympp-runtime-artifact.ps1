@@ -95,15 +95,84 @@ function Require-Url([string]$Value, [string]$Label) {
   }
 }
 
-function Get-PluginMetadata([string]$RepoRoot, [string]$SourceRevision) {
-  $manifestPath = Join-Path $RepoRoot "plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json"
-  $plugin = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-  [ordered]@{
-    name = [string]$plugin.name
-    version = [string]$plugin.version
-    marketplace = "symphony-plus-plus"
-    source_revision = $SourceRevision
+function Normalize-McpContractFingerprint([string]$Fingerprint) {
+  if ([string]::IsNullOrWhiteSpace($Fingerprint)) {
+    return $null
   }
+
+  $normalized = $Fingerprint.Trim().ToLowerInvariant()
+  if ($normalized -match '^[0-9a-f]{64}$') {
+    return $normalized
+  }
+
+  return $null
+}
+
+function Resolve-McpContractFingerprint($Manifest) {
+  foreach ($name in @("mcp_contract_fingerprint", "contract_fingerprint")) {
+    if ($Manifest.PSObject.Properties.Name -contains $name) {
+      $fingerprint = Normalize-McpContractFingerprint ([string]$Manifest.$name)
+      if ($fingerprint) {
+        return $fingerprint
+      }
+    }
+  }
+
+  if ($Manifest.PSObject.Properties.Name -contains "launcher_contract" -and $null -ne $Manifest.launcher_contract) {
+    foreach ($name in @("mcp_contract_fingerprint", "contract_fingerprint")) {
+      if ($Manifest.launcher_contract.PSObject.Properties.Name -contains $name) {
+        $fingerprint = Normalize-McpContractFingerprint ([string]$Manifest.launcher_contract.$name)
+        if ($fingerprint) {
+          return $fingerprint
+        }
+      }
+    }
+  }
+
+  return $null
+}
+
+function New-LauncherContract($Manifest, [string]$McpContractFingerprint) {
+  $contract = [ordered]@{}
+  if ($Manifest.PSObject.Properties.Name -contains "launcher_contract" -and $null -ne $Manifest.launcher_contract) {
+    foreach ($property in $Manifest.launcher_contract.PSObject.Properties) {
+      if ($property.Name -notin @("workflow", "workflow_path")) {
+        $contract[$property.Name] = $property.Value
+      }
+    }
+  }
+
+  $contract["mcp_contract_fingerprint"] = $McpContractFingerprint
+  $contract["contract_fingerprint"] = $McpContractFingerprint
+  return $contract
+}
+
+function Resolve-PluginIdentity($Manifest, [string]$SourceRevision) {
+  $plugin = Require-Property $Manifest "plugin" "Artifact manifest"
+  $name = ([string](Require-Property $plugin "name" "Artifact manifest plugin")).Trim()
+  $version = ([string](Require-Property $plugin "version" "Artifact manifest plugin")).Trim()
+  if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($version)) {
+    throw "Artifact manifest plugin must declare name and version."
+  }
+
+  $identity = [ordered]@{
+    name = $name
+    version = $version
+  }
+  if ($plugin.PSObject.Properties.Name -contains "marketplace") {
+    $identity["marketplace"] = [string]$plugin.marketplace
+  }
+  if ($plugin.PSObject.Properties.Name -contains "packages") {
+    $identity["packages"] = @($plugin.packages)
+  }
+  $identity["source_revision"] = $SourceRevision
+
+  $identity
+}
+
+function Get-PluginIdentityKey($Plugin) {
+  $packages = if ($Plugin.Contains("packages")) { @($Plugin["packages"]) -join "," } else { "" }
+  "$($Plugin["marketplace"])|$($Plugin["name"])|$($Plugin["version"])|$packages"
 }
 
 function Get-ManifestFiles {
@@ -161,11 +230,11 @@ function Read-BuiltManifest([string]$Path) {
     throw "Artifact manifest dashboard.fingerprint must be a SHA256 hex digest: $fullPath"
   }
 
-  $launcherContract = Require-Property $manifest "launcher_contract" "Artifact manifest"
-  $contractFingerprint = ([string](Require-Property $launcherContract "mcp_contract_fingerprint" "Artifact manifest launcher_contract")).ToLowerInvariant()
-  if ($contractFingerprint -notmatch '^[0-9a-f]{64}$') {
-    throw "Artifact manifest launcher_contract.mcp_contract_fingerprint must be a SHA256 hex digest: $fullPath"
+  $contractFingerprint = Resolve-McpContractFingerprint $manifest
+  if (-not $contractFingerprint) {
+    throw "Artifact manifest must declare mcp_contract_fingerprint or contract_fingerprint: $fullPath"
   }
+  $pluginIdentity = Resolve-PluginIdentity $manifest $revision
 
   [pscustomobject]@{
     path = $fullPath
@@ -178,6 +247,9 @@ function Read-BuiltManifest([string]$Path) {
     artifact_sha256 = $expectedSha
     artifact_size = (Get-Item -LiteralPath $artifactPath).Length
     contract_fingerprint = $contractFingerprint
+    launcher_contract = New-LauncherContract $manifest $contractFingerprint
+    plugin = $pluginIdentity
+    plugin_key = Get-PluginIdentityKey $pluginIdentity
   }
 }
 
@@ -209,17 +281,22 @@ if ($records.Count -eq 1 -and [string]::IsNullOrWhiteSpace($PublishedBaseUrl)) {
     channel = $Channel
     advanced_at = (Get-Date).ToUniversalTime().ToString("o")
     source_revision = $record.revision
+    plugin = $record.plugin
+    mcp_contract_fingerprint = $record.contract_fingerprint
+    contract_fingerprint = $record.contract_fingerprint
     platform = $record.platform.key
     artifact = [ordered]@{
       url = $PublishedArtifactUrl
       sha256 = $record.artifact_sha256
       size_bytes = $record.artifact_size
+      mcp_contract_fingerprint = $record.contract_fingerprint
+      contract_fingerprint = $record.contract_fingerprint
     }
     manifest = [ordered]@{
       url = $PublishedManifestUrl
       sha256 = $record.manifest_sha256
     }
-    launcher_contract = $record.manifest.launcher_contract
+    launcher_contract = $record.launcher_contract
   }
 
   $channelPath = if ([System.IO.Path]::IsPathRooted($ChannelOutputPath)) { $ChannelOutputPath } else { Join-Path $repoRoot $ChannelOutputPath }
@@ -251,7 +328,15 @@ foreach ($platform in $required) {
   }
 }
 
-$plugin = Get-PluginMetadata $repoRoot $sourceRevision
+$pluginKeys = @($records | ForEach-Object { $_.plugin_key } | Select-Object -Unique)
+if ($pluginKeys.Count -ne 1) {
+  throw "Release-channel artifacts must share one plugin identity."
+}
+$plugin = [ordered]@{}
+foreach ($property in $records[0].plugin.GetEnumerator()) {
+  $plugin[$property.Key] = $property.Value
+}
+$plugin["source_revision"] = $sourceRevision
 $contractFingerprints = @($records | ForEach-Object { $_.contract_fingerprint } | Select-Object -Unique)
 if ($contractFingerprints.Count -ne 1) {
   throw "Release-channel artifacts must share one MCP contract fingerprint; found $($contractFingerprints -join ', ')."
@@ -274,6 +359,7 @@ foreach ($record in @($records | Sort-Object { $_.platform.key })) {
     }
     source_revision = $sourceRevision
     mcp_contract_fingerprint = $contractFingerprint
+    contract_fingerprint = $contractFingerprint
     archive = [ordered]@{
       url = New-AssetUrl $PublishedBaseUrl $record.artifact_file
       sha256 = $record.artifact_sha256
@@ -285,7 +371,6 @@ foreach ($record in @($records | Sort-Object { $_.platform.key })) {
     }
     runtime = [ordered]@{
       command = $entrypoint
-      workflow = "WORKFLOW.md"
       args = @()
       mcp_path = "/mcp"
       health_path = "/health"
@@ -322,10 +407,12 @@ $aggregate = [ordered]@{
   }
   source_revision = $sourceRevision
   mcp_contract_fingerprint = $contractFingerprint
+  contract_fingerprint = $contractFingerprint
   launcher_contract = [ordered]@{
     manifest = "sympp-runtime-artifact"
     version = 1
     mcp_contract_fingerprint = $contractFingerprint
+    contract_fingerprint = $contractFingerprint
   }
   artifacts = $aggregateArtifacts
 }

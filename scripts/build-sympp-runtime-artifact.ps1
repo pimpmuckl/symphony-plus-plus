@@ -49,6 +49,20 @@ function Resolve-Revision([string]$Candidate, [string]$RepoRoot) {
   $normalized
 }
 
+function Resolve-PluginIdentity([string]$RepoRoot) {
+  $pluginPath = Join-Path $RepoRoot "plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json"
+  Require-Path $pluginPath "MCP plugin manifest" | Out-Null
+
+  $plugin = Get-Content -LiteralPath $pluginPath -Raw | ConvertFrom-Json
+  $name = ([string]$plugin.name).Trim()
+  $version = ([string]$plugin.version).Trim()
+  if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($version)) {
+    throw "MCP plugin manifest must declare name and version."
+  }
+
+  [pscustomobject]@{ name = $name; version = $version }
+}
+
 function Resolve-Platform([string]$Candidate) {
   if (-not [string]::IsNullOrWhiteSpace($Candidate)) {
     return $Candidate.Trim().ToLowerInvariant()
@@ -151,12 +165,12 @@ $elixirDir = Join-Path $repoRoot "elixir"
 $assetsDir = Join-Path $elixirDir "assets"
 $outputRoot = if ([System.IO.Path]::IsPathRooted($OutputDir)) { $OutputDir } else { Join-Path $repoRoot $OutputDir }
 $revision = Resolve-Revision $Revision $repoRoot
+$pluginIdentity = Resolve-PluginIdentity $repoRoot
 $platformId = Resolve-Platform $Platform
 $packageBaseName = "sympp-runtime-$revision-$platformId"
 $stagingDir = Join-Path $outputRoot "$packageBaseName-staging"
 $releaseDir = Join-Path $elixirDir "_build/prod/rel/symphony_elixir"
 $sourceStaticDir = Join-Path $elixirDir "priv/static"
-$workflowTemplatePath = Join-Path $repoRoot "implementation_docs_symphplusplus/templates/WORKFLOW.symfony_pp.md"
 $payloadManifestPath = Join-Path $stagingDir "runtime-manifest.json"
 $archivePath = Join-Path $outputRoot "$packageBaseName.zip"
 $manifestPath = Join-Path $outputRoot "$packageBaseName.manifest.json"
@@ -164,7 +178,6 @@ $manifestPath = Join-Path $outputRoot "$packageBaseName.manifest.json"
 Require-Path $elixirDir "Elixir project directory" -Directory | Out-Null
 Require-Path (Join-Path $elixirDir "mix.exs") "mix project" | Out-Null
 Require-Path $assetsDir "Dashboard assets directory" -Directory | Out-Null
-Require-Path $workflowTemplatePath "Runtime artifact workflow template" | Out-Null
 
 if ($DryRun) {
   Write-Host "Dry run: revision=$revision platform=$platformId output=$outputRoot"
@@ -206,7 +219,6 @@ Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContin
 New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
 Copy-Item -LiteralPath $releaseDir -Destination (Join-Path $stagingDir "runtime") -Recurse
 Copy-Item -LiteralPath $sourceStaticDir -Destination (Join-Path $stagingDir "dashboard-static") -Recurse
-Copy-Item -LiteralPath $workflowTemplatePath -Destination (Join-Path $stagingDir "WORKFLOW.md")
 @'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -260,7 +272,7 @@ done
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 runtime_bin="$script_dir/runtime/bin/symphony_elixir"
-chmod +x "$runtime_bin" 2>/dev/null || true
+chmod +x "$runtime_bin" "$script_dir"/runtime/bin/* "$script_dir"/runtime/erts-*/bin/* 2>/dev/null || true
 release_tmp="$logs_root/release-tmp"
 mkdir -p "$logs_root" "$release_tmp"
 export SYMPP_RUNTIME_ARTIFACT=1
@@ -328,6 +340,8 @@ $payload = [ordered]@{
   schema_version = 1
   plugin = [ordered]@{
     marketplace = "symphony-plus-plus"
+    name = $pluginIdentity.name
+    version = $pluginIdentity.version
     packages = @("symphony-plus-plus", "symphony-plus-plus-mcp")
   }
   source_revision = $revision
@@ -353,7 +367,7 @@ $payload = [ordered]@{
     manifest = "sympp-runtime-artifact"
     version = 1
     mcp_contract_fingerprint = $mcpContractFingerprint
-    workflow = "WORKFLOW.md"
+    contract_fingerprint = $mcpContractFingerprint
   }
 }
 
@@ -368,6 +382,7 @@ $archiveItem = Get-Item -LiteralPath $archivePath
 $manifest = [ordered]@{
   schema_version = 1
   status = "built"
+  plugin = $payload.plugin
   source_revision = $revision
   platform = $platformId
   created_at = (Get-Date).ToUniversalTime().ToString("o")
