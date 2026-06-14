@@ -88,10 +88,8 @@ payload. Installed plugin launchers ignore local source-root hints; use
 `codex plugin marketplace upgrade` to change the installed runtime payload. When the launcher starts, it writes the actual backend
 port, dashboard URL, process ids, and log paths to
 `%USERPROFILE%\.agents\splusplus\runtime\codex-plugin.json` by default.
-Override with `SYMPP_RUNTIME_FILE`, `SYMPP_BACKEND_PORT`,
-`SYMPP_DASHBOARD_PORT`, `SYMPP_BACKEND_URL`, or `SYMPP_DASHBOARD_ORIGIN` when a
-specific local setup needs to divert. Runtime identity is the agent-facing MCP
-contract fingerprint plus the backend and dashboard endpoints. New Codex
+Runtime identity is the agent-facing MCP contract fingerprint plus the backend
+and dashboard endpoints. New Codex
 sessions attach to a healthy matching runtime; if the running runtime exposes an
 incompatible MCP contract, the launcher starts a new managed runtime and records
 new leases against that runtime key. When the last bridge lease for a runtime
@@ -101,14 +99,11 @@ backend on `127.0.0.1:19998` that reports the same agent-facing MCP contract
 fingerprint as the launcher is recorded as `external_loopback` when it was not
 started by the bridge. In artifact mode, the dashboard URL is normally
 `http://127.0.0.1:19998/sympp/board`; a separate `19999` listener is only
-expected for explicit source/Vite dashboard runs or a custom
-`SYMPP_DASHBOARD_ORIGIN`. The source revision remains in health and
-runtime-state diagnostics, but it is not the reuse boundary when the MCP
-contract is compatible. That mode is intentionally attach-only: bridge exits
-must not stop the backend or dashboard, but later launches may reuse it quickly
-and prune stale managed runtime records around it. Explicit `SYMPP_BACKEND_URL` and
-`SYMPP_DASHBOARD_ORIGIN` targets are external, remain operator-owned, and are
-not promoted into later implicit reuse.
+expected for source/Vite dashboard development. The source revision remains in
+health and runtime-state diagnostics, but it is not the reuse boundary when the
+MCP contract is compatible. That mode is intentionally attach-only: bridge
+exits must not stop the backend or dashboard, but later launches may reuse it
+quickly and prune stale managed runtime records around it.
 
 To prove the daemon independently of Codex plugin loading, run this from the
 source repository checkout root after the launcher or `mix sympp.cockpit` is
@@ -125,11 +120,6 @@ latest skill Markdown; refresh the local plugin cache, then reload or start
 that dedicated MCP-enabled session after changing plugin config, cache state,
 or skill files. If the smoke reports `stale_or_unverified_daemon` or
 `stale_daemon_source_revision_mismatch`, an old manual cockpit may still own
-the port. Dedicated plugin launchers reuse untracked local backends only when
-their MCP health reports the same agent-facing contract fingerprint; source
-revision mismatches are emitted as diagnostics. Dashboards are reused from
-recorded managed state or explicit `SYMPP_DASHBOARD_ORIGIN`, otherwise a new
-managed dashboard is started on an available port only when the reused backend
-source matches the launcher source. Set
-`SYMPP_BACKEND_URL` or `SYMPP_DASHBOARD_ORIGIN` only when you intentionally want
-to reuse an operator-owned external process.
+the port. Dedicated plugin launchers reuse local backends only when their MCP
+health reports the same agent-facing contract fingerprint; source revision
+mismatches are emitted as diagnostics.

@@ -36,8 +36,7 @@ starts the singleton backend/dashboard from the marketplace cache, refreshes
 contract-keyed runtime state, runs the MCP HTTP smoke, checks the dashboard
 route, and prints both stopped and left-running PIDs. Installed artifact
 runtimes normally serve both MCP and the packaged dashboard from `19998`;
-`19999` is only expected for explicit source/Vite dashboard runs or custom
-dashboard-origin setups.
+`19999` is only a source/Vite development detail.
 
 If `codex plugin marketplace upgrade` cannot move the old installed cache out
 of the way, the helper can still recover when the marketplace source snapshot is
