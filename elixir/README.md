@@ -311,9 +311,23 @@ The observability UI now runs on a minimal Phoenix stack:
 make all
 ```
 
-`make all` is quiet by default. It prints one line per gate step and writes full
-logs to `_build/make-logs/`. Run `make all VERBOSE=1` to stream Mix output while
+`make all` is the fast PR gate: format, specs, Credo, and fast tests. It is
+quiet by default, prints one line per step, and writes full logs to
+`_build/make-logs/`. Run `make all VERBOSE=1` to stream Mix output while
 debugging.
+
+Use split targets when validating one gate at a time:
+
+```bash
+make ci-static
+make ci-test
+make ci-dialyzer
+make ci-coverage
+make ci-hygiene
+```
+
+Use `make ci-full` before release-style handoff when you need coverage,
+Dialyzer, and hygiene ratchets in one local command.
 
 Run the real external end-to-end test only when you want Symphony to create disposable Linear
 resources and launch a real `codex app-server` session:

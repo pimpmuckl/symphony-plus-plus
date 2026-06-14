@@ -9,20 +9,22 @@ known gaps are documented with evidence.
 Run from the repository root when `make` and `mix` are on `PATH`:
 
 ```powershell
-make -C elixir all
+make -C elixir ci-full
 ```
 
 If Elixir is managed by `mise` instead of being on `PATH`, pass the Mix command
 through the Makefile:
 
 ```powershell
-make -C elixir all MIX="mise exec -- mix"
+make -C elixir ci-full MIX="mise exec -- mix"
 ```
 
-That gate runs dependency setup, build, format check, lint/static checks,
-coverage, and Dialyzer through the Elixir `Makefile`.
+That gate runs dependency setup, build, the fast static checks, coverage,
+Dialyzer, and hygiene ratchets through the Elixir `Makefile`. `make -C elixir
+all` is the fast PR gate for format, specs, Credo, and fast tests; it is not the
+release-readiness gate.
 
-The Elixir lint/static step includes `mix code_quality.guard`. The Mix guard
+The Elixir hygiene step includes `mix code_quality.guard`. The Mix guard
 scans backend and frontend source paths, applies separate production and test
 line/function-complexity defaults, and keeps measured legacy oversize files in
 an explicit ratchet allowlist. Frontend ESLint applies the matching
@@ -64,14 +66,14 @@ PR so the gate remains evidence-backed.
 
 A release candidate is honest only when the PR records:
 
-- The exact `make -C elixir all` result, including any environment blocker.
+- The exact `make -C elixir ci-full` result, including any environment blocker.
 - The exact `mix test --cover` result and coverage percentage.
 - Lint/static gate results.
 - Known gaps that are not being fixed in the release candidate.
 
 ## Release gate checklist
 
-- `make -C elixir all` is green for the release candidate, or the PR records
+- `make -C elixir ci-full` is green for the release candidate, or the PR records
   the exact environment blocker. Refresh this gate when a package touches
   runtime code, tests, build files, or release-critical policy.
 - Coverage passes the ratchet in `elixir/mix.exs`. The ratchet is near current
