@@ -9891,14 +9891,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, markdown} <- PlanningRenderer.render_state(state, "task_plan.md"),
          uri = "sympp://work-packages/#{work_package_id}/task_plan.md",
          version = plan_version(state.plan_version_material),
-         {:ok, toon} <- WorkerContext.encode_virtual_file(state, "task_plan.md", uri: uri, version: version) do
+         {:ok, virtual_payload} <- WorkerContext.virtual_file_payload(state, "task_plan.md", uri: uri, version: version) do
+      toon = WorkerContext.encode_tool_payload(virtual_payload)
+
       {:ok,
        agent_tool_result(
-         %{
-           "uri" => uri,
-           "text" => markdown,
-           "version" => version
-         },
+         Map.put(virtual_payload, "text", markdown),
          toon
        )}
     else
