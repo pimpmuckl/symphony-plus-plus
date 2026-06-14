@@ -53,7 +53,7 @@ export function RequestDetailContent({
   const handoffEligible = !detailFinished && architectHandoffEligibleRequest(request);
   const handoffHasOpenQuestions = (openQuestions.length || request.open_question_count || 0) > 0;
   const handoffIdentity = `${handoffHasOpenQuestions}:${request.id}:${request.status || ""}:${request.updated_at || ""}`;
-  const canManualArchive = Boolean(request.completed_at && !request.archived_at);
+  const canManualArchive = canArchiveWorkRequest(request);
   const canMarkDelivered = !detailFinished;
   const {
     cachedHandoff,
@@ -258,6 +258,11 @@ function requestDetailStats(
 
 function requestPlanNodeCount(detail: WorkRequestDetail) {
   return detail.product_tree?.summary?.node_count ?? detail.product_tree?.nodes?.length ?? 0;
+}
+
+export function canArchiveWorkRequest(request: WorkRequestDetail["work_request"]) {
+  const finishedState = request.operational_state?.key || request.status;
+  return Boolean(!request.archived_at && (request.completed_at || isFinishedBoardStatus(finishedState)));
 }
 
 export function DangerousStateConfirmationDialog({

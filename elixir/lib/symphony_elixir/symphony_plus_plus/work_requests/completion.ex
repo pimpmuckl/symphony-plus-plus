@@ -13,6 +13,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
 
   @terminal_planned_slice_statuses ["skipped"]
   @terminal_work_package_statuses ["merged", "merged_into_phase", "closed", "abandoned"]
+  @terminal_delivery_outcomes ["pr_merged", "completed_no_pr", "superseded", "abandoned"]
   @completion_blocking_work_request_statuses ["human_info_needed"]
   @operator_completion_source "operator"
   @restorable_archive_reasons ["age"]
@@ -74,7 +75,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
         work_request,
         question_state,
         planned_slices,
-        work_package_contexts
+        work_package_contexts,
+        deliveries_by_slice_id
       )
 
     completed_at =
@@ -94,11 +96,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     }
   end
 
-  defp derived_completed?(%WorkRequest{} = work_request, question_state, planned_slices, work_package_contexts) do
+  defp derived_completed?(
+         %WorkRequest{} = work_request,
+         question_state,
+         planned_slices,
+         work_package_contexts,
+         deliveries_by_slice_id
+       ) do
     completion_status_allowed?(work_request) and
       Map.get(question_state, :open_count, 0) == 0 and
       planned_slices != [] and
-      Enum.all?(planned_slices, &terminal_slice?(&1, Map.get(work_package_contexts, &1.work_package_id)))
+      Enum.all?(planned_slices, fn planned_slice ->
+        terminal_slice?(
+          planned_slice,
+          Map.get(work_package_contexts, planned_slice.work_package_id),
+          Map.get(deliveries_by_slice_id, planned_slice.id)
+        )
+      end)
   end
 
   defp derived_completed_at_if_complete(false, %WorkRequest{}, _question_state, _planned_slices, _work_package_contexts, _deliveries_by_slice_id), do: nil
@@ -530,13 +544,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
-  defp terminal_slice?(%PlannedSlice{status: status}, _context) when status in @terminal_planned_slice_statuses, do: true
+  defp terminal_slice?(planned_slice, context, delivery \\ nil)
 
-  defp terminal_slice?(%PlannedSlice{status: "dispatched"}, context) when is_map(context) do
+  defp terminal_slice?(%PlannedSlice{status: status}, _context, _delivery) when status in @terminal_planned_slice_statuses, do: true
+
+  defp terminal_slice?(%PlannedSlice{status: status}, _context, %PlannedSliceDelivery{outcome: outcome})
+       when status in ["approved", "dispatched"] and outcome in @terminal_delivery_outcomes,
+       do: true
+
+  defp terminal_slice?(%PlannedSlice{status: "dispatched"}, context, _delivery) when is_map(context) do
     terminal_work_package?(context) and not active_blocker_context?(context) and not active_runtime_context?(context)
   end
 
-  defp terminal_slice?(%PlannedSlice{}, _context), do: false
+  defp terminal_slice?(%PlannedSlice{}, _context, _delivery), do: false
 
   defp terminal_work_package?(%{work_package: %WorkPackage{status: status}}), do: status in @terminal_work_package_statuses
 

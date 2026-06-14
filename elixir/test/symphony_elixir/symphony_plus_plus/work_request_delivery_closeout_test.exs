@@ -643,7 +643,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert %WorkRequest{completed_at: nil} = repo.get!(WorkRequest, work_request.id)
   end
 
-  test "delivery on an approved unlinked planned slice skips linked worker grant checks", %{repo: repo} do
+  test "delivery on an approved unlinked planned slice completes and can archive the request", %{repo: repo} do
     work_request = create_work_request!(repo, id: "WR-DELIVERY-APPROVED-UNLINKED", status: "ready_for_slicing")
     planned_slice = create_planned_slice!(repo, work_request, id: "WRS-DELIVERY-APPROVED-UNLINKED")
     assert {:ok, approved_slice} = Repository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
@@ -661,7 +661,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
              )
 
     assert delivery.outcome == "completed_no_pr"
-    assert %WorkRequest{completed_at: nil} = repo.get!(WorkRequest, work_request.id)
+    assert %WorkRequest{completed_at: %DateTime{}, archived_at: nil} = repo.get!(WorkRequest, work_request.id)
+
+    assert {:ok, archived} = Service.archive(repo, work_request.id)
+    assert %DateTime{} = archived.archived_at
   end
 
   test "terminal linked package does not complete an approved slice before dispatch", %{repo: repo} do
