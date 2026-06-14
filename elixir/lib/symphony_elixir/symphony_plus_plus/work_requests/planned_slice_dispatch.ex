@@ -286,25 +286,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     claim_arguments =
       claim_arguments
       |> Enum.sort_by(fn {key, _value} -> key end)
-      |> Enum.map_join(", ", fn {key, value} -> "#{key}=#{prompt_data(value)}" end)
+      |> Map.new(fn {key, value} -> {to_string(key), value} end)
+      |> Jason.encode!()
 
     """
-    You are assigned Symphony++ WorkPackage JSON id #{work_package_id} from WorkRequest JSON id #{work_request_id}. WorkPackage title JSON data: #{title}.
+    Symphony++ WorkPackage #{work_package_id}: #{title}
+    WorkRequest #{work_request_id}; planned slice #{planned_slice_id}.
 
-    Preferred packaged setup: use `#{@mcp_worker_skill}` plus `#{@mcp_work_package_skill}` from the opt-in MCP plugin. Repo-local fallback: use `#{@default_worker_skill}` plus copied `#{@repo_work_package_skill}` and the configured Symphony++ MCP server.
+    Skills: `#{@mcp_worker_skill}` + `#{@mcp_work_package_skill}`. Fallback: `#{@default_worker_skill}` + `#{@repo_work_package_skill}`.
     #{ledger_line}
 
-    Start from the ledger-backed local claim path. Call `claim_local_assignment` with #{claim_arguments}. Then call `get_current_assignment()` and read the WorkPackage context before coding.
-
-    Implement only this WorkPackage and planned slice JSON id #{planned_slice_id}. Do not ask for, print, paste, or commit raw secrets.
+    Start: call `claim_local_assignment` with #{claim_arguments}; stop on paused/owned/scope failure.
+    Then `get_current_assignment()`, read `read_context()`, `read_task_plan()`, virtual resources, and update the task plan before coding.
+    Track progress/findings/blockers/review evidence; ready only after acceptance/tests/review gates.
+    Scope: only this WorkPackage/planned slice. Never request, print, paste, or commit raw secrets.
+    Stop if MCP, claim, assignment, context, or scope is missing.
     """
     |> String.trim()
   end
 
-  defp ledger_prompt_line(nil), do: "Use the active MCP session ledger for the claim."
+  defp ledger_prompt_line(nil), do: "Use the active MCP ledger."
 
   defp ledger_prompt_line(database) do
-    "Configure the Symphony++ MCP session with ledger database JSON data #{prompt_data(database)} before claiming."
+    "Set MCP ledger #{prompt_data(database)} before claiming."
   end
 
   defp prompt_data(nil), do: ~s("")

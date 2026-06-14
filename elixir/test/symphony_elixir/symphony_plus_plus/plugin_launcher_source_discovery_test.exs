@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
   use ExUnit.Case, async: true
 
+  @moduletag :ci_slow
+
   @repo_root Path.expand("../../../../", __DIR__)
   @plugin_marketplace_name "symphony-plus-plus"
   @plugin_manifest_path Path.join(@repo_root, "plugins/symphony-plus-plus/.codex-plugin/plugin.json")

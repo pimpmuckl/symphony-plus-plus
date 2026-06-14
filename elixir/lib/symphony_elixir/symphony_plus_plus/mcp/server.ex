@@ -88,6 +88,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @agent_text_mime_type "text/vnd.toon"
   @solo_tools ToolCatalog.solo_tools()
   @assignment_release_tool ToolCatalog.assignment_release_tool()
+  @bootstrap_tools ToolCatalog.bootstrap_tools()
   @local_operator_tools ToolCatalog.local_operator_tools()
   @local_trusted_work_request_read_tools [
     "list_work_requests",
@@ -1101,8 +1102,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "tool_sets" => %{
         "architect" => architect_session_tool_specs(),
         "claimable" => claimable_tool_specs(config),
-        "local_operator" => local_operator_tool_specs(),
-        "unbound" => unbound_tool_specs_for_config(config),
+        "local_operator" => LocalTrustedTools.tool_specs(config),
+        "unbound" => hide_trusted_local_tool_specs(unbound_tool_specs_for_config(config)),
         "worker" => worker_session_tool_specs()
       }
     }
@@ -1631,17 +1632,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp tool_specs_for_server(%__MODULE__{config: config, session: session} = server) do
     with {:ok, specs} <- tool_specs_for_session(config, session) do
-      {:ok, dedupe_tool_specs(specs ++ local_trusted_tool_specs(server))}
+      {:ok, dedupe_tool_specs(advertised_tool_specs(specs, server) ++ local_trusted_tool_specs(server))}
     end
+  end
+
+  defp advertised_tool_specs(specs, %__MODULE__{} = server) do
+    if local_trusted_tools_enabled?(server) do
+      specs
+    else
+      hide_trusted_local_tool_specs(specs)
+    end
+  end
+
+  defp hide_trusted_local_tool_specs(specs) do
+    Enum.reject(specs, &(&1["name"] in @bootstrap_tools))
   end
 
   defp dedupe_tool_specs(specs) do
     Enum.uniq_by(specs, & &1["name"])
   end
 
-  defp local_trusted_tool_specs(%__MODULE__{} = server), do: if(local_trusted_tools_enabled?(server), do: LocalTrustedTools.tool_specs(server.config), else: [])
-
-  defp local_operator_tool_specs, do: ToolCatalog.local_operator_tool_specs()
+  defp local_trusted_tool_specs(%__MODULE__{} = server) do
+    if local_trusted_tools_enabled?(server) do
+      LocalTrustedTools.tool_specs(server.config)
+    else
+      []
+    end
+  end
 
   defp local_trusted_tools_enabled?(%__MODULE__{} = server), do: LocalTrustedTools.enabled?(server)
 
@@ -1869,7 +1886,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          claim <- hydrate_local_assignment_claim(config.repo, work_package, claim),
          :ok <- validate_local_assignment_scope(config.repo, work_package, claim),
          {:ok, lease, lease_action} <- ensure_local_assignment_claim_lease(config.repo, work_package, claim) do
-      case claim_local_assignment_session(config.repo, work_package, claim) do
+      case claim_local_assignment_session(config.repo, work_package, claim, lease, lease_action) do
         {:ok, result, session, grant_action} ->
           finalize_local_assignment_claim(config.repo, result, session, claim, lease, lease_action, grant_action)
 
@@ -1946,16 +1963,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_local_assignment_rebind_allowed(_repo, nil, _claim), do: :ok
 
   defp require_local_assignment_rebind_allowed(repo, %Session{} = session, claim) do
-    if session.assignment.work_package_id == claim.work_package_id and
-         session.assignment.claimed_by == claim.claimed_by do
+    if same_local_assignment_claim?(session, claim) do
       :ok
     else
-      case Auth.require_session(session, repo) do
-        {:ok, %Session{}} -> {:error, {:session_already_bound, current_assignment_summary(repo, session)}}
-        {:error, {:service_unavailable, _reason} = reason} -> {:error, reason}
-        {:error, _reason} -> :ok
-      end
+      reject_live_bound_session_rebind(repo, session)
     end
+  end
+
+  defp same_local_assignment_claim?(%Session{assignment: assignment}, claim) do
+    assignment.grant_role == "worker" and assignment.work_package_id == claim.work_package_id
   end
 
   defp validate_local_assignment_scope(repo, %WorkPackage{} = work_package, claim) do
@@ -2198,19 +2214,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
   end
 
-  defp claim_local_assignment_session(repo, %WorkPackage{} = work_package, claim) do
+  defp claim_local_assignment_session(repo, %WorkPackage{} = work_package, claim, %ClaimLease{} = lease, lease_action) do
     claim_now = DateTime.utc_now(:microsecond)
     existing_grant_ids = local_assignment_active_worker_grant_ids(repo, work_package.id, claim.claimed_by, claim_now)
 
-    with {:ok, grant} <-
-           AccessGrantService.claim_local_worker_grant(repo, work_package.id,
-             claimed_by: claim.claimed_by,
-             now: claim_now
-           ),
+    with {:ok, grant, grant_action} <-
+           LocalClaimLeases.claim_worker_grant(repo, work_package.id, claim, lease, lease_action, existing_grant_ids, claim_now),
          {:ok, session} <- Auth.session_from_grant(repo, grant, proof_hash: grant.secret_hash),
          :ok <- require_worker_assignment(session.assignment) do
       assignment = %{"assignment" => Session.public_assignment(session)}
-      {:ok, assignment, session, local_assignment_grant_action(grant, existing_grant_ids)}
+      {:ok, assignment, session, grant_action}
     end
   end
 
@@ -2233,11 +2246,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp local_assignment_active_worker_grant_ids(_repo, _work_package_id, _claimed_by, %DateTime{}), do: []
 
-  @spec local_assignment_grant_action(AccessGrant.t(), [String.t()]) :: :reconnected | :claimed
-  defp local_assignment_grant_action(%AccessGrant{id: id}, existing_grant_ids) when is_binary(id) do
-    if id in existing_grant_ids, do: :reconnected, else: :claimed
-  end
-
   defp finalize_local_assignment_claim(repo, result, %Session{} = session, claim, %ClaimLease{} = lease, lease_action, grant_action) do
     session = Session.with_claim_lease(session, lease)
 
@@ -2259,6 +2267,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp revoke_failed_local_assignment_grant(repo, %Session{assignment: %{grant_id: grant_id}}, :reclaimed, :claimed)
        when is_binary(grant_id) do
     _result = AccessGrantService.revoke(repo, grant_id)
+    :ok
+  end
+
+  defp revoke_failed_local_assignment_grant(repo, %Session{}, :reclaimed, {:recovered, recovery}) do
+    _result = LocalClaimLeases.rollback_worker_grant_recovery(repo, recovery)
     :ok
   end
 
@@ -2419,16 +2432,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_local_architect_assignment_rebind_allowed(_repo, nil, _claim), do: :ok
 
   defp require_local_architect_assignment_rebind_allowed(repo, %Session{} = session, claim) do
-    if session.assignment.grant_role == "architect" and
-         session.assignment.work_package_id == claim.architect_anchor_work_package_id and
-         session.assignment.claimed_by == claim.claimed_by do
+    if same_local_architect_assignment_claim?(session, claim) do
       :ok
     else
-      case Auth.require_session(session, repo) do
-        {:ok, %Session{}} -> {:error, {:session_already_bound, current_assignment_summary(repo, session)}}
-        {:error, {:service_unavailable, _reason} = reason} -> {:error, reason}
-        {:error, _reason} -> :ok
-      end
+      reject_live_bound_session_rebind(repo, session)
+    end
+  end
+
+  defp same_local_architect_assignment_claim?(%Session{assignment: assignment}, claim) do
+    assignment.grant_role == "architect" and assignment.work_package_id == claim.architect_anchor_work_package_id
+  end
+
+  defp reject_live_bound_session_rebind(repo, %Session{} = session) do
+    case Auth.require_session(session, repo) do
+      {:ok, %Session{}} -> {:error, {:session_already_bound, current_assignment_summary(repo, session)}}
+      {:error, {:service_unavailable, _reason} = reason} -> {:error, reason}
+      {:error, _reason} -> :ok
     end
   end
 
@@ -2753,6 +2772,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_required_capabilities(name), do: [architect_tool_capability(name)]
 
   defp local_assignment_claim_error(:database_busy), do: service_error(:database_busy, @local_assignment_claim_tool)
+  defp local_assignment_claim_error({:service_unavailable, _reason} = reason), do: service_error(reason, @local_assignment_claim_tool)
   defp local_assignment_claim_error({:storage_failed, _reason} = reason), do: service_error(reason, @local_assignment_claim_tool)
   defp local_assignment_claim_error({:migration_failed, _reason} = reason), do: service_error(reason, @local_assignment_claim_tool)
 
@@ -2773,6 +2793,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp local_architect_assignment_claim_error(:database_busy), do: service_error(:database_busy, @local_architect_assignment_claim_tool)
+
+  defp local_architect_assignment_claim_error({:service_unavailable, _reason} = reason),
+    do: service_error(reason, @local_architect_assignment_claim_tool)
 
   defp local_architect_assignment_claim_error({:storage_failed, _reason} = reason),
     do: service_error(reason, @local_architect_assignment_claim_tool)
@@ -2952,20 +2975,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp authorize_bootstrap_tool_call(%__MODULE__{session: nil}, _tool), do: :ok
-
-  defp authorize_bootstrap_tool_call(%__MODULE__{} = server, tool) do
-    case authorize_trusted_local_tool_call(server, tool) do
-      :ok ->
-        :ok
-
-      {:error, -32_001, "Unauthorized", _data} ->
-        {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "bootstrap_tools_require_unbound_or_trusted_local_session"}}
-
-      error ->
-        error
-    end
-  end
+  defp authorize_bootstrap_tool_call(%__MODULE__{} = server, tool), do: authorize_trusted_local_tool_call(server, tool)
 
   defp authorize_local_trusted_work_request_read_tool_call(%__MODULE__{} = server, tool) do
     authorize_local_operator_tool_call(server, tool)

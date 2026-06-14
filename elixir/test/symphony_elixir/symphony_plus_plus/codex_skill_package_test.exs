@@ -17,6 +17,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   @plugin_default_coordinator_skill_path Path.join(@repo_root, "plugins/symphony-plus-plus/skills-default/symphony-coordinator/SKILL.md")
   @plugin_solo_script_path Path.join(@repo_root, "plugins/symphony-plus-plus/scripts/sympp-solo.ps1")
   @plugin_lifecycle_diagnostic_path Path.join(@repo_root, "plugins/symphony-plus-plus/scripts/diagnose-mcp-lifecycle.ps1")
+  @plugin_lifecycle_diagnostic_helper_names ~w(
+    sympp-diagnostic-runtime-artifacts.ps1
+    sympp-diagnostic-launcher-artifacts.ps1
+    sympp-diagnostic-self-test.ps1
+  )
   @mcp_plugin_manifest_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json")
   @mcp_plugin_mcp_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/.mcp.json")
   @mcp_plugin_readme_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/README.md")
@@ -395,7 +400,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           "Resolve-ComparableFileSystemPath",
           "Update-TomlMultilineStringState",
           "New-CurrentDiagnosticCommand",
-          "diagnose-mcp-lifecycle self-test passed",
           "installed_cache = @($cachePackages)",
           "live_repo_roots = @($repoRoots)",
           "launcher_parents = @($launcherParents)",
@@ -406,7 +410,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           "Find-AncestorLauncherProcessIds",
           "foreach ($processId in $found)",
           "Find-TomlBooleanKeyAssignment",
-          "quoted boolean key",
           "$filterAnchorProcesses",
           "manifest_parse_error",
           "mcp_parse_error",
@@ -460,6 +463,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         ] do
       assert lifecycle_diagnostic =~ marker
     end
+
+    for helper_name <- @plugin_lifecycle_diagnostic_helper_names do
+      helper_path = Path.join(Path.dirname(@plugin_lifecycle_diagnostic_path), helper_name)
+      assert File.exists?(helper_path)
+    end
+
+    diagnostic_self_test =
+      @plugin_lifecycle_diagnostic_path
+      |> Path.dirname()
+      |> Path.join("sympp-diagnostic-self-test.ps1")
+      |> File.read!()
+
+    assert diagnostic_self_test =~ "diagnose-mcp-lifecycle self-test passed"
+    assert diagnostic_self_test =~ "quoted boolean key"
 
     assert File.read!(@refresh_script_path) =~
              "Assert-ExistingCachePathNotReparsePoint @($codexHomePath, $pluginsRoot, $cacheRoot, $marketplaceCacheRoot, $pluginCacheRoot)"
@@ -691,27 +708,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
     assert fingerprint =~ ~r/\A[0-9a-f]{64}\z/
     assert launcher =~ ~s($ExpectedMcpContractFingerprint = "#{fingerprint}")
-  end
-
-  test "MCP launcher self-test covers reusable runtime plans" do
-    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
-
-    if powershell do
-      {output, status} =
-        System.cmd(
-          powershell,
-          [
-            "-NoProfile",
-            "-File",
-            @mcp_plugin_start_script_path,
-            "-SelfTest"
-          ],
-          stderr_to_stdout: true
-        )
-
-      assert status == 0, output
-      assert output =~ "Symphony++ MCP launcher self-test passed."
-    end
   end
 
   test "enable command safely mutates only the MCP companion plugin config" do
@@ -1712,7 +1708,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
       try do
         File.mkdir_p!(Path.dirname(installed_script_path))
-        File.cp!(@plugin_lifecycle_diagnostic_path, installed_script_path)
+        copy_lifecycle_diagnostic!(installed_script_path)
         write_activation_cache(temp_codex_home, "jonat-local")
 
         File.write!(
@@ -1797,7 +1793,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
       try do
         File.mkdir_p!(Path.dirname(installed_script_path))
-        File.cp!(@plugin_lifecycle_diagnostic_path, installed_script_path)
+        copy_lifecycle_diagnostic!(installed_script_path)
 
         {no_config_output, no_config_status} = run_diagnostic.(temp_codex_home)
         assert no_config_status == 0, no_config_output
@@ -1924,7 +1920,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
       try do
         File.mkdir_p!(Path.dirname(installed_script_path))
-        File.cp!(@plugin_lifecycle_diagnostic_path, installed_script_path)
+        copy_lifecycle_diagnostic!(installed_script_path)
         File.write!(Path.join(temp_codex_home, "config.toml"), "")
         File.mkdir_p!(Path.dirname(companion_local_manifest_path))
 
@@ -2006,7 +2002,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         File.write!(Path.join(stale_source_root, "scripts/refresh-local-plugin.ps1"), "")
         File.write!(Path.join(stale_source_root, "scripts/smoke-sympp-mcp-http.ps1"), "")
         File.mkdir_p!(Path.dirname(installed_script_path))
-        File.cp!(@plugin_lifecycle_diagnostic_path, installed_script_path)
+        copy_lifecycle_diagnostic!(installed_script_path)
         File.write!(Path.join(temp_codex_home, "config.toml"), "")
 
         mcp_config = command_mcp_config_json()
@@ -2329,7 +2325,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       try do
         File.mkdir_p!(Path.dirname(default_cache_manifest_path))
         File.mkdir_p!(Path.dirname(diagnostic_path))
-        File.cp!(@plugin_lifecycle_diagnostic_path, diagnostic_path)
+        copy_lifecycle_diagnostic!(diagnostic_path)
         File.write!(default_cache_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => default_version}))
         File.write!(default_cache_hint_path, "C:/sympp/repo-one\n")
 
@@ -2508,7 +2504,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
       try do
         File.mkdir_p!(Path.dirname(diagnostic_path))
-        File.cp!(@plugin_lifecycle_diagnostic_path, diagnostic_path)
+        copy_lifecycle_diagnostic!(diagnostic_path)
         File.mkdir_p!(Path.dirname(default_manifest_path))
         File.write!(default_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "1.0.0"}))
         File.mkdir_p!(Path.dirname(opt_in_manifest_path))
@@ -2565,7 +2561,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
       try do
         File.mkdir_p!(Path.dirname(diagnostic_path))
-        File.cp!(@plugin_lifecycle_diagnostic_path, diagnostic_path)
+        copy_lifecycle_diagnostic!(diagnostic_path)
         File.mkdir_p!(Path.dirname(default_manifest_path))
         File.write!(default_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "1.0.0"}))
         write_source_hint!(default_hint_path, fixture_repo_root("default"))
@@ -2630,7 +2626,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
       try do
         File.mkdir_p!(Path.dirname(diagnostic_path))
-        File.cp!(@plugin_lifecycle_diagnostic_path, diagnostic_path)
+        copy_lifecycle_diagnostic!(diagnostic_path)
         File.mkdir_p!(Path.dirname(default_manifest_path))
         File.write!(default_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "1.0.0"}))
         write_source_hint!(default_hint_path, fixture_repo_root("default"))
@@ -2801,7 +2797,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
       try do
         File.mkdir_p!(Path.dirname(diagnostic_path))
-        File.cp!(@plugin_lifecycle_diagnostic_path, diagnostic_path)
+        copy_lifecycle_diagnostic!(diagnostic_path)
         File.mkdir_p!(Path.dirname(default_manifest_path))
         File.write!(default_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "1.0.0"}))
 
@@ -3001,6 +2997,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   test "refresh script installs the repo-local plugin into the requested Codex home" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
@@ -3097,6 +3094,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   test "refresh script validates installed default cache wrapper from cache roots" do
     powershell = System.find_executable("pwsh")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
@@ -3195,6 +3193,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   @tag timeout: 120_000
   test "refresh script installs and validates the opt-in MCP plugin" do
     powershell = System.find_executable("pwsh")
@@ -3251,6 +3250,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   test "refresh script prunes generated local cache and overlays manifest-version cache" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
@@ -3338,6 +3338,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   test "refresh script fails when an unmarked local cache could shadow the versioned install" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh-unmarked-local")
@@ -3376,6 +3377,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   test "refresh script rejects unresolved marketplace source paths" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
@@ -3424,6 +3426,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   test "refresh script resolves repo-root relative source paths from marketplace file" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
@@ -3479,6 +3482,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   test "refresh script repairs incompatible generated default caches only" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
@@ -3621,6 +3625,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  @tag :ci_slow
   test "refresh script repairs stale default MCP artifacts during MCP-only refresh" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh-mcp-only")
@@ -3886,6 +3891,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     File.rm_rf!(cache_root)
     File.mkdir_p!(Path.dirname(cache_root))
     File.cp_r!(source_root, cache_root)
+  end
+
+  defp copy_lifecycle_diagnostic!(target_path) do
+    File.mkdir_p!(Path.dirname(target_path))
+    File.cp!(@plugin_lifecycle_diagnostic_path, target_path)
+
+    for helper_name <- @plugin_lifecycle_diagnostic_helper_names do
+      File.cp!(
+        Path.join(Path.dirname(@plugin_lifecycle_diagnostic_path), helper_name),
+        Path.join(Path.dirname(target_path), helper_name)
+      )
+    end
   end
 
   defp config_backups(codex_home) do

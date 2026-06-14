@@ -6,7 +6,8 @@ This directory contains the Elixir agent orchestration service that polls Linear
 
 - Elixir: `1.19.x` (OTP 28) via `mise`.
 - Install deps: `mix setup`.
-- Main quality gate: `make all` (format check, lint, coverage, dialyzer).
+- Fast PR gate: `make all` (format check, specs, Credo, and fast tests).
+- Full local gate: `make ci-full` (fast PR gate plus coverage, Dialyzer, and hygiene ratchets).
 
 
 ## Codebase-Specific Conventions
@@ -30,6 +31,16 @@ Run targeted tests while iterating, then run full gates before handoff.
 
 ```bash
 make all
+```
+
+Use split targets when validating one gate at a time:
+
+```bash
+make ci-static
+make ci-test
+make ci-dialyzer
+make ci-coverage
+make ci-hygiene
 ```
 
 ## Required Rules

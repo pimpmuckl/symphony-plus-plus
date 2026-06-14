@@ -29,12 +29,9 @@ $SoloTools = @(
   "solo_archive"
 )
 
-$ExpectedGenericUnboundTools = @("sympp.health") + $SoloTools + @("create_work_request")
+$ExpectedGenericUnboundTools = @("sympp.health") + $SoloTools
 
-$ExpectedHttpUnboundTools = @(
-  "claim_local_assignment",
-  "claim_local_architect_assignment"
-)
+$ExpectedHttpUnboundTools = @("claim_local_assignment", "claim_local_architect_assignment", "create_work_request")
 
 $OptionalTrustedLocalHttpUnboundTools = @(
   "add_work_request_comment",
@@ -1460,8 +1457,8 @@ function Invoke-SelfTest {
     throw "Expected unbound discovery to include local HTTP claim tools."
   }
 
-  if ($ExpectedUnboundTools -notcontains "create_work_request") {
-    throw "Expected unbound discovery to include generic bootstrap tools."
+  if ($ExpectedHttpUnboundTools -notcontains "create_work_request") {
+    throw "Expected trusted local HTTP unbound discovery to include safe bootstrap tools."
   }
 
   if ($OptionalTrustedLocalHttpUnboundTools -notcontains "add_work_request_comment" -or $OptionalTrustedLocalHttpUnboundTools -notcontains "record_work_request_operator_decision") {

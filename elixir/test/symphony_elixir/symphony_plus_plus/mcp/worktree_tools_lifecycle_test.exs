@@ -3,6 +3,8 @@ Code.require_file("../../../support/symphony_plus_plus/mcp_case.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorktreeToolsLifecycleTest do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
+  @moduletag :ci_slow
+
   test "WorkPackage worktree MCP tools prepare, audit, and cleanup a linked package", %{repo: repo} do
     fixture = TestSupport.git_repo_fixture!("symphony-plus-plus/beta", prefix: "sympp-mcp-worktree")
     other_fixture = TestSupport.git_repo_fixture!("symphony-plus-plus/beta", prefix: "sympp-mcp-other-worktree")
