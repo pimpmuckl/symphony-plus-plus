@@ -184,6 +184,66 @@ If any required platform is missing or fails validation, the channel remains on
 the previous manifest. New source commits can still be tested from source
 checkouts, but they are not marketplace-visible installed-runtime updates.
 
+## GitHub Release Publication
+
+The PR/main workflow `.github/workflows/sympp-runtime-artifact.yml` is a
+validation workflow. It builds per-platform runtime packages, validates each
+local manifest, and uploads short-lived GitHub Actions artifacts for inspection.
+Those Actions artifact URLs are not the release channel.
+
+The release workflow `.github/workflows/sympp-runtime-release.yml` is the
+durable publication lane. It runs on runtime release tags or manual dispatch,
+builds `linux-x64`, `windows-x64`, and `macos-arm64` from one source revision,
+  smokes the extracted artifact runtime with an explicit runtime-safe workflow,
+  MCP health, and dashboard route on each platform, uploads each package and
+  per-platform build manifest as GitHub Release assets, then writes an aggregate
+  channel manifest such as
+`sympp-runtime-artifacts-stable.json` and uploads it to the same release.
+
+The installed MCP plugin carries
+`assets/sympp-runtime-artifacts.json` as the stable channel pointer. That file
+references the durable `sympp-runtime-stable` GitHub Release asset, so a normal
+marketplace package has a launcher-discoverable channel without changing
+launcher lookup policy. Publishing the stable channel should use manual dispatch
+with `release_tag=sympp-runtime-stable` and `channel=stable`. If that stable
+tag does not exist yet, set `source_ref` to the branch or SHA to build; when
+`source_ref` is omitted, manual dispatch builds the requested `release_tag`.
+Versioned tag builds still emit their own aggregate manifest on that tag for
+inspection or explicit pinning.
+
+The aggregate manifest is the launcher-consumable channel document. It includes:
+
+- `plugin.name`, `plugin.version`, `plugin.marketplace`, and
+  `plugin.source_revision`.
+- `release.channel`, `release.manifest_version`, `release.source_revision`,
+  `release.repository`, `release.tag`, `release.published_base_url`, and
+  `release.required_platforms`.
+- `launcher_contract.mcp_contract_fingerprint` and `contract_fingerprint` for
+  the MCP contract expected by the installed launcher.
+- One `artifacts[]` entry per required platform with a normalized platform
+  tuple, durable GitHub Release archive URL, archive SHA-256, archive size,
+  per-platform build manifest URL and SHA-256, runtime command metadata,
+  dashboard asset root and fingerprint, and explicit fallback policy.
+
+Release artifacts must not package
+`implementation_docs_symphplusplus/templates/WORKFLOW.symfony_pp.md` as
+`WORKFLOW.md`. That template is an explicit-copy operator starting point with
+placeholders, not an installed-runtime default. Artifact launch remains blocked
+with `workflow_missing` unless a real workflow is supplied through
+`SYMPP_WORKFLOW_FILE`, runtime arguments, or a source checkout fallback that has
+its own `elixir/WORKFLOW.md`.
+
+The publisher refuses to write the aggregate manifest unless every required
+platform manifest is present, every package exists locally, every local archive
+hash matches its per-platform build manifest, all artifacts share one source
+revision, all artifacts share one plugin identity, all artifacts share one MCP
+contract fingerprint from their build manifests, and the dashboard fingerprint
+required by the launcher is present. The generated aggregate shape uses the
+existing `artifacts[]` manifest contract and can be consumed by the current
+launcher helpers when placed at
+`.sympp-runtime-artifacts.json`, `assets/sympp-runtime-artifacts.json`, or
+another marketplace-visible manifest location that resolves to the same JSON.
+
 ## Installed Behavior vs Developer Fallback
 
 Normal installed behavior:
@@ -251,17 +311,14 @@ GitHub tokens, MCP auth tokens, worker secrets, or secret-bearing command lines.
 Non-goals for this contract slice:
 
 - Implementing launcher artifact download, extraction, or runtime startup.
-- Adding CI workflows or hosted release publication.
-- Choosing a hosted release location, retention policy, or signing mechanism.
+- Changing launcher artifact selection policy.
+- Adding artifact signing beyond SHA-256 verification.
 - Changing global Codex config behavior.
 - Changing MCP tool schemas or dashboard product behavior.
 
 Open questions for later product or release slices:
 
-- Hosted artifact location and access pattern.
 - Artifact retention and rollback policy.
 - Whether signatures are required in addition to SHA-256.
-- Exact supported platform matrix for the first artifact-backed release
-  manifest.
 - Whether emergency installed-user source fallback should exist, and what
   explicit operator switch would enable it.

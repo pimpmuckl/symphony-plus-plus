@@ -65,14 +65,6 @@ if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
   exit 1
 fi
 
-launcher_path="$repo_root/plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1"
-[[ -f "$launcher_path" ]] || { echo "MCP launcher script is missing: $launcher_path" >&2; exit 1; }
-mcp_contract_fingerprint="$(grep -E '\$ExpectedMcpContractFingerprint[[:space:]]*=[[:space:]]*"[0-9a-fA-F]{64}"' "$launcher_path" | head -n 1 | sed -E 's/.*"([0-9a-fA-F]{64})".*/\1/' | tr '[:upper:]' '[:lower:]' || true)"
-if [[ ! "$mcp_contract_fingerprint" =~ ^[0-9a-f]{64}$ ]]; then
-  echo "Could not resolve MCP contract fingerprint from $launcher_path." >&2
-  exit 1
-fi
-
 plugin_manifest_path="$repo_root/plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json"
 [[ -f "$plugin_manifest_path" ]] || { echo "MCP plugin manifest is missing: $plugin_manifest_path" >&2; exit 1; }
 plugin_name="$(grep -E '"name"[[:space:]]*:[[:space:]]*"[^"]+"' "$plugin_manifest_path" | head -n 1 | sed -E 's/.*"name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
@@ -107,7 +99,7 @@ staging_dir="$output_root/$package_base-staging"
 release_dir="$elixir_dir/_build/prod/rel/symphony_elixir"
 source_static_dir="$elixir_dir/priv/static"
 payload_manifest_path="$staging_dir/runtime-manifest.json"
-archive_path="$output_root/$package_base.tar.gz"
+archive_path="$output_root/$package_base.zip"
 manifest_path="$output_root/$package_base.manifest.json"
 
 [[ -d "$elixir_dir" ]] || { echo "Elixir project directory is missing: $elixir_dir" >&2; exit 1; }
@@ -144,6 +136,39 @@ fi
 release_app_dir="${release_app_dirs[0]}"
 [[ -f "$release_app_dir/priv/static/index.html" ]] || { echo "Release dashboard static index is missing." >&2; exit 1; }
 [[ -f "$release_app_dir/priv/static/.vite/manifest.json" ]] || { echo "Release dashboard Vite manifest is missing." >&2; exit 1; }
+
+dashboard_fingerprint="$("$python_bin" - "$source_static_dir" <<'PY'
+import hashlib
+import os
+import sys
+
+root = os.path.abspath(sys.argv[1])
+lines = []
+for base, _dirs, files in os.walk(root):
+    for name in files:
+        path = os.path.join(base, name)
+        rel = os.path.relpath(path, root).replace(os.sep, "/")
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        lines.append(f"{rel} {digest.hexdigest()}")
+payload = "\n".join(sorted(lines)).encode("utf-8")
+print(hashlib.sha256(payload).hexdigest())
+PY
+)"
+
+mcp_contract_fingerprint="$("$python_bin" - "$repo_root/plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1], "r", encoding="utf-8").read()
+match = re.search(r'\$ExpectedMcpContractFingerprint\s*=\s*"([0-9a-fA-F]{64})"', text)
+if not match:
+    raise SystemExit(f"Could not resolve MCP contract fingerprint from {sys.argv[1]}.")
+print(match.group(1).lower())
+PY
+)"
 
 mkdir -p "$output_root"
 rm -rf "$staging_dir" "$archive_path" "$manifest_path"
@@ -202,6 +227,8 @@ done
 [[ "$port" =~ ^[0-9]+$ ]] || { echo "--port must be a non-negative integer." >&2; exit 2; }
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+runtime_bin="$script_dir/runtime/bin/symphony_elixir"
+chmod +x "$runtime_bin" "$script_dir"/runtime/bin/* "$script_dir"/runtime/erts-*/bin/* 2>/dev/null || true
 release_tmp="$logs_root/release-tmp"
 mkdir -p "$logs_root" "$release_tmp"
 export SYMPP_RUNTIME_ARTIFACT=1
@@ -211,7 +238,7 @@ export SYMPP_LOGS_ROOT="$logs_root"
 export SYMPP_BACKEND_PORT="$port"
 export RELEASE_TMP="$release_tmp"
 export PHX_SERVER=true
-exec "$script_dir/runtime/bin/symphony_elixir" start
+exec "$runtime_bin" start
 SH
 chmod +x "$staging_dir/start-runtime.sh"
 cat > "$staging_dir/start-runtime.ps1" <<'PS1'
@@ -266,12 +293,12 @@ $env:PHX_SERVER = "true"
 exit $LASTEXITCODE
 PS1
 
-PYTHON_BIN="$python_bin" "$python_bin" - "$payload_manifest_path" "$revision" "$platform" "$mcp_contract_fingerprint" "$plugin_name" "$plugin_version" <<'PY'
+PYTHON_BIN="$python_bin" "$python_bin" - "$payload_manifest_path" "$revision" "$platform" "$dashboard_fingerprint" "$mcp_contract_fingerprint" "$plugin_name" "$plugin_version" <<'PY'
 import datetime
 import json
 import sys
 
-path, revision, platform, mcp_contract_fingerprint, plugin_name, plugin_version = sys.argv[1:7]
+path, revision, platform, dashboard_fingerprint, mcp_contract_fingerprint, plugin_name, plugin_version = sys.argv[1:8]
 now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 payload = {
     "schema_version": 1,
@@ -282,8 +309,6 @@ payload = {
         "packages": ["symphony-plus-plus", "symphony-plus-plus-mcp"],
     },
     "source_revision": revision,
-    "mcp_contract_fingerprint": mcp_contract_fingerprint,
-    "contract_fingerprint": mcp_contract_fingerprint,
     "platform": platform,
     "built_at": now,
     "backend": {
@@ -300,6 +325,7 @@ payload = {
         "relative_path": "dashboard-static",
         "index": "dashboard-static/index.html",
         "vite_manifest": "dashboard-static/.vite/manifest.json",
+        "fingerprint": dashboard_fingerprint,
     },
     "launcher_contract": {
         "manifest": "sympp-runtime-artifact",
@@ -313,16 +339,34 @@ with open(path, "w", encoding="utf-8", newline="\n") as handle:
     handle.write("\n")
 PY
 
-tar -czf "$archive_path" -C "$staging_dir" .
+PYTHON_BIN="$python_bin" "$python_bin" - "$archive_path" "$staging_dir" <<'PY'
+import os
+import stat
+import sys
+import zipfile
 
-PYTHON_BIN="$python_bin" "$python_bin" - "$manifest_path" "$payload_manifest_path" "$archive_path" "$output_root" "$revision" "$platform" "$mcp_contract_fingerprint" <<'PY'
+archive_path, staging_dir = sys.argv[1:3]
+with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    for base, dirs, files in os.walk(staging_dir):
+        dirs.sort()
+        for name in sorted(files):
+            path = os.path.join(base, name)
+            relative = os.path.relpath(path, staging_dir).replace(os.sep, "/")
+            info = zipfile.ZipInfo.from_file(path, relative)
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+            info.external_attr = mode << 16
+            with open(path, "rb") as handle:
+                archive.writestr(info, handle.read(), compress_type=zipfile.ZIP_DEFLATED)
+PY
+
+PYTHON_BIN="$python_bin" "$python_bin" - "$manifest_path" "$payload_manifest_path" "$archive_path" "$output_root" "$revision" "$platform" <<'PY'
 import datetime
 import hashlib
 import json
 import os
 import sys
 
-manifest_path, payload_manifest_path, archive_path, output_root, revision, platform, mcp_contract_fingerprint = sys.argv[1:8]
+manifest_path, payload_manifest_path, archive_path, output_root, revision, platform = sys.argv[1:7]
 
 def sha256(path):
     digest = hashlib.sha256()
@@ -340,8 +384,6 @@ manifest = {
     "status": "built",
     "plugin": payload["plugin"],
     "source_revision": revision,
-    "mcp_contract_fingerprint": mcp_contract_fingerprint,
-    "contract_fingerprint": mcp_contract_fingerprint,
     "platform": platform,
     "created_at": now,
     "artifact": {

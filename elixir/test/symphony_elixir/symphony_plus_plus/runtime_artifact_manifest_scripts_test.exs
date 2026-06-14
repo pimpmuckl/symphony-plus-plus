@@ -151,7 +151,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RuntimeArtifactManifestScriptsTest do
 
         normalized = normalized_output(output)
         assert normalized =~ "Artifact manifest must declare mcp_contract_fingerprint"
-        assert normalized =~ "contract_fingerprint."
+        assert normalized =~ "contract_fingerprint:"
       after
         File.rm_rf!(temp_root)
       end
@@ -262,7 +262,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RuntimeArtifactManifestScriptsTest do
           )
 
         assert status != 0
-        assert output =~ "Artifact manifest plugin must declare name and version."
+        assert output =~ "Artifact manifest is missing required property 'plugin'."
       after
         File.rm_rf!(temp_root)
       end
@@ -296,7 +296,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RuntimeArtifactManifestScriptsTest do
           )
 
         assert status != 0
-        assert output =~ "Artifact manifest must declare mcp_contract_fingerprint or contract_fingerprint."
+        assert output =~ "Artifact manifest must declare mcp_contract_fingerprint or contract_fingerprint:"
       after
         File.rm_rf!(temp_root)
       end
@@ -326,6 +326,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RuntimeArtifactManifestScriptsTest do
           "file" => Path.basename(artifact_path),
           "sha256" => file_sha256(artifact_path),
           "size_bytes" => byte_size("runtime")
+        },
+        "dashboard" => %{
+          "kind" => "vite_static",
+          "relative_path" => "dashboard-static",
+          "index" => "dashboard-static/index.html",
+          "vite_manifest" => "dashboard-static/.vite/manifest.json",
+          "fingerprint" => String.duplicate("d", 64)
         },
         "launcher_contract" => %{
           "manifest" => "sympp-runtime-artifact",
