@@ -54,6 +54,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 elixir_dir="$repo_root/elixir"
 assets_dir="$elixir_dir/assets"
+workflow_template_path="$repo_root/implementation_docs_symphplusplus/templates/WORKFLOW.symfony_pp.md"
 
 if [[ -z "${revision// }" ]] && command -v git >/dev/null 2>&1; then
   revision="$(git -C "$repo_root" rev-parse --verify HEAD 2>/dev/null || true)"
@@ -90,12 +91,13 @@ staging_dir="$output_root/$package_base-staging"
 release_dir="$elixir_dir/_build/prod/rel/symphony_elixir"
 source_static_dir="$elixir_dir/priv/static"
 payload_manifest_path="$staging_dir/runtime-manifest.json"
-archive_path="$output_root/$package_base.tar.gz"
+archive_path="$output_root/$package_base.zip"
 manifest_path="$output_root/$package_base.manifest.json"
 
 [[ -d "$elixir_dir" ]] || { echo "Elixir project directory is missing: $elixir_dir" >&2; exit 1; }
 [[ -f "$elixir_dir/mix.exs" ]] || { echo "Mix project is missing: $elixir_dir/mix.exs" >&2; exit 1; }
 [[ -d "$assets_dir" ]] || { echo "Dashboard assets directory is missing: $assets_dir" >&2; exit 1; }
+[[ -f "$workflow_template_path" ]] || { echo "Runtime artifact workflow template is missing: $workflow_template_path" >&2; exit 1; }
 
 if [[ "$dry_run" -eq 1 ]]; then
   echo "Dry run: revision=$revision platform=$platform output=$output_root"
@@ -128,11 +130,45 @@ release_app_dir="${release_app_dirs[0]}"
 [[ -f "$release_app_dir/priv/static/index.html" ]] || { echo "Release dashboard static index is missing." >&2; exit 1; }
 [[ -f "$release_app_dir/priv/static/.vite/manifest.json" ]] || { echo "Release dashboard Vite manifest is missing." >&2; exit 1; }
 
+dashboard_fingerprint="$("$python_bin" - "$source_static_dir" <<'PY'
+import hashlib
+import os
+import sys
+
+root = os.path.abspath(sys.argv[1])
+lines = []
+for base, _dirs, files in os.walk(root):
+    for name in files:
+        path = os.path.join(base, name)
+        rel = os.path.relpath(path, root).replace(os.sep, "/")
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        lines.append(f"{rel} {digest.hexdigest()}")
+payload = "\n".join(sorted(lines)).encode("utf-8")
+print(hashlib.sha256(payload).hexdigest())
+PY
+)"
+
+mcp_contract_fingerprint="$("$python_bin" - "$repo_root/plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1], "r", encoding="utf-8").read()
+match = re.search(r'\$ExpectedMcpContractFingerprint\s*=\s*"([0-9a-fA-F]{64})"', text)
+if not match:
+    raise SystemExit(f"Could not resolve MCP contract fingerprint from {sys.argv[1]}.")
+print(match.group(1).lower())
+PY
+)"
+
 mkdir -p "$output_root"
 rm -rf "$staging_dir" "$archive_path" "$manifest_path"
 mkdir -p "$staging_dir"
 cp -R "$release_dir" "$staging_dir/runtime"
 cp -R "$source_static_dir" "$staging_dir/dashboard-static"
+cp "$workflow_template_path" "$staging_dir/WORKFLOW.md"
 cat > "$staging_dir/start-runtime.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -185,6 +221,8 @@ done
 [[ "$port" =~ ^[0-9]+$ ]] || { echo "--port must be a non-negative integer." >&2; exit 2; }
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+runtime_bin="$script_dir/runtime/bin/symphony_elixir"
+chmod +x "$runtime_bin" 2>/dev/null || true
 release_tmp="$logs_root/release-tmp"
 mkdir -p "$logs_root" "$release_tmp"
 export SYMPP_RUNTIME_ARTIFACT=1
@@ -194,7 +232,7 @@ export SYMPP_LOGS_ROOT="$logs_root"
 export SYMPP_BACKEND_PORT="$port"
 export RELEASE_TMP="$release_tmp"
 export PHX_SERVER=true
-exec "$script_dir/runtime/bin/symphony_elixir" start
+exec "$runtime_bin" start
 SH
 chmod +x "$staging_dir/start-runtime.sh"
 cat > "$staging_dir/start-runtime.ps1" <<'PS1'
@@ -249,12 +287,12 @@ $env:PHX_SERVER = "true"
 exit $LASTEXITCODE
 PS1
 
-PYTHON_BIN="$python_bin" "$python_bin" - "$payload_manifest_path" "$revision" "$platform" <<'PY'
+PYTHON_BIN="$python_bin" "$python_bin" - "$payload_manifest_path" "$revision" "$platform" "$dashboard_fingerprint" "$mcp_contract_fingerprint" <<'PY'
 import datetime
 import json
 import sys
 
-path, revision, platform = sys.argv[1:4]
+path, revision, platform, dashboard_fingerprint, mcp_contract_fingerprint = sys.argv[1:6]
 now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 payload = {
     "schema_version": 1,
@@ -279,10 +317,13 @@ payload = {
         "relative_path": "dashboard-static",
         "index": "dashboard-static/index.html",
         "vite_manifest": "dashboard-static/.vite/manifest.json",
+        "fingerprint": dashboard_fingerprint,
     },
     "launcher_contract": {
         "manifest": "sympp-runtime-artifact",
         "version": 1,
+        "mcp_contract_fingerprint": mcp_contract_fingerprint,
+        "workflow": "WORKFLOW.md",
     },
 }
 with open(path, "w", encoding="utf-8", newline="\n") as handle:
@@ -290,7 +331,25 @@ with open(path, "w", encoding="utf-8", newline="\n") as handle:
     handle.write("\n")
 PY
 
-tar -czf "$archive_path" -C "$staging_dir" .
+PYTHON_BIN="$python_bin" "$python_bin" - "$archive_path" "$staging_dir" <<'PY'
+import os
+import stat
+import sys
+import zipfile
+
+archive_path, staging_dir = sys.argv[1:3]
+with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    for base, dirs, files in os.walk(staging_dir):
+        dirs.sort()
+        for name in sorted(files):
+            path = os.path.join(base, name)
+            relative = os.path.relpath(path, staging_dir).replace(os.sep, "/")
+            info = zipfile.ZipInfo.from_file(path, relative)
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+            info.external_attr = mode << 16
+            with open(path, "rb") as handle:
+                archive.writestr(info, handle.read(), compress_type=zipfile.ZIP_DEFLATED)
+PY
 
 PYTHON_BIN="$python_bin" "$python_bin" - "$manifest_path" "$payload_manifest_path" "$archive_path" "$output_root" "$revision" "$platform" <<'PY'
 import datetime

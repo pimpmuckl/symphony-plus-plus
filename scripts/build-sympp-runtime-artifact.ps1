@@ -112,6 +112,40 @@ function Get-FirstReleaseAppDir([string]$ReleaseDir) {
   $matches[0].FullName
 }
 
+function Get-FileSha256([string]$Path) {
+  (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Get-DirectoryFingerprint([string]$Path) {
+  $root = (Resolve-Path -LiteralPath $Path).Path
+  $lines = New-Object System.Collections.Generic.List[string]
+  foreach ($file in @(Get-ChildItem -LiteralPath $root -File -Recurse | Sort-Object FullName)) {
+    $relativePath = [System.IO.Path]::GetRelativePath($root, $file.FullName).Replace("\", "/")
+    $lines.Add("$relativePath $(Get-FileSha256 $file.FullName)")
+  }
+
+  $payload = [string]::Join("`n", $lines)
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+    [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace("-", "").ToLowerInvariant()
+  }
+  finally {
+    $sha.Dispose()
+  }
+}
+
+function Get-McpContractFingerprint([string]$RepoRoot) {
+  $launcherPath = Join-Path $RepoRoot "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1"
+  $text = Get-Content -LiteralPath $launcherPath -Raw
+  $match = [regex]::Match($text, '\$ExpectedMcpContractFingerprint\s*=\s*"([0-9a-fA-F]{64})"')
+  if (-not $match.Success) {
+    throw "Could not resolve MCP contract fingerprint from $launcherPath."
+  }
+
+  $match.Groups[1].Value.ToLowerInvariant()
+}
+
 $repoRoot = Resolve-RepoRoot
 $elixirDir = Join-Path $repoRoot "elixir"
 $assetsDir = Join-Path $elixirDir "assets"
@@ -122,6 +156,7 @@ $packageBaseName = "sympp-runtime-$revision-$platformId"
 $stagingDir = Join-Path $outputRoot "$packageBaseName-staging"
 $releaseDir = Join-Path $elixirDir "_build/prod/rel/symphony_elixir"
 $sourceStaticDir = Join-Path $elixirDir "priv/static"
+$workflowTemplatePath = Join-Path $repoRoot "implementation_docs_symphplusplus/templates/WORKFLOW.symfony_pp.md"
 $payloadManifestPath = Join-Path $stagingDir "runtime-manifest.json"
 $archivePath = Join-Path $outputRoot "$packageBaseName.zip"
 $manifestPath = Join-Path $outputRoot "$packageBaseName.manifest.json"
@@ -129,6 +164,7 @@ $manifestPath = Join-Path $outputRoot "$packageBaseName.manifest.json"
 Require-Path $elixirDir "Elixir project directory" -Directory | Out-Null
 Require-Path (Join-Path $elixirDir "mix.exs") "mix project" | Out-Null
 Require-Path $assetsDir "Dashboard assets directory" -Directory | Out-Null
+Require-Path $workflowTemplatePath "Runtime artifact workflow template" | Out-Null
 
 if ($DryRun) {
   Write-Host "Dry run: revision=$revision platform=$platformId output=$outputRoot"
@@ -162,12 +198,15 @@ Require-Path $releaseDir "Compiled backend release" -Directory | Out-Null
 $releaseAppDir = Get-FirstReleaseAppDir $releaseDir
 Require-Path (Join-Path $releaseAppDir "priv/static/index.html") "Release dashboard static index" | Out-Null
 Require-Path (Join-Path $releaseAppDir "priv/static/.vite/manifest.json") "Release dashboard Vite manifest" | Out-Null
+$dashboardFingerprint = Get-DirectoryFingerprint $sourceStaticDir
+$mcpContractFingerprint = Get-McpContractFingerprint $repoRoot
 
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
 Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
 Copy-Item -LiteralPath $releaseDir -Destination (Join-Path $stagingDir "runtime") -Recurse
 Copy-Item -LiteralPath $sourceStaticDir -Destination (Join-Path $stagingDir "dashboard-static") -Recurse
+Copy-Item -LiteralPath $workflowTemplatePath -Destination (Join-Path $stagingDir "WORKFLOW.md")
 @'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -220,6 +259,8 @@ done
 [[ "$port" =~ ^[0-9]+$ ]] || { echo "--port must be a non-negative integer." >&2; exit 2; }
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+runtime_bin="$script_dir/runtime/bin/symphony_elixir"
+chmod +x "$runtime_bin" 2>/dev/null || true
 release_tmp="$logs_root/release-tmp"
 mkdir -p "$logs_root" "$release_tmp"
 export SYMPP_RUNTIME_ARTIFACT=1
@@ -229,7 +270,7 @@ export SYMPP_LOGS_ROOT="$logs_root"
 export SYMPP_BACKEND_PORT="$port"
 export RELEASE_TMP="$release_tmp"
 export PHX_SERVER=true
-exec "$script_dir/runtime/bin/symphony_elixir" start
+exec "$runtime_bin" start
 '@ | Set-Content -LiteralPath (Join-Path $stagingDir "start-runtime.sh") -Encoding utf8NoBOM
 @'
 [CmdletBinding()]
@@ -306,10 +347,13 @@ $payload = [ordered]@{
     relative_path = "dashboard-static"
     index = "dashboard-static/index.html"
     vite_manifest = "dashboard-static/.vite/manifest.json"
+    fingerprint = $dashboardFingerprint
   }
   launcher_contract = [ordered]@{
     manifest = "sympp-runtime-artifact"
     version = 1
+    mcp_contract_fingerprint = $mcpContractFingerprint
+    workflow = "WORKFLOW.md"
   }
 }
 
@@ -318,7 +362,7 @@ Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
 [System.IO.Compression.ZipFile]::CreateFromDirectory($stagingDir, $archivePath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
 
 $archiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-$payloadHash = (Get-FileHash -LiteralPath $payloadManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$payloadHash = Get-FileSha256 $payloadManifestPath
 $archiveItem = Get-Item -LiteralPath $archivePath
 
 $manifest = [ordered]@{

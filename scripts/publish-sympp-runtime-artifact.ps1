@@ -1,10 +1,17 @@
 [CmdletBinding()]
 param(
   [string]$ManifestPath,
+  [string[]]$ManifestPaths = @(),
+  [string]$ManifestDir = "",
+  [string[]]$RequiredPlatforms = @("linux-x64", "windows-x64", "macos-arm64"),
   [string]$Channel = "stable",
+  [string]$ManifestVersion = "",
+  [string]$Repository = "",
+  [string]$ReleaseTag = "",
+  [string]$PublishedBaseUrl = "",
   [string]$PublishedArtifactUrl = "",
   [string]$PublishedManifestUrl = "",
-  [string]$ChannelOutputPath = "artifacts/sympp-runtime-channel.json",
+  [string]$ChannelOutputPath = "artifacts/sympp-runtime-artifacts.json",
   [switch]$DryRun,
   [switch]$Help
 )
@@ -14,14 +21,15 @@ Set-StrictMode -Version Latest
 
 function Show-Usage {
   @"
-Validates a built Symphony++ runtime artifact manifest before advancing a release channel.
+Validates built Symphony++ runtime artifacts before advancing a release channel.
 
-Publishing is intentionally separate from building. Non-dry-run channel output
-requires already-published artifact and manifest URLs, so marketplace users
-cannot be pointed at a local or unvalidated artifact.
+Single-manifest mode remains available for PR/main validation. Release-channel
+mode validates every required platform, verifies local SHA-256 values, and
+writes one aggregate manifest with durable release asset URLs.
 
 Usage:
-  scripts/publish-sympp-runtime-artifact.ps1 -ManifestPath <manifest.json> -PublishedArtifactUrl <url> -PublishedManifestUrl <url> [-Channel stable]
+  scripts/publish-sympp-runtime-artifact.ps1 -ManifestPath <manifest.json> -DryRun
+  scripts/publish-sympp-runtime-artifact.ps1 -ManifestDir <dir> -PublishedBaseUrl <release-url> -ReleaseTag <tag> [-Channel stable]
 "@ | Write-Host
 }
 
@@ -30,8 +38,50 @@ if ($Help) {
   exit 0
 }
 
-if ([string]::IsNullOrWhiteSpace($ManifestPath)) {
-  throw "ManifestPath is required."
+function Resolve-RepoRoot {
+  Split-Path -Parent $PSScriptRoot
+}
+
+function Write-JsonFile([string]$Path, $Value) {
+  $json = ($Value | ConvertTo-Json -Depth 30) + [Environment]::NewLine
+  [System.IO.File]::WriteAllText($Path, $json, (New-Object System.Text.UTF8Encoding $false))
+}
+
+function Get-FileSha256([string]$Path) {
+  (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Normalize-Platform([string]$Platform) {
+  if ([string]::IsNullOrWhiteSpace($Platform)) {
+    throw "Artifact manifest platform is required."
+  }
+
+  $parts = @($Platform.Trim().ToLowerInvariant() -split "-")
+  if ($parts.Count -lt 2) {
+    throw "Artifact manifest platform must look like '<os>-<arch>': $Platform"
+  }
+
+  $arch = switch ($parts[1]) {
+    { $_ -in @("x64", "x86_64", "amd64") } { "x86_64"; break }
+    { $_ -in @("arm64", "aarch64") } { "aarch64"; break }
+    default { $parts[1] }
+  }
+  $abi = if ($parts.Count -ge 3) { $parts[2] } elseif ($parts[0] -eq "windows") { "msvc" } else { $null }
+
+  [pscustomobject]@{
+    key = "$($parts[0])-$($parts[1])"
+    os = $parts[0]
+    arch = $arch
+    abi = $abi
+  }
+}
+
+function Require-Property($Object, [string]$Name, [string]$Label) {
+  if ($null -eq $Object -or -not ($Object.PSObject.Properties.Name -contains $Name)) {
+    throw "$Label is missing required property '$Name'."
+  }
+
+  $Object.$Name
 }
 
 function Require-Url([string]$Value, [string]$Label) {
@@ -45,75 +95,242 @@ function Require-Url([string]$Value, [string]$Label) {
   }
 }
 
-function Require-Property($Object, [string]$Name, [string]$Label) {
-  if ($null -eq $Object -or -not ($Object.PSObject.Properties.Name -contains $Name)) {
-    throw "$Label is missing required property '$Name'."
+function Get-PluginMetadata([string]$RepoRoot, [string]$SourceRevision) {
+  $manifestPath = Join-Path $RepoRoot "plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json"
+  $plugin = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+  [ordered]@{
+    name = [string]$plugin.name
+    version = [string]$plugin.version
+    marketplace = "symphony-plus-plus"
+    source_revision = $SourceRevision
+  }
+}
+
+function Get-ManifestFiles {
+  $files = New-Object System.Collections.Generic.List[string]
+  if (-not [string]::IsNullOrWhiteSpace($ManifestPath)) {
+    $files.Add($ManifestPath)
+  }
+  foreach ($path in @($ManifestPaths)) {
+    if (-not [string]::IsNullOrWhiteSpace($path)) {
+      $files.Add($path)
+    }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ManifestDir)) {
+    foreach ($item in @(Get-ChildItem -LiteralPath $ManifestDir -Filter "*.manifest.json" -File | Sort-Object Name)) {
+      $files.Add($item.FullName)
+    }
   }
 
-  $Object.$Name
+  @($files | ForEach-Object { (Resolve-Path -LiteralPath $_).Path } | Select-Object -Unique)
 }
 
-function Write-JsonFile([string]$Path, $Value) {
-  $json = ($Value | ConvertTo-Json -Depth 20) + [Environment]::NewLine
-  [System.IO.File]::WriteAllText($Path, $json, (New-Object System.Text.UTF8Encoding $false))
+function Read-BuiltManifest([string]$Path) {
+  $fullPath = (Resolve-Path -LiteralPath $Path).Path
+  $manifest = Get-Content -LiteralPath $fullPath -Raw | ConvertFrom-Json
+  if ((Require-Property $manifest "status" "Artifact manifest") -ne "built") {
+    throw "Artifact manifest status must be 'built': $fullPath"
+  }
+
+  $revision = [string](Require-Property $manifest "source_revision" "Artifact manifest")
+  if ($revision -notmatch '^[0-9a-f]{40}$') {
+    throw "Artifact manifest source_revision must be a 40-character SHA: $fullPath"
+  }
+
+  $platform = Normalize-Platform ([string](Require-Property $manifest "platform" "Artifact manifest"))
+  $artifact = Require-Property $manifest "artifact" "Artifact manifest"
+  $artifactFile = [string](Require-Property $artifact "file" "Artifact manifest artifact")
+  $expectedSha = ([string](Require-Property $artifact "sha256" "Artifact manifest artifact")).ToLowerInvariant()
+  if ($expectedSha -notmatch '^[0-9a-f]{64}$') {
+    throw "Artifact manifest artifact.sha256 must be a SHA256 hex digest: $fullPath"
+  }
+
+  $artifactPath = Join-Path (Split-Path -Parent $fullPath) $artifactFile
+  if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
+    throw "Artifact package referenced by manifest is missing: $artifactPath"
+  }
+
+  $actualSha = Get-FileSha256 $artifactPath
+  if ($actualSha -ne $expectedSha) {
+    throw "Artifact package SHA256 mismatch for $artifactPath. Expected $expectedSha, got $actualSha."
+  }
+
+  $dashboard = Require-Property $manifest "dashboard" "Artifact manifest"
+  $dashboardFingerprint = [string](Require-Property $dashboard "fingerprint" "Artifact manifest dashboard")
+  if ($dashboardFingerprint -notmatch '^[0-9a-f]{64}$') {
+    throw "Artifact manifest dashboard.fingerprint must be a SHA256 hex digest: $fullPath"
+  }
+
+  $launcherContract = Require-Property $manifest "launcher_contract" "Artifact manifest"
+  $contractFingerprint = ([string](Require-Property $launcherContract "mcp_contract_fingerprint" "Artifact manifest launcher_contract")).ToLowerInvariant()
+  if ($contractFingerprint -notmatch '^[0-9a-f]{64}$') {
+    throw "Artifact manifest launcher_contract.mcp_contract_fingerprint must be a SHA256 hex digest: $fullPath"
+  }
+
+  [pscustomobject]@{
+    path = $fullPath
+    manifest = $manifest
+    manifest_sha256 = Get-FileSha256 $fullPath
+    revision = $revision
+    platform = $platform
+    artifact_path = (Resolve-Path -LiteralPath $artifactPath).Path
+    artifact_file = Split-Path -Leaf $artifactPath
+    artifact_sha256 = $expectedSha
+    artifact_size = (Get-Item -LiteralPath $artifactPath).Length
+    contract_fingerprint = $contractFingerprint
+  }
 }
 
-$manifestFullPath = (Resolve-Path -LiteralPath $ManifestPath).Path
-$manifest = Get-Content -LiteralPath $manifestFullPath -Raw | ConvertFrom-Json
-
-if ((Require-Property $manifest "status" "Artifact manifest") -ne "built") {
-  throw "Artifact manifest status must be 'built'."
+function New-AssetUrl([string]$BaseUrl, [string]$FileName) {
+  $escaped = [Uri]::EscapeDataString($FileName).Replace("%2D", "-").Replace("%2E", ".").Replace("%5F", "_")
+  "$($BaseUrl.TrimEnd('/'))/$escaped"
 }
 
-$revision = [string](Require-Property $manifest "source_revision" "Artifact manifest")
-if ($revision -notmatch '^[0-9a-f]{40}$') {
-  throw "Artifact manifest source_revision must be a 40-character SHA."
+$repoRoot = Resolve-RepoRoot
+$manifestFiles = @(Get-ManifestFiles)
+if ($manifestFiles.Count -eq 0) {
+  throw "At least one artifact manifest is required."
 }
 
-$artifact = Require-Property $manifest "artifact" "Artifact manifest"
-$artifactFile = [string](Require-Property $artifact "file" "Artifact manifest artifact")
-$expectedSha = ([string](Require-Property $artifact "sha256" "Artifact manifest artifact")).ToLowerInvariant()
-if ($expectedSha -notmatch '^[0-9a-f]{64}$') {
-  throw "Artifact manifest artifact.sha256 must be a SHA256 hex digest."
-}
+$records = @($manifestFiles | ForEach-Object { Read-BuiltManifest $_ })
 
-$artifactPath = Join-Path (Split-Path -Parent $manifestFullPath) $artifactFile
-if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
-  throw "Artifact package referenced by manifest is missing: $artifactPath"
-}
+if ($records.Count -eq 1 -and [string]::IsNullOrWhiteSpace($PublishedBaseUrl)) {
+  $record = $records[0]
+  if ($DryRun) {
+    Write-Host "Dry run: validated $($record.path) and $($record.artifact_path) for channel '$Channel'."
+    exit 0
+  }
 
-$actualSha = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($actualSha -ne $expectedSha) {
-  throw "Artifact package SHA256 mismatch. Expected $expectedSha, got $actualSha."
-}
+  Require-Url $PublishedArtifactUrl "PublishedArtifactUrl"
+  Require-Url $PublishedManifestUrl "PublishedManifestUrl"
 
-if ($DryRun) {
-  Write-Host "Dry run: validated $manifestFullPath and $artifactPath for channel '$Channel'."
+  $channelDoc = [ordered]@{
+    schema_version = 1
+    channel = $Channel
+    advanced_at = (Get-Date).ToUniversalTime().ToString("o")
+    source_revision = $record.revision
+    platform = $record.platform.key
+    artifact = [ordered]@{
+      url = $PublishedArtifactUrl
+      sha256 = $record.artifact_sha256
+      size_bytes = $record.artifact_size
+    }
+    manifest = [ordered]@{
+      url = $PublishedManifestUrl
+      sha256 = $record.manifest_sha256
+    }
+    launcher_contract = $record.manifest.launcher_contract
+  }
+
+  $channelPath = if ([System.IO.Path]::IsPathRooted($ChannelOutputPath)) { $ChannelOutputPath } else { Join-Path $repoRoot $ChannelOutputPath }
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $channelPath) | Out-Null
+  Write-JsonFile $channelPath $channelDoc
+  Write-Host "Wrote release channel manifest $channelPath"
   exit 0
 }
 
-Require-Url $PublishedArtifactUrl "PublishedArtifactUrl"
-Require-Url $PublishedManifestUrl "PublishedManifestUrl"
+Require-Url $PublishedBaseUrl "PublishedBaseUrl"
+$revisions = @($records | ForEach-Object { $_.revision } | Select-Object -Unique)
+if ($revisions.Count -ne 1) {
+  throw "Release-channel artifacts must share one source revision; found $($revisions -join ', ')."
+}
+$sourceRevision = $revisions[0]
 
-$channelDoc = [ordered]@{
-  schema_version = 1
-  channel = $Channel
-  advanced_at = (Get-Date).ToUniversalTime().ToString("o")
-  source_revision = $revision
-  platform = [string](Require-Property $manifest "platform" "Artifact manifest")
-  artifact = [ordered]@{
-    url = $PublishedArtifactUrl
-    sha256 = $expectedSha
-    size_bytes = $artifact.size_bytes
+$recordsByPlatform = @{}
+foreach ($record in $records) {
+  if ($recordsByPlatform.ContainsKey($record.platform.key)) {
+    throw "Release-channel artifacts contain duplicate platform '$($record.platform.key)'."
   }
-  manifest = [ordered]@{
-    url = $PublishedManifestUrl
-    sha256 = (Get-FileHash -LiteralPath $manifestFullPath -Algorithm SHA256).Hash.ToLowerInvariant()
-  }
-  launcher_contract = $manifest.launcher_contract
+  $recordsByPlatform[$record.platform.key] = $record
 }
 
-$channelPath = if ([System.IO.Path]::IsPathRooted($ChannelOutputPath)) { $ChannelOutputPath } else { Join-Path (Split-Path -Parent $PSScriptRoot) $ChannelOutputPath }
+$required = @($RequiredPlatforms | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { (Normalize-Platform $_).key })
+foreach ($platform in $required) {
+  if (-not $recordsByPlatform.ContainsKey($platform)) {
+    throw "Release-channel artifact is missing required platform '$platform'."
+  }
+}
+
+$plugin = Get-PluginMetadata $repoRoot $sourceRevision
+$contractFingerprints = @($records | ForEach-Object { $_.contract_fingerprint } | Select-Object -Unique)
+if ($contractFingerprints.Count -ne 1) {
+  throw "Release-channel artifacts must share one MCP contract fingerprint; found $($contractFingerprints -join ', ')."
+}
+$contractFingerprint = $contractFingerprints[0]
+$manifestVersionValue = if ([string]::IsNullOrWhiteSpace($ManifestVersion)) {
+  if ([string]::IsNullOrWhiteSpace($ReleaseTag)) { $sourceRevision.Substring(0, 12) } else { $ReleaseTag }
+} else {
+  $ManifestVersion
+}
+
+$aggregateArtifacts = @()
+foreach ($record in @($records | Sort-Object { $_.platform.key })) {
+  $entrypoint = if ($record.platform.os -eq "windows") { "start-runtime.ps1" } else { "start-runtime.sh" }
+  $aggregateArtifacts += [ordered]@{
+    platform = [ordered]@{
+      os = $record.platform.os
+      arch = $record.platform.arch
+      abi = $record.platform.abi
+    }
+    source_revision = $sourceRevision
+    mcp_contract_fingerprint = $contractFingerprint
+    archive = [ordered]@{
+      url = New-AssetUrl $PublishedBaseUrl $record.artifact_file
+      sha256 = $record.artifact_sha256
+      size_bytes = $record.artifact_size
+    }
+    build_manifest = [ordered]@{
+      url = New-AssetUrl $PublishedBaseUrl (Split-Path -Leaf $record.path)
+      sha256 = $record.manifest_sha256
+    }
+    runtime = [ordered]@{
+      command = $entrypoint
+      workflow = "WORKFLOW.md"
+      args = @()
+      mcp_path = "/mcp"
+      health_path = "/health"
+    }
+    backend = $record.manifest.backend
+    dashboard = [ordered]@{
+      asset_root = "dashboard-static"
+      entrypoint = "index.html"
+      fingerprint = $record.manifest.dashboard.fingerprint
+      index = $record.manifest.dashboard.index
+      vite_manifest = $record.manifest.dashboard.vite_manifest
+    }
+    fallback = [ordered]@{
+      developer_source_compile = "allowed_with_explicit_source_checkout"
+      installed_user_source_compile = "disabled_by_default"
+    }
+  }
+}
+
+$aggregate = [ordered]@{
+  schema_version = 1
+  plugin = $plugin
+  release = [ordered]@{
+    channel = $Channel
+    manifest_version = $manifestVersionValue
+    source_revision = $sourceRevision
+    repository = $Repository
+    tag = $ReleaseTag
+    published_base_url = $PublishedBaseUrl.TrimEnd("/")
+    required_platforms = @($required | ForEach-Object {
+        $platform = Normalize-Platform $_
+        [ordered]@{ os = $platform.os; arch = $platform.arch; abi = $platform.abi }
+      })
+  }
+  source_revision = $sourceRevision
+  mcp_contract_fingerprint = $contractFingerprint
+  launcher_contract = [ordered]@{
+    manifest = "sympp-runtime-artifact"
+    version = 1
+    mcp_contract_fingerprint = $contractFingerprint
+  }
+  artifacts = $aggregateArtifacts
+}
+
+$channelPath = if ([System.IO.Path]::IsPathRooted($ChannelOutputPath)) { $ChannelOutputPath } else { Join-Path $repoRoot $ChannelOutputPath }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $channelPath) | Out-Null
-Write-JsonFile $channelPath $channelDoc
-Write-Host "Wrote release channel manifest $channelPath"
+Write-JsonFile $channelPath $aggregate
+Write-Host "Wrote aggregate release channel manifest $channelPath"

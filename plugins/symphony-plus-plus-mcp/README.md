@@ -28,18 +28,19 @@ This plugin intentionally bundles:
   dashboard npm dependencies into the selected source tree when Vite is missing,
   then bridges Codex stdio MCP traffic into the backend HTTP `/mcp` endpoint.
 - The same `assets/splusplus-logo.png` icon used by the default Symphony++ plugin.
+- `assets/sympp-runtime-artifacts.json`, a stable release-channel pointer for
+  prebuilt installed-runtime artifacts.
 - The MCP-mode Solo Session, worker, coordinator, architect, and WorkPackage skills.
 - The local MCP launcher plus the Solo wrapper script needed after marketplace/cache packaging.
   The launcher discovers the full Codex marketplace source clone automatically,
   so normal marketplace installs do not require users to set `SYMPP_REPO_ROOT`.
 
-The target installed-runtime contract lives in the source repository operator
-docs as `17_RUNTIME_ARTIFACT_CONTRACT.md`. It defines the future verified
-artifact path, release-channel gate, manifest fields, static dashboard
-expectations, source-checkout fallback semantics, and diagnostics. Installed
-plugin cache copies of this README are self-contained: until that launcher path
-is implemented, this README describes the current marketplace-source runtime
-behavior.
+The installed-runtime contract lives in the source repository operator docs as
+`17_RUNTIME_ARTIFACT_CONTRACT.md`. It defines the verified artifact path,
+release-channel gate, manifest fields, static dashboard expectations,
+source-checkout fallback semantics, and diagnostics. Installed plugin cache
+copies of this README are self-contained and include the stable channel pointer
+used by the launcher artifact lookup path.
 
 The default `symphony-plus-plus` plugin must remain skill-only and should stay
 enabled broadly for non-MCP work. Dedicated MCP homes should enable this
