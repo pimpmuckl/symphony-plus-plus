@@ -4,8 +4,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport06Test do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
   defmodule FailingRebindValidationRepo do
-    def database_path, do: SymphonyElixir.SymphonyPlusPlus.Repo.database_path()
-    def query(sql, params, opts), do: SymphonyElixir.SymphonyPlusPlus.Repo.query(sql, params, opts)
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    def database_path, do: Repo.database_path()
+    def query(sql, params, opts), do: Repo.query(sql, params, opts)
     def get(_schema, _id), do: raise(RuntimeError, "grant lookup unavailable")
   end
 

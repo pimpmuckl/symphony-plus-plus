@@ -1,4 +1,4 @@
-.PHONY: help all setup deps build static fmt fmt-check lint hygiene assets-check test test-fast coverage ci ci-prepare ci-fast ci-static ci-test ci-dialyzer ci-coverage ci-hygiene ci-full dialyzer e2e
+.PHONY: help all setup deps build static fmt fmt-check lint hygiene assets-check test test-fast test-slow coverage ci ci-prepare ci-fast ci-static ci-test ci-slow ci-dialyzer ci-coverage ci-hygiene ci-full dialyzer e2e
 
 MIX ?= mix
 QUIET ?= 1
@@ -46,8 +46,8 @@ endef
 endif
 
 help:
-	@echo Targets: setup, deps, build, static, fmt, fmt-check, lint, hygiene, assets-check, test, test-fast, coverage, dialyzer, e2e
-	@echo CI targets: ci-fast, ci-static, ci-test, ci-dialyzer, ci-coverage, ci-hygiene, ci-full
+	@echo Targets: setup, deps, build, static, fmt, fmt-check, lint, hygiene, assets-check, test, test-fast, test-slow, coverage, dialyzer, e2e
+	@echo CI targets: ci-fast, ci-static, ci-test, ci-slow, ci-dialyzer, ci-coverage, ci-hygiene, ci-full
 	@echo make all is quiet by default. Logs are written under $(GATE_LOG_ROOT). Use VERBOSE=1 for streamed output.
 	@echo make all runs the fast PR gate. Use make ci-full for coverage, Dialyzer, and hygiene ratchets.
 
@@ -87,6 +87,9 @@ test:
 test-fast:
 	@$(MIX) test --exclude ci_slow
 
+test-slow:
+	@$(MIX) test --only ci_slow
+
 dialyzer:
 	@$(MIX) dialyzer --format short
 
@@ -102,6 +105,9 @@ ci-static: ci-prepare
 
 ci-test: ci-prepare
 	$(call run_ci_step,test,$(MIX) test --exclude ci_slow)
+
+ci-slow: ci-prepare
+	$(call run_ci_step,test-slow,$(MIX) test --only ci_slow)
 
 ci-dialyzer: ci-prepare
 	$(call run_ci_step,dialyzer,$(MIX) dialyzer --format short)
