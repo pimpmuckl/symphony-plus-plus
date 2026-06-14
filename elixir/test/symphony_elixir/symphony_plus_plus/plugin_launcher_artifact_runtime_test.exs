@@ -890,6 +890,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactRuntimeTest do
   defp normalize_shell_output(output) do
     output
     |> String.replace(~r/\e\[[0-9;]*m/, "")
+    |> String.replace(~r/\s+\|\s+/, " ")
     |> String.replace(~r/\s+/, " ")
   end
 
