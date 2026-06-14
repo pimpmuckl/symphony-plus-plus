@@ -9,6 +9,10 @@ on:
     branches:
       - main
 
+permissions:
+  actions: read
+  contents: read
+
 jobs:
   build-runtime-artifact:
     name: Build runtime artifact (${{ matrix.platform }})
@@ -82,6 +86,121 @@ jobs:
           $manifest = Get-ChildItem -LiteralPath artifacts/sympp-runtime -Filter *.manifest.json | Select-Object -First 1
           ./scripts/publish-sympp-runtime-artifact.ps1 -ManifestPath $manifest.FullName -DryRun
 
+      - name: Smoke runtime artifact
+        if: matrix.shell == 'bash'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(find artifacts/sympp-runtime -maxdepth 1 -type f -name '*.tar.gz' | head -n 1)"
+          if [ -z "$archive" ]; then
+            echo "Runtime artifact archive is missing." >&2
+            exit 1
+          fi
+
+          smoke_root="${RUNNER_TEMP}/sympp-runtime-smoke-${{ matrix.platform }}"
+          logs_root="${RUNNER_TEMP}/sympp-runtime-smoke-logs-${{ matrix.platform }}"
+          rm -rf "$smoke_root" "$logs_root"
+          mkdir -p "$smoke_root" "$logs_root"
+          tar -xzf "$archive" -C "$smoke_root"
+
+          test ! -e "$smoke_root/WORKFLOW.md"
+          workflow_file="$GITHUB_WORKSPACE/elixir/WORKFLOW.md"
+          test -f "$workflow_file"
+          chmod +x "$smoke_root/start-runtime.sh" || true
+          "$smoke_root/start-runtime.sh" \
+            --i-understand-that-this-will-be-running-without-the-usual-guardrails \
+            --workflow "$workflow_file" \
+            --logs-root "$logs_root" \
+            --port 19998 &
+          runtime_pid="$!"
+          trap 'kill "$runtime_pid" 2>/dev/null || true; wait "$runtime_pid" 2>/dev/null || true' EXIT
+
+          ready=0
+          for _ in $(seq 1 120); do
+            if curl -fsS "http://127.0.0.1:19998/sympp/board" > /dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "Runtime artifact dashboard route did not become ready." >&2
+            exit 1
+          fi
+
+          pwsh -NoProfile -File scripts/smoke-sympp-mcp-http.ps1 \
+            -Url "http://127.0.0.1:19998/mcp" \
+            -ExpectedSourceRevision "${GITHUB_SHA}" \
+            -SkipUnboundTools
+          curl -fsS "http://127.0.0.1:19998/sympp/board" > /dev/null
+
+      - name: Smoke runtime artifact
+        if: matrix.shell == 'pwsh'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = Get-ChildItem -LiteralPath artifacts/sympp-runtime -Filter *.zip | Select-Object -First 1
+          if ($null -eq $archive) {
+            throw "Runtime artifact archive is missing."
+          }
+
+          $smokeRoot = Join-Path $env:RUNNER_TEMP "sympp-runtime-smoke-${{ matrix.platform }}"
+          $logsRoot = Join-Path $env:RUNNER_TEMP "sympp-runtime-smoke-logs-${{ matrix.platform }}"
+          Remove-Item -LiteralPath $smokeRoot, $logsRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $smokeRoot, $logsRoot | Out-Null
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath $smokeRoot -Force
+          if (Test-Path -LiteralPath (Join-Path $smokeRoot "WORKFLOW.md")) {
+            throw "Release artifact must not include placeholder WORKFLOW.md"
+          }
+
+          $entrypoint = Join-Path $smokeRoot "start-runtime.ps1"
+          $workflow = Join-Path $env:GITHUB_WORKSPACE "elixir/WORKFLOW.md"
+          if (-not (Test-Path -LiteralPath $workflow -PathType Leaf)) {
+            throw "Runtime smoke workflow is missing: $workflow"
+          }
+          $process = Start-Process `
+            -FilePath "pwsh" `
+            -ArgumentList @(
+              "-NoProfile",
+              "-File",
+              $entrypoint,
+              "-IUnderstandThatThisWillBeRunningWithoutTheUsualGuardrails",
+              "-Workflow",
+              $workflow,
+              "-LogsRoot",
+              $logsRoot,
+              "-Port",
+              "19998"
+            ) `
+            -PassThru
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 120; $attempt += 1) {
+              try {
+                Invoke-WebRequest -Uri "http://127.0.0.1:19998/sympp/board" -UseBasicParsing | Out-Null
+                $ready = $true
+                break
+              }
+              catch {
+                Start-Sleep -Seconds 1
+              }
+            }
+            if (-not $ready) {
+              throw "Runtime artifact dashboard route did not become ready."
+            }
+
+            ./scripts/smoke-sympp-mcp-http.ps1 `
+              -Url "http://127.0.0.1:19998/mcp" `
+              -ExpectedSourceRevision "${env:GITHUB_SHA}" `
+              -SkipUnboundTools
+            Invoke-WebRequest -Uri "http://127.0.0.1:19998/sympp/board" -UseBasicParsing | Out-Null
+          }
+          finally {
+            if ($null -ne $process -and -not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
+
       - name: Upload runtime artifact
         id: upload-runtime-artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -93,3 +212,82 @@ jobs:
             artifacts/sympp-runtime/*.zip
           if-no-files-found: error
           retention-days: 30
+
+  publish-stable-release:
+    name: Publish stable release channel
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-runtime-artifact
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_CHANNEL: stable
+      RELEASE_TAG: sympp-runtime-stable
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Download platform artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: artifacts/sympp-runtime-release
+          pattern: sympp-runtime-*-${{ github.sha }}
+          merge-multiple: true
+
+      - name: Validate release inputs
+        shell: bash
+        run: |
+          test -n "${RELEASE_CHANNEL// }"
+          test -n "${RELEASE_TAG// }"
+          find artifacts/sympp-runtime-release -maxdepth 1 -type f -print | sort
+
+      - name: Build aggregate channel manifest
+        shell: pwsh
+        run: |
+          $baseUrl = "https://github.com/${env:GITHUB_REPOSITORY}/releases/download/${env:RELEASE_TAG}"
+          ./scripts/publish-sympp-runtime-artifact.ps1 `
+            -ManifestDir "artifacts/sympp-runtime-release" `
+            -PublishedBaseUrl $baseUrl `
+            -ReleaseTag "${env:RELEASE_TAG}" `
+            -Repository "${env:GITHUB_REPOSITORY}" `
+            -Channel "${env:RELEASE_CHANNEL}" `
+            -ManifestVersion "${env:RELEASE_TAG}" `
+            -ChannelOutputPath "artifacts/sympp-runtime-release/sympp-runtime-artifacts-${env:RELEASE_CHANNEL}.json"
+
+      - name: Create or update GitHub Release
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --target "${GITHUB_SHA}" \
+              --title "Symphony++ runtime artifacts $RELEASE_TAG" \
+              --notes "Prebuilt Symphony++ runtime artifacts for ${GITHUB_SHA}."
+          else
+            gh release create "$RELEASE_TAG" \
+              --target "${GITHUB_SHA}" \
+              --title "Symphony++ runtime artifacts $RELEASE_TAG" \
+              --notes "Prebuilt Symphony++ runtime artifacts for ${GITHUB_SHA}."
+          fi
+
+      - name: Upload platform release assets
+        shell: bash
+        run: |
+          shopt -s nullglob
+          assets=(
+            artifacts/sympp-runtime-release/*.zip
+            artifacts/sympp-runtime-release/*.tar.gz
+            artifacts/sympp-runtime-release/*.manifest.json
+          )
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No platform release assets found." >&2
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+
+      - name: Upload aggregate channel manifest
+        shell: bash
+        run: |
+          gh release upload "$RELEASE_TAG" "artifacts/sympp-runtime-release/sympp-runtime-artifacts-${RELEASE_CHANNEL}.json" --clobber
