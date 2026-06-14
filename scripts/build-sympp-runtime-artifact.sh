@@ -228,7 +228,12 @@ done
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 runtime_bin="$script_dir/runtime/bin/symphony_elixir"
-chmod +x "$runtime_bin" "$script_dir"/runtime/bin/* "$script_dir"/runtime/erts-*/bin/* 2>/dev/null || true
+chmod +x \
+  "$runtime_bin" \
+  "$script_dir"/runtime/bin/* \
+  "$script_dir"/runtime/erts-*/bin/* \
+  "$script_dir"/runtime/releases/*/elixir \
+  2>/dev/null || true
 release_tmp="$logs_root/release-tmp"
 mkdir -p "$logs_root" "$release_tmp"
 export SYMPP_RUNTIME_ARTIFACT=1
