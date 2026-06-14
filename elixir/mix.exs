@@ -5,7 +5,7 @@ defmodule SymphonyElixir.MixProject do
     [
       app: :symphony_elixir,
       version: "0.1.0",
-      elixir: "~> 1.19",
+      elixir: "~> 1.20",
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       start_permanent: Mix.env() == :prod,
       test_coverage: [
@@ -60,6 +60,7 @@ defmodule SymphonyElixir.MixProject do
       ],
       cli: cli(),
       escript: escript(),
+      releases: releases(),
       aliases: aliases(),
       deps: deps()
     ]
@@ -82,18 +83,18 @@ defmodule SymphonyElixir.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:bandit, "~> 1.8"},
-      {:floki, ">= 0.30.0", only: :test},
-      {:lazy_html, ">= 0.1.0", only: :test},
-      {:phoenix, "~> 1.8.0"},
-      {:phoenix_html, "~> 4.2"},
-      {:phoenix_live_view, "~> 1.1.0"},
-      {:req, "~> 0.5"},
+      {:bandit, "~> 1.12"},
+      {:floki, "~> 0.38.3", only: :test},
+      {:lazy_html, "~> 0.1.11", only: :test},
+      {:phoenix, "~> 1.8"},
+      {:phoenix_html, "~> 4.3"},
+      {:phoenix_live_view, "~> 1.2"},
+      {:req, "~> 0.6.1"},
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.12"},
-      {:solid, "~> 1.2"},
-      {:ecto, "~> 3.13"},
-      {:ecto_sql, "~> 3.13"},
+      {:solid, "~> 1.3"},
+      {:ecto, "~> 3.13.0"},
+      {:ecto_sql, "~> 3.13.0"},
       {:ecto_sqlite3, "~> 0.23.0"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
@@ -117,6 +118,17 @@ defmodule SymphonyElixir.MixProject do
       main_module: SymphonyElixir.CLI,
       name: "symphony",
       path: "bin/symphony"
+    ]
+  end
+
+  defp releases do
+    [
+      symphony_elixir: [
+        include_executables_for: [:unix, :windows],
+        applications: [
+          runtime_tools: :permanent
+        ]
+      ]
     ]
   end
 end

@@ -70,13 +70,35 @@ function Get-SymppMarketplaceInstallRevision([string]$RepoRoot) {
   }
 }
 
-function Resolve-SymppSourceRevision([string]$RepoRoot) {
+function Get-SymppPinnedSourceRevision([string]$Root) {
+  if ([string]::IsNullOrWhiteSpace($Root)) {
+    return $null
+  }
+
+  $revisionPath = Join-Path $Root ".sympp-source-revision"
+  if (-not (Test-Path -LiteralPath $revisionPath)) {
+    return $null
+  }
+
+  try {
+    return Normalize-SymppSourceRevision (Get-Content -LiteralPath $revisionPath -Raw)
+  } catch {
+    return $null
+  }
+}
+
+function Resolve-SymppSourceRevision([string]$RepoRoot, [string]$PluginRoot = $null) {
   $gitRevision = Get-SymppGitHeadRevision $RepoRoot
   if ($gitRevision) {
     return $gitRevision
   }
 
-  return Get-SymppMarketplaceInstallRevision $RepoRoot
+  $installRevision = Get-SymppMarketplaceInstallRevision $RepoRoot
+  if ($installRevision) {
+    return $installRevision
+  }
+
+  return Get-SymppPinnedSourceRevision $PluginRoot
 }
 
 function Get-SymppStablePathKey([string]$Value) {
@@ -161,6 +183,49 @@ function Convert-SymppProcessorArchitectureToTargetArch([string]$Architecture) {
   }
 }
 
+function Get-SymppRuntimeOsKey {
+  if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
+    return "windows"
+  }
+  if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)) {
+    return "linux"
+  }
+  if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)) {
+    return "macos"
+  }
+
+  return $null
+}
+
+function Get-SymppRuntimeArchKey {
+  $architecture = $null
+  if (Test-SymppWindowsPlatform) {
+    $architecture = Get-SymppWindowsProcessorArchitecture
+  } else {
+    try {
+      $architecture = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+    } catch {
+    }
+  }
+
+  $targetArch = Convert-SymppProcessorArchitectureToTargetArch $architecture
+  if (-not [string]::IsNullOrWhiteSpace($targetArch)) {
+    return $targetArch
+  }
+
+  return $null
+}
+
+function Get-SymppRuntimePlatformKey {
+  $os = Get-SymppRuntimeOsKey
+  $arch = Get-SymppRuntimeArchKey
+  if ([string]::IsNullOrWhiteSpace($os) -or [string]::IsNullOrWhiteSpace($arch)) {
+    return $null
+  }
+
+  return "$os-$arch"
+}
+
 function Set-SymppWindowsNativeTargetEnvironment {
   if (-not (Test-SymppWindowsPlatform)) {
     return
@@ -193,8 +258,8 @@ function Set-SymppWindowsNativeTargetEnvironment {
   }
 }
 
-function Resolve-SymppDefaultMixBuildRoot([string]$RepoRoot, [string]$Launcher, [string]$Purpose) {
-  $sourceKey = Resolve-SymppSourceRevision $RepoRoot
+function Resolve-SymppDefaultMixBuildRoot([string]$RepoRoot, [string]$Launcher, [string]$Purpose, [string]$PluginRoot = $null) {
+  $sourceKey = Resolve-SymppSourceRevision $RepoRoot $PluginRoot
   if (-not $sourceKey) {
     $sourceKey = "unknown"
   }
@@ -205,12 +270,12 @@ function Resolve-SymppDefaultMixBuildRoot([string]$RepoRoot, [string]$Launcher, 
   return [System.IO.Path]::GetFullPath((Join-Path (Resolve-SymppPluginHome) "build/$Purpose/$launcherKey/$shortSourceKey-$pathKey"))
 }
 
-function Set-SymppDefaultMixBuildRoot([string]$RepoRoot, [string]$Launcher, [string]$Purpose) {
+function Set-SymppDefaultMixBuildRoot([string]$RepoRoot, [string]$Launcher, [string]$Purpose, [string]$PluginRoot = $null) {
   if (-not [string]::IsNullOrWhiteSpace($env:MIX_BUILD_ROOT)) {
     return
   }
 
-  $buildRoot = Resolve-SymppDefaultMixBuildRoot $RepoRoot $Launcher $Purpose
+  $buildRoot = Resolve-SymppDefaultMixBuildRoot $RepoRoot $Launcher $Purpose $PluginRoot
   New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
   $env:MIX_BUILD_ROOT = $buildRoot
   [Environment]::SetEnvironmentVariable("MIX_BUILD_ROOT", $buildRoot, "Process")

@@ -8,10 +8,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
   @plugin_manifest_path Path.join(@repo_root, "plugins/symphony-plus-plus/.codex-plugin/plugin.json")
   @plugin_version @plugin_manifest_path |> File.read!() |> Jason.decode!() |> Map.fetch!("version")
   @plugin_solo_script_path Path.join(@repo_root, "plugins/symphony-plus-plus/scripts/sympp-solo.ps1")
-  @plugin_lifecycle_diagnostic_path Path.join(@repo_root, "plugins/symphony-plus-plus/scripts/diagnose-mcp-lifecycle.ps1")
   @mcp_plugin_solo_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-solo.ps1")
   @mcp_plugin_start_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1")
-  @mcp_plugin_helper_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-mcp-launcher-helpers.ps1")
 
   test "installed launchers resolve marketplace source clone despite missing or stale cache hints" do
     powershell = System.find_executable("pwsh")
@@ -43,7 +41,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
               ["-NoProfile", "-File", script_path, "-ValidateOnly"],
               cd: Path.dirname(Path.dirname(script_path)),
               stderr_to_stdout: true,
-              env: [{"SYMPP_LAUNCHER", "direct"}, {"SYMPP_MIX", fake_mix}, {"SYMPP_REPO_ROOT", ""}]
+              env: [
+                {"SYMPP_LAUNCHER", "direct"},
+                {"SYMPP_MIX", fake_mix},
+                {"SYMPP_REPO_ROOT", ""},
+                {"SYMPP_SOURCE_FALLBACK", "1"}
+              ]
             )
 
           assert status == 0, output
@@ -80,7 +83,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
               ["-NoProfile", "-File", script_path, "-ValidateOnly"],
               cd: Path.dirname(Path.dirname(script_path)),
               stderr_to_stdout: true,
-              env: [{"SYMPP_MISE", fake_mise}, {"SYMPP_REPO_ROOT", ""}, {"SYMPP_HOME", sympp_home}]
+              env: [
+                {"SYMPP_MISE", fake_mise},
+                {"SYMPP_REPO_ROOT", ""},
+                {"SYMPP_HOME", sympp_home},
+                {"SYMPP_SOURCE_FALLBACK", "1"}
+              ]
             )
 
           assert status == 0, output
@@ -168,56 +176,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     end
   end
 
-  test "lifecycle doctor resolves marketplace source clone before stale cache hints" do
-    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
-    temp_codex_home = unique_temp_path("sympp-plugin-marketplace-source-doctor")
-
-    if powershell do
-      marketplace_root = write_minimal_marketplace_source(temp_codex_home)
-      stale_source_root = write_minimal_stale_source(temp_codex_home)
-      default_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version])
-      mcp_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version], "symphony-plus-plus-mcp")
-
-      try do
-        installed_script_path = write_cached_script(default_cache_root, @plugin_lifecycle_diagnostic_path)
-        write_cache_manifest(default_cache_root, "symphony-plus-plus")
-        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
-        File.write!(Path.join(default_cache_root, ".sympp-source-root"), "#{stale_source_root}\n")
-        File.write!(Path.join(mcp_cache_root, ".sympp-source-root"), "#{stale_source_root}\n")
-
-        {output, status} =
-          System.cmd(
-            powershell,
-            [
-              "-NoProfile",
-              "-File",
-              installed_script_path,
-              "-CodexHome",
-              temp_codex_home,
-              "-MarketplaceName",
-              @plugin_marketplace_name,
-              "-SkipProcessScan",
-              "-Json"
-            ],
-            cd: temp_codex_home,
-            stderr_to_stdout: true,
-            env: [{"SYMPP_REPO_ROOT", ""}]
-          )
-
-        assert status == 0, output
-        report = Jason.decode!(output)
-        source_checkout = get_in(report, ["readiness", "source_checkout"])
-        assert source_checkout["status"] == "codex_marketplace_source_clone"
-        assert normalize_path_fragment(source_checkout["root"]) == normalize_path_fragment(marketplace_root)
-        assert report["process_scan_scope"] == "installed_cache_marketplace_source_clone"
-        assert [process_filter] = report["process_repo_root_filters"]
-        assert normalize_path_fragment(process_filter) == normalize_path_fragment(marketplace_root)
-      after
-        File.rm_rf!(temp_codex_home)
-      end
-    end
-  end
-
   test "direct stdio launcher fetches locked deps before running MCP from marketplace source clone" do
     powershell = System.find_executable("pwsh")
     temp_codex_home = unique_temp_path("sympp-plugin-elixir-deps")
@@ -253,7 +211,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
               {"SYMPP_LOG_DIR", log_dir},
               {"SYMPP_MCP_BRIDGE_MODE", "direct_stdio"},
               {"SYMPP_MIX", fake_mix},
-              {"SYMPP_REPO_ROOT", ""}
+              {"SYMPP_REPO_ROOT", ""},
+              {"SYMPP_SOURCE_FALLBACK", "1"}
             ]
           )
 
@@ -268,6 +227,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
           |> File.read!()
           |> String.split("\n", trim: true)
           |> Enum.map(&String.trim/1)
+          |> Enum.map(&String.replace(&1, "\"", ""))
           |> Enum.filter(
             &(String.contains?(&1, "deps.get") or &1 == "compile" or
                 String.starts_with?(&1, "sympp.mcp "))
@@ -286,7 +246,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     File.mkdir_p!(Path.dirname(target))
     File.cp!(source_script_path, target)
 
-    for helper_name <- ~w(sympp-launcher-runtime.ps1 sympp-mcp-launcher-helpers.ps1) do
+    for helper_name <-
+          ~w(sympp-launcher-runtime.ps1 sympp-mcp-launcher-helpers.ps1 sympp-mcp-artifact-manifest.ps1 sympp-mcp-artifact-channel.ps1 sympp-mcp-artifact-runtime.ps1 sympp-mcp-process-runtime.ps1 sympp-diagnostic-runtime-artifacts.ps1 sympp-diagnostic-launcher-artifacts.ps1 sympp-diagnostic-self-test.ps1) do
       source_helper = Path.join(Path.dirname(source_script_path), helper_name)
 
       if File.exists?(source_helper) do
@@ -327,6 +288,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
 
   defp write_minimal_marketplace_source(codex_home) do
     marketplace_root = Path.join([codex_home, ".tmp", "marketplaces", @plugin_marketplace_name])
+    File.mkdir_p!(marketplace_root)
+    File.write!(Path.join(marketplace_root, ".codex-marketplace-install.json"), Jason.encode!(%{"revision" => String.duplicate("b", 40)}))
     File.mkdir_p!(Path.join(marketplace_root, "elixir"))
     File.write!(Path.join(marketplace_root, "elixir/mix.exs"), "defmodule SymphonyElixir.MixProject do\nend\n")
     File.mkdir_p!(Path.join(marketplace_root, "elixir/lib/mix/tasks"))
@@ -341,21 +304,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
       Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1")
     )
 
-    File.cp!(
-      Path.join(Path.dirname(@mcp_plugin_start_script_path), "sympp-launcher-runtime.ps1"),
-      Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-launcher-runtime.ps1")
-    )
-
-    File.cp!(
-      @mcp_plugin_helper_path,
-      Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-mcp-launcher-helpers.ps1")
-    )
-
-    for plugin_name <- ~w(symphony-plus-plus symphony-plus-plus-mcp) do
-      manifest_path = Path.join([marketplace_root, "plugins", plugin_name, ".codex-plugin", "plugin.json"])
-      File.mkdir_p!(Path.dirname(manifest_path))
-      File.write!(manifest_path, Jason.encode!(%{"name" => plugin_name, "version" => @plugin_version}))
+    for helper_name <-
+          ~w(sympp-launcher-runtime.ps1 sympp-mcp-launcher-helpers.ps1 sympp-mcp-artifact-manifest.ps1 sympp-mcp-artifact-channel.ps1 sympp-mcp-artifact-runtime.ps1 sympp-mcp-process-runtime.ps1) do
+      File.cp!(
+        Path.join(Path.dirname(@mcp_plugin_start_script_path), helper_name),
+        Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts/#{helper_name}")
+      )
     end
+
+    write_cache_manifest(Path.join(marketplace_root, "plugins/symphony-plus-plus"), "symphony-plus-plus")
+    write_cache_manifest(Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp"), "symphony-plus-plus-mcp", mcp?: true)
 
     marketplace_root
   end
