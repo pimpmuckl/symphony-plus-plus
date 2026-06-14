@@ -96,6 +96,47 @@ def require_url(value, label):
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         fail(f"{label} must be an http(s) URL.")
 
+def normalize_mcp_contract_fingerprint(value):
+    value = str(value or "").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", value):
+        return value
+    return ""
+
+def resolve_mcp_contract_fingerprint(manifest):
+    for key in ("mcp_contract_fingerprint", "contract_fingerprint"):
+        fingerprint = normalize_mcp_contract_fingerprint(manifest.get(key))
+        if fingerprint:
+            return fingerprint
+    launcher_contract = manifest.get("launcher_contract") or {}
+    for key in ("mcp_contract_fingerprint", "contract_fingerprint"):
+        fingerprint = normalize_mcp_contract_fingerprint(launcher_contract.get(key))
+        if fingerprint:
+            return fingerprint
+    return ""
+
+def launcher_contract_with_fingerprint(manifest, fingerprint):
+    launcher_contract = dict(manifest.get("launcher_contract") or {})
+    launcher_contract["mcp_contract_fingerprint"] = fingerprint
+    launcher_contract["contract_fingerprint"] = fingerprint
+    return launcher_contract
+
+def resolve_plugin_identity(manifest):
+    plugin = manifest.get("plugin") or {}
+    name = str(plugin.get("name") or "").strip()
+    version = str(plugin.get("version") or "").strip()
+    if not name or not version:
+        fail("Artifact manifest plugin must declare name and version.")
+
+    identity = {
+        "name": name,
+        "version": version,
+    }
+    if plugin.get("marketplace"):
+        identity["marketplace"] = str(plugin.get("marketplace"))
+    if "packages" in plugin:
+        identity["packages"] = list(plugin.get("packages") or [])
+    return identity
+
 with open(manifest_path, "r", encoding="utf-8") as handle:
     manifest = json.load(handle)
 
@@ -105,6 +146,11 @@ if manifest.get("status") != "built":
 revision = str(manifest.get("source_revision", ""))
 if not re.fullmatch(r"[0-9a-f]{40}", revision):
     fail("Artifact manifest source_revision must be a 40-character SHA.")
+
+mcp_contract_fingerprint = resolve_mcp_contract_fingerprint(manifest)
+if not mcp_contract_fingerprint:
+    fail("Artifact manifest must declare mcp_contract_fingerprint or contract_fingerprint.")
+plugin_identity = resolve_plugin_identity(manifest)
 
 artifact = manifest.get("artifact") or {}
 artifact_file = str(artifact.get("file", ""))
@@ -131,18 +177,23 @@ channel_doc = {
     "schema_version": 1,
     "channel": channel,
     "advanced_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+    "plugin": plugin_identity,
     "source_revision": revision,
+    "mcp_contract_fingerprint": mcp_contract_fingerprint,
+    "contract_fingerprint": mcp_contract_fingerprint,
     "platform": str(manifest.get("platform", "")),
     "artifact": {
         "url": artifact_url,
         "sha256": expected_sha,
         "size_bytes": artifact.get("size_bytes"),
+        "mcp_contract_fingerprint": mcp_contract_fingerprint,
+        "contract_fingerprint": mcp_contract_fingerprint,
     },
     "manifest": {
         "url": manifest_url,
         "sha256": sha256(manifest_path),
     },
-    "launcher_contract": manifest.get("launcher_contract"),
+    "launcher_contract": launcher_contract_with_fingerprint(manifest, mcp_contract_fingerprint),
 }
 
 if not os.path.isabs(channel_output_path):

@@ -65,6 +65,23 @@ if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
   exit 1
 fi
 
+launcher_path="$repo_root/plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1"
+[[ -f "$launcher_path" ]] || { echo "MCP launcher script is missing: $launcher_path" >&2; exit 1; }
+mcp_contract_fingerprint="$(grep -E '\$ExpectedMcpContractFingerprint[[:space:]]*=[[:space:]]*"[0-9a-fA-F]{64}"' "$launcher_path" | head -n 1 | sed -E 's/.*"([0-9a-fA-F]{64})".*/\1/' | tr '[:upper:]' '[:lower:]' || true)"
+if [[ ! "$mcp_contract_fingerprint" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "Could not resolve MCP contract fingerprint from $launcher_path." >&2
+  exit 1
+fi
+
+plugin_manifest_path="$repo_root/plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json"
+[[ -f "$plugin_manifest_path" ]] || { echo "MCP plugin manifest is missing: $plugin_manifest_path" >&2; exit 1; }
+plugin_name="$(grep -E '"name"[[:space:]]*:[[:space:]]*"[^"]+"' "$plugin_manifest_path" | head -n 1 | sed -E 's/.*"name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
+plugin_version="$(grep -E '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$plugin_manifest_path" | head -n 1 | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
+if [[ -z "${plugin_name// }" || -z "${plugin_version// }" ]]; then
+  echo "MCP plugin manifest must declare name and version." >&2
+  exit 1
+fi
+
 if [[ -z "${platform// }" ]]; then
   os="$(uname -s | tr '[:upper:]' '[:lower:]')"
   arch="$(uname -m | tr '[:upper:]' '[:lower:]')"
@@ -249,20 +266,24 @@ $env:PHX_SERVER = "true"
 exit $LASTEXITCODE
 PS1
 
-PYTHON_BIN="$python_bin" "$python_bin" - "$payload_manifest_path" "$revision" "$platform" <<'PY'
+PYTHON_BIN="$python_bin" "$python_bin" - "$payload_manifest_path" "$revision" "$platform" "$mcp_contract_fingerprint" "$plugin_name" "$plugin_version" <<'PY'
 import datetime
 import json
 import sys
 
-path, revision, platform = sys.argv[1:4]
+path, revision, platform, mcp_contract_fingerprint, plugin_name, plugin_version = sys.argv[1:7]
 now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 payload = {
     "schema_version": 1,
     "plugin": {
         "marketplace": "symphony-plus-plus",
+        "name": plugin_name,
+        "version": plugin_version,
         "packages": ["symphony-plus-plus", "symphony-plus-plus-mcp"],
     },
     "source_revision": revision,
+    "mcp_contract_fingerprint": mcp_contract_fingerprint,
+    "contract_fingerprint": mcp_contract_fingerprint,
     "platform": platform,
     "built_at": now,
     "backend": {
@@ -283,6 +304,8 @@ payload = {
     "launcher_contract": {
         "manifest": "sympp-runtime-artifact",
         "version": 1,
+        "mcp_contract_fingerprint": mcp_contract_fingerprint,
+        "contract_fingerprint": mcp_contract_fingerprint,
     },
 }
 with open(path, "w", encoding="utf-8", newline="\n") as handle:
@@ -292,14 +315,14 @@ PY
 
 tar -czf "$archive_path" -C "$staging_dir" .
 
-PYTHON_BIN="$python_bin" "$python_bin" - "$manifest_path" "$payload_manifest_path" "$archive_path" "$output_root" "$revision" "$platform" <<'PY'
+PYTHON_BIN="$python_bin" "$python_bin" - "$manifest_path" "$payload_manifest_path" "$archive_path" "$output_root" "$revision" "$platform" "$mcp_contract_fingerprint" <<'PY'
 import datetime
 import hashlib
 import json
 import os
 import sys
 
-manifest_path, payload_manifest_path, archive_path, output_root, revision, platform = sys.argv[1:7]
+manifest_path, payload_manifest_path, archive_path, output_root, revision, platform, mcp_contract_fingerprint = sys.argv[1:8]
 
 def sha256(path):
     digest = hashlib.sha256()
@@ -315,7 +338,10 @@ now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00",
 manifest = {
     "schema_version": 1,
     "status": "built",
+    "plugin": payload["plugin"],
     "source_revision": revision,
+    "mcp_contract_fingerprint": mcp_contract_fingerprint,
+    "contract_fingerprint": mcp_contract_fingerprint,
     "platform": platform,
     "created_at": now,
     "artifact": {

@@ -134,20 +134,18 @@ function Get-DiagnosticRuntimeArtifactStatusFromLauncherHelpers([string]$Root, [
   }
 
   $expectedRevision = Normalize-SymppSourceRevision $ExpectedRevision
-  if ([string]::IsNullOrWhiteSpace($expectedRevision)) {
-    return [pscustomobject]@{ status = "artifact_missing"; detail = "source_revision_missing"; platform = $platform; manifest_path = $manifest.manifest_path }
-  }
-
   $expectedContract = Get-DiagnosticExpectedMcpContractFingerprint $Root
   $pluginName = Get-SymppPluginName $Root
   $pluginVersion = Get-SymppPluginVersion $Root
+  $requireSourceRevision = Test-SourceCheckoutLaunch $Root
   try {
-    $artifact = Select-SymppArtifact $manifest $platform $expectedRevision $expectedContract $pluginName $pluginVersion
+    $artifact = Select-SymppArtifact $manifest $platform $expectedRevision $expectedContract $pluginName $pluginVersion $requireSourceRevision
   } catch {
     return [pscustomobject]@{ status = "artifact_manifest_invalid"; detail = $_.Exception.Message; platform = $platform; manifest_path = $manifest.manifest_path }
   }
   if ($null -eq $artifact) {
-    return [pscustomobject]@{ status = "artifact_missing"; detail = "matching_artifact_missing"; platform = $platform; manifest_path = $manifest.manifest_path }
+    $detail = Get-SymppArtifactSelectionMissDetail $manifest $platform $expectedRevision $expectedContract $pluginName $pluginVersion $requireSourceRevision
+    return [pscustomobject]@{ status = "artifact_missing"; detail = $detail; platform = $platform; manifest_path = $manifest.manifest_path }
   }
 
   try {
@@ -168,9 +166,10 @@ function Get-DiagnosticRuntimeArtifactStatusFromLauncherHelpers([string]$Root, [
     return [pscustomobject]@{ status = "artifact_verification_failed"; detail = $_.Exception.Message; platform = $platform; manifest_path = $manifest.manifest_path }
   }
 
-  $cacheRoot = Resolve-SymppArtifactCacheRoot $platform $expectedRevision $pluginVersion $sha256
+  $cacheSourceRevision = Resolve-SymppArtifactCacheSourceRevision $manifest $artifact $expectedRevision $requireSourceRevision
+  $cacheRoot = Resolve-SymppArtifactCacheRoot $platform $cacheSourceRevision $pluginVersion $sha256
   $extractRoot = Join-Path $cacheRoot "runtime"
-  $runtime = New-SymppArtifactRuntimeDescriptor $extractRoot $entrypoint $workflow $runtimeArgs $sha256 $platform $expectedRevision $pluginVersion $manifest.manifest_path $dashboardRoot $dashboardFingerprint
+  $runtime = New-SymppArtifactRuntimeDescriptor $extractRoot $entrypoint $workflow $runtimeArgs $sha256 $platform $cacheSourceRevision $pluginVersion $manifest.manifest_path $dashboardRoot $dashboardFingerprint
   $cacheReady = Test-SymppArtifactCacheReady $extractRoot $entrypoint $sha256 $dashboardRoot $dashboardFingerprint
   $launchBlockReason = Get-DiagnosticRuntimeArtifactLaunchBlockReason $runtime $Root $cacheReady
   if ($launchBlockReason) {

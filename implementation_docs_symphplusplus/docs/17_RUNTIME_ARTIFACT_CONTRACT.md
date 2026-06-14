@@ -20,16 +20,18 @@ contract.
 
 ## Installed Runtime Flow
 
-1. The marketplace package pins a release channel, plugin version, and source
-   revision marker.
+1. The marketplace package pins a release channel and plugin version, and may
+   include source revision metadata for diagnostics.
 2. The launcher resolves the host platform and CPU architecture.
 3. The launcher loads the artifact manifest for the pinned channel/version.
-4. The launcher selects exactly one artifact whose platform tuple matches the
-   host and whose source revision matches the package source revision marker.
+4. The launcher selects exactly one installed-user artifact whose platform
+   tuple, plugin identity/version, and MCP contract fingerprint match this
+   package.
 5. The launcher downloads or reads the archive from the manifest location.
 6. The launcher computes SHA-256 over the archive bytes before extraction.
 7. The launcher extracts into the Symphony++ runtime home under a directory
-   keyed by artifact version, platform, source revision, and archive SHA-256.
+   keyed by artifact version, platform, available source revision metadata, and
+   archive SHA-256.
 8. The launcher starts the expected runtime command from the extracted payload,
    starts or serves the packaged dashboard assets, and records runtime state
    under `$HOME/.agents/splusplus/runtime/` unless `SYMPP_RUNTIME_FILE`
@@ -39,9 +41,9 @@ contract.
    expected SHA-256, actual SHA-256 when available, cache path, and next action.
 
 Artifact extraction must be idempotent. A previously extracted payload can be
-reused only when its recorded source revision, platform, archive SHA-256,
-expected runtime command, and dashboard asset fingerprint still match the
-selected manifest entry.
+reused only when its recorded platform, archive SHA-256, expected runtime
+command, dashboard asset fingerprint, and available source revision metadata
+still match the selected manifest entry.
 
 ## Manifest Shape
 
@@ -57,6 +59,7 @@ mutating an already-visible manifest.
     "version": "0.1.6",
     "source_revision": "0123456789abcdef0123456789abcdef01234567"
   },
+  "mcp_contract_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   "release": {
     "channel": "stable",
     "manifest_version": "2026.06.13.1",
@@ -72,6 +75,7 @@ mutating an already-visible manifest.
         "arch": "x86_64",
         "abi": "msvc"
       },
+      "mcp_contract_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "archive": {
         "url": "https://example.invalid/symphony-plus-plus/0.1.6/windows-x86_64-msvc.zip",
         "path": null,
@@ -100,13 +104,16 @@ mutating an already-visible manifest.
 Required manifest fields:
 
 - `schema_version`: manifest parser version.
-- `plugin.name`, `plugin.version`, and `plugin.source_revision`: marketplace
-  package identity the manifest applies to. `plugin.source_revision` is the
-  package-visible revision marker.
+- `plugin.name` and `plugin.version`: marketplace package identity the manifest
+  applies to.
+- `plugin.source_revision`: optional package-visible revision metadata used for
+  diagnostics, cache identity, and developer/source-checkout validation.
+- `mcp_contract_fingerprint`: MCP contract fingerprint expected by the
+  launcher and implemented by the artifact runtime.
 - `release.channel`: channel consumed by the marketplace entry.
 - `release.manifest_version`: monotonically advancing release manifest id.
-- `release.source_revision`: exact source commit used to build every artifact
-  in this manifest.
+- `release.source_revision`: optional source commit used to build every
+  artifact in this manifest.
 - `release.required_platforms`: platform tuples that must have validated
   artifacts before this manifest can advance the release channel.
 - `artifacts[].platform.os`: normalized operating-system id.
@@ -133,27 +140,32 @@ Optional future fields may describe signatures, retention windows, or alternate
 mirrors. They are non-goals for this slice until the architect records a hosted
 release and signing decision.
 
-## Package Revision Metadata
+## Artifact Identity Metadata
 
 Installed packages expose the package source revision with the existing
 non-secret `.sympp-source-revision` marker written beside the plugin payload
-during local refresh/marketplace cache publication. The launcher may also read
-manifest-equivalent package metadata from a marketplace install record when the
-host provides one, but it must normalize both paths into the same
-`plugin.source_revision` value before selecting an artifact.
+during local refresh/marketplace cache publication when that revision is known.
+The launcher may also read manifest-equivalent package metadata from a
+marketplace install record when the host provides one.
 
-The selected artifact manifest is valid only when
-`plugin.source_revision == release.source_revision` and the selected artifact
-was built from that same revision. If no package source revision is available,
-the launcher must diagnose `channel_not_ready` or an equivalent missing-revision
-state instead of falling back to git state from an arbitrary checkout.
+For normal installed marketplace users, source revision is not the compatibility
+boundary. Installed artifact selection is valid when plugin name, plugin
+version, platform, and MCP contract fingerprint match, and archive/dashboard
+verification succeeds. Source revision metadata remains useful for cache
+identity, diagnostics, provenance, and developer/source-checkout validation, but
+a missing or different raw git SHA must not reject a verified installed-user
+artifact by itself.
+
+For source-checkout and explicit developer artifact validation paths, source
+revision checks may remain strict so local artifacts cannot silently mask
+checkout drift.
 
 ## Release-Channel Gating
 
 A marketplace-visible plugin version must not advance ahead of its runtime
 artifacts. Release automation should publish or expose a channel entry only
 after all `release.required_platforms` artifacts exist and pass validation for
-that exact source revision.
+the plugin version and MCP contract fingerprint being published.
 
 Minimum channel gate:
 
@@ -163,7 +175,8 @@ Minimum channel gate:
 - Compute and record archive SHA-256 after the final archive is produced.
 - Smoke the runtime command from the extracted archive.
 - Smoke the local HTTP MCP handshake and dashboard route from the artifact.
-- Verify manifest source revision equals the package source revision marker.
+- Verify the artifact declares the plugin version and MCP contract fingerprint
+  expected by the package.
 - Verify the marketplace package points to a channel entry whose artifacts cover
   every `release.required_platforms` entry.
 
@@ -218,7 +231,7 @@ runtime state, and MCP health should distinguish these states:
   payload metadata matches, runtime command starts, and dashboard assets are
   present.
 - `artifact_missing`: no manifest entry exists for the plugin version, channel,
-  source revision, or platform.
+  MCP contract fingerprint, or platform.
 - `artifact_checksum_mismatch`: archive bytes do not match manifest SHA-256.
 - `artifact_runtime_failed`: verified payload failed runtime startup or health.
 - `artifact_dashboard_missing`: runtime started but expected static dashboard
@@ -228,8 +241,8 @@ runtime state, and MCP health should distinguish these states:
 - `channel_not_ready`: marketplace/plugin version is ahead of the latest
   validated channel entry.
 
-Diagnostics must name non-secret paths, versions, revisions, platform tuple,
-channel, manifest version, selected archive location, runtime file, log
+Diagnostics must name non-secret paths, versions, available revisions, platform
+tuple, channel, manifest version, selected archive location, runtime file, log
 locations, and recommended next action. They must not print bearer tokens,
 GitHub tokens, MCP auth tokens, worker secrets, or secret-bearing command lines.
 

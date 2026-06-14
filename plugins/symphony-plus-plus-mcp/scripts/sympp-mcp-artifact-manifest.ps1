@@ -218,11 +218,7 @@ function Test-SymppArtifactPlatformMatches($Artifact, [string]$Platform) {
   return (Test-SymppArtifactPlatformStringMatches $artifactPlatform $Platform) -and (Test-SymppArtifactAbiMatches $Artifact)
 }
 
-function Test-SymppArtifactRevisionMatches($Artifact, [string]$ExpectedSourceRevision, [string]$ManifestSourceRevision) {
-  if ([string]::IsNullOrWhiteSpace($ExpectedSourceRevision)) {
-    return $true
-  }
-
+function Get-SymppArtifactSourceRevisions($Artifact, [string]$ManifestSourceRevision) {
   $revisionPaths = @(
     @("source_revision"),
     @("revision"),
@@ -244,11 +240,32 @@ function Test-SymppArtifactRevisionMatches($Artifact, [string]$ExpectedSourceRev
     $normalizedRevisions += $manifestRevision
   }
 
-  if ($normalizedRevisions.Count -eq 0) {
+  return @($normalizedRevisions)
+}
+
+function Get-SymppArtifactSourceRevision($Artifact, [string]$ManifestSourceRevision) {
+  $revisions = @(Get-SymppArtifactSourceRevisions $Artifact $ManifestSourceRevision)
+  if ($revisions.Count -gt 0) {
+    return $revisions[0]
+  }
+
+  return $null
+}
+
+function Test-SymppArtifactRevisionMatches($Artifact, [string]$ExpectedSourceRevision, [string]$ManifestSourceRevision, [bool]$RequireSourceRevision) {
+  if (-not $RequireSourceRevision) {
+    return $true
+  }
+  if ([string]::IsNullOrWhiteSpace($ExpectedSourceRevision)) {
     return $false
   }
 
-  foreach ($revision in $normalizedRevisions) {
+  $revisions = @(Get-SymppArtifactSourceRevisions $Artifact $ManifestSourceRevision)
+  if ($revisions.Count -eq 0) {
+    return $false
+  }
+
+  foreach ($revision in $revisions) {
     if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($revision, $ExpectedSourceRevision)) {
       return $false
     }
@@ -271,21 +288,19 @@ function Test-SymppArtifactContractMatches($Artifact, [string]$ExpectedContractF
   }
 
   if (-not $artifactContract) {
-    $contractManifest = [string](Get-JsonFirstPathValue $Artifact @(
-        @("launcher_contract", "manifest"),
-        @("runtime", "launcher_contract", "manifest")
-      ))
-    return [string]::IsNullOrWhiteSpace($ExpectedContractFingerprint) -or
-      [System.StringComparer]::OrdinalIgnoreCase.Equals($contractManifest.Trim(), "sympp-runtime-artifact")
+    return [string]::IsNullOrWhiteSpace($ExpectedContractFingerprint)
   }
 
   return [System.StringComparer]::OrdinalIgnoreCase.Equals($artifactContract, $ExpectedContractFingerprint)
 }
 
-function Test-SymppArtifactManifestPluginMatches($Manifest, [string]$ExpectedPluginName, [string]$ExpectedPluginVersion, [string]$ExpectedSourceRevision) {
+function Test-SymppArtifactManifestPluginMatches($Manifest, [string]$ExpectedPluginName, [string]$ExpectedPluginVersion, [string]$ExpectedSourceRevision, [bool]$RequireSourceRevision) {
+  $requirePluginIdentity = (-not $RequireSourceRevision) -and
+    -not [string]::IsNullOrWhiteSpace($ExpectedPluginName) -and
+    -not [string]::IsNullOrWhiteSpace($ExpectedPluginVersion)
   $plugin = Get-JsonPathValue $Manifest @("plugin")
   if ($null -eq $plugin) {
-    return $true
+    return -not $requirePluginIdentity
   }
 
   $name = [string](Get-JsonPathValue $plugin @("name"))
@@ -295,15 +310,21 @@ function Test-SymppArtifactManifestPluginMatches($Manifest, [string]$ExpectedPlu
     if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($name.Trim(), $ExpectedPluginName)) {
       return $false
     }
-    if (-not [string]::IsNullOrWhiteSpace($version) -and
-        -not [System.StringComparer]::OrdinalIgnoreCase.Equals($version.Trim(), $ExpectedPluginVersion)) {
+    if ([string]::IsNullOrWhiteSpace($version)) {
+      return -not $requirePluginIdentity
+    }
+    if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($version.Trim(), $ExpectedPluginVersion)) {
       return $false
     }
-    if ($sourceRevision -and -not [System.StringComparer]::OrdinalIgnoreCase.Equals($sourceRevision, $ExpectedSourceRevision)) {
+    if ($RequireSourceRevision -and $sourceRevision -and -not [System.StringComparer]::OrdinalIgnoreCase.Equals($sourceRevision, $ExpectedSourceRevision)) {
       return $false
     }
 
     return $true
+  }
+
+  if ($requirePluginIdentity) {
+    return $false
   }
 
   $packages = Get-JsonPathValue $plugin @("packages")
@@ -329,19 +350,7 @@ function Get-SymppArtifactCandidates($Manifest) {
   return @()
 }
 
-function Select-SymppArtifact($Manifest, [string]$Platform, [string]$ExpectedSourceRevision, [string]$ExpectedContractFingerprint, [string]$ExpectedPluginName, [string]$ExpectedPluginVersion) {
-  if ($null -eq $Manifest) {
-    return $null
-  }
-  if (-not (Test-SymppArtifactManifestPluginMatches $Manifest $ExpectedPluginName $ExpectedPluginVersion $ExpectedSourceRevision)) {
-    return $null
-  }
-
-  $artifacts = @(Get-SymppArtifactCandidates $Manifest)
-  if ($artifacts.Count -eq 0) {
-    return $null
-  }
-
+function Get-SymppManifestSourceRevision($Manifest, [string]$ExpectedSourceRevision, [bool]$RequireSourceRevision) {
   $manifestRevisionPaths = @(
     @("source_revision"),
     @("revision"),
@@ -354,37 +363,86 @@ function Select-SymppArtifact($Manifest, [string]$Platform, [string]$ExpectedSou
   foreach ($path in $manifestRevisionPaths) {
     $revision = Normalize-SymppSourceRevision ([string](Get-JsonPathValue $Manifest $path))
     if ($revision) {
-      if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($revision, $ExpectedSourceRevision)) {
-        return $null
+      if ($RequireSourceRevision -and -not [System.StringComparer]::OrdinalIgnoreCase.Equals($revision, $ExpectedSourceRevision)) {
+        return [pscustomobject]@{ revision = $revision; matches = $false }
       }
       if (-not $manifestRevision) {
         $manifestRevision = $revision
       }
     }
   }
+
+  return [pscustomobject]@{ revision = $manifestRevision; matches = $true }
+}
+
+function Resolve-SymppArtifactCacheSourceRevision($Manifest, $Artifact, [string]$ExpectedSourceRevision, [bool]$RequireSourceRevision) {
+  $manifestRevision = (Get-SymppManifestSourceRevision $Manifest $ExpectedSourceRevision $RequireSourceRevision).revision
+  $artifactSourceRevision = Get-SymppArtifactSourceRevision $Artifact $manifestRevision
+  if (-not [string]::IsNullOrWhiteSpace($artifactSourceRevision)) {
+    return $artifactSourceRevision
+  }
+
+  return $ExpectedSourceRevision
+}
+
+function Resolve-SymppArtifactSelection($Manifest, [string]$Platform, [string]$ExpectedSourceRevision, [string]$ExpectedContractFingerprint, [string]$ExpectedPluginName, [string]$ExpectedPluginVersion, [bool]$RequireSourceRevision) {
+  if ($null -eq $Manifest) {
+    return [pscustomobject]@{ artifact = $null; detail = "manifest_missing" }
+  }
+  if (-not (Test-SymppArtifactManifestPluginMatches $Manifest $ExpectedPluginName $ExpectedPluginVersion $ExpectedSourceRevision $RequireSourceRevision)) {
+    return [pscustomobject]@{ artifact = $null; detail = "channel_not_ready" }
+  }
+
+  $artifacts = @(Get-SymppArtifactCandidates $Manifest)
+  if ($artifacts.Count -eq 0) {
+    return [pscustomobject]@{ artifact = $null; detail = "channel_not_ready" }
+  }
+
+  $platformMatches = @($artifacts | Where-Object { Test-SymppArtifactPlatformMatches $_ $Platform })
+  if ($platformMatches.Count -eq 0) {
+    return [pscustomobject]@{ artifact = $null; detail = "platform_missing" }
+  }
+
+  $manifestRevisionResult = Get-SymppManifestSourceRevision $Manifest $ExpectedSourceRevision $RequireSourceRevision
   $manifestContract = Normalize-McpContractFingerprint ([string](Get-JsonFirstPathValue $Manifest @(
       @("mcp_contract_fingerprint"),
       @("contract_fingerprint"),
       @("launcher_contract", "mcp_contract_fingerprint"),
       @("launcher_contract", "contract_fingerprint")
     )))
-  $matches = @()
-  foreach ($artifact in $artifacts) {
-    if ((Test-SymppArtifactPlatformMatches $artifact $Platform) -and
-        (Test-SymppArtifactRevisionMatches $artifact $ExpectedSourceRevision $manifestRevision) -and
-        (Test-SymppArtifactContractMatches $artifact $ExpectedContractFingerprint $manifestContract)) {
-      $matches += $artifact
+
+  $contractMatches = @($platformMatches | Where-Object { Test-SymppArtifactContractMatches $_ $ExpectedContractFingerprint $manifestContract })
+  if ($contractMatches.Count -eq 0) {
+    return [pscustomobject]@{ artifact = $null; detail = "contract_mismatch" }
+  }
+
+  $matches = $contractMatches
+  if ($RequireSourceRevision) {
+    if (-not $manifestRevisionResult.matches) {
+      return [pscustomobject]@{ artifact = $null; detail = "source_revision_mismatch" }
+    }
+    $matches = @($contractMatches | Where-Object { Test-SymppArtifactRevisionMatches $_ $ExpectedSourceRevision $manifestRevisionResult.revision $RequireSourceRevision })
+    if ($matches.Count -eq 0) {
+      return [pscustomobject]@{ artifact = $null; detail = "source_revision_mismatch" }
     }
   }
 
   if ($matches.Count -eq 1) {
-    return $matches[0]
+    return [pscustomobject]@{ artifact = $matches[0]; detail = "selected" }
   }
   if ($matches.Count -gt 1) {
     throw "artifact_manifest_invalid: Symphony++ runtime artifact manifest contains multiple matching artifacts for platform $Platform."
   }
 
-  return $null
+  return [pscustomobject]@{ artifact = $null; detail = "matching_artifact_missing" }
+}
+
+function Get-SymppArtifactSelectionMissDetail($Manifest, [string]$Platform, [string]$ExpectedSourceRevision, [string]$ExpectedContractFingerprint, [string]$ExpectedPluginName, [string]$ExpectedPluginVersion, [bool]$RequireSourceRevision) {
+  return (Resolve-SymppArtifactSelection $Manifest $Platform $ExpectedSourceRevision $ExpectedContractFingerprint $ExpectedPluginName $ExpectedPluginVersion $RequireSourceRevision).detail
+}
+
+function Select-SymppArtifact($Manifest, [string]$Platform, [string]$ExpectedSourceRevision, [string]$ExpectedContractFingerprint, [string]$ExpectedPluginName, [string]$ExpectedPluginVersion, [bool]$RequireSourceRevision = $true) {
+  return (Resolve-SymppArtifactSelection $Manifest $Platform $ExpectedSourceRevision $ExpectedContractFingerprint $ExpectedPluginName $ExpectedPluginVersion $RequireSourceRevision).artifact
 }
 
 function Assert-SymppRelativeArtifactPath([string]$Path, [string]$Label) {

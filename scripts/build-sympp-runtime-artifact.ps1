@@ -49,6 +49,33 @@ function Resolve-Revision([string]$Candidate, [string]$RepoRoot) {
   $normalized
 }
 
+function Resolve-McpContractFingerprint([string]$RepoRoot) {
+  $launcherPath = Join-Path $RepoRoot "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1"
+  Require-Path $launcherPath "MCP launcher script" | Out-Null
+
+  $launcher = Get-Content -LiteralPath $launcherPath -Raw
+  $match = [regex]::Match($launcher, '\$ExpectedMcpContractFingerprint\s*=\s*"([0-9a-fA-F]{64})"')
+  if (-not $match.Success) {
+    throw "Could not resolve MCP contract fingerprint from $launcherPath."
+  }
+
+  $match.Groups[1].Value.ToLowerInvariant()
+}
+
+function Resolve-PluginIdentity([string]$RepoRoot) {
+  $pluginPath = Join-Path $RepoRoot "plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json"
+  Require-Path $pluginPath "MCP plugin manifest" | Out-Null
+
+  $plugin = Get-Content -LiteralPath $pluginPath -Raw | ConvertFrom-Json
+  $name = ([string]$plugin.name).Trim()
+  $version = ([string]$plugin.version).Trim()
+  if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($version)) {
+    throw "MCP plugin manifest must declare name and version."
+  }
+
+  [pscustomobject]@{ name = $name; version = $version }
+}
+
 function Resolve-Platform([string]$Candidate) {
   if (-not [string]::IsNullOrWhiteSpace($Candidate)) {
     return $Candidate.Trim().ToLowerInvariant()
@@ -117,6 +144,8 @@ $elixirDir = Join-Path $repoRoot "elixir"
 $assetsDir = Join-Path $elixirDir "assets"
 $outputRoot = if ([System.IO.Path]::IsPathRooted($OutputDir)) { $OutputDir } else { Join-Path $repoRoot $OutputDir }
 $revision = Resolve-Revision $Revision $repoRoot
+$mcpContractFingerprint = Resolve-McpContractFingerprint $repoRoot
+$pluginIdentity = Resolve-PluginIdentity $repoRoot
 $platformId = Resolve-Platform $Platform
 $packageBaseName = "sympp-runtime-$revision-$platformId"
 $stagingDir = Join-Path $outputRoot "$packageBaseName-staging"
@@ -287,9 +316,13 @@ $payload = [ordered]@{
   schema_version = 1
   plugin = [ordered]@{
     marketplace = "symphony-plus-plus"
+    name = $pluginIdentity.name
+    version = $pluginIdentity.version
     packages = @("symphony-plus-plus", "symphony-plus-plus-mcp")
   }
   source_revision = $revision
+  mcp_contract_fingerprint = $mcpContractFingerprint
+  contract_fingerprint = $mcpContractFingerprint
   platform = $platformId
   built_at = (Get-Date).ToUniversalTime().ToString("o")
   backend = [ordered]@{
@@ -310,6 +343,8 @@ $payload = [ordered]@{
   launcher_contract = [ordered]@{
     manifest = "sympp-runtime-artifact"
     version = 1
+    mcp_contract_fingerprint = $mcpContractFingerprint
+    contract_fingerprint = $mcpContractFingerprint
   }
 }
 
@@ -324,7 +359,10 @@ $archiveItem = Get-Item -LiteralPath $archivePath
 $manifest = [ordered]@{
   schema_version = 1
   status = "built"
+  plugin = $payload.plugin
   source_revision = $revision
+  mcp_contract_fingerprint = $mcpContractFingerprint
+  contract_fingerprint = $mcpContractFingerprint
   platform = $platformId
   created_at = (Get-Date).ToUniversalTime().ToString("o")
   artifact = [ordered]@{
