@@ -7,8 +7,19 @@ on:
       - main
 
 jobs:
-  make-all:
+  gates:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: static
+            target: ci-static
+          - name: test
+            target: ci-test
+          - name: dialyzer
+            target: ci-dialyzer
     defaults:
       run:
         working-directory: elixir
@@ -30,9 +41,22 @@ jobs:
           path: |
             elixir/deps
             elixir/_build
-          key: ${{ runner.os }}-mix-${{ hashFiles('elixir/mix.lock') }}
+          key: ${{ runner.os }}-mix-${{ hashFiles('elixir/mise.toml', 'elixir/mix.lock') }}
           restore-keys: |
             ${{ runner.os }}-mix-
 
-      - name: Verify make all
-        run: make all
+      - name: Verify ${{ matrix.name }}
+        run: make ${{ matrix.target }}
+
+  make-all:
+    runs-on: ubuntu-latest
+    needs: gates
+    if: ${{ always() }}
+    steps:
+      - name: Verify split gates
+        run: |
+          if [ "${{ needs.gates.result }}" != "success" ]; then
+            echo "split gate result: ${{ needs.gates.result }}"
+            exit 1
+          fi
+          echo "make-all split gates passed"

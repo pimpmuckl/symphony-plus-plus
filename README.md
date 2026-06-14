@@ -55,16 +55,17 @@ scope.
 
 ## Validation
 
-Run the full local gate from the repository root when `make` and `mix` are
-already on `PATH`:
+Run the fast PR gate from the repository root when `make` and `mix` are already
+on `PATH`:
 
 ```powershell
-make -C elixir all
+make all
 ```
 
-The aggregate gate is quiet by default and writes per-step logs under
+The gate is quiet by default and writes per-step logs under
 `elixir/_build/make-logs/`. Use `VERBOSE=1` when you need the full Mix output
-streamed to the console.
+streamed to the console. Use `make ci-full` for coverage, Dialyzer, and hygiene
+ratchets in one local command.
 
 If the Elixir toolchain is managed by `mise`, run the validated command from
 the Elixir project:
