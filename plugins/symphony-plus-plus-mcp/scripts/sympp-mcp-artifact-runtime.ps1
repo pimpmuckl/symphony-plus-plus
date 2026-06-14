@@ -45,6 +45,13 @@ function Resolve-SymppArtifactCacheRoot([string]$Platform, [string]$SourceRevisi
 }
 
 function New-SymppArtifactRuntimeDescriptor([string]$ExtractRoot, [string]$Entrypoint, [string]$Workflow, [string[]]$RuntimeArgs, [string]$Sha256, [string]$Platform, [string]$SourceRevision, [string]$PluginVersion, [string]$ManifestPath, [string]$DashboardRoot, [string]$DashboardFingerprint) {
+  $runtimeArgList = @()
+  foreach ($arg in @($RuntimeArgs)) {
+    if ($null -ne $arg) {
+      $runtimeArgList += [string]$arg
+    }
+  }
+
   return [pscustomobject]@{
     root = [System.IO.Path]::GetFullPath($ExtractRoot)
     entrypoint = [System.IO.Path]::GetFullPath((Join-Path $ExtractRoot $Entrypoint))
@@ -52,7 +59,7 @@ function New-SymppArtifactRuntimeDescriptor([string]$ExtractRoot, [string]$Entry
     workflow = if ($Workflow) { [System.IO.Path]::GetFullPath((Join-Path $ExtractRoot $Workflow)) } else { $null }
     dashboard_root = if ($DashboardRoot) { [System.IO.Path]::GetFullPath((Join-Path $ExtractRoot $DashboardRoot)) } else { $null }
     dashboard_fingerprint = $DashboardFingerprint
-    runtime_args = if ($null -ne $RuntimeArgs) { @($RuntimeArgs) } else { $null }
+    runtime_args = if ($runtimeArgList.Count -gt 0) { $runtimeArgList } else { $null }
     command_contract = "runtime_wrapper"
     sha256 = $Sha256
     platform = $Platform

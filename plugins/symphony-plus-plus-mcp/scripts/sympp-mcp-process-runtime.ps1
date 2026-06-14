@@ -62,8 +62,19 @@ function Resolve-ArtifactWorkflowPath($ArtifactRuntime, [string]$ElixirDir) {
   throw "artifact_workflow_missing: verified artifact runtime requires a WORKFLOW.md path. Set SYMPP_WORKFLOW_FILE or include WORKFLOW.md in the runtime artifact."
 }
 
+function Get-ArtifactRuntimeArgList($ArtifactRuntime) {
+  $args = @()
+  foreach ($arg in @($ArtifactRuntime.runtime_args)) {
+    if ($null -ne $arg -and -not [string]::IsNullOrWhiteSpace([string]$arg)) {
+      $args += [string]$arg
+    }
+  }
+
+  return $args
+}
+
 function Test-ArtifactWorkflowAvailable($ArtifactRuntime, [string]$ElixirDir) {
-  if (@($ArtifactRuntime.runtime_args).Count -gt 0) {
+  if ((Get-ArtifactRuntimeArgList $ArtifactRuntime).Count -gt 0) {
     return $true
   }
 
@@ -92,7 +103,7 @@ function Expand-ArtifactRuntimeArg([string]$Arg, [string]$Workflow, [string]$Run
 }
 
 function Resolve-ArtifactRuntimeArgs($ArtifactRuntime, [string]$Workflow, [string]$RuntimeLogRoot, $Plan, [string]$DashboardOrigin, [string]$EntrypointName) {
-  $manifestArgs = @($ArtifactRuntime.runtime_args)
+  $manifestArgs = Get-ArtifactRuntimeArgList $ArtifactRuntime
   if ($manifestArgs.Count -gt 0) {
     $expandedArgs = @()
     foreach ($arg in $manifestArgs) {
@@ -130,7 +141,7 @@ function Get-ArtifactBackendCommand($ArtifactRuntime, $Plan, [string]$DashboardO
     throw "artifact_database_unsupported: verified artifact runtime wrapper does not support SYMPP_DATABASE. Use explicit source fallback for custom ledger paths."
   }
 
-  $manifestArgs = @($ArtifactRuntime.runtime_args)
+  $manifestArgs = Get-ArtifactRuntimeArgList $ArtifactRuntime
   $workflow = if ($manifestArgs.Count -gt 0) { [string]$ArtifactRuntime.workflow } else { Resolve-ArtifactWorkflowPath $ArtifactRuntime $ElixirDir }
   $runtimeLogRoot = Join-Path $LogDir "artifact-runtime"
   $entrypoint = [string]$ArtifactRuntime.entrypoint
