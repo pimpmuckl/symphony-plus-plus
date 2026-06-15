@@ -424,28 +424,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile02Test do
     end
   end
 
-  test "WorkPackage worktree MCP prepare accepts same-owner bare target origins", %{repo: repo} do
+  test "WorkPackage worktree MCP prepare accepts explicit bare target origins", %{repo: repo} do
     fixture =
       "symphony-plus-plus/beta"
       |> TestSupport.git_repo_fixture!(prefix: "sympp-mcp-bare-host-conflict-worktree")
       |> set_relative_owner_origin!("acme/frontend")
 
-    host_repo_root =
-      TestSupport.git_repo_with_origin_fixture!("acme/symphony-plus-plus.git",
-        prefix: "sympp-mcp-host-same-owner"
-      )
-
-    other_host_repo_root =
-      TestSupport.git_repo_with_origin_fixture!("other/symphony-plus-plus.git",
-        prefix: "sympp-mcp-host-different-owner"
-      )
-
-    hosted_target_repo_root =
-      TestSupport.git_repo_with_origin_fixture!("https://gitlab.com/acme/frontend.git",
-        prefix: "sympp-mcp-hostless-target-conflict"
-      )
+    target_repo_root = Path.join(fixture.root, "frontend")
+    File.rename!(fixture.repo_root, target_repo_root)
+    fixture = %{fixture | repo_root: target_repo_root}
 
     codex_home = Path.join(fixture.root, "codex-home")
+    host_repo_root = Path.join(fixture.root, "symphony-plus-plus")
+    other_host_repo_root = Path.join(fixture.root, "other-symphony-plus-plus")
+    File.mkdir_p!(host_repo_root)
+
     config = Config.default(repo: repo, repo_root: host_repo_root)
     other_owner_config = Config.default(repo: repo, repo_root: other_host_repo_root)
 
@@ -504,20 +497,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile02Test do
     try do
       System.put_env("CODEX_HOME", codex_home)
 
-      host_mismatch_response =
+      host_checkout_response =
         mcp_tool(
           repo,
           session,
           "prepare_work_package_worktree",
           %{
             "work_package_id" => package.id,
-            "target_repo_root" => hosted_target_repo_root
+            "target_repo_root" => host_repo_root
           },
           config: config
         )
 
-      assert get_in(host_mismatch_response, ["error", "code"]) == -32_602
-      assert get_in(host_mismatch_response, ["error", "data", "reason"]) == "target_repo_root_scope_mismatch"
+      assert get_in(host_checkout_response, ["error", "data", "reason"]) == "target_repo_root_scope_mismatch"
+
+      previous_trusted_remotes = Application.get_env(:symphony_elixir, :sympp_repo_identity_trusted_remotes)
+
+      try do
+        Application.put_env(:symphony_elixir, :sympp_repo_identity_trusted_remotes, ["other/frontend"])
+
+        conflicting_checkout_response =
+          mcp_tool(
+            repo,
+            session,
+            "prepare_work_package_worktree",
+            %{
+              "work_package_id" => package.id,
+              "target_repo_root" => fixture.repo_root
+            },
+            config: config
+          )
+
+        assert get_in(conflicting_checkout_response, ["error", "data", "reason"]) == "target_repo_root_scope_mismatch"
+      after
+        restore_app_env(:sympp_repo_identity_trusted_remotes, previous_trusted_remotes)
+      end
 
       prepare_response =
         mcp_tool(
@@ -548,7 +562,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile02Test do
       cleanup_payload = get_in(cleanup_response, ["result", "structuredContent"])
       assert cleanup_payload["worktree"]["status"] == "cleaned"
 
-      wrong_owner_response =
+      other_owner_response =
         mcp_tool(
           repo,
           session,
@@ -560,8 +574,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.DeliveryReconcile02Test do
           config: other_owner_config
         )
 
-      assert get_in(wrong_owner_response, ["error", "code"]) == -32_602
-      assert get_in(wrong_owner_response, ["error", "data", "reason"]) == "target_repo_root_scope_mismatch"
+      other_owner_payload = get_in(other_owner_response, ["result", "structuredContent"])
+      assert other_owner_payload["worktree"]["status"] == "prepared"
     after
       restore_env("CODEX_HOME", previous_codex_home)
     end
