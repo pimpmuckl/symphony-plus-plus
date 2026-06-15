@@ -6324,10 +6324,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     origin = RepoIdentity.local_git_origin_remote(target_repo_root)
 
     same_existing_path?(target_repo_root, expected_repo) or
+      local_repo_checkout_matches_scope?(target_repo_root, expected_repo, origin, config) or
       origin_matches_repo_scope?(origin, expected_repo, target_repo_root, config)
   end
 
   defp target_repo_root_matches_repo_scope?(_target_repo_root, _expected_repo, _config), do: false
+
+  defp local_repo_checkout_matches_scope?(
+         target_repo_root,
+         expected_repo,
+         origin,
+         %Config{repo_root: repo_root} = config
+       )
+       when is_binary(target_repo_root) and is_binary(expected_repo) and is_binary(origin) do
+    expected_repo = String.trim(expected_repo)
+    trusted_remotes = [origin | repo_scope_trusted_remotes(config, target_repo_root)]
+
+    bare_repo_name?(expected_repo) and
+      expected_repo
+      |> WorktreeTargetRoot.checkout_candidates(repo_root)
+      |> Enum.reject(&same_existing_path?(&1, repo_root))
+      |> Enum.any?(&same_existing_path?(target_repo_root, &1)) and
+      RepoIdentity.scope_match?(expected_repo, origin, trusted_remotes: trusted_remotes)
+  end
+
+  defp local_repo_checkout_matches_scope?(_target_repo_root, _expected_repo, _origin, _config), do: false
 
   defp origin_matches_repo_scope?(origin, expected_repo, target_repo_root, %Config{} = config) when is_binary(origin) do
     trusted_remotes = repo_scope_trusted_remotes(config, target_repo_root)
