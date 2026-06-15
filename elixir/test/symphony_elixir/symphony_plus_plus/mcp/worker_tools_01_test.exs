@@ -651,6 +651,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools01Test do
     assert read_plan_text =~ "plan_nodes: 1"
     refute read_plan_text =~ "Plan node 101"
     assert get_in(read_plan_response, ["result", "structuredContent", "text"]) =~ "1 later plan nodes omitted"
+    assert get_in(read_plan_response, ["result", "structuredContent", "omitted", "plan_nodes"]) == 1
+
+    structured_plan_nodes = get_in(read_plan_response, ["result", "structuredContent", "plan_nodes"])
+    assert length(structured_plan_nodes) == 100
+    assert get_in(structured_plan_nodes, [Access.at(0), "id"]) == hd(plan_nodes).id
+    assert get_in(structured_plan_nodes, [Access.at(0), "status"]) == "pending"
+    assert get_in(structured_plan_nodes, [Access.at(0), "title"]) == "Plan node 1"
+
     version = get_in(read_plan_response, ["result", "structuredContent", "version"])
     assert version
 
@@ -664,7 +672,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools01Test do
             "name" => "update_task_plan",
             "arguments" => %{
               "expected_version" => version,
-              "patch" => %{"nodes" => [%{"id" => hd(plan_nodes).id, "status" => "done"}]}
+              "patch" => %{"nodes" => [%{"id" => get_in(structured_plan_nodes, [Access.at(0), "id"]), "status" => "done"}]}
             }
           }
         },
