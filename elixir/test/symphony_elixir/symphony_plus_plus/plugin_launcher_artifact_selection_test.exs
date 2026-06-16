@@ -200,6 +200,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
     end
   end
 
+  test "installed MCP launcher ignores stale source marker when marketplace payload matches" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-artifact-stale-installed-marker")
+
+    if powershell && windows?() do
+      marketplace_root = write_minimal_marketplace_source(temp_codex_home)
+      File.write!(Path.join(marketplace_root, "elixir/WORKFLOW.md"), "workflow: test\n")
+      mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
+      sympp_home = Path.join(temp_codex_home, "sympp-home")
+      stale_revision = String.duplicate("a", 40)
+      current_revision = String.duplicate("b", 40)
+
+      try do
+        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        script_path = write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
+        write_pinned_source_revision!(mcp_cache_root, stale_revision)
+        write_runtime_artifact!(mcp_cache_root, source_revision: current_revision, entrypoint: "start-runtime.ps1")
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            ["-NoProfile", "-File", script_path, "-ValidateOnly"],
+            cd: Path.dirname(Path.dirname(script_path)),
+            stderr_to_stdout: true,
+            env: [
+              {"SYMPP_HOME", sympp_home},
+              {"SYMPP_LAUNCHER", "direct"},
+              {"SYMPP_MIX", Path.join(temp_codex_home, "missing-mix.cmd")},
+              {"SYMPP_REPO_ROOT", ""}
+            ]
+          )
+
+        assert status == 0, output
+        assert output =~ "runtimeMode: artifact"
+        assert output =~ "artifactStatus: artifact_selected"
+        assert normalize_path_fragment(output) =~ "reporoot: #{normalize_path_fragment(marketplace_root)}"
+        assert normalize_path_fragment(output) =~ "/#{String.slice(current_revision, 0, 12)}/"
+        refute normalize_path_fragment(output) =~ "/#{String.slice(stale_revision, 0, 12)}/"
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
   test "installed MCP launcher selects artifact when source revision is unavailable" do
     powershell = System.find_executable("pwsh")
     temp_codex_home = unique_temp_path("sympp-plugin-artifact-no-source-revision")
@@ -698,17 +742,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
   defp write_runtime_artifact!(cache_root, opts) do
     artifact_build_root = Path.join(cache_root, "artifact-build")
     archive_path = Path.join(cache_root, "sympp-runtime.zip")
-    entrypoint = "runtime.cmd"
+    entrypoint = Keyword.get(opts, :entrypoint, "runtime.cmd")
     dashboard_entries = [{"dashboard-static/index.html", "<main>ok</main>"}]
     artifact_contract_fingerprint = Keyword.get(opts, :mcp_contract_fingerprint, expected_mcp_contract_fingerprint())
     manifest_contract_fingerprint = Keyword.get(opts, :manifest_contract_fingerprint)
     File.mkdir_p!(artifact_build_root)
 
-    File.write!(Path.join(artifact_build_root, entrypoint), """
-    @echo off
-    if not "%SYMPP_FAKE_ARTIFACT_LOG%"=="" echo %*>>"%SYMPP_FAKE_ARTIFACT_LOG%"
-    exit /b 0
-    """)
+    File.write!(Path.join(artifact_build_root, entrypoint), fake_artifact_entrypoint(entrypoint))
 
     {:ok, _} =
       :zip.create(
@@ -758,6 +798,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
 
   defp write_pinned_source_revision!(cache_root, revision) do
     File.write!(Path.join(cache_root, ".sympp-source-revision"), "#{revision}\n")
+  end
+
+  defp fake_artifact_entrypoint(entrypoint) do
+    if String.ends_with?(entrypoint, ".ps1") do
+      """
+      if ($env:SYMPP_FAKE_ARTIFACT_LOG -ne "") { [string]::Join(" ", $args) | Out-File -Append -Encoding utf8 $env:SYMPP_FAKE_ARTIFACT_LOG }
+      exit 0
+      """
+    else
+      """
+      @echo off
+      if not "%SYMPP_FAKE_ARTIFACT_LOG%"=="" echo %*>>"%SYMPP_FAKE_ARTIFACT_LOG%"
+      exit /b 0
+      """
+    end
   end
 
   defp dashboard_fingerprint(entries) do

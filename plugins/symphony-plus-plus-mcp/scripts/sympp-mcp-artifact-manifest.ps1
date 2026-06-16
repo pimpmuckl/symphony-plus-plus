@@ -73,14 +73,19 @@ function Get-SymppPluginName([string]$PluginRoot) {
 }
 
 function Resolve-ExpectedSourceRevision([string]$PluginRoot) {
-  $pinnedRevision = Get-SymppPinnedSourceRevision $PluginRoot
-  if ($pinnedRevision) {
-    return $pinnedRevision
-  }
-
   $sourceCandidate = [System.IO.Path]::GetFullPath((Join-Path $PluginRoot "../.."))
   if (Test-SymphonySourceRoot $sourceCandidate) {
     return Resolve-SymppSourceRevision $sourceCandidate $PluginRoot
+  }
+
+  $marketplaceRoot = Resolve-RepoRootFromMarketplaceCache $PluginRoot
+  if ($marketplaceRoot) {
+    return Resolve-SymppSourceRevision $marketplaceRoot $PluginRoot
+  }
+
+  $pinnedRevision = Get-SymppPinnedSourceRevision $PluginRoot
+  if ($pinnedRevision) {
+    return $pinnedRevision
   }
 
   return $null

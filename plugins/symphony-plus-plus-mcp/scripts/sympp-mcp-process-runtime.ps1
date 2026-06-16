@@ -54,9 +54,11 @@ function Resolve-ArtifactWorkflowPath($ArtifactRuntime, [string]$ElixirDir) {
     return [System.IO.Path]::GetFullPath($artifactWorkflow)
   }
 
-  $sourceWorkflow = Join-Path $ElixirDir "WORKFLOW.md"
-  if (Test-Path -LiteralPath $sourceWorkflow -PathType Leaf) {
-    return [System.IO.Path]::GetFullPath($sourceWorkflow)
+  if (-not [string]::IsNullOrWhiteSpace($ElixirDir)) {
+    $sourceWorkflow = Join-Path $ElixirDir "WORKFLOW.md"
+    if (Test-Path -LiteralPath $sourceWorkflow -PathType Leaf) {
+      return [System.IO.Path]::GetFullPath($sourceWorkflow)
+    }
   }
 
   throw "artifact_workflow_missing: verified artifact runtime requires a WORKFLOW.md path. Set SYMPP_WORKFLOW_FILE or include WORKFLOW.md in the runtime artifact."
@@ -75,6 +77,11 @@ function Get-ArtifactRuntimeArgList($ArtifactRuntime) {
 
 function Test-ArtifactWorkflowAvailable($ArtifactRuntime, [string]$ElixirDir) {
   if ((Get-ArtifactRuntimeArgList $ArtifactRuntime).Count -gt 0) {
+    return $true
+  }
+
+  $entrypointName = (Split-Path -Leaf ([string]$ArtifactRuntime.entrypoint)).ToLowerInvariant()
+  if ($entrypointName -like "*.bat" -or $entrypointName -like "*.cmd") {
     return $true
   }
 
@@ -142,10 +149,10 @@ function Get-ArtifactBackendCommand($ArtifactRuntime, $Plan, [string]$DashboardO
   }
 
   $manifestArgs = Get-ArtifactRuntimeArgList $ArtifactRuntime
-  $workflow = if ($manifestArgs.Count -gt 0) { [string]$ArtifactRuntime.workflow } else { Resolve-ArtifactWorkflowPath $ArtifactRuntime $ElixirDir }
   $runtimeLogRoot = Join-Path $LogDir "artifact-runtime"
   $entrypoint = [string]$ArtifactRuntime.entrypoint
   $entrypointName = (Split-Path -Leaf $entrypoint).ToLowerInvariant()
+  $workflow = if ($manifestArgs.Count -gt 0 -or $entrypointName -like "*.bat" -or $entrypointName -like "*.cmd") { [string]$ArtifactRuntime.workflow } else { Resolve-ArtifactWorkflowPath $ArtifactRuntime $ElixirDir }
   $environment = @{
     SYMPP_RUNTIME_ARTIFACT = "1"
     SYMPP_RUNTIME_ARTIFACT_ACKNOWLEDGED = "1"

@@ -88,13 +88,6 @@ function Resolve-RepoRootFromMarketplaceCache([string]$PluginRoot) {
       return $null
     }
 
-    $installedRevision = Get-SymppPinnedSourceRevision $versionRoot
-    $candidateRevision = Resolve-SymppSourceRevision $candidate
-    if ($installedRevision -and $candidateRevision -and
-        -not [System.StringComparer]::OrdinalIgnoreCase.Equals($installedRevision, $candidateRevision)) {
-      return $null
-    }
-
     return $candidate
   }
 
