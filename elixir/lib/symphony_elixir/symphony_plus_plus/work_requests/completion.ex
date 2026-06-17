@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   @moduledoc false
 
+  alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
@@ -25,7 +26,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   @type retention_summary :: %{
           refreshed_count: non_neg_integer(),
           archived_count: non_neg_integer(),
-          archived_ids: [String.t()]
+          archived_ids: [String.t()],
+          deleted_count: non_neg_integer(),
+          deleted_ids: [String.t()]
         }
 
   @spec default_archive_after_days() :: pos_integer()
@@ -194,25 +197,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   end
 
   @spec retention_pass(Repository.repo()) ::
-          {:ok, retention_summary()} | {:error, Repository.error() | :invalid_archive_after_days | :not_completed}
+          {:ok, retention_summary()}
+          | {:error, Repository.error() | :invalid_archive_after_days | :invalid_delete_after_days | :not_completed}
   @spec retention_pass(Repository.repo(), keyword()) ::
-          {:ok, retention_summary()} | {:error, Repository.error() | :invalid_archive_after_days | :not_completed}
+          {:ok, retention_summary()}
+          | {:error, Repository.error() | :invalid_archive_after_days | :invalid_delete_after_days | :not_completed}
   def retention_pass(repo, opts \\ []) when is_atom(repo) and is_list(opts) do
     now = Keyword.get_lazy(opts, :now, fn -> DateTime.utc_now(:microsecond) end)
 
     with {:ok, archive_after_days} <- archive_after_days(opts),
+         {:ok, delete_after_days} <- delete_after_days(opts),
          {:ok, refreshed} <- refresh_all(repo),
          {:ok, _restored_for_age} <- restore_unexpired(repo, refreshed, now, archive_after_days),
          {:ok, archived_for_age} <- archive_expired(repo, refreshed, now, archive_after_days),
          {:ok, visible_completed} <- completed_unarchived(repo),
-         {:ok, archived_for_limit} <- archive_overflow(repo, visible_completed) do
+         {:ok, archived_for_limit} <- archive_overflow(repo, visible_completed),
+         {:ok, deleted_ids} <- delete_expired_archived(repo, now, delete_after_days) do
       archived_ids = archived_for_age ++ archived_for_limit
 
       {:ok,
        %{
          refreshed_count: length(refreshed),
          archived_count: length(archived_ids),
-         archived_ids: archived_ids
+         archived_ids: archived_ids,
+         deleted_count: length(deleted_ids),
+         deleted_ids: deleted_ids
        }}
     end
   end
@@ -316,6 +325,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     end
   end
 
+  defp delete_after_days(opts) do
+    case Keyword.get(opts, :delete_after_days) do
+      nil -> {:ok, nil}
+      days when is_integer(days) and days >= 1 -> {:ok, days}
+      _days -> {:error, :invalid_delete_after_days}
+    end
+  end
+
   defp archive_expired(repo, work_requests, now, archive_after_days) do
     cutoff = DateTime.add(now, -archive_after_days * 24 * 60 * 60, :second)
 
@@ -413,6 +430,65 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     {:ok, work_requests}
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp delete_expired_archived(_repo, _now, nil), do: {:ok, []}
+
+  defp delete_expired_archived(repo, now, delete_after_days) do
+    cutoff = DateTime.add(now, -delete_after_days * 24 * 60 * 60, :second)
+
+    repo.transaction(fn ->
+      archived =
+        repo.all(
+          from(work_request in WorkRequest,
+            where: not is_nil(work_request.archived_at),
+            where: work_request.archived_at < ^cutoff,
+            order_by: [asc: work_request.archived_at, asc: work_request.id],
+            select: work_request.id
+          )
+        )
+
+      case delete_archived_comments(repo, archived) do
+        :ok -> delete_archived_work_requests(repo, archived)
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp delete_archived_comments(_repo, []), do: :ok
+
+  defp delete_archived_comments(repo, work_request_ids) do
+    planned_slice_ids =
+      repo.all(
+        from(planned_slice in PlannedSlice,
+          where: planned_slice.work_request_id in ^work_request_ids,
+          select: planned_slice.id
+        )
+      )
+
+    targets =
+      Enum.map(work_request_ids, &{"work_request", &1}) ++
+        Enum.map(planned_slice_ids, &{"planned_slice", &1})
+
+    case CommentService.delete_for_targets(repo, targets) do
+      {:ok, _deleted_count} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_archived_work_requests(_repo, []), do: []
+
+  defp delete_archived_work_requests(repo, work_request_ids) do
+    {deleted_count, _rows} =
+      repo.delete_all(from(work_request in WorkRequest, where: work_request.id in ^work_request_ids))
+
+    if deleted_count == length(work_request_ids) do
+      work_request_ids
+    else
+      repo.rollback({:constraint_failed, "archived_work_request_delete_count"})
+    end
   end
 
   defp completed_sort_key(%WorkRequest{} = work_request) do

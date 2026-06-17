@@ -248,7 +248,7 @@ export function DashboardSettingsDialog({
                   onSave={onArchiveAfterDaysChange}
                 />
                 <RetentionCutoffSetting
-                  description={`Archived Solo Sessions delete after ${soloSessionDeleteAfterDays} days.`}
+                  description={`Archived WorkRequests and Solo Sessions delete after ${soloSessionDeleteAfterDays} days.`}
                   inputLabel="Deletion cutoff days"
                   label="Deletion cutoff"
                   value={soloSessionDeleteAfterDays}

@@ -106,6 +106,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Comments.Repository do
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
+  @spec delete_for_targets(repo(), [target()]) :: {:ok, non_neg_integer()} | {:error, error()}
+  def delete_for_targets(_repo, []), do: {:ok, 0}
+
+  def delete_for_targets(repo, targets) when is_atom(repo) and is_list(targets) do
+    targets = normalize_targets(targets)
+
+    {deleted_count, _rows} =
+      repo.delete_all(from(comment in Comment, where: ^target_filter(targets)))
+
+    {:ok, deleted_count}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
   @spec counts_for_targets(repo(), [target()]) ::
           {:ok, %{target() => %{comment_count: non_neg_integer(), open_comment_count: non_neg_integer()}}}
           | {:error, error()}
@@ -197,6 +211,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Comments.Repository do
   end
 
   defp validate_target(_repo, _target_kind, _target_id), do: {:error, :invalid_target}
+
+  defp target_filter(targets) do
+    Enum.reduce(targets, dynamic(false), fn {target_kind, target_id}, query ->
+      dynamic([comment], ^query or (comment.target_kind == ^target_kind and comment.target_id == ^target_id))
+    end)
+  end
 
   defp capped_comment_query(target_kinds, target_ids) do
     ranked_ids =

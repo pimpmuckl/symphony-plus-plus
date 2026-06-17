@@ -1339,7 +1339,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
     with {:ok, _work_request_summary} <-
            WorkRequestService.retention_pass(repo,
-             archive_after_days: settings.work_request_archive_after_days
+             archive_after_days: settings.work_request_archive_after_days,
+             delete_after_days: settings.solo_session_delete_after_days
            ),
          {:ok, _solo_archived_count} <-
            SoloSessionService.archive_stale(repo, now, settings.work_request_archive_after_days),

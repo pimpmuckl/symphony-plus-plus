@@ -9,6 +9,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service, as: ClaimLeaseService
+  alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
+  alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
@@ -97,6 +99,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     repo.delete_all(ProgressEvent)
     repo.delete_all(ClaimLease)
     repo.delete_all(AccessGrant)
+    repo.delete_all(Comment)
     repo.delete_all(PlannedSlice)
     repo.delete_all(WorkPackage)
     repo.delete_all(ClarificationQuestion)
@@ -478,6 +481,88 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert {:ok, relaxed} = Repository.get(repo, request.id)
     assert relaxed.completed_at == completed_at
     assert relaxed.archived_at == nil
+  end
+
+  test "retention deletes expired archived work requests after removing their comments", %{repo: repo} do
+    now = utc_usec(~U[2026-05-23 12:00:00Z])
+    stale_at = utc_usec(~U[2026-05-20 12:00:00Z])
+    recent_at = utc_usec(~U[2026-05-22 12:00:00Z])
+
+    expired = completed_skipped_request!(repo, "WR-RETENTION-DELETE-EXPIRED", stale_at)
+    assert {:ok, expired_archived} = Service.archive(repo, expired.id)
+    set_archived_at!(repo, expired_archived, stale_at)
+    expired_slice_id = "WRS-#{expired.id}"
+
+    assert {:ok, request_comment} =
+             CommentService.create(repo, %{
+               id: "comment-retention-delete-wr",
+               target_kind: "work_request",
+               target_id: expired.id,
+               body: "Remove with WorkRequest",
+               source_type: "operator",
+               author_name: "retention-test"
+             })
+
+    assert {:ok, slice_comment} =
+             CommentService.create(repo, %{
+               id: "comment-retention-delete-slice",
+               target_kind: "planned_slice",
+               target_id: expired_slice_id,
+               body: "Remove with planned slice",
+               source_type: "operator",
+               author_name: "retention-test"
+             })
+
+    active = completed_skipped_request!(repo, "WR-RETENTION-DELETE-ACTIVE", recent_at)
+
+    assert {:ok, active_comment} =
+             CommentService.create(repo, %{
+               id: "comment-retention-keep-active",
+               target_kind: "work_request",
+               target_id: active.id,
+               body: "Keep active",
+               source_type: "operator",
+               author_name: "retention-test"
+             })
+
+    collision_package = create_activity_work_package!(repo, expired_slice_id, status: "merged")
+
+    assert {:ok, collision_comment} =
+             CommentService.create(repo, %{
+               id: "comment-retention-keep-collision",
+               target_kind: "work_package",
+               target_id: collision_package.id,
+               body: "Keep matching id on another target kind",
+               source_type: "operator",
+               author_name: "retention-test"
+             })
+
+    completed = completed_skipped_request!(repo, "WR-RETENTION-DELETE-COMPLETED", stale_at)
+    assert {:ok, open} = Repository.create(repo, attrs(id: "WR-RETENTION-DELETE-OPEN", status: "draft"))
+
+    recent_archived = completed_skipped_request!(repo, "WR-RETENTION-DELETE-RECENT", stale_at)
+    assert {:ok, recent_archived} = Service.archive(repo, recent_archived.id)
+    recent_archived = set_archived_at!(repo, recent_archived, recent_at)
+
+    assert {:ok, summary} =
+             Service.retention_pass(repo,
+               now: now,
+               archive_after_days: 3650,
+               delete_after_days: 1
+             )
+
+    assert summary.deleted_ids == [expired.id]
+    assert summary.deleted_count == 1
+    assert {:error, :not_found} = Service.get(repo, expired.id)
+    assert {:error, :not_found} = CommentService.get(repo, request_comment.id)
+    assert {:error, :not_found} = CommentService.get(repo, slice_comment.id)
+
+    assert {:ok, ^active} = Service.get(repo, active.id)
+    assert {:ok, ^active_comment} = CommentService.get(repo, active_comment.id)
+    assert {:ok, ^collision_comment} = CommentService.get(repo, collision_comment.id)
+    assert {:ok, ^completed} = Service.get(repo, completed.id)
+    assert {:ok, ^open} = Service.get(repo, open.id)
+    assert {:ok, ^recent_archived} = Service.get(repo, recent_archived.id)
   end
 
   test "retention caps visible completed work requests to ten per repo", %{repo: repo} do
@@ -1114,6 +1199,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
   end
 
   defp utc_usec(%DateTime{} = datetime), do: %{datetime | microsecond: {elem(datetime.microsecond, 0), 6}}
+
+  defp set_archived_at!(repo, %WorkRequest{} = work_request, %DateTime{} = archived_at) do
+    work_request
+    |> Ecto.Changeset.change(archived_at: archived_at, updated_at: archived_at)
+    |> repo.update!()
+  end
 
   defp create_matching_work_package!(repo, work_request, planned_slice, overrides) do
     attrs =
