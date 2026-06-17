@@ -22,7 +22,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository, as: GuidanceRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.OperatorAudit
-  alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Service, as: OperatorSettingsService
+  alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Repository, as: OperatorSettingsRepository
   alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings, as: OperatorSettings
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
@@ -5244,7 +5244,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   test "local operator dashboard retention archives and deletes Solo Sessions", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       assert {:ok, _settings} =
-               OperatorSettingsService.update(repo, %{
+               OperatorSettingsRepository.update(repo, %{
                  "work_request_archive_after_days" => 1,
                  "solo_session_delete_after_days" => 1
                })
@@ -5292,7 +5292,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
   test "local operator dashboard refresh applies archive retention", %{repo: repo} do
     with_local_operator_endpoint(fn ->
-      assert {:ok, _settings} = OperatorSettingsService.update(repo, %{"work_request_archive_after_days" => 1})
+      assert {:ok, _settings} = OperatorSettingsRepository.update(repo, %{"work_request_archive_after_days" => 1})
 
       completed_at = DateTime.add(DateTime.utc_now(:microsecond), -2 * 24 * 60 * 60, :second)
       request = create_completed_skipped_work_request!(repo, "WR-LOCAL-REFRESH-RETENTION", completed_at)
@@ -5310,7 +5310,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
   test "local operator dashboard retention hides stale terminal unlinked WorkPackages only", %{repo: repo} do
     with_local_operator_endpoint(fn ->
-      assert {:ok, _settings} = OperatorSettingsService.update(repo, %{"work_request_archive_after_days" => 1})
+      assert {:ok, _settings} = OperatorSettingsRepository.update(repo, %{"work_request_archive_after_days" => 1})
 
       stale_at = DateTime.add(DateTime.utc_now(:microsecond), -2 * 24 * 60 * 60, :second)
       recent_at = DateTime.utc_now(:microsecond)
@@ -5398,7 +5398,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", linked_terminal_package.id)
 
       assert {:ok, _settings} =
-               OperatorSettingsService.update(repo, %{
+               OperatorSettingsRepository.update(repo, %{
                  "hidden_work_package_ids" => [existing_hidden_package.id, existing_hidden_package.id]
                })
 
@@ -5578,7 +5578,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  payload: %{type: "blocker", source_tool: "report_blocker", blocker_id: "local-clear-blocker-stale-dashboard", active: true}
                })
 
-      assert {:ok, _settings} = OperatorSettingsService.update(repo, %{"hidden_work_package_ids" => []})
+      assert {:ok, _settings} = OperatorSettingsRepository.update(repo, %{"hidden_work_package_ids" => []})
 
       repo.query!("UPDATE sympp_operator_settings SET hidden_work_package_ids = ? WHERE id = ?", [
         "not-json",
