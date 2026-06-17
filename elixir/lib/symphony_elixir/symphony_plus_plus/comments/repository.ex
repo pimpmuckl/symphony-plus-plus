@@ -14,6 +14,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Comments.Repository do
   @type repo :: module()
   @type target :: {String.t(), String.t()}
   @default_list_limit 100
+  @delete_target_chunk_size 500
   @type error ::
           :already_resolved
           | :database_busy
@@ -110,12 +111,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Comments.Repository do
   def delete_for_targets(_repo, []), do: {:ok, 0}
 
   def delete_for_targets(repo, targets) when is_atom(repo) and is_list(targets) do
-    targets = normalize_targets(targets)
+    targets
+    |> normalize_targets()
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Enum.reduce({:ok, 0}, fn
+      {_target_kind, _target_ids}, {:error, reason} ->
+        {:error, reason}
 
-    {deleted_count, _rows} =
-      repo.delete_all(from(comment in Comment, where: ^target_filter(targets)))
-
-    {:ok, deleted_count}
+      {target_kind, target_ids}, {:ok, deleted_count} ->
+        case delete_target_ids(repo, target_kind, target_ids) do
+          {:ok, count} -> {:ok, deleted_count + count}
+          {:error, reason} -> {:error, reason}
+        end
+    end)
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
@@ -212,9 +220,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Comments.Repository do
 
   defp validate_target(_repo, _target_kind, _target_id), do: {:error, :invalid_target}
 
-  defp target_filter(targets) do
-    Enum.reduce(targets, dynamic(false), fn {target_kind, target_id}, query ->
-      dynamic([comment], ^query or (comment.target_kind == ^target_kind and comment.target_id == ^target_id))
+  defp delete_target_ids(repo, target_kind, target_ids) do
+    target_ids
+    |> Enum.uniq()
+    |> Enum.chunk_every(@delete_target_chunk_size)
+    |> Enum.reduce({:ok, 0}, fn
+      _chunk, {:error, reason} ->
+        {:error, reason}
+
+      ids, {:ok, deleted_count} ->
+        {count, _rows} =
+          repo.delete_all(
+            from(comment in Comment,
+              where: comment.target_kind == ^target_kind,
+              where: comment.target_id in ^ids
+            )
+          )
+
+        {:ok, deleted_count + count}
     end)
   end
 
