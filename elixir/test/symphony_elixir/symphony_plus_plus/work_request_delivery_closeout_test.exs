@@ -397,6 +397,76 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert "package_terminal" in closeout_event.payload["runtime_reason_codes_before_closeout"]
   end
 
+  test "abandoned closeout accepts an already-abandoned package with recycled inactive runtime", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-DELIVERY-ABANDONED-RECYCLED-RUNTIME",
+        status: "ready_for_worker"
+      )
+
+    assert {:ok, _runtime_cleanup_event} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: linked_package.id,
+               summary: "Worker runtime was recycled before delivery closeout.",
+               status: "cleaned",
+               idempotency_key: "abandoned-recycled-runtime-before-closeout",
+               payload: %{
+                 "source_tool" => "cleanup_work_request_planned_slice_runtime",
+                 "delivery_evidence" => %{"outcome" => "abandoned"},
+                 "runtime_cleanup" => %{"status" => "cleaned"}
+               }
+             })
+
+    assert {:ok, _abandoned_package} = WorkPackageRepository.update(repo, linked_package.id, %{status: "abandoned", worktree_path: nil})
+
+    attrs =
+      delivery_attrs(%{
+        outcome: "abandoned",
+        idempotency_key: "delivery-abandoned-recycled-runtime",
+        abandoned_rationale: "The package was already abandoned and its worker runtime had already been recycled."
+      })
+
+    assert {:ok, delivery} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert delivery.outcome == "abandoned"
+    assert repo.get!(WorkPackage, linked_package.id).status == "abandoned"
+
+    closeout_event = repo.all(ProgressEvent) |> Enum.find(&(&1.payload["source_tool"] == "record_planned_slice_delivery"))
+    assert closeout_event.payload["previous_status"] == "abandoned"
+    assert "worker_recycled" in closeout_event.payload["runtime_reason_codes_before_closeout"]
+    assert "package_terminal" in closeout_event.payload["runtime_reason_codes_before_closeout"]
+  end
+
+  test "abandoned closeout rejects generic recycled runtime evidence without abandonment proof", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-DELIVERY-ABANDONED-GENERIC-RECYCLED",
+        status: "ready_for_worker"
+      )
+
+    assert {:ok, _generic_recycle_event} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: linked_package.id,
+               summary: "A generic worker runtime recycle happened before closeout.",
+               status: "claimed",
+               idempotency_key: "abandoned-generic-recycled-runtime",
+               payload: %{"source_tool" => "claim_local_assignment"}
+             })
+
+    assert {:ok, _abandoned_package} = WorkPackageRepository.update(repo, linked_package.id, %{status: "abandoned", worktree_path: nil})
+
+    attrs =
+      delivery_attrs(%{
+        outcome: "abandoned",
+        idempotency_key: "delivery-abandoned-generic-recycled-runtime",
+        abandoned_rationale: "Generic runtime recycle evidence must not prove abandonment."
+      })
+
+    assert {:error, :active_runtime} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+  end
+
   test "abandoned closeout rejects already-abandoned packages with implementation history", %{repo: repo} do
     {work_request, planned_slice, linked_package} =
       linked_slice!(repo,
@@ -439,6 +509,57 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
 
     assert {:error, :active_runtime} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+  end
+
+  test "abandoned closeout still rejects an already-abandoned package with current runtime authority", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-DELIVERY-ABANDONED-CURRENT-RUNTIME",
+        status: "ready_for_worker"
+      )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "current-worker")
+
+    assert {:ok, claim_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               linked_package.id,
+               %{
+                 "actor_kind" => "agent",
+                 "actor_id" => "local:current-worker",
+                 "actor_display_name" => "current-worker"
+               },
+               access_grant_id: minted.grant.id,
+               stale_after_ms: 60_000
+             )
+
+    assert {:ok, _runtime_cleanup_event} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: linked_package.id,
+               summary: "Prior cleanup evidence exists, but current authority remains.",
+               status: "cleaned",
+               idempotency_key: "abandoned-current-runtime-cleanup-evidence",
+               payload: %{
+                 "source_tool" => "cleanup_work_request_planned_slice_runtime",
+                 "delivery_evidence" => %{"outcome" => "abandoned"}
+               }
+             })
+
+    assert {:ok, _abandoned_package} = WorkPackageRepository.update(repo, linked_package.id, %{status: "abandoned", worktree_path: nil})
+
+    attrs =
+      delivery_attrs(%{
+        outcome: "abandoned",
+        idempotency_key: "delivery-abandoned-current-runtime",
+        abandoned_rationale: "This should not close while current worker authority remains."
+      })
+
+    assert {:error, :active_runtime} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+    assert %AccessGrant{revoked_at: nil} = repo.get!(AccessGrant, minted.grant.id)
+    assert %ClaimLease{status: "active"} = repo.get!(ClaimLease, claim_lease.id)
   end
 
   test "phase-child PR merged closeout must use merge_child_into_phase", %{repo: repo} do
