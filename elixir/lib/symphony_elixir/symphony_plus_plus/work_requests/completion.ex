@@ -2,6 +2,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   @moduledoc false
 
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
+  alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Repository, as: OperatorSettingsRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
@@ -449,9 +450,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
           )
         )
 
-      planned_slice_ids = archived_planned_slice_ids(repo, archived)
+      {planned_slice_ids, linked_work_package_ids} = archived_planned_slice_context(repo, archived)
 
-      case delete_archived_dependents(repo, archived, planned_slice_ids) do
+      case delete_archived_dependents(repo, archived, planned_slice_ids, linked_work_package_ids) do
         :ok -> delete_archived_work_requests(repo, archived)
         {:error, reason} -> repo.rollback(reason)
       end
@@ -460,25 +461,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
-  defp archived_planned_slice_ids(_repo, []), do: []
+  defp archived_planned_slice_context(_repo, []), do: {[], []}
 
-  defp archived_planned_slice_ids(repo, work_request_ids) do
-    work_request_ids
-    |> Enum.chunk_every(@delete_work_request_chunk_size)
-    |> Enum.flat_map(fn ids ->
-      repo.all(
-        from(planned_slice in PlannedSlice,
-          where: planned_slice.work_request_id in ^ids,
-          select: planned_slice.id
+  defp archived_planned_slice_context(repo, work_request_ids) do
+    rows =
+      work_request_ids
+      |> Enum.chunk_every(@delete_work_request_chunk_size)
+      |> Enum.flat_map(fn ids ->
+        repo.all(
+          from(planned_slice in PlannedSlice,
+            where: planned_slice.work_request_id in ^ids,
+            select: {planned_slice.id, planned_slice.work_package_id}
+          )
         )
-      )
-    end)
+      end)
+
+    {
+      Enum.map(rows, fn {planned_slice_id, _work_package_id} -> planned_slice_id end),
+      rows
+      |> Enum.map(fn {_planned_slice_id, work_package_id} -> work_package_id end)
+      |> Enum.reject(&is_nil/1)
+    }
   end
 
-  defp delete_archived_dependents(repo, work_request_ids, planned_slice_ids) do
-    case delete_archived_comments(repo, work_request_ids, planned_slice_ids) do
-      :ok -> delete_archived_grant_scopes(repo, work_request_ids, planned_slice_ids)
-      {:error, reason} -> {:error, reason}
+  defp delete_archived_dependents(repo, work_request_ids, planned_slice_ids, linked_work_package_ids) do
+    with :ok <- preserve_archived_linked_work_package_hides(repo, linked_work_package_ids),
+         :ok <- delete_archived_comments(repo, work_request_ids, planned_slice_ids) do
+      delete_archived_grant_scopes(repo, work_request_ids, planned_slice_ids)
+    end
+  end
+
+  defp preserve_archived_linked_work_package_hides(_repo, []), do: :ok
+
+  defp preserve_archived_linked_work_package_hides(repo, work_package_ids) do
+    case OperatorSettingsRepository.get(repo) do
+      {:ok, settings} ->
+        hidden_work_package_ids = Enum.uniq(settings.hidden_work_package_ids ++ Enum.uniq(work_package_ids))
+
+        case OperatorSettingsRepository.update(repo, %{"hidden_work_package_ids" => hidden_work_package_ids}) do
+          {:ok, _settings} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

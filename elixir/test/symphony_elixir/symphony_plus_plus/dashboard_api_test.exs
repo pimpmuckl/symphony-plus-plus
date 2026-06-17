@@ -5306,6 +5306,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       expired = set_work_request_archived_at!(expired, repo, stale_at)
       expired_slice_id = "WRS-#{expired.id}"
 
+      linked_expired = create_work_request!(repo, id: "WR-LOCAL-DELETE-LINKED", status: "ready_for_slicing")
+
+      assert {:ok, linked_slice} =
+               WorkRequestRepository.add_planned_slice(
+                 repo,
+                 linked_expired.id,
+                 planned_slice_attrs(id: "WRS-LOCAL-DELETE-LINKED", target_base_branch: linked_expired.base_branch)
+               )
+
+      assert {:ok, linked_slice} = WorkRequestRepository.approve_planned_slice(repo, linked_expired.id, linked_slice.id, "planned")
+
+      linked_package =
+        create_matching_work_package!(repo, linked_expired, linked_slice,
+          id: "WP-LOCAL-DELETE-LINKED",
+          status: "merged"
+        )
+        |> set_work_package_updated_at!(repo, fresh_at)
+
+      assert {:ok, _dispatched} =
+               WorkRequestRepository.dispatch_planned_slice(repo, linked_expired.id, linked_slice.id, "approved", linked_package.id)
+
+      linked_expired =
+        linked_expired
+        |> Ecto.Changeset.change(status: "sliced", completed_at: stale_at, archived_at: stale_at, updated_at: stale_at)
+        |> repo.update!()
+
       recent = create_completed_skipped_work_request!(repo, "WR-LOCAL-KEEP-ARCHIVED", stale_at)
       assert {:ok, recent} = WorkRequestService.archive(repo, recent.id)
       recent = set_work_request_archived_at!(recent, repo, fresh_at)
@@ -5348,12 +5374,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       archived_ids = payload["archived_work_requests"]["work_requests"] |> Enum.map(& &1["id"])
 
       refute expired.id in archived_ids
+      refute linked_expired.id in archived_ids
       assert recent.id in archived_ids
       assert {:error, :not_found} = WorkRequestService.get(repo, expired.id)
+      assert {:error, :not_found} = WorkRequestService.get(repo, linked_expired.id)
       assert {:error, :not_found} = CommentService.get(repo, request_comment.id)
       assert {:error, :not_found} = CommentService.get(repo, slice_comment.id)
       assert {:ok, ^recent} = WorkRequestService.get(repo, recent.id)
       assert {:ok, ^kept_comment} = CommentService.get(repo, kept_comment.id)
+      assert linked_package.id in payload["settings"]["hidden_work_package_ids"]
+      refute linked_package.id in board_work_package_ids(payload)
     end)
   end
 

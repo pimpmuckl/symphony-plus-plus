@@ -1110,6 +1110,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo),
          {:ok, settings} <- OperatorSettingsRepository.get(repo),
          :ok <- run_operator_retention(repo, settings),
+         {:ok, settings} <- OperatorSettingsRepository.get(repo),
          {:ok, linked_work_package_id_sets} <- linked_work_package_id_sets(repo),
          {:ok, architect_handoff_anchor_work_package_ids} <- architect_handoff_anchor_work_package_ids(repo),
          {:ok, settings} <- dedupe_hidden_work_package_ids_for_local_operator(repo, settings),
