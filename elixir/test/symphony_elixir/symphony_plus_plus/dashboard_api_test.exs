@@ -5543,6 +5543,82 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator dashboard recovers malformed hidden package ids before clearing blockers and archiving", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      work_request = create_work_request!(repo, id: "WR-LOCAL-CLEAR-BLOCKER-STALE-DASHBOARD", status: "ready_for_slicing")
+
+      assert {:ok, slice} =
+               WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-LOCAL-CLEAR-BLOCKER-STALE-DASHBOARD"))
+
+      assert {:ok, approved} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, slice.id, "planned")
+
+      work_package =
+        create_matching_work_package!(repo, work_request, approved,
+          id: "WP-LOCAL-CLEAR-BLOCKER-STALE-DASHBOARD",
+          status: "implementing"
+        )
+
+      archive_package =
+        create_work_package!(repo,
+          id: "WP-LOCAL-ARCHIVE-STALE-DASHBOARD",
+          status: "merged",
+          repo: work_package.repo,
+          base_branch: work_package.base_branch
+        )
+
+      assert {:ok, _dispatched} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", work_package.id)
+
+      assert {:ok, _blocker} =
+               PlanningRepository.append_progress_event(repo, %{
+                 work_package_id: work_package.id,
+                 summary: "Review scope blocker",
+                 body: "Reviewer requested an out-of-scope file change.",
+                 status: "blocked",
+                 idempotency_key: "local-clear-blocker-stale-dashboard",
+                 payload: %{type: "blocker", source_tool: "report_blocker", blocker_id: "local-clear-blocker-stale-dashboard", active: true}
+               })
+
+      assert {:ok, _settings} = OperatorSettingsService.update(repo, %{"hidden_work_package_ids" => []})
+
+      repo.query!("UPDATE sympp_operator_settings SET hidden_work_package_ids = ? WHERE id = ?", [
+        "not-json",
+        OperatorSettings.settings_id()
+      ])
+
+      dashboard_payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      assert get_in(dashboard_payload, ["settings", "hidden_work_package_ids"]) == []
+      assert %{rows: [["[]"]]} = repo.query!("SELECT hidden_work_package_ids FROM sympp_operator_settings WHERE id = ?", [OperatorSettings.settings_id()])
+
+      payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-packages/#{work_package.id}/blockers/local-clear-blocker-stale-dashboard/clear", %{})
+        |> json_response(200)
+
+      assert %{"progress_event" => %{"blocker_id" => "local-clear-blocker-stale-dashboard"}} = payload
+      assert get_in(payload, ["dashboard", "settings", "hidden_work_package_ids"]) == []
+      refute Map.has_key?(payload, "error")
+
+      assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, work_package.id)
+      refute Enum.any?(BlockerProjection.blockers(progress_events), & &1.active)
+      assert length(resolve_blocker_events(progress_events, "local-clear-blocker-stale-dashboard")) == 1
+
+      assert {:ok, persisted_package} = WorkPackageRepository.get(repo, work_package.id)
+      assert persisted_package.status == "implementing"
+
+      archive_payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-packages/#{archive_package.id}/archive", %{})
+        |> json_response(200)
+
+      assert get_in(archive_payload, ["dashboard", "settings", "hidden_work_package_ids"]) == [archive_package.id]
+      refute archive_package.id in board_work_package_ids(archive_payload["dashboard"])
+    end)
+  end
+
   test "local operator can close linked WorkPackages with no-PR evidence", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       work_request = create_work_request!(repo, id: "WR-LOCAL-NO-PR", status: "ready_for_slicing")
