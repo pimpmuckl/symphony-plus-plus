@@ -597,7 +597,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert first_overflow.archive_reason == "limit"
 
     assert {:ok, visible_requests} = Repository.list(repo)
-    expected_requests = Enum.sort_by([release_request | Enum.drop(completed_requests, 2)], &{&1.inserted_at, &1.id})
+    expected_requests = Enum.drop(completed_requests, 2) ++ [release_request]
     assert Enum.map(visible_requests, & &1.id) == Enum.map(expected_requests, & &1.id)
     assert {:ok, second_summary} = Service.retention_pass(repo, now: now)
     assert second_summary.archived_ids == []
