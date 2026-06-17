@@ -431,6 +431,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
   end
 
   test "ttl cleanup prevents queued updates from resurrecting expired state" do
+    original_ttl_ms = :sys.get_state(HTTPStateStore).ttl_ms
+    on_exit(fn -> :sys.replace_state(HTTPStateStore, &%{&1 | ttl_ms: original_ttl_ms}) end)
+
     config = config("queued-ttl-expire")
     parent = self()
     key = store_key(config, "client", "state")
