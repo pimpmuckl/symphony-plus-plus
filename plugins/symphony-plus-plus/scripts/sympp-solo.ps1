@@ -9,13 +9,34 @@ $ErrorActionPreference = "Stop"
 
 . (Join-Path $PSScriptRoot "sympp-launcher-runtime.ps1")
 
+function Resolve-UsageScriptPath {
+  $scriptParent = Split-Path -Parent $PSScriptRoot
+  $packageRoot = Split-Path -Parent $scriptParent
+  $marketplaceRoot = Split-Path -Parent $packageRoot
+  $cacheRoot = Split-Path -Parent $marketplaceRoot
+  $pluginsRoot = Split-Path -Parent $cacheRoot
+  $pluginName = if ((Split-Path -Leaf $cacheRoot) -eq "cache" -and (Split-Path -Leaf $pluginsRoot) -eq "plugins") {
+    Split-Path -Leaf $packageRoot
+  } else {
+    Split-Path -Leaf $scriptParent
+  }
+  $scriptName = Split-Path -Leaf $PSCommandPath
+  if ([string]::IsNullOrWhiteSpace($scriptName)) {
+    $scriptName = "sympp-solo.ps1"
+  }
+
+  return "plugins/$pluginName/scripts/$scriptName"
+}
+
 function Write-Usage {
+  $scriptPath = Resolve-UsageScriptPath
+
   Write-Host "Runs the Symphony++ Solo Session CLI from any current repository."
   Write-Host ""
   Write-Host "Usage:"
-  Write-Host "  pwsh plugins/symphony-plus-plus/scripts/sympp-solo.ps1 -Help"
-  Write-Host "  pwsh plugins/symphony-plus-plus/scripts/sympp-solo.ps1 -ValidateOnly"
-  Write-Host "  pwsh plugins/symphony-plus-plus/scripts/sympp-solo.ps1 <mix sympp.solo command> [options]"
+  Write-Host "  pwsh $scriptPath -Help"
+  Write-Host "  pwsh $scriptPath -ValidateOnly"
+  Write-Host "  pwsh $scriptPath <mix sympp.solo command> [options]"
   Write-Host ""
   Write-Host "Environment:"
   Write-Host "  SYMPP_REPO_ROOT   Explicit developer-only Symphony++ source checkout override; not the caller/task repo. Marketplace installs are discovered automatically."

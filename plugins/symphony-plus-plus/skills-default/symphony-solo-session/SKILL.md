@@ -29,7 +29,8 @@ secret hashes, secret-bearing commands, or claim lease internals.
 
 ## Tools
 
-Prefer MCP tools when available in an unbound session:
+Prefer MCP tools from the `symphony_plus_plus` namespace when available in an
+unbound session. The exposed tool names are:
 
 ```text
 solo_attach

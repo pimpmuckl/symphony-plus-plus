@@ -24,6 +24,9 @@ ledger-backed claims, scoped grants, delivery boards, or MCP merge gates, use
 - Use fresh worktrees/branches when isolation or parallelism matters.
 - Give workers goal, scope, base/branch/worktree, acceptance, validation,
   review profile, budget, stop conditions, and expected PR/evidence.
+- PR-size or line-budget guidance; add slice-specific PR-size or line-budget
+  constraints when the default boundary is not enough. These budgets should
+  always be used and split between implementation- and test work when possible.
 - For S++ WorkPackages, pass ledger claim metadata and local worktree scope.
   Do not prompt normal workers for work keys or private handoff secrets.
 - Use explorers for reconnaissance only.

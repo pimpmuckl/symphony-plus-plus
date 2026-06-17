@@ -294,6 +294,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     refute File.read!(@mcp_plugin_solo_script_path) =~ "Resolve-RepoRootFromCacheHints"
     refute File.read!(@mcp_plugin_solo_script_path) =~ "Resolve-DefaultDatabase"
     refute File.read!(@mcp_plugin_solo_script_path) =~ "solo-sessions.sqlite3"
+    assert File.read!(@plugin_solo_script_path) == File.read!(@mcp_plugin_solo_script_path)
+    assert File.read!(@plugin_solo_script_path) =~ "Resolve-UsageScriptPath"
+    refute File.read!(@plugin_solo_script_path) =~ "pwsh plugins/symphony-plus-plus/scripts/sympp-solo.ps1"
+    refute File.read!(@plugin_solo_script_path) =~ "pwsh plugins/symphony-plus-plus-mcp/scripts/sympp-solo.ps1"
 
     assert Enum.any?(marketplace["plugins"], fn plugin ->
              plugin["name"] == "symphony-plus-plus" and

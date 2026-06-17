@@ -59,6 +59,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     end
   end
 
+  test "installed Solo wrapper help derives usage from cache package name" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-help-cache-path")
+
+    if powershell do
+      default_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"])
+      mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
+
+      try do
+        wrappers = [
+          {write_cached_script(default_cache_root, @plugin_solo_script_path), "pwsh plugins/symphony-plus-plus/scripts/sympp-solo.ps1 -Help"},
+          {write_cached_script(mcp_cache_root, @mcp_plugin_solo_script_path), "pwsh plugins/symphony-plus-plus-mcp/scripts/sympp-solo.ps1 -Help"}
+        ]
+
+        for {script_path, expected_usage} <- wrappers do
+          {output, status} =
+            System.cmd(
+              powershell,
+              ["-NoProfile", "-File", script_path, "-Help"],
+              cd: Path.dirname(Path.dirname(script_path)),
+              stderr_to_stdout: true
+            )
+
+          assert status == 0, output
+          assert output =~ expected_usage
+          refute output =~ "plugins/1.0.0/scripts/sympp-solo.ps1"
+        end
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
   test "installed launchers default to mise for source checkouts with mise config" do
     powershell = System.find_executable("pwsh")
     temp_codex_home = unique_temp_path("sympp-plugin-marketplace-mise-default")
