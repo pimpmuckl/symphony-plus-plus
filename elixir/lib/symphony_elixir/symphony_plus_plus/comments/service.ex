@@ -50,6 +50,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Comments.Service do
   @spec list_for_target(Repository.repo(), String.t(), String.t()) :: {:ok, [Comment.t()]} | {:error, error()}
   def list_for_target(repo, target_kind, target_id), do: Repository.list_for_target(repo, target_kind, target_id)
 
+  @spec delete_for_targets(Repository.repo(), [Repository.target()]) :: {:ok, non_neg_integer()} | {:error, error()}
+  def delete_for_targets(repo, targets), do: Repository.delete_for_targets(repo, targets)
+
   @spec list_for_assignment(Repository.repo(), Assignment.t(), String.t(), String.t()) ::
           {:ok, [Comment.t()]} | {:error, error()}
   def list_for_assignment(repo, %Assignment{} = assignment, target_kind, target_id)

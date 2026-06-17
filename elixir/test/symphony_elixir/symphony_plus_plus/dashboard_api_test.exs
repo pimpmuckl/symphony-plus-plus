@@ -4073,7 +4073,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
       archived_request
       |> Ecto.Changeset.change(completed_at: %{~U[2026-05-01 00:00:00Z] | microsecond: {0, 6}})
-      |> Ecto.Changeset.change(archived_at: %{~U[2026-05-16 00:00:00Z] | microsecond: {0, 6}})
+      |> Ecto.Changeset.change(archived_at: DateTime.add(DateTime.utc_now(:microsecond), -1, :day))
       |> repo.update!()
 
       payload = json_response(get(local_operator_conn(), "/api/v1/sympp/operator/dashboard"), 200)
@@ -5290,6 +5290,103 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator dashboard retention deletes expired archived WorkRequests", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      assert {:ok, _settings} =
+               OperatorSettingsRepository.update(repo, %{
+                 "work_request_archive_after_days" => 1,
+                 "solo_session_delete_after_days" => 1
+               })
+
+      stale_at = DateTime.add(DateTime.utc_now(:microsecond), -2 * 24 * 60 * 60, :second)
+      fresh_at = DateTime.utc_now(:microsecond)
+
+      expired = create_completed_skipped_work_request!(repo, "WR-LOCAL-DELETE-ARCHIVED", stale_at)
+      assert {:ok, expired} = WorkRequestService.archive(repo, expired.id)
+      expired = set_work_request_archived_at!(expired, repo, stale_at)
+      expired_slice_id = "WRS-#{expired.id}"
+
+      linked_expired = create_work_request!(repo, id: "WR-LOCAL-DELETE-LINKED", status: "ready_for_slicing")
+
+      assert {:ok, linked_slice} =
+               WorkRequestRepository.add_planned_slice(
+                 repo,
+                 linked_expired.id,
+                 planned_slice_attrs(id: "WRS-LOCAL-DELETE-LINKED", target_base_branch: linked_expired.base_branch)
+               )
+
+      assert {:ok, linked_slice} = WorkRequestRepository.approve_planned_slice(repo, linked_expired.id, linked_slice.id, "planned")
+
+      linked_package =
+        create_matching_work_package!(repo, linked_expired, linked_slice,
+          id: "WP-LOCAL-DELETE-LINKED",
+          status: "merged"
+        )
+        |> set_work_package_updated_at!(repo, fresh_at)
+
+      assert {:ok, _dispatched} =
+               WorkRequestRepository.dispatch_planned_slice(repo, linked_expired.id, linked_slice.id, "approved", linked_package.id)
+
+      linked_expired =
+        linked_expired
+        |> Ecto.Changeset.change(status: "sliced", completed_at: stale_at, archived_at: stale_at, updated_at: stale_at)
+        |> repo.update!()
+
+      recent = create_completed_skipped_work_request!(repo, "WR-LOCAL-KEEP-ARCHIVED", stale_at)
+      assert {:ok, recent} = WorkRequestService.archive(repo, recent.id)
+      recent = set_work_request_archived_at!(recent, repo, fresh_at)
+
+      assert {:ok, request_comment} =
+               CommentService.create(repo, %{
+                 id: "comment-local-delete-wr",
+                 target_kind: "work_request",
+                 target_id: expired.id,
+                 body: "Remove with archived request",
+                 source_type: "operator",
+                 author_name: "dashboard-test"
+               })
+
+      assert {:ok, slice_comment} =
+               CommentService.create(repo, %{
+                 id: "comment-local-delete-slice",
+                 target_kind: "planned_slice",
+                 target_id: expired_slice_id,
+                 body: "Remove with archived slice",
+                 source_type: "operator",
+                 author_name: "dashboard-test"
+               })
+
+      assert {:ok, kept_comment} =
+               CommentService.create(repo, %{
+                 id: "comment-local-keep-archived",
+                 target_kind: "work_request",
+                 target_id: recent.id,
+                 body: "Keep recent archive",
+                 source_type: "operator",
+                 author_name: "dashboard-test"
+               })
+
+      payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      archived_ids = payload["archived_work_requests"]["work_requests"] |> Enum.map(& &1["id"])
+
+      refute expired.id in archived_ids
+      refute linked_expired.id in archived_ids
+      assert recent.id in archived_ids
+      assert {:error, :not_found} = WorkRequestService.get(repo, expired.id)
+      assert {:error, :not_found} = WorkRequestService.get(repo, linked_expired.id)
+      assert {:error, :not_found} = CommentService.get(repo, request_comment.id)
+      assert {:error, :not_found} = CommentService.get(repo, slice_comment.id)
+      assert {:ok, ^recent} = WorkRequestService.get(repo, recent.id)
+      assert {:ok, ^kept_comment} = CommentService.get(repo, kept_comment.id)
+      assert linked_package.id in payload["settings"]["hidden_work_package_ids"]
+      refute linked_package.id in board_work_package_ids(payload)
+    end)
+  end
+
   test "local operator dashboard refresh applies archive retention", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       assert {:ok, _settings} = OperatorSettingsRepository.update(repo, %{"work_request_archive_after_days" => 1})
@@ -6483,6 +6580,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
   defp set_solo_session_archived_at!(%SoloSession{} = session, repo, %DateTime{} = timestamp) do
     session
+    |> Ecto.Changeset.change(archived_at: timestamp, updated_at: timestamp)
+    |> repo.update!()
+  end
+
+  defp set_work_request_archived_at!(%WorkRequest{} = work_request, repo, %DateTime{} = timestamp) do
+    work_request
     |> Ecto.Changeset.change(archived_at: timestamp, updated_at: timestamp)
     |> repo.update!()
   end

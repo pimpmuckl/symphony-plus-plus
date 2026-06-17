@@ -14,6 +14,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Comments.Repository do
   @type repo :: module()
   @type target :: {String.t(), String.t()}
   @default_list_limit 100
+  @delete_target_chunk_size 500
   @type error ::
           :already_resolved
           | :database_busy
@@ -102,6 +103,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Comments.Repository do
       |> Enum.group_by(&{&1.target_kind, &1.target_id})
 
     {:ok, Map.merge(default_comment_lists(target_set), grouped_comments)}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec delete_for_targets(repo(), [target()]) :: {:ok, non_neg_integer()} | {:error, error()}
+  def delete_for_targets(_repo, []), do: {:ok, 0}
+
+  def delete_for_targets(repo, targets) when is_atom(repo) and is_list(targets) do
+    targets
+    |> normalize_targets()
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Enum.reduce({:ok, 0}, fn
+      {_target_kind, _target_ids}, {:error, reason} ->
+        {:error, reason}
+
+      {target_kind, target_ids}, {:ok, deleted_count} ->
+        case delete_target_ids(repo, target_kind, target_ids) do
+          {:ok, count} -> {:ok, deleted_count + count}
+          {:error, reason} -> {:error, reason}
+        end
+    end)
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
@@ -197,6 +219,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Comments.Repository do
   end
 
   defp validate_target(_repo, _target_kind, _target_id), do: {:error, :invalid_target}
+
+  defp delete_target_ids(repo, target_kind, target_ids) do
+    target_ids
+    |> Enum.uniq()
+    |> Enum.chunk_every(@delete_target_chunk_size)
+    |> Enum.reduce({:ok, 0}, fn
+      _chunk, {:error, reason} ->
+        {:error, reason}
+
+      ids, {:ok, deleted_count} ->
+        {count, _rows} =
+          repo.delete_all(
+            from(comment in Comment,
+              where: comment.target_kind == ^target_kind,
+              where: comment.target_id in ^ids
+            )
+          )
+
+        {:ok, deleted_count + count}
+    end)
+  end
 
   defp capped_comment_query(target_kinds, target_ids) do
     ranked_ids =
