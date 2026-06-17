@@ -1097,6 +1097,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "tools" => %{}
       },
       "health_result_fields" => @mcp_contract_health_fields,
+      "client_lease_protocol" => 1,
       "protocol_version" => @protocol_version,
       "resources" => resource_contract_material(),
       "schema_version" => @mcp_contract_schema_version,

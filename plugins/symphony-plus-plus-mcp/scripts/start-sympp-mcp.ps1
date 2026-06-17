@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 $DefaultBackendPort = 19998
 $DefaultDashboardPort = 19999
 $BoardPath = "/sympp/board"
-$ExpectedMcpContractFingerprint = "a25b9c3594f0e99bec2f8b308aa5126d239f2e4627f75cf178a7a51f8609a31c"
+$ExpectedMcpContractFingerprint = "1d1e037290b82071adab7b2efbc75d5d3e5e8ac3e443276b1e81ba5e96f991d6"
 
 . (Join-Path $PSScriptRoot "sympp-launcher-runtime.ps1")
 . (Join-Path $PSScriptRoot "sympp-mcp-launcher-helpers.ps1")
@@ -51,6 +51,7 @@ function Write-Usage {
   Write-Host "  SYMPP_FRONTEND_STARTUP_TIMEOUT_SEC   Frontend startup wait. Defaults to 20."
   Write-Host "  SYMPP_MCP_HTTP_TIMEOUT_SEC           Per-request bridge timeout. Defaults to 300."
   Write-Host "  SYMPP_STARTUP_LOCK_TIMEOUT_SEC       Local startup lock wait. Defaults to the configured startup waits plus 30 seconds, with a 120-second floor."
+  Write-Host "  SYMPP_MCP_CLIENT_HEARTBEAT_SEC       Bridge client lease heartbeat interval. Defaults to 300; max 540."
   Write-Host ""
   Write-Host "Installed plugins resolve through the Codex marketplace snapshot. .sympp-source-root hints are ignored."
 }
@@ -453,7 +454,88 @@ function Get-HealthContractFingerprint($Payload) {
   return $null
 }
 
-function Invoke-McpPost([string]$Url, [string]$Body, [string]$SessionId, [string]$ProtocolVersion, [int]$TimeoutSec) {
+function Convert-HttpClientHeaders($Response) {
+  $headers = @{}
+  if ($null -eq $Response) {
+    return $headers
+  }
+
+  foreach ($header in @($Response.Headers)) {
+    $headers[[string]$header.Key] = @($header.Value)
+  }
+  if ($null -ne $Response.Content) {
+    foreach ($header in @($Response.Content.Headers)) {
+      $headers[[string]$header.Key] = @($header.Value)
+    }
+  }
+
+  return $headers
+}
+
+function Wait-McpTaskWithLeaseHeartbeat($Task, [string]$McpUrl, [string]$LeaseClientId, [int]$HeartbeatIntervalMs, [bool]$LeaseShutdownOnIdle) {
+  $waitMs = [Math]::Max(1000, $HeartbeatIntervalMs)
+  while (-not $Task.Wait($waitMs)) {
+    Invoke-McpClientLease $McpUrl $LeaseClientId "heartbeat" $false $LeaseShutdownOnIdle | Out-Null
+  }
+
+  return $Task.GetAwaiter().GetResult()
+}
+
+function Invoke-McpPostWithLeaseHeartbeat([string]$Url, [string]$Body, [string]$SessionId, [string]$ProtocolVersion, [int]$TimeoutSec, [string]$LeaseClientId, [int]$LeaseHeartbeatIntervalMs, [bool]$LeaseShutdownOnIdle) {
+  Add-Type -AssemblyName System.Net.Http
+  $client = [System.Net.Http.HttpClient]::new()
+  $request = $null
+  $response = $null
+  try {
+    $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, $Url)
+    [void]$request.Headers.TryAddWithoutValidation("Accept", "application/json, text/event-stream")
+    if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
+      [void]$request.Headers.TryAddWithoutValidation("Mcp-Session-Id", $SessionId)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ProtocolVersion)) {
+      [void]$request.Headers.TryAddWithoutValidation("MCP-Protocol-Version", $ProtocolVersion)
+    }
+    $request.Content = [System.Net.Http.StringContent]::new($Body, [System.Text.Encoding]::UTF8, "application/json")
+
+    $response = Wait-McpTaskWithLeaseHeartbeat ($client.SendAsync($request)) $Url $LeaseClientId $LeaseHeartbeatIntervalMs $LeaseShutdownOnIdle
+    $content = Wait-McpTaskWithLeaseHeartbeat ($response.Content.ReadAsStringAsync()) $Url $LeaseClientId $LeaseHeartbeatIntervalMs $LeaseShutdownOnIdle
+    $headers = Convert-HttpClientHeaders $response
+    $ok = $response.IsSuccessStatusCode
+
+    return [pscustomobject]@{
+      ok = $ok
+      statusCode = [int]$response.StatusCode
+      headers = $headers
+      content = [string]$content
+      content_lines = if ($ok) { @(Convert-McpHttpContentToJsonLines ([string]$content) $headers) } else { @() }
+      error = if ($ok) { $null } else { $response.ReasonPhrase }
+    }
+  } catch {
+    return [pscustomobject]@{
+      ok = $false
+      statusCode = $null
+      headers = $null
+      content = $null
+      content_lines = @()
+      error = $_.Exception.Message
+    }
+  } finally {
+    if ($null -ne $response) {
+      $response.Dispose()
+    }
+    if ($null -ne $request) {
+      $request.Dispose()
+    }
+    $client.Dispose()
+  }
+}
+
+function Invoke-McpPost([string]$Url, [string]$Body, [string]$SessionId, [string]$ProtocolVersion, [int]$TimeoutSec, [string]$LeaseClientId = $null, [int]$LeaseHeartbeatIntervalMs = 0, [bool]$LeaseShutdownOnIdle = $false) {
+  if (-not [string]::IsNullOrWhiteSpace($LeaseClientId) -and $LeaseHeartbeatIntervalMs -gt 0) {
+    return Invoke-McpPostWithLeaseHeartbeat $Url $Body $SessionId $ProtocolVersion $TimeoutSec $LeaseClientId $LeaseHeartbeatIntervalMs $LeaseShutdownOnIdle
+  }
+
   $headers = @{ Accept = "application/json, text/event-stream" }
   if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
     $headers["Mcp-Session-Id"] = $SessionId
@@ -1852,6 +1934,7 @@ $backendPortReleaseTimeout = Get-EnvInteger "SYMPP_BACKEND_PORT_RELEASE_TIMEOUT_
 $frontendInstallTimeout = Get-EnvInteger "SYMPP_FRONTEND_INSTALL_TIMEOUT_SEC" 180 1 1800
 $frontendTimeout = Get-EnvInteger "SYMPP_FRONTEND_STARTUP_TIMEOUT_SEC" 20 1 600
 $bridgeTimeout = Get-EnvInteger "SYMPP_MCP_HTTP_TIMEOUT_SEC" 300 1 3600
+$clientHeartbeatInterval = Get-EnvInteger "SYMPP_MCP_CLIENT_HEARTBEAT_SEC" 300 5 540
 $startupLockMinimum = 30
 if ($autostartBackend) {
   $startupLockMinimum += ($elixirSetupTimeout * 2)
@@ -1919,7 +2002,8 @@ if ($null -ne $fastAttachCandidate) {
   if ($null -ne $bridgeLeasePath) {
     try {
       Write-Diagnostic "Symphony++ MCP bridge attached: backend=$($backendPlan.url) dashboard=$($dashboardPlan.url) runtime=$runtimeFile"
-      Invoke-HttpMcpBridge $backendPlan.mcp_url $bridgeTimeout
+      $shutdownOnIdle = ($backendPlan.managed -eq $true) -and ($dashboardPlan.managed -ne $true)
+      Invoke-HttpMcpBridge $backendPlan.mcp_url $bridgeTimeout (New-McpClientLeaseId) $clientHeartbeatInterval $shutdownOnIdle
     } finally {
       Remove-BridgeLease $bridgeLeasePath
       Stop-ManagedServersIfUnused $runtimeFile $runtimeKey
@@ -2090,7 +2174,8 @@ try {
   Exit-FileLock $startupLock
 }
 try {
-  Invoke-HttpMcpBridge $backendPlan.mcp_url $bridgeTimeout
+  $shutdownOnIdle = ($backendPlan.managed -eq $true) -and ($dashboardPlan.managed -ne $true)
+  Invoke-HttpMcpBridge $backendPlan.mcp_url $bridgeTimeout (New-McpClientLeaseId) $clientHeartbeatInterval $shutdownOnIdle
 } finally {
   Remove-BridgeLease $bridgeLeasePath
   Stop-ManagedServersIfUnused $runtimeFile $runtimeKey

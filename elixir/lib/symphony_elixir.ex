@@ -29,6 +29,7 @@ defmodule SymphonyElixir.Application do
       SymphonyElixir.WorkflowStore,
       SymphonyElixir.Orchestrator,
       SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore,
+      SymphonyElixir.SymphonyPlusPlus.MCP.ClientLeases,
       SymphonyElixir.HttpServer,
       SymphonyElixir.StatusDashboard
     ]
