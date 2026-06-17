@@ -4,6 +4,8 @@ MIX ?= mix
 QUIET ?= 1
 MAKEFLAGS += --no-print-directory
 GATE_LOG_ROOT ?= _build/make-logs
+FAST_TEST_PARTITIONS ?= 4
+CI_TEST_PARTITION_FLAGS := $(if $(MIX_TEST_PARTITION),--partitions $(FAST_TEST_PARTITIONS),)
 
 ifeq ($(OS),Windows_NT)
 GATE_RUN_ID := $(or $(GATE_RUN_ID),$(shell powershell.exe -NoProfile -Command "([guid]::NewGuid().ToString('N')).Substring(0, 12)"))
@@ -104,7 +106,7 @@ ci-static: ci-prepare
 	$(call run_ci_step,static,$(MIX) static)
 
 ci-test: ci-prepare
-	$(call run_ci_step,test,$(MIX) test --exclude ci_slow)
+	$(call run_ci_step,test,$(MIX) test --exclude ci_slow $(CI_TEST_PARTITION_FLAGS))
 
 ci-slow: ci-prepare
 	$(call run_ci_step,test-slow,$(MIX) test --only ci_slow)
