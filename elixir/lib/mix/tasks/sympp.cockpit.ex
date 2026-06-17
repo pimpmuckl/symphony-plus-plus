@@ -5,7 +5,7 @@ defmodule Mix.Tasks.Sympp.Cockpit do
 
   alias SymphonyElixir.HttpServer
   alias SymphonyElixir.SymphonyPlusPlus.MCP.Config, as: MCPConfig
-  alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Service, as: OperatorSettingsService
+  alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Repository, as: OperatorSettingsRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service, as: SoloSessionService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
@@ -389,7 +389,7 @@ defmodule Mix.Tasks.Sympp.Cockpit do
   end
 
   defp run_work_request_retention_pass do
-    with {:ok, settings} <- OperatorSettingsService.get(Repo),
+    with {:ok, settings} <- OperatorSettingsRepository.get(Repo),
          :ok <- run_operator_retention(settings) do
       :ok
     else

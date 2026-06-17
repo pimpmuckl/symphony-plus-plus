@@ -9,7 +9,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
-  alias SymphonyElixir.SymphonyPlusPlus.Phases.Service, as: PhaseService
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -67,7 +66,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
 
   test "creates and reads a phase", %{repo: repo} do
     assert {:ok, %Phase{} = phase} =
-             PhaseService.create(repo, %{
+             PhaseRepository.create(repo, %{
                id: "phase-p7",
                title: "Phase 7",
                description: "Delegated phase work"
@@ -77,7 +76,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
     assert phase.status == "active"
     assert phase.description == "Delegated phase work"
 
-    assert {:ok, fetched} = PhaseService.get(repo, phase.id)
+    assert {:ok, fetched} = PhaseRepository.get(repo, phase.id)
     assert fetched == phase
   end
 
@@ -87,8 +86,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
   end
 
   test "architect grant reads only its own phase board", %{repo: repo} do
-    assert {:ok, own_phase} = PhaseService.create(repo, %{id: "phase-own", title: "Own phase"})
-    assert {:ok, other_phase} = PhaseService.create(repo, %{id: "phase-other", title: "Other phase"})
+    assert {:ok, own_phase} = PhaseRepository.create(repo, %{id: "phase-own", title: "Own phase"})
+    assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-other", title: "Other phase"})
 
     assert {:ok, own_child} =
              WorkPackageRepository.create(
@@ -125,8 +124,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
   end
 
   test "legacy null phase grant derives MCP scope only from its phased anchor", %{repo: repo} do
-    assert {:ok, phase} = PhaseService.create(repo, %{id: "phase-legacy-anchor", title: "Legacy anchor"})
-    assert {:ok, other_phase} = PhaseService.create(repo, %{id: "phase-legacy-anchor-other", title: "Legacy other"})
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-legacy-anchor", title: "Legacy anchor"})
+    assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-legacy-anchor-other", title: "Legacy other"})
 
     assert {:ok, anchor} =
              WorkPackageRepository.create(
@@ -163,7 +162,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
   end
 
   test "explicit phase grant phase board filters to frozen repo and base branch", %{repo: repo} do
-    assert {:ok, phase} = PhaseService.create(repo, %{id: "phase-board-scope", title: "Scoped board"})
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-board-scope", title: "Scoped board"})
 
     assert {:ok, anchor} =
              WorkPackageRepository.create(
@@ -243,7 +242,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
   end
 
   test "explicit phase grant without frozen scope snapshot fails phase board closed", %{repo: repo} do
-    assert {:ok, phase} = PhaseService.create(repo, %{id: "phase-board-missing-snapshot", title: "Missing board snapshot"})
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-board-missing-snapshot", title: "Missing board snapshot"})
 
     assert {:ok, anchor} =
              WorkPackageRepository.create(
@@ -267,7 +266,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
   end
 
   test "legacy null phase grant with unphased anchor is denied MCP phase board", %{repo: repo} do
-    assert {:ok, phase} = PhaseService.create(repo, %{id: "phase-legacy-unphased", title: "Legacy unphased"})
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-legacy-unphased", title: "Legacy unphased"})
 
     assert {:ok, anchor} =
              WorkPackageRepository.create(
@@ -283,8 +282,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
   end
 
   test "architect grant is denied phase board after its anchor leaves the phase", %{repo: repo} do
-    assert {:ok, phase} = PhaseService.create(repo, %{id: "phase-anchor-drift", title: "Anchor drift"})
-    assert {:ok, other_phase} = PhaseService.create(repo, %{id: "phase-anchor-drift-other", title: "Other phase"})
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-anchor-drift", title: "Anchor drift"})
+    assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-anchor-drift-other", title: "Other phase"})
 
     assert {:ok, anchor} =
              WorkPackageRepository.create(
@@ -312,7 +311,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
   end
 
   test "worker grant is denied phase board access", %{repo: repo} do
-    assert {:ok, phase} = PhaseService.create(repo, %{id: "phase-worker-denied", title: "Worker denied"})
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-worker-denied", title: "Worker denied"})
 
     assert {:ok, package} =
              WorkPackageRepository.create(
@@ -331,8 +330,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
   end
 
   test "architect grant minting rejects anchor package outside phase", %{repo: repo} do
-    assert {:ok, phase} = PhaseService.create(repo, %{id: "phase-anchor", title: "Anchor phase"})
-    assert {:ok, other_phase} = PhaseService.create(repo, %{id: "phase-anchor-other", title: "Other anchor phase"})
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-anchor", title: "Anchor phase"})
+    assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-anchor-other", title: "Other anchor phase"})
 
     assert {:ok, other_child} =
              WorkPackageRepository.create(
@@ -345,7 +344,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
   end
 
   test "standalone packages do not require a phase and architect grants are not global board grants", %{repo: repo} do
-    assert {:ok, phase} = PhaseService.create(repo, %{id: "phase-nonglobal", title: "Scoped phase"})
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-nonglobal", title: "Scoped phase"})
 
     assert {:ok, child} =
              WorkPackageRepository.create(
@@ -370,7 +369,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
   end
 
   test "phase board ignores generic parent ancestry that collides with a phase id", %{repo: repo} do
-    assert {:ok, phase} = PhaseService.create(repo, %{id: "SYMPP-P7-COLLISION-PARENT", title: "Collision phase"})
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "SYMPP-P7-COLLISION-PARENT", title: "Collision phase"})
 
     assert {:ok, child} =
              WorkPackageRepository.create(

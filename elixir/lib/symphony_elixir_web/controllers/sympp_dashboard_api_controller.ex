@@ -22,7 +22,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
   alias SymphonyElixir.SymphonyPlusPlus.OperatorAudit
-  alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Service, as: OperatorSettingsService
+  alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Repository, as: OperatorSettingsRepository
   alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings, as: OperatorSettings
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
@@ -722,7 +722,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @spec operator_update_settings(Conn.t(), map()) :: Conn.t()
   def operator_update_settings(conn, params) do
     send_local_operator_response(conn, :dangerous_override, Target.ledger(), :operator_update_settings, fn repo ->
-      with {:ok, settings} <- OperatorSettingsService.update(repo, operator_settings_attrs(params)),
+      with {:ok, settings} <- OperatorSettingsRepository.update(repo, operator_settings_attrs(params)),
            :ok <- run_operator_retention(repo, settings),
            {:ok, dashboard} <- operator_dashboard_payload(repo) do
         json(conn, %{settings: operator_settings_payload(settings), dashboard: dashboard})
@@ -1108,7 +1108,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp operator_dashboard_payload(repo) do
     with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo),
-         {:ok, settings} <- OperatorSettingsService.get(repo),
+         {:ok, settings} <- OperatorSettingsRepository.get(repo),
          :ok <- run_operator_retention(repo, settings),
          {:ok, linked_work_package_id_sets} <- linked_work_package_id_sets(repo),
          {:ok, architect_handoff_anchor_work_package_ids} <- architect_handoff_anchor_work_package_ids(repo),
@@ -1190,7 +1190,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     if hidden_work_package_ids == settings.hidden_work_package_ids do
       {:ok, settings}
     else
-      OperatorSettingsService.update(repo, %{"hidden_work_package_ids" => hidden_work_package_ids})
+      OperatorSettingsRepository.update(repo, %{"hidden_work_package_ids" => hidden_work_package_ids})
     end
   end
 
@@ -1566,7 +1566,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     now = DateTime.utc_now(:microsecond)
 
     with {:ok, _settings} <- ensure_operator_settings_for_local_operator(repo),
-         {:ok, _settings} <- OperatorSettingsService.get(repo),
+         {:ok, _settings} <- OperatorSettingsRepository.get(repo),
          {1, _rows} <-
            repo.update_all(append_hidden_work_package_id_query(work_package_id, now), []),
          %OperatorSettings{} = settings <- repo.get(OperatorSettings, OperatorSettings.settings_id()) do
