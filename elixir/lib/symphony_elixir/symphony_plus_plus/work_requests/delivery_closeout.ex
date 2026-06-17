@@ -10,6 +10,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.RuntimeCleanup
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
@@ -278,7 +279,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
 
   defp prepare_abandoned_closeout_context(repo, work_package_id, context) do
     with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
-         :ok <- require_abandonable_no_code_status(repo, work_package),
+         :ok <- require_abandonable_no_code_status(repo, work_package, context),
          :ok <- require_cleaned_worktree(work_package),
          :ok <- reject_non_recoverable_abandoned_runtime_context(context),
          :ok <- reject_claimed_live_worker_grants(repo, work_package_id),
@@ -294,19 +295,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
     end
   end
 
-  defp require_abandonable_no_code_status(_repo, %{status: status}) when status in @abandonable_no_code_statuses, do: :ok
+  defp require_abandonable_no_code_status(_repo, %{status: status}, _context) when status in @abandonable_no_code_statuses, do: :ok
 
-  defp require_abandonable_no_code_status(repo, %{id: work_package_id, status: @abandoned_no_code_status}) do
+  defp require_abandonable_no_code_status(repo, %{id: work_package_id, status: @abandoned_no_code_status}, context) do
     with {:ok, events} <- PlanningRepository.list_progress_events(repo, work_package_id) do
       cond do
-        not Enum.any?(events, &abandoned_progress_event?/1) -> {:error, :active_runtime}
         Enum.any?(events, &implementation_history_event?/1) -> {:error, :active_runtime}
+        recycled_runtime_context?(context) and Enum.any?(events, &abandoned_runtime_cleanup_event?/1) -> :ok
+        not Enum.any?(events, &abandoned_progress_event?/1) -> {:error, :active_runtime}
         true -> :ok
       end
     end
   end
 
-  defp require_abandonable_no_code_status(_repo, _work_package), do: {:error, :active_runtime}
+  defp require_abandonable_no_code_status(_repo, _work_package, _context), do: {:error, :active_runtime}
+
+  defp recycled_runtime_context?(context), do: get_in(context, [:runtime_state, :recycled?]) == true
+
+  defp abandoned_runtime_cleanup_event?(%{payload: payload}) when is_map(payload) do
+    map_value(payload, :source_tool) == RuntimeCleanup.source_tool() and
+      get_in(payload, ["delivery_evidence", "outcome"]) == @abandoned_no_code_status
+  end
+
+  defp abandoned_runtime_cleanup_event?(_event), do: false
 
   defp abandoned_progress_event?(%{status: @abandoned_no_code_status}), do: true
 
