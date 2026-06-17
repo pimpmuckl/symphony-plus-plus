@@ -5,7 +5,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings.HiddenWorkPackageIdList
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.StringList
+
+  defmodule HiddenWorkPackageIdList do
+    @moduledoc false
+
+    @behaviour Ecto.Type
+
+    @spec type() :: :string
+    def type, do: StringList.type()
+
+    @spec embed_as(term()) :: :self
+    def embed_as(format), do: StringList.embed_as(format)
+
+    @spec equal?(term(), term()) :: boolean()
+    def equal?(left, right), do: StringList.equal?(left, right)
+
+    @spec cast(term()) :: {:ok, [String.t()]} | :error
+    def cast(value), do: StringList.cast(value)
+
+    @spec dump(term()) :: {:ok, String.t()} | :error
+    def dump(value), do: StringList.dump(value)
+
+    @spec load(term()) :: {:ok, [String.t()]}
+    def load(value) do
+      case StringList.load(value) do
+        {:ok, values} -> {:ok, values}
+        :error -> {:ok, []}
+      end
+    end
+  end
 
   @settings_id "local_operator"
   @default_work_request_archive_after_days 14
@@ -25,7 +55,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings do
   schema "sympp_operator_settings" do
     field(:work_request_archive_after_days, :integer, default: @default_work_request_archive_after_days)
     field(:solo_session_delete_after_days, :integer, default: @default_solo_session_delete_after_days)
-    field(:hidden_work_package_ids, StringList, default: [])
+    field(:hidden_work_package_ids, HiddenWorkPackageIdList, default: [])
 
     timestamps(type: :utc_datetime_usec)
   end
