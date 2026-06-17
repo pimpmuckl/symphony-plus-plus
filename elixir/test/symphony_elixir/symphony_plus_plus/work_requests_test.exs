@@ -526,6 +526,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
              })
 
     collision_package = create_activity_work_package!(repo, expired_slice_id, status: "merged")
+    grant = insert_claimed_activity_grant!(repo, collision_package, "worker", "retention-worker")
+    insert_grant_scope!(repo, grant.id, "work_request", expired.id)
+    insert_grant_scope!(repo, grant.id, "planned_slice", expired_slice_id)
 
     assert {:ok, collision_comment} =
              CommentService.create(repo, %{
@@ -556,10 +559,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert {:error, :not_found} = Service.get(repo, expired.id)
     assert {:error, :not_found} = CommentService.get(repo, request_comment.id)
     assert {:error, :not_found} = CommentService.get(repo, slice_comment.id)
+    assert grant_scope_count(repo, "work_request", expired.id) == 0
+    assert grant_scope_count(repo, "planned_slice", expired_slice_id) == 0
 
     assert {:ok, ^active} = Service.get(repo, active.id)
     assert {:ok, ^active_comment} = CommentService.get(repo, active_comment.id)
     assert {:ok, ^collision_comment} = CommentService.get(repo, collision_comment.id)
+    assert grant_scope_count(repo, "work_package", collision_package.id) == 1
     assert {:ok, ^completed} = Service.get(repo, completed.id)
     assert {:ok, ^open} = Service.get(repo, open.id)
     assert {:ok, ^recent_archived} = Service.get(repo, recent_archived.id)
@@ -1196,6 +1202,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     grant
     |> Ecto.Changeset.change(claimed_at: now, claimed_by: claimed_by, updated_at: now)
     |> repo.update!()
+  end
+
+  defp insert_grant_scope!(repo, access_grant_id, scope_type, scope_id) do
+    now = DateTime.utc_now(:microsecond)
+
+    assert {1, _rows} =
+             repo.insert_all("sympp_access_grant_scopes", [
+               %{
+                 id: "ags-retention-#{access_grant_id}-#{scope_type}",
+                 access_grant_id: access_grant_id,
+                 scope_type: scope_type,
+                 scope_key: "#{scope_type}:#{scope_id}",
+                 scope_id: scope_id,
+                 inserted_at: now,
+                 updated_at: now
+               }
+             ])
+  end
+
+  defp grant_scope_count(repo, scope_type, scope_id) do
+    %{rows: [[count]]} =
+      SQL.query!(
+        repo,
+        "SELECT COUNT(*) FROM sympp_access_grant_scopes WHERE scope_type = ? AND scope_id = ?",
+        [scope_type, scope_id]
+      )
+
+    count
   end
 
   defp utc_usec(%DateTime{} = datetime), do: %{datetime | microsecond: {elem(datetime.microsecond, 0), 6}}

@@ -20,6 +20,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   @restorable_archive_reasons ["age"]
   @default_archive_after_days 14
   @completed_visible_limit 10
+  @delete_work_request_chunk_size 500
 
   @type context :: %{optional(:work_package) => WorkPackage.t(), optional(:card) => map()}
   @type state :: %{completed?: boolean(), completed_at: DateTime.t() | nil, archived_at: DateTime.t() | nil}
@@ -448,7 +449,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
           )
         )
 
-      case delete_archived_comments(repo, archived) do
+      planned_slice_ids = archived_planned_slice_ids(repo, archived)
+
+      case delete_archived_dependents(repo, archived, planned_slice_ids) do
         :ok -> delete_archived_work_requests(repo, archived)
         {:error, reason} -> repo.rollback(reason)
       end
@@ -457,17 +460,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
-  defp delete_archived_comments(_repo, []), do: :ok
+  defp archived_planned_slice_ids(_repo, []), do: []
 
-  defp delete_archived_comments(repo, work_request_ids) do
-    planned_slice_ids =
+  defp archived_planned_slice_ids(repo, work_request_ids) do
+    work_request_ids
+    |> Enum.chunk_every(@delete_work_request_chunk_size)
+    |> Enum.flat_map(fn ids ->
       repo.all(
         from(planned_slice in PlannedSlice,
-          where: planned_slice.work_request_id in ^work_request_ids,
+          where: planned_slice.work_request_id in ^ids,
           select: planned_slice.id
         )
       )
+    end)
+  end
 
+  defp delete_archived_dependents(repo, work_request_ids, planned_slice_ids) do
+    case delete_archived_comments(repo, work_request_ids, planned_slice_ids) do
+      :ok -> delete_archived_grant_scopes(repo, work_request_ids, planned_slice_ids)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_archived_comments(_repo, [], []), do: :ok
+
+  defp delete_archived_comments(repo, work_request_ids, planned_slice_ids) do
     targets =
       Enum.map(work_request_ids, &{"work_request", &1}) ++
         Enum.map(planned_slice_ids, &{"planned_slice", &1})
@@ -478,11 +495,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     end
   end
 
+  defp delete_archived_grant_scopes(repo, work_request_ids, planned_slice_ids) do
+    with {:ok, _work_request_count} <- delete_grant_scope_ids(repo, "work_request", work_request_ids),
+         {:ok, _planned_slice_count} <- delete_grant_scope_ids(repo, "planned_slice", planned_slice_ids) do
+      :ok
+    end
+  end
+
+  defp delete_grant_scope_ids(_repo, _scope_type, []), do: {:ok, 0}
+
+  defp delete_grant_scope_ids(repo, scope_type, scope_ids) do
+    scope_ids
+    |> Enum.uniq()
+    |> Enum.chunk_every(@delete_work_request_chunk_size)
+    |> Enum.reduce({:ok, 0}, fn
+      _ids, {:error, reason} ->
+        {:error, reason}
+
+      ids, {:ok, deleted_count} ->
+        {count, _rows} =
+          repo.delete_all(
+            from(scope in "sympp_access_grant_scopes",
+              where: scope.scope_type == ^scope_type,
+              where: scope.scope_id in ^ids
+            )
+          )
+
+        {:ok, deleted_count + count}
+    end)
+  end
+
   defp delete_archived_work_requests(_repo, []), do: []
 
   defp delete_archived_work_requests(repo, work_request_ids) do
-    {deleted_count, _rows} =
-      repo.delete_all(from(work_request in WorkRequest, where: work_request.id in ^work_request_ids))
+    deleted_count =
+      work_request_ids
+      |> Enum.chunk_every(@delete_work_request_chunk_size)
+      |> Enum.reduce(0, fn ids, deleted_count ->
+        {count, _rows} = repo.delete_all(from(work_request in WorkRequest, where: work_request.id in ^ids))
+        deleted_count + count
+      end)
 
     if deleted_count == length(work_request_ids) do
       work_request_ids
