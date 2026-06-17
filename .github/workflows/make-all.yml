@@ -16,10 +16,28 @@ jobs:
         include:
           - name: static
             target: ci-static
-          - name: test
+            partition: ""
+            partitions: ""
+          - name: test 1/4
             target: ci-test
+            partition: 1
+            partitions: 4
+          - name: test 2/4
+            target: ci-test
+            partition: 2
+            partitions: 4
+          - name: test 3/4
+            target: ci-test
+            partition: 3
+            partitions: 4
+          - name: test 4/4
+            target: ci-test
+            partition: 4
+            partitions: 4
           - name: dialyzer
             target: ci-dialyzer
+            partition: ""
+            partitions: ""
     defaults:
       run:
         working-directory: elixir
@@ -47,6 +65,9 @@ jobs:
 
       - name: Verify ${{ matrix.name }}
         run: make ${{ matrix.target }}
+        env:
+          FAST_TEST_PARTITIONS: ${{ matrix.partitions }}
+          MIX_TEST_PARTITION: ${{ matrix.partition }}
 
   make-all:
     runs-on: ubuntu-latest
