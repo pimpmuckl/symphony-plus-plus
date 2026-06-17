@@ -8,7 +8,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, HTTPStateStore, Session, SessionBinding, SessionRecovery}
+
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{
+    ClientLeases,
+    Config,
+    HTTPStateStore,
+    Session,
+    SessionBinding,
+    SessionRecovery
+  }
+
   alias SymphonyElixir.SymphonyPlusPlus.MCP.Server
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
@@ -123,6 +132,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     assert [session_id] = get_resp_header(conn, "mcp-session-id")
     assert session_id =~ ~r/^[!-~]+$/
     assert get_resp_header(conn, "access-control-allow-origin") == []
+  end
+
+  test "POST /mcp/client-lease attaches and detaches launcher clients" do
+    on_exit(fn -> ClientLeases.detach("endpoint-client") end)
+
+    attach = post_json(%{"client_id" => "endpoint-client", "action" => "attach"}, [], path: "/mcp/client-lease")
+    assert %{"status" => "ok", "active_client_count" => count} = json_response(attach, 200)
+    assert count >= 1
+
+    heartbeat = post_json(%{"client_id" => "endpoint-client", "action" => "heartbeat"}, [], path: "/mcp/client-lease")
+    assert %{"status" => "ok"} = json_response(heartbeat, 200)
+
+    detach = post_json(%{"client_id" => "endpoint-client", "action" => "detach"}, [], path: "/mcp/client-lease")
+    assert %{"status" => "ok"} = json_response(detach, 200)
+  end
+
+  test "POST /mcp/client-lease restarts a missing lease worker" do
+    on_exit(fn -> ClientLeases.detach("restarted-endpoint-client") end)
+
+    assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, ClientLeases)
+    refute Process.whereis(ClientLeases)
+
+    attach = post_json(%{"client_id" => "restarted-endpoint-client", "action" => "attach"}, [], path: "/mcp/client-lease")
+    assert %{"status" => "ok"} = json_response(attach, 200)
+    assert Process.whereis(ClientLeases)
   end
 
   test "POST /mcp tools/list uses Mcp-Session-Id continuity" do
@@ -1065,11 +1099,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
 
   defp post_raw(body, headers \\ [], opts \\ []) do
     headers = [{"content-type", "application/json"}, {"accept", "application/json, text/event-stream"} | headers]
+    path = Keyword.get(opts, :path, "/mcp")
 
     opts
     |> local_conn()
     |> put_headers(headers)
-    |> post("/mcp", body)
+    |> post(path, body)
   end
 
   defp local_conn(opts \\ []) do

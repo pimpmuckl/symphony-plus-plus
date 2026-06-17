@@ -709,6 +709,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert launcher =~ ~s($ExpectedMcpContractFingerprint = "#{fingerprint}")
   end
 
+  test "MCP launcher keeps client lease heartbeat below the server lease ttl" do
+    launcher = File.read!(@mcp_plugin_start_script_path)
+
+    assert launcher =~ ~s(Get-EnvInteger "SYMPP_MCP_CLIENT_HEARTBEAT_SEC" 300 5 540)
+  end
+
   test "enable command safely mutates only the MCP companion plugin config" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-enable-#{System.unique_integer([:positive])}")

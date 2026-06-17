@@ -339,45 +339,122 @@ function Write-McpResponseLine([string]$Content) {
   }
 }
 
-function Invoke-HttpMcpBridge([string]$McpUrl, [int]$TimeoutSec) {
+function New-McpClientLeaseId {
+  return "bridge-$PID-$([guid]::NewGuid().ToString('N'))"
+}
+
+function Invoke-McpClientLease([string]$McpUrl, [string]$ClientId, [string]$Action, [bool]$Required = $false, [bool]$ShutdownOnIdle = $false) {
+  if ([string]::IsNullOrWhiteSpace($ClientId)) {
+    return $null
+  }
+
+  $body = @{
+    client_id = $ClientId
+    action = $Action
+    shutdown_on_idle = $ShutdownOnIdle -eq $true
+  } | ConvertTo-Json -Depth 4 -Compress
+  $leaseUrl = $McpUrl.TrimEnd("/") + "/client-lease"
+  try {
+    $response = Invoke-WebRequest -Uri $leaseUrl -Method Post -ContentType "application/json" -Body $body -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+    if ([string]::IsNullOrWhiteSpace([string]$response.Content)) {
+      return $null
+    }
+
+    return $response.Content | ConvertFrom-Json
+  } catch {
+    if ($Required) {
+      throw
+    }
+
+    return $null
+  }
+}
+
+function Resolve-McpClientHeartbeatIntervalMs([int]$RequestedIntervalSec, $Lease) {
+  $requestedMs = [Math]::Max(1000, $RequestedIntervalSec * 1000)
+  if ($null -eq $Lease -or -not $Lease.PSObject.Properties["stale_after_ms"]) {
+    return $requestedMs
+  }
+
+  $staleAfterMs = 0
+  if (-not [int]::TryParse([string]$Lease.stale_after_ms, [ref]$staleAfterMs) -or $staleAfterMs -le 1000) {
+    return $requestedMs
+  }
+
+  $marginMs = [Math]::Min(60000, [Math]::Max(1000, [int]($staleAfterMs / 10)))
+  return [Math]::Min($requestedMs, [Math]::Max(1000, $staleAfterMs - $marginMs))
+}
+
+function Get-McpNowMs {
+  return [int64]([DateTime]::UtcNow.Subtract([datetime]"1970-01-01T00:00:00Z").TotalMilliseconds)
+}
+
+function Invoke-McpClientHeartbeatIfDue([string]$McpUrl, [string]$ClientId, [int64]$LastHeartbeatMs, [int]$HeartbeatIntervalMs, [bool]$ShutdownOnIdle) {
+  $now = Get-McpNowMs
+  if (($now - $LastHeartbeatMs) -lt $HeartbeatIntervalMs) {
+    return $LastHeartbeatMs
+  }
+
+  Invoke-McpClientLease $McpUrl $ClientId "heartbeat" $false $ShutdownOnIdle | Out-Null
+  return $now
+}
+
+function Invoke-HttpMcpBridge([string]$McpUrl, [int]$TimeoutSec, [string]$ClientId = $null, [int]$HeartbeatIntervalSec = 300, [bool]$ShutdownOnIdle = $false) {
   $sessionId = $null
   $protocolVersion = $null
-  while ($true) {
-    $line = [Console]::In.ReadLine()
-    if ($null -eq $line) {
-      break
-    }
-    if ([string]::IsNullOrWhiteSpace($line)) {
-      continue
-    }
-
-    $requestProtocolVersion = Get-InitializeProtocolVersion $line
-    $response = Invoke-McpPost $McpUrl $line $sessionId $protocolVersion $TimeoutSec
-    $nextSessionId = Get-ResponseHeaderValue $response.headers "Mcp-Session-Id"
-    if (-not [string]::IsNullOrWhiteSpace($nextSessionId)) {
-      $sessionId = $nextSessionId
-    }
-
-    if (-not $response.ok) {
-      Write-JsonRpcErrorLine (Get-RequestIdForError $line) -32000 "Symphony++ HTTP MCP bridge request failed." @{
-        statusCode = $response.statusCode
-        detail = $response.error
+  $lease = Invoke-McpClientLease $McpUrl $ClientId "attach" $true $ShutdownOnIdle
+  $heartbeatIntervalMs = Resolve-McpClientHeartbeatIntervalMs $HeartbeatIntervalSec $lease
+  $lastHeartbeatMs = Get-McpNowMs
+  try {
+    $readTask = [Console]::In.ReadLineAsync()
+    while ($true) {
+      if (-not $readTask.Wait($heartbeatIntervalMs)) {
+        Invoke-McpClientLease $McpUrl $ClientId "heartbeat" $false $ShutdownOnIdle | Out-Null
+        $lastHeartbeatMs = Get-McpNowMs
+        continue
       }
-      continue
-    }
 
-    if (-not [string]::IsNullOrWhiteSpace($requestProtocolVersion)) {
-      $responseProtocolVersion = Get-ResponseProtocolVersion @($response.content_lines)
-      if (-not [string]::IsNullOrWhiteSpace($responseProtocolVersion)) {
-        $protocolVersion = $responseProtocolVersion
-      } else {
-        $protocolVersion = $requestProtocolVersion
+      $line = $readTask.Result
+      if ($null -eq $line) {
+        break
+      }
+      $readTask = [Console]::In.ReadLineAsync()
+      if ([string]::IsNullOrWhiteSpace($line)) {
+        continue
+      }
+
+      $lastHeartbeatMs = Invoke-McpClientHeartbeatIfDue $McpUrl $ClientId $lastHeartbeatMs $heartbeatIntervalMs $ShutdownOnIdle
+      $requestProtocolVersion = Get-InitializeProtocolVersion $line
+      $response = Invoke-McpPost $McpUrl $line $sessionId $protocolVersion $TimeoutSec $ClientId $heartbeatIntervalMs $ShutdownOnIdle
+      $lastHeartbeatMs = Invoke-McpClientHeartbeatIfDue $McpUrl $ClientId $lastHeartbeatMs $heartbeatIntervalMs $ShutdownOnIdle
+      $nextSessionId = Get-ResponseHeaderValue $response.headers "Mcp-Session-Id"
+      if (-not [string]::IsNullOrWhiteSpace($nextSessionId)) {
+        $sessionId = $nextSessionId
+      }
+
+      if (-not $response.ok) {
+        Write-JsonRpcErrorLine (Get-RequestIdForError $line) -32000 "Symphony++ HTTP MCP bridge request failed." @{
+          statusCode = $response.statusCode
+          detail = $response.error
+        }
+        continue
+      }
+
+      if (-not [string]::IsNullOrWhiteSpace($requestProtocolVersion)) {
+        $responseProtocolVersion = Get-ResponseProtocolVersion @($response.content_lines)
+        if (-not [string]::IsNullOrWhiteSpace($responseProtocolVersion)) {
+          $protocolVersion = $responseProtocolVersion
+        } else {
+          $protocolVersion = $requestProtocolVersion
+        }
+      }
+
+      foreach ($contentLine in @($response.content_lines)) {
+        Write-McpResponseLine $contentLine
       }
     }
-
-    foreach ($contentLine in @($response.content_lines)) {
-      Write-McpResponseLine $contentLine
-    }
+  } finally {
+    Invoke-McpClientLease $McpUrl $ClientId "detach" $false $ShutdownOnIdle | Out-Null
   }
 }
 

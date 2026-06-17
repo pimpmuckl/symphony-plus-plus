@@ -2,7 +2,7 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
   @moduledoc false
 
   alias Plug.Conn
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, HTTPStateStore, HTTPTransport, Server, Session}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{ClientLeases, Config, HTTPStateStore, HTTPTransport, Server, Session}
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixirWeb.Endpoint
   alias SymphonyElixirWeb.SymppBoardLive
@@ -29,7 +29,107 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
     end
   end
 
+  def call(%Conn{path_info: ["mcp", "client-lease"]} = conn, _opts) do
+    with {:ok, _trusted?} <- validate_local_request(conn),
+         :ok <- validate_origin(conn),
+         :ok <- ensure_client_leases_started(),
+         {:ok, payload, conn} <- read_json_body(conn),
+         {:ok, client_id} <- client_lease_id(payload),
+         {:ok, action} <- client_lease_action(payload),
+         {:ok, shutdown_on_idle?} <- client_lease_shutdown_on_idle(payload),
+         {:ok, result} <- apply_client_lease(action, client_id, shutdown_on_idle?) do
+      send_json(conn, 200, %{
+        "status" => "ok",
+        "active_client_count" => result.active_client_count,
+        "stale_after_ms" => result.stale_after_ms
+      })
+    else
+      {:error, :invalid_json, conn} -> send_json_rpc_error(conn, 400, :invalid_json)
+      {:error, :body_too_large, conn} -> send_json_rpc_error(conn, 413, :body_too_large)
+      {:error, :body_read_failed, conn} -> send_json_rpc_error(conn, 400, :body_read_failed)
+      {:error, :client_lease_unavailable} -> send_json_rpc_error(conn, 503, :ledger_unavailable)
+      {:error, reason} when reason in [:local_only, :origin_not_allowed] -> send_json_rpc_error(conn, 403, reason)
+      {:error, _reason} -> send_json_rpc_error(conn, 400, :invalid_request)
+    end
+  end
+
   def call(%Conn{} = conn, _opts), do: conn
+
+  defp client_lease_id(%{"client_id" => client_id}) when is_binary(client_id) do
+    client_id = String.trim(client_id)
+
+    if client_id != "" and byte_size(client_id) <= 160 and visible_ascii?(client_id),
+      do: {:ok, client_id},
+      else: {:error, :invalid_client_id}
+  end
+
+  defp client_lease_id(_payload), do: {:error, :invalid_client_id}
+
+  defp client_lease_action(%{"action" => action}) when action in ["attach", "heartbeat", "detach"], do: {:ok, action}
+  defp client_lease_action(_payload), do: {:error, :invalid_action}
+
+  defp client_lease_shutdown_on_idle(%{"shutdown_on_idle" => shutdown_on_idle?}) when is_boolean(shutdown_on_idle?),
+    do: {:ok, shutdown_on_idle?}
+
+  defp client_lease_shutdown_on_idle(_payload), do: {:ok, false}
+
+  defp apply_client_lease("attach", client_id, shutdown_on_idle?),
+    do: normalize_client_lease_result(ClientLeases.attach(client_id, shutdown_on_idle?: shutdown_on_idle?))
+
+  defp apply_client_lease("heartbeat", client_id, shutdown_on_idle?),
+    do: normalize_client_lease_result(ClientLeases.attach(client_id, shutdown_on_idle?: shutdown_on_idle?))
+
+  defp apply_client_lease("detach", client_id, _shutdown_on_idle?), do: normalize_client_lease_result(ClientLeases.detach(client_id))
+
+  defp normalize_client_lease_result({:ok, result}), do: {:ok, result}
+  defp normalize_client_lease_result({:error, _reason}), do: {:error, :client_lease_unavailable}
+
+  defp ensure_client_leases_started do
+    case Process.whereis(ClientLeases) do
+      pid when is_pid(pid) ->
+        :ok
+
+      nil ->
+        start_client_leases()
+    end
+  end
+
+  defp start_client_leases do
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      pid when is_pid(pid) -> start_supervised_client_leases()
+      nil -> start_direct_client_leases()
+    end
+  end
+
+  defp start_supervised_client_leases do
+    case Supervisor.restart_child(SymphonyElixir.Supervisor, ClientLeases) do
+      {:ok, _pid} -> :ok
+      {:ok, _pid, _info} -> :ok
+      {:error, :running} -> :ok
+      {:error, :not_found} -> add_supervised_client_leases()
+      {:error, {:already_started, _pid}} -> :ok
+      {:error, _reason} -> {:error, :client_lease_unavailable}
+    end
+  catch
+    :exit, _reason -> {:error, :client_lease_unavailable}
+  end
+
+  defp add_supervised_client_leases do
+    case Supervisor.start_child(SymphonyElixir.Supervisor, ClientLeases) do
+      {:ok, _pid} -> :ok
+      {:ok, _pid, _info} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+      {:error, _reason} -> {:error, :client_lease_unavailable}
+    end
+  end
+
+  defp start_direct_client_leases do
+    case GenServer.start(ClientLeases, [], name: ClientLeases) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+      {:error, _reason} -> {:error, :client_lease_unavailable}
+    end
+  end
 
   defp ensure_state_store_started do
     case Process.whereis(HTTPStateStore) do
@@ -261,6 +361,7 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
   defp json_rpc_error(id, :ledger_unavailable), do: error_response(id, -32_000, "Server error", "ledger_unavailable")
   defp json_rpc_error(id, :local_only), do: error_response(id, -32_600, "Invalid Request", "local_only")
   defp json_rpc_error(id, :origin_not_allowed), do: error_response(id, -32_600, "Invalid Request", "origin_not_allowed")
+  defp json_rpc_error(id, :invalid_request), do: error_response(id, -32_600, "Invalid Request", "invalid_request")
   defp json_rpc_error(id, :method_not_allowed), do: error_response(id, -32_601, "Method not found", "method_not_allowed")
 
   defp error_response(id, code, message, reason) do
