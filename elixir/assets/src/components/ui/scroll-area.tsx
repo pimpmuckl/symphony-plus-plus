@@ -21,6 +21,7 @@ function ScrollBar({ className, orientation = "vertical", ref, ...props }: React
       orientation={orientation}
       className={cn(
         "flex touch-none select-none transition-colors",
+        "dashboard-scrollbar",
         orientation === "vertical" && "h-full w-2.5 border-l border-l-transparent p-px",
         orientation === "horizontal" && "h-2.5 flex-col border-t border-t-transparent p-px",
         className,

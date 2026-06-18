@@ -96,7 +96,7 @@ describe("workstream row state", () => {
     expect(state.tone).toBe("blocked");
   });
 
-  it("uses product-tree guidance counts instead of generic attention counts", () => {
+  it("uses product-tree guidance counts without turning partial progress into warning state", () => {
     const node: ProductTreeNode = {
       id: "node-active-runtime",
       title: "Active runtime node",
@@ -110,8 +110,9 @@ describe("workstream row state", () => {
     const state = productNodeState(node, 1, { childrenByParent: new Map() }, new Map());
 
     expect(state.guidanceCount).toBe(0);
-    expect(state.tone).toBe("review");
-    expect(state.statusLabel).toBe("In Progress");
+    expect(state.tone).toBe("implementing");
+    expect(state.statusLabel).toBe("Active");
+    expect(state.badgeVariant).toBe("info");
   });
 
   it("labels active product nodes from active descendant slices instead of partial completion", () => {
@@ -156,7 +157,60 @@ describe("workstream row state", () => {
 
     expect(state.statusLabel).toBe("Ready");
     expect(state.badgeVariant).toBe("ready");
+    expect(state.tone).toBe("ready");
     expect(state.progress).toBe(0);
+  });
+
+  it("uses guidance color for clarifying request rows", () => {
+    const detail: WorkRequestDetail = {
+      work_request: {
+        id: "wr-clarifying",
+        status: "clarifying",
+        operational_state: { key: "clarifying", label: "Clarifying" },
+      },
+      planned_slices: [],
+    };
+
+    const state = requestBoardState(detail, new Map(), { blockerCount: 0, guidanceCount: 0 }, 0);
+
+    expect(state.label).toBe("Clarifying");
+    expect(state.badgeVariant).toBe("guidance");
+    expect(state.tone).toBe("guidance");
+  });
+
+  it("uses ready color for ready request rows", () => {
+    const detail: WorkRequestDetail = {
+      work_request: {
+        id: "wr-ready",
+        status: "ready_for_slicing",
+        operational_state: { key: "ready_for_slicing", label: "Ready For Slicing" },
+      },
+      planned_slices: [],
+    };
+
+    const state = requestBoardState(detail, new Map(), { blockerCount: 0, guidanceCount: 0 }, 0);
+
+    expect(state.label).toBe("Ready For Slicing");
+    expect(state.badgeVariant).toBe("ready");
+    expect(state.tone).toBe("ready");
+  });
+
+  it("uses active state for partial request progress with planned descendants", () => {
+    const detail: WorkRequestDetail = {
+      work_request: {
+        id: "wr-partial-planned",
+        status: "sliced",
+        operational_state: { key: "sliced", label: "Sliced" },
+      },
+      planned_slices: [plannedSlice("slice-planned", undefined, "planned", "Planned")],
+    };
+
+    const state = requestBoardState(detail, new Map(), { blockerCount: 0, guidanceCount: 0 }, 50);
+
+    expect(state.kind).toBe("active");
+    expect(state.label).toBe("Active");
+    expect(state.badgeVariant).toBe("info");
+    expect(state.tone).toBe("implementing");
   });
 
   it("derives request row state from active child slices before raw request status", () => {

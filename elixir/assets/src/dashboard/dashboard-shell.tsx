@@ -6,6 +6,7 @@ import { GuidanceDialog } from "@/components/dashboard/guidance-dialog";
 import { NewRequestDialog } from "@/components/dashboard/new-request-dialog";
 import type { NewRequestForm } from "@/components/dashboard/new-request-dialog";
 import type * as React from "react";
+import { useEffect, useState } from "react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { architectHandoffEligibleRequest } from "@/lib/operational-state";
@@ -13,11 +14,12 @@ import { cn } from "@/lib/utils";
 import { AppDialogState, BlockerItem } from "./dashboard-state";
 import { ArchivedRequestsDialog, DashboardSettingsDialog, ThemeToggle } from "./dashboard-settings";
 import { CardDetailDialog } from "./card-detail-dialog";
-import { CardDetailSelection, DASHBOARD_LOGO_URL, DashboardConnectionIssue, DashboardTheme, DashboardUpdateAnimations, LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageBlockerClearMutation, WorkPackageStateMutation, WorkRequestMutation, WorkRequestStateMutation, WorkspaceTab, isLocalOperatorAuthRequiredMessage } from "./runtime";
+import { CardDetailSelection, DASHBOARD_LOGO_URL, DashboardConnectionIssue, DashboardTheme, DashboardUpdateAnimations, LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE, ResolveContextComment, SubmitContextComment, TopPanelKey, WorkPackageArchiveMutation, WorkPackageBlockerClearMutation, WorkPackageStateMutation, WorkRequestMutation, WorkRequestStateMutation, WorkspaceTab, isLocalOperatorAuthRequiredMessage } from "./runtime";
 import { LiveLedgerBadge } from "./status-cards";
 import { RepoSummary } from "./dashboard-data";
-import { StatusRail, UpdateSimulationControls } from "./status-rail";
+import { AttentionBarControls, StatusRail, UpdateSimulationControls } from "./status-rail";
 import { WorkspaceTabCarousel } from "./workspace-tabs";
+import { readStoredTopPanel, writeDashboardUiStateValue } from "./dashboard-persistence";
 
 type DashboardDisplayPreferences = {
   hideEmptyWorkstreams: boolean;
@@ -118,6 +120,11 @@ export function DashboardShell({
   const { hideEmptyWorkstreams, showWorkstreamContextBar } = displayPreferences;
   const localOperatorReconnectIssue = isLocalOperatorAuthRequiredMessage(error) || connectionIssue?.reconnectableLocalSession === true;
   const dashboardAlertMessage = error || (localOperatorReconnectIssue ? connectionIssue?.message || LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE : null);
+  const [openTopPanel, setOpenTopPanel] = useState<TopPanelKey | null>(readStoredTopPanel);
+
+  useEffect(() => {
+    writeDashboardUiStateValue("topPanel", openTopPanel);
+  }, [openTopPanel]);
 
   if (loading) {
     return (
@@ -148,6 +155,13 @@ export function DashboardShell({
             <div className="flex flex-wrap items-center gap-2">
               {showUpdateSimulationControls ? <UpdateSimulationControls updateAnimations={updateAnimations} /> : null}
               <LiveLedgerBadge error={error} connectionIssue={connectionIssue} databasePath={dashboard?.ledger?.database} />
+              <AttentionBarControls
+                guidanceItems={guidanceItems}
+                blockerItems={blockerItems}
+                openPanel={openTopPanel}
+                onToggle={setOpenTopPanel}
+                updateAnimations={updateAnimations}
+              />
               <ThemeToggle theme={theme} onToggle={toggleTheme} />
               <DashboardSettingsDialog
                 archiveAfterDays={archiveAfterDays}
@@ -177,6 +191,16 @@ export function DashboardShell({
                 />
               ) : null}
             </div>
+          </div>
+          <div className="dashboard-top-panel-shell mx-auto max-w-[1500px] px-4 sm:px-6 lg:px-8">
+            <StatusRail
+              openPanel={openTopPanel}
+              guidanceItems={guidanceItems}
+              blockerItems={blockerItems}
+              onSelectGuidance={onSelectGuidance}
+              onSelectCard={onSelectCard}
+              updateAnimations={updateAnimations}
+            />
           </div>
         </header>
 
@@ -214,14 +238,6 @@ export function DashboardShell({
               </CardContent>
             </Card>
           ) : null}
-
-          <StatusRail
-            guidanceItems={guidanceItems}
-            blockerItems={blockerItems}
-            onSelectGuidance={onSelectGuidance}
-            onSelectCard={onSelectCard}
-            updateAnimations={updateAnimations}
-          />
 
           <Tabs value={workspaceTab} onValueChange={(value) => onWorkspaceTabChange(value as WorkspaceTab)} className="min-w-0 motion-card">
             <div className="dashboard-tabs-row">

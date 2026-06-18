@@ -2,13 +2,14 @@ import type { SignalTone, StateCardTone } from "@/components/dashboard/state-car
 import { statusLabel } from "@/lib/status-labels";
 import type { PackageOperationalAttention, PlannedSlice, WorkPackageCard, WorkRequestCard } from "@/types/dashboard";
 
-export type BadgeTone = "default" | "secondary" | "outline" | "success" | "warning" | "danger" | "info" | "ready";
+export type BadgeTone = "default" | "secondary" | "outline" | "success" | "warning" | "danger" | "guidance" | "info" | "ready";
 export type BoardLane = "slices" | "implementing" | "finished";
 type RequestLane = "requested" | "slices" | "finished";
 
 const CARD_TONES: Record<string, StateCardTone> = {
   active: "implementing",
   abandoned: "muted",
+  approved: "ready",
   blocked: "blocked",
   ci_waiting: "review",
   claimed: "queued",
@@ -29,11 +30,16 @@ const CARD_TONES: Record<string, StateCardTone> = {
   needs_closeout: "merge",
   planned: "slice",
   planning: "queued",
+  clarifying: "guidance",
+  human_info_needed: "guidance",
+  ready_for_clarification: "guidance",
   ready_for_architect_merge: "merge",
   ready_for_human_merge: "merge",
-  ready_for_worker: "queued",
+  ready_for_slicing: "ready",
+  ready_for_worker: "ready",
   reviewing: "review",
   skipped: "muted",
+  sliced: "ready",
   started_paused: "queued",
   superseded: "muted",
 };
@@ -42,7 +48,7 @@ const BADGE_TONES: Record<string, BadgeTone> = {
   active: "info",
   abandoned: "secondary",
   answered: "success",
-  approved: "info",
+  approved: "ready",
   blocked: "danger",
   ci_waiting: "info",
   claimed: "info",
@@ -51,7 +57,8 @@ const BADGE_TONES: Record<string, BadgeTone> = {
   completed_no_pr: "secondary",
   created: "info",
   delivered: "success",
-  human_info_needed: "danger",
+  clarifying: "guidance",
+  human_info_needed: "guidance",
   implementing: "info",
   in_progress: "info",
   merge_ready: "ready",
@@ -64,10 +71,12 @@ const BADGE_TONES: Record<string, BadgeTone> = {
   planning: "info",
   ready_for_architect_merge: "ready",
   ready_for_human_merge: "ready",
-  ready_for_slicing: "info",
-  ready_for_worker: "info",
+  ready_for_clarification: "guidance",
+  ready_for_slicing: "ready",
+  ready_for_worker: "ready",
   reviewing: "info",
   skipped: "secondary",
+  sliced: "ready",
   started_paused: "info",
   superseded: "secondary",
 };
@@ -207,16 +216,21 @@ export function operationalBadgeVariant(operational?: WorkPackageCard["operation
   if (!operational) return statusVariant(fallbackStatus);
   const key = operational.key || "";
 
-  if (operational.tone === "critical") return "danger";
+  return operationalBadgeRule(key, operational.tone, operational.raw_status || fallbackStatus) || statusVariant(key || operational.raw_status || fallbackStatus);
+}
+
+function operationalBadgeRule(key: string, tone?: string | null, fallbackStatus?: string | null): BadgeTone | null {
+  if (tone === "critical") return "danger";
+  if (guidanceStatus(key || fallbackStatus)) return "guidance";
   if (key === "completed_no_pr" || key === "superseded") return "secondary";
   if (key === "needs_closeout") return "warning";
-  if (key === "merge_ready") return operational.tone === "warning" ? "warning" : "ready";
+  if (key === "merge_ready") return tone === "warning" ? "warning" : "ready";
   if (key === "blocked") return "danger";
-  if (["merged", "merged_into_phase", "closed", "completed"].includes(key) || operational.tone === "success") return "success";
+  if (["merged", "merged_into_phase", "closed", "completed"].includes(key) || tone === "success") return "success";
   if (["abandoned", "skipped"].includes(key)) return "secondary";
-  if (operational.tone === "warning") return "warning";
-  if (operational.tone === "info") return "info";
-  return statusVariant(key || operational.raw_status || fallbackStatus);
+  if (tone === "warning") return "warning";
+  if (tone === "info") return "info";
+  return null;
 }
 
 export function attentionTone(attention?: PackageOperationalAttention | null): SignalTone {
@@ -225,6 +239,10 @@ export function attentionTone(attention?: PackageOperationalAttention | null): S
 
 function statusVariant(status?: string | null): BadgeTone {
   return BADGE_TONES[status || ""] || "secondary";
+}
+
+function guidanceStatus(status?: string | null) {
+  return status === "human_info_needed" || status === "ready_for_clarification" || status === "clarifying";
 }
 
 export function isFinishedBoardStatus(status?: string | null) {

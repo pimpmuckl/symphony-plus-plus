@@ -95,8 +95,6 @@ export type DashboardTheme = "light" | "dark";
 
 export type CommentCardSignal = { open: number; total: number };
 
-export type StatusTileTone = "violet" | "amber";
-
 export type RepoSummaryPlateTone = "requested" | "active" | "implementing" | "finished" | "guidance" | "blocker";
 
 export type UpdateMotionsAction =
@@ -123,19 +121,6 @@ export type DashboardConnectionIssue = {
   lastFailedAt: number;
   message: string;
   reconnectableLocalSession: boolean;
-};
-
-export const STATUS_TILE_TONES: Record<StatusTileTone, { card: string; icon: string; value: string }> = {
-  violet: {
-    card: "border-violet-300 bg-violet-50/35 dark:border-violet-700/70 dark:bg-violet-950/35",
-    icon: "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-700/70 dark:bg-violet-950/70 dark:text-violet-200",
-    value: "text-violet-700 dark:text-violet-200",
-  },
-  amber: {
-    card: "border-amber-200 bg-amber-50/25 dark:border-amber-700/70 dark:bg-amber-950/30",
-    icon: "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-700/70 dark:bg-amber-950/70 dark:text-amber-200",
-    value: "text-amber-700 dark:text-amber-200",
-  },
 };
 
 export const REPO_SUMMARY_PLATE_TONES: Record<RepoSummaryPlateTone, string> = {

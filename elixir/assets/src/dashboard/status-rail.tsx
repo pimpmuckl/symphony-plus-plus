@@ -1,19 +1,18 @@
-import { AlertTriangle, ChevronDown, MessageSquareText, RefreshCw } from "lucide-react";
+import { AlertTriangle, MessageSquareText, RefreshCw } from "lucide-react";
 import { AnimatedTopGrid, NumberWheel, TOP_PANEL_RESIZE_MS, TOP_PANEL_SLIDE_MS, useCountMotion } from "@/components/dashboard/motion";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { GuidanceItem } from "@/types/dashboard";
 import type * as React from "react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { clearMotionTimers, later, measureElementHeight, nextFrame } from "@/components/dashboard/motion-utils";
-import { cn } from "@/lib/utils";
 import { BlockerPreviewCard } from "./blocker-preview-card";
-import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef } from "react";
 import { BlockerItem } from "./dashboard-state";
 import { GuidancePreviewCard } from "./guidance-preview-card";
-import { CardDetailSelect, CardDetailSelection, DashboardUpdateAnimations, STATUS_TILE_TONES, StatusTileTone, TopPanelDirection, TopPanelKey, TopPanelPhase } from "./runtime";
+import { CardDetailSelect, CardDetailSelection, DashboardUpdateAnimations, TopPanelDirection, TopPanelKey, TopPanelPhase } from "./runtime";
 import { EmptyPanel } from "./detail-extras";
 import { blockerUpdateKey, guidanceUpdateKey } from "./update-animations";
-import { readStoredTopPanel, topPanelDirection, writeDashboardUiStateValue } from "./dashboard-persistence";
+import { topPanelDirection } from "./dashboard-persistence";
 
 const UPDATE_SIMULATION_CONTROLS = [
   { kind: "guidance", label: "G", icon: <MessageSquareText className="size-3.5" />, tooltip: "Simulate new human guidance" },
@@ -22,38 +21,16 @@ const UPDATE_SIMULATION_CONTROLS = [
 ] as const;
 
 export function StatusRail({
+  openPanel,
   guidanceItems,
   blockerItems,
   onSelectGuidance,
   onSelectCard,
   updateAnimations,
-}: {
-  guidanceItems: GuidanceItem[];
-  blockerItems: BlockerItem[];
-  onSelectGuidance: (item: GuidanceItem) => void;
-  onSelectCard: CardDetailSelect;
-  updateAnimations: DashboardUpdateAnimations;
+}: Omit<TopPanelContentProps, "panel" | "interactive"> & {
+  openPanel: TopPanelKey | null;
 }) {
-  const [openPanel, setOpenPanel] = useState<TopPanelKey | null>(readStoredTopPanel);
   const selectCardFromPanel = useCallback((selection: CardDetailSelection) => onSelectCard(selection), [onSelectCard]);
-  const tileConfigs: StatusTileConfig[] = [
-    {
-      icon: <MessageSquareText className="size-6" />,
-      panel: "guidance",
-      pulseToken: updateAnimations.countPulseFor("guidance"),
-      title: "Human Guidance Needed",
-      tone: "violet",
-      value: guidanceItems.length,
-    },
-    {
-      icon: <AlertTriangle className="size-6" />,
-      panel: "blockers",
-      pulseToken: updateAnimations.countPulseFor("blockers"),
-      title: "Active Blockers",
-      tone: "amber",
-      value: blockerItems.length,
-    },
-  ];
   const panelContentProps = {
     blockerItems,
     guidanceItems,
@@ -62,62 +39,60 @@ export function StatusRail({
     updateAnimations,
   };
 
-  useEffect(() => {
-    writeDashboardUiStateValue("topPanel", openPanel);
-  }, [openPanel]);
-
   return (
-    <section className="relative grid gap-3">
-      <div className="grid gap-3 lg:hidden">
-        {tileConfigs.map((tile) => (
-          <div key={tile.panel} className="top-panel-inline grid gap-3">
-            <StatusTile {...tile} openPanel={openPanel} onToggle={setOpenPanel} />
-            <MobileTopPanel active={openPanel === tile.panel} panel={tile.panel} {...panelContentProps} />
-          </div>
-        ))}
-      </div>
-
-      <div className="hidden gap-3 lg:grid lg:grid-cols-2">
-        {tileConfigs.map((tile) => (
-          <StatusTile key={tile.panel} {...tile} openPanel={openPanel} onToggle={setOpenPanel} />
-        ))}
-      </div>
-
-      <div className="hidden lg:block">
-        <TopPanelCarousel activePanel={openPanel} {...panelContentProps} />
-      </div>
+    <section className="dashboard-top-panel-anchor top-panel-inline" data-open-panel={openPanel ?? "none"}>
+      <TopPanelCarousel activePanel={openPanel} {...panelContentProps} />
     </section>
   );
 }
 
-function MobileTopPanel({
-  active,
-  panel,
-  ...contentProps
-}: Omit<TopPanelContentProps, "interactive"> & {
-  active: boolean;
+export function AttentionBarControls({
+  openPanel,
+  guidanceItems,
+  blockerItems,
+  onToggle,
+  updateAnimations,
+}: {
+  openPanel: TopPanelKey | null;
+  guidanceItems: GuidanceItem[];
+  blockerItems: BlockerItem[];
+  onToggle: (panel: TopPanelKey | null) => void;
+  updateAnimations: DashboardUpdateAnimations;
 }) {
-  if (!active) return null;
+  const configs: AttentionButtonConfig[] = [
+    {
+      icon: <MessageSquareText className="size-6" />,
+      panel: "guidance",
+      pulseToken: updateAnimations.countPulseFor("guidance"),
+      title: "Human Guidance Needed",
+      tone: "guidance",
+      value: guidanceItems.length,
+    },
+    {
+      icon: <AlertTriangle className="size-6" />,
+      panel: "blockers",
+      pulseToken: updateAnimations.countPulseFor("blockers"),
+      title: "Active Blockers",
+      tone: blockerItems.length === 0 ? "blocker-clear" : "blocker",
+      value: blockerItems.length,
+    },
+  ];
 
   return (
-    <div className="top-panel-viewport" data-phase="idle" data-resize="steady" data-has-content="true">
-      <div className="top-panel-static" data-motion="idle">
-        <div className="top-panel-motion-frame">
-          <div className="top-panel-pane-inner">
-            <TopPanelContent {...contentProps} panel={panel} />
-          </div>
-        </div>
-      </div>
+    <div className="dashboard-attention-controls" aria-label="Dashboard attention">
+      {configs.map((config) => (
+        <AttentionBarButton key={config.panel} {...config} open={openPanel === config.panel} onToggle={onToggle} />
+      ))}
     </div>
   );
 }
 
-type StatusTileConfig = {
+type AttentionButtonConfig = {
   icon: React.ReactNode;
   panel: TopPanelKey;
   pulseToken: number;
   title: string;
-  tone: StatusTileTone;
+  tone: "guidance" | "blocker" | "blocker-clear";
   value: number;
 };
 
@@ -332,16 +307,11 @@ function TopPanelCarousel({
         transitionHeights,
       },
     });
+    if (newHeight < oldHeight - 2) {
+      nextFrame(framesRef, () => dispatch({ type: "patch", state: { height: newHeight } }));
+    }
     later(timersRef, TOP_PANEL_SLIDE_MS, () => {
-      if (newHeight < oldHeight - 2) {
-        dispatch({ type: "patch", state: { previousPanel: null, phase: "post-resize" } });
-        nextFrame(framesRef, () => dispatch({ type: "patch", state: { height: newHeight } }));
-        later(timersRef, TOP_PANEL_RESIZE_MS, () => {
-          dispatch({ type: "patch", state: { phase: "idle", height: "auto" } });
-        });
-      } else {
-        dispatch({ type: "patch", state: { previousPanel: null, phase: "idle", height: "auto" } });
-      }
+      dispatch({ type: "patch", state: { previousPanel: null, phase: "idle", height: "auto" } });
     });
   }, [activePanel]);
 
@@ -446,58 +416,42 @@ function topPanelViewportHeight(hasPanes: boolean, height: TopPanelCarouselState
   return `${Math.max(height, 0)}px`;
 }
 
-function StatusTile({
+function AttentionBarButton({
   panel,
   title,
   value,
   icon,
   tone,
-  openPanel,
+  open,
   onToggle,
   pulseToken = 0,
-}: {
-  panel: TopPanelKey;
-  title: string;
-  value: number;
-  icon: React.ReactNode;
-  tone: StatusTileTone;
-  openPanel: TopPanelKey | null;
+}: AttentionButtonConfig & {
+  open: boolean;
   onToggle: (panel: TopPanelKey | null) => void;
-  pulseToken?: number;
 }) {
-  const open = openPanel === panel;
   const countMotion = useCountMotion(value, pulseToken);
-  const toneClasses = STATUS_TILE_TONES[tone];
 
   return (
-    <button
-      type="button"
-      className={cn(
-        "dashboard-glass-surface status-tile motion-card group flex min-h-[86px] items-center justify-between rounded-lg border bg-card p-4 text-left shadow-sm outline-none transition-all hover:shadow-dashboard focus-visible:ring-2 focus-visible:ring-ring sm:p-5",
-        open && toneClasses.card,
-      )}
-      data-count-motion={countMotion.direction}
-      onClick={() => onToggle(open ? null : panel)}
-      aria-expanded={open}
-    >
-      <div className="flex items-center gap-4">
-        <div className={cn("flex size-10 items-center justify-center rounded-full border sm:size-11", toneClasses.icon)}>{icon}</div>
-        <div>
-          <p className="text-sm font-semibold sm:text-base">{title}</p>
-          <p className={cn("mt-1 text-2xl font-semibold sm:text-3xl", toneClasses.value)}>
-            <NumberWheel value={value} motion={countMotion} />
-          </p>
-        </div>
-      </div>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors group-hover:bg-muted group-hover:text-foreground">
-            <ChevronDown className={cn("size-4 transition-transform duration-200", open && "rotate-180")} />
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className="dashboard-attention-button"
+          data-count-motion={countMotion.direction}
+          data-state={open ? "open" : "closed"}
+          data-tone={tone}
+          onClick={() => onToggle(open ? null : panel)}
+          aria-label={`${title}: ${value}`}
+          aria-expanded={open}
+        >
+          {icon}
+          <span className="dashboard-attention-count" aria-hidden="true">
+            <NumberWheel value={value} motion={countMotion} compact />
           </span>
-        </TooltipTrigger>
-        <TooltipContent>{open ? "Collapse" : "Open"}</TooltipContent>
-      </Tooltip>
-    </button>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{title}</TooltipContent>
+    </Tooltip>
   );
 }
 

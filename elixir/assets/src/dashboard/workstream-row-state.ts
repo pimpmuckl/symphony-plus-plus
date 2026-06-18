@@ -2,6 +2,7 @@ import type { PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/d
 import type { ProductTreeCompletionMark, ProductTreeNode } from "@/types/product-tree";
 import { isFinishedBoardStatus, operationalLabel, sliceOperationalState } from "@/lib/operational-state";
 import type { BadgeTone } from "@/lib/operational-state";
+import type { StateCardTone } from "@/components/dashboard/state-card-style";
 import { productNodeProgressPercent } from "./workstream-progress";
 
 const MIN_STATUS_LABEL_LENGTH = 8;
@@ -10,12 +11,12 @@ const MAX_STATUS_BADGE_WIDTH_REM = 11;
 
 export type RowProgressIconState = "active" | "blocked" | "done" | "guidance" | "muted";
 export type RowProgressAttentionState = "blocked" | "guidance" | null;
-export type BoardRowStateKind = "active" | "blocked" | "deferred" | "done" | "guidance" | "in_progress" | "not_started" | "ready" | "unknown";
+export type BoardRowStateKind = "active" | "blocked" | "deferred" | "done" | "guidance" | "not_started" | "ready" | "unknown";
 export type BoardRowState = {
   badgeVariant: BadgeTone;
   kind: BoardRowStateKind;
   label: string;
-  tone: string;
+  tone: StateCardTone;
 };
 
 const BOARD_ROW_STATES: Record<BoardRowStateKind, BoardRowState> = {
@@ -23,10 +24,9 @@ const BOARD_ROW_STATES: Record<BoardRowStateKind, BoardRowState> = {
   blocked: { badgeVariant: "danger", kind: "blocked", label: "Blocked", tone: "blocked" },
   deferred: { badgeVariant: "secondary", kind: "deferred", label: "Deferred", tone: "muted" },
   done: { badgeVariant: "success", kind: "done", label: "Done", tone: "finished" },
-  guidance: { badgeVariant: "danger", kind: "guidance", label: "Guidance Needed", tone: "guidance" },
-  in_progress: { badgeVariant: "warning", kind: "in_progress", label: "In Progress", tone: "review" },
+  guidance: { badgeVariant: "guidance", kind: "guidance", label: "Guidance Needed", tone: "guidance" },
   not_started: { badgeVariant: "info", kind: "not_started", label: "Not started", tone: "slice" },
-  ready: { badgeVariant: "ready", kind: "ready", label: "Ready", tone: "queued" },
+  ready: { badgeVariant: "ready", kind: "ready", label: "Ready", tone: "ready" },
   unknown: { badgeVariant: "secondary", kind: "unknown", label: "Unknown", tone: "slice" },
 };
 
@@ -243,7 +243,7 @@ function aggregateBoardRowState({
     [blockerCount > 0 || childState.blocked, "blocked"],
     [guidanceCount > 0 || childState.guidance, "guidance"],
     [childState.ready, "ready"],
-    [progress > 0 || fallbackStatus === "partial", "in_progress"],
+    [progress > 0 || fallbackStatus === "partial", "active"],
     [childState.deferred, "deferred", fallbackLabel],
     [childState.notStarted, "not_started"],
   ]);
@@ -326,7 +326,7 @@ function boardRowStateFromStatus(status?: string | null, label?: string | null):
     [statusIn(READY_STATUSES, status), "ready", label],
     [statusIn(DEFERRED_STATUSES, status), "deferred", label],
     [statusIn(NOT_STARTED_STATUSES, status), "not_started", label],
-    [status === "partial" || status === "in_progress", "in_progress"],
+    [status === "partial" || status === "in_progress", "active"],
   ]) ?? boardRowState("unknown", label);
 }
 
