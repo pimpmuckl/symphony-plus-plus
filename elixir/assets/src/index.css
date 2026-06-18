@@ -30,6 +30,7 @@
     --radius: 0.5rem;
     --dashboard-modal-ease: cubic-bezier(0.42, 0, 0.58, 1);
     --dashboard-modal-size-ms: 560ms;
+    --dashboard-scrollbar-top-offset: 0px;
   }
 
   html {
@@ -42,6 +43,10 @@
     html {
       overflow-y: scroll;
     }
+  }
+
+  html::-webkit-scrollbar-track {
+    margin-top: var(--dashboard-scrollbar-top-offset);
   }
 
   .dark {

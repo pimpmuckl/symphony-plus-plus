@@ -6,7 +6,7 @@ import { GuidanceDialog } from "@/components/dashboard/guidance-dialog";
 import { NewRequestDialog } from "@/components/dashboard/new-request-dialog";
 import type { NewRequestForm } from "@/components/dashboard/new-request-dialog";
 import type * as React from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { architectHandoffEligibleRequest } from "@/lib/operational-state";
@@ -123,6 +123,9 @@ export function DashboardShell({
   const localOperatorReconnectIssue = isLocalOperatorAuthRequiredMessage(error) || connectionIssue?.reconnectableLocalSession === true;
   const dashboardAlertMessage = error || (localOperatorReconnectIssue ? connectionIssue?.message || LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE : null);
   const [openTopPanel, setOpenTopPanel] = useState<TopPanelKey | null>(readStoredTopPanel);
+  const headerRef = useRef<HTMLElement | null>(null);
+
+  useDashboardScrollbarOffset(headerRef, loading);
 
   useEffect(() => {
     writeDashboardUiStateValue("topPanel", openTopPanel);
@@ -142,7 +145,7 @@ export function DashboardShell({
   return (
     <TooltipProvider delayDuration={150}>
       <main className="dashboard-shell min-h-screen">
-        <header className="dashboard-header-glass sticky top-0 z-20">
+        <header ref={headerRef} className="dashboard-header-glass sticky top-0 z-20">
           <div className="mx-auto flex max-w-[1500px] flex-col gap-4 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
             <div className="flex items-center gap-3">
               <div className="flex size-10 items-center justify-center overflow-hidden rounded-lg border bg-card shadow-sm motion-pop">
@@ -286,4 +289,25 @@ export function DashboardShell({
       </main>
     </TooltipProvider>
   );
+}
+
+function useDashboardScrollbarOffset(headerRef: React.RefObject<HTMLElement | null>, loading: boolean) {
+  useLayoutEffect(() => {
+    const update = () => {
+      document.documentElement.style.setProperty("--dashboard-scrollbar-top-offset", `${Math.ceil(headerRef.current?.getBoundingClientRect().height ?? 0)}px`);
+    };
+
+    update();
+
+    const header = headerRef.current;
+    const observer = header && typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+    if (header && observer) observer.observe(header);
+    window.addEventListener("resize", update);
+
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", update);
+      document.documentElement.style.removeProperty("--dashboard-scrollbar-top-offset");
+    };
+  }, [headerRef, loading]);
 }
