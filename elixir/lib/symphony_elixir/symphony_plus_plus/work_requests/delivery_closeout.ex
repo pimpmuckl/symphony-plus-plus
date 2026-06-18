@@ -18,7 +18,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
 
   @abandonable_no_code_statuses ["planning", "ready_for_worker"]
   @abandoned_no_code_status "abandoned"
-  @implementation_history_statuses [
+  @non_abandonable_history_statuses [
+    "blocked",
     "implementing",
     "reviewing",
     "ci_waiting",
@@ -35,9 +36,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
           | WorkPackageRepository.error()
           | ClaimLeaseRepository.error()
           | PlanningRepository.error()
+          | :active_blocker
+          | :active_runtime
+          | :claim_not_current
           | :idempotency_key_conflict
           | :malformed_pr_evidence
           | :missing_strong_pr_evidence
+          | :work_package_not_abandonable
 
   @spec record(Repository.repo(), String.t(), String.t(), map()) ::
           {:ok, PlannedSliceDelivery.t()} | {:error, error()}
@@ -300,7 +305,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   defp require_abandonable_no_code_status(repo, %{id: work_package_id, status: @abandoned_no_code_status}, context) do
     with {:ok, events} <- PlanningRepository.list_progress_events(repo, work_package_id) do
       cond do
-        Enum.any?(events, &implementation_history_event?/1) -> {:error, :active_runtime}
+        Enum.any?(events, &non_abandonable_history_event?/1) -> {:error, :work_package_not_abandonable}
         recycled_runtime_context?(context) and Enum.any?(events, &abandoned_runtime_cleanup_event?/1) -> :ok
         not Enum.any?(events, &abandoned_progress_event?/1) -> {:error, :active_runtime}
         true -> :ok
@@ -308,7 +313,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
     end
   end
 
-  defp require_abandonable_no_code_status(_repo, _work_package, _context), do: {:error, :active_runtime}
+  defp require_abandonable_no_code_status(_repo, _work_package, _context), do: {:error, :work_package_not_abandonable}
 
   defp recycled_runtime_context?(context), do: get_in(context, [:runtime_state, :recycled?]) == true
 
@@ -328,10 +333,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
 
   defp abandoned_progress_event?(_event), do: false
 
-  defp implementation_history_event?(event) do
+  defp non_abandonable_history_event?(event) do
     event
     |> progress_history_statuses()
-    |> Enum.any?(&(&1 in @implementation_history_statuses))
+    |> Enum.any?(&(&1 in @non_abandonable_history_statuses))
   end
 
   defp progress_history_statuses(%{status: status, payload: payload}) when is_map(payload) do

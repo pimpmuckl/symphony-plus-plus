@@ -374,7 +374,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
                status: "abandoned",
                idempotency_key: "abandoned-before-closeout",
                payload: %{
-                 "previous_status" => "blocked",
+                 "previous_status" => "ready_for_worker",
                  "next_status" => "abandoned"
                }
              })
@@ -467,47 +467,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
   end
 
-  test "abandoned closeout rejects already-abandoned packages with implementation history", %{repo: repo} do
-    {work_request, planned_slice, linked_package} =
-      linked_slice!(repo,
-        work_request_id: "WR-DELIVERY-ABANDONED-WITH-HISTORY",
-        status: "ready_for_worker"
-      )
+  test "abandoned closeout rejects already-abandoned packages with non-abandonable history", %{repo: repo} do
+    for {history_status, request_id} <- [
+          {"blocked", "WR-DELIVERY-ABANDONED-WITH-BLOCKED-HISTORY"},
+          {"implementing", "WR-DELIVERY-ABANDONED-WITH-IMPLEMENTING-HISTORY"}
+        ] do
+      {work_request, planned_slice, linked_package} =
+        linked_slice!(repo,
+          work_request_id: request_id,
+          status: "ready_for_worker"
+        )
 
-    assert {:ok, _implementation_progress} =
-             PlanningRepository.append_progress_event(repo, %{
-               work_package_id: linked_package.id,
-               summary: "Implementation started before the package was abandoned.",
-               status: "implementing",
-               idempotency_key: "abandoned-with-implementation-history",
-               payload: %{
-                 "previous_status" => "ready_for_worker",
-                 "next_status" => "implementing"
-               }
-             })
+      assert {:ok, _history_progress} =
+               PlanningRepository.append_progress_event(repo, %{
+                 work_package_id: linked_package.id,
+                 summary: "Package reached #{history_status} before it was abandoned.",
+                 status: history_status,
+                 idempotency_key: "abandoned-with-#{history_status}-history",
+                 payload: %{
+                   "previous_status" => "ready_for_worker",
+                   "next_status" => history_status
+                 }
+               })
 
-    assert {:ok, _abandoned_progress} =
-             PlanningRepository.append_progress_event(repo, %{
-               work_package_id: linked_package.id,
-               summary: "Package was later abandoned.",
-               status: "abandoned",
-               idempotency_key: "abandoned-after-implementation-history",
-               payload: %{
-                 "previous_status" => "implementing",
-                 "next_status" => "abandoned"
-               }
-             })
+      assert {:ok, _abandoned_progress} =
+               PlanningRepository.append_progress_event(repo, %{
+                 work_package_id: linked_package.id,
+                 summary: "Package was later abandoned.",
+                 status: "abandoned",
+                 idempotency_key: "abandoned-after-#{history_status}-history",
+                 payload: %{
+                   "previous_status" => history_status,
+                   "next_status" => "abandoned"
+                 }
+               })
 
-    assert {:ok, _abandoned_package} = WorkPackageRepository.update(repo, linked_package.id, %{status: "abandoned", worktree_path: nil})
+      assert {:ok, _abandoned_package} = WorkPackageRepository.update(repo, linked_package.id, %{status: "abandoned", worktree_path: nil})
 
-    attrs =
-      delivery_attrs(%{
-        outcome: "abandoned",
-        idempotency_key: "delivery-abandoned-with-history",
-        abandoned_rationale: "This should not hide implementation history."
-      })
+      attrs =
+        delivery_attrs(%{
+          outcome: "abandoned",
+          idempotency_key: "delivery-abandoned-with-#{history_status}-history",
+          abandoned_rationale: "This should not hide non-abandonable history."
+        })
 
-    assert {:error, :active_runtime} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+      assert {:error, :work_package_not_abandonable} =
+               Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    end
+
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
   end
 
@@ -1201,6 +1208,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
 
   test "abandoned closeout rejects packages that reached implementation states", %{repo: repo} do
     for {status, request_id} <- [
+          {"blocked", "WR-DELIVERY-ABANDONED-BLOCKED"},
           {"implementing", "WR-DELIVERY-ABANDONED-IMPLEMENTING"},
           {"ready_for_human_merge", "WR-DELIVERY-ABANDONED-MERGE-READY"}
         ] do
@@ -1211,7 +1219,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
           status: status
         )
 
-      assert {:error, :active_runtime} =
+      assert {:error, :work_package_not_abandonable} =
                Service.record_planned_slice_delivery(
                  repo,
                  work_request.id,

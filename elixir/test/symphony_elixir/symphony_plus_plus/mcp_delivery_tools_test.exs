@@ -582,6 +582,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     assert repo.get!(WorkPackage, oracle_package.id).status == "ready_for_worker"
   end
 
+  test "abandoned delivery closeout reports currently non-abandonable packages as preconditions", %{repo: repo} do
+    {work_request, planned_slice, _linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-MCP-DELIVERY-ABANDONED-BLOCKED",
+        work_package_status: "blocked"
+      )
+
+    session = create_work_request_architect_session(repo, work_request, ArchitectHandoff.capabilities())
+
+    response =
+      record_delivery(
+        repo,
+        session,
+        abandoned_args(
+          work_request,
+          planned_slice,
+          "delivery-mcp-abandoned-blocked",
+          "Currently blocked packages should be superseded rather than hidden as no-code abandonments."
+        )
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_009
+    assert get_in(response, ["error", "data", "decision_reason"]) == "precondition_denied"
+    assert get_in(response, ["error", "data", "reason"]) == "work_package_not_abandonable"
+    assert get_in(response, ["error", "data", "reason_code"]) == "work_package_not_abandonable"
+  end
+
   test "workers and out-of-scope WR architects cannot record or revoke delivery", %{repo: repo} do
     {work_request, planned_slice, linked_package} = linked_slice!(repo, work_request_id: "WR-MCP-DELIVERY-SCOPED")
     worker_session = create_worker_session(repo, linked_package)
