@@ -4873,7 +4873,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_602, "Invalid params", %{"tool" => "record_planned_slice_delivery", "reason" => Atom.to_string(reason)}}
   end
 
-  defp record_planned_slice_delivery_error(reason) when reason in [:active_runtime, :claim_not_current] do
+  defp record_planned_slice_delivery_error(reason) when reason in [:active_runtime, :claim_not_current, :work_package_not_abandonable] do
     delivery_closeout_precondition_error("record_planned_slice_delivery", reason)
   end
 
