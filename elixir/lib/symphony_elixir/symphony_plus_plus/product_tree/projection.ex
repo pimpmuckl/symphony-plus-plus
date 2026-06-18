@@ -7,7 +7,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
 
   @terminal_completion_keys ["merged", "merged_into_phase", "delivered", "completed_no_pr", "closed", "completed"]
   @guidance_completion_keys ["human_info_needed", "ready_for_clarification", "clarifying"]
-  @not_started_completion_keys ["approved", "planned", "planning", "ready_for_worker"]
+  @not_started_completion_keys ["approved", "planned", "ready_for_worker"]
   @partial_completion_keys [
     "active",
     "blocked",
@@ -20,6 +20,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
     "merging",
     "needs_attention",
     "needs_closeout",
+    "planning",
     "ready_for_architect_merge",
     "ready_for_human_merge",
     "reviewing",

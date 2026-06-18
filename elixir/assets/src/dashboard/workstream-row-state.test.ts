@@ -100,7 +100,7 @@ describe("workstream row state", () => {
     expect(state.tone).toBe("blocked");
   });
 
-  it("uses product-tree guidance counts without turning partial progress into warning state", () => {
+  it("uses product-tree guidance counts without turning partial progress into active work", () => {
     const node: ProductTreeNode = {
       id: "node-active-runtime",
       title: "Active runtime node",
@@ -114,9 +114,9 @@ describe("workstream row state", () => {
     const state = productNodeState(node, 1, { childrenByParent: new Map() }, new Map());
 
     expect(state.guidanceCount).toBe(0);
-    expect(state.tone).toBe("implementing");
-    expect(state.statusLabel).toBe("Active");
-    expect(state.badgeVariant).toBe("info");
+    expect(state.tone).toBe("muted");
+    expect(state.statusLabel).toBe("Partial");
+    expect(state.badgeVariant).toBe("secondary");
   });
 
   it("labels active product nodes from active descendant slices instead of partial completion", () => {
@@ -165,6 +165,54 @@ describe("workstream row state", () => {
     expect(state.progress).toBe(0);
   });
 
+  it("labels planned-only product nodes as planned instead of ready or active", () => {
+    const node: ProductTreeNode = {
+      id: "node-planned-descendant",
+      title: "Planned descendant node",
+      completion_mark: "not_done",
+      slice_ids: ["slice-planned"],
+    };
+    const state = productNodeState(
+      node,
+      1,
+      { childrenByParent: new Map() },
+      new Map(),
+      undefined,
+      [plannedSlice("slice-planned", undefined, "planned", "Planned")],
+      new Map(),
+    );
+
+    expect(state.statusLabel).toBe("Planned");
+    expect(state.badgeVariant).toBe("secondary");
+    expect(state.tone).toBe("muted");
+    expect(state.progress).toBe(0);
+  });
+
+  it("does not label mixed planned and not-started descendants as planned", () => {
+    const node: ProductTreeNode = {
+      id: "node-mixed-quiet-descendants",
+      title: "Mixed quiet descendants",
+      completion_mark: "not_done",
+      slice_ids: ["slice-planned", "slice-created"],
+    };
+    const state = productNodeState(
+      node,
+      1,
+      { childrenByParent: new Map() },
+      new Map(),
+      undefined,
+      [
+        plannedSlice("slice-planned", undefined, "planned", "Planned"),
+        plannedSlice("slice-created", undefined, "created", "Created"),
+      ],
+      new Map(),
+    );
+
+    expect(state.statusLabel).toBe("Not started");
+    expect(state.badgeVariant).toBe("secondary");
+    expect(state.tone).toBe("muted");
+  });
+
   it("uses guidance color for clarifying request rows", () => {
     const detail: WorkRequestDetail = {
       work_request: {
@@ -199,7 +247,7 @@ describe("workstream row state", () => {
     expect(state.tone).toBe("ready");
   });
 
-  it("uses active state for partial request progress with planned descendants", () => {
+  it("uses planned state for requests whose visible descendants are only planned", () => {
     const detail: WorkRequestDetail = {
       work_request: {
         id: "wr-partial-planned",
@@ -211,10 +259,10 @@ describe("workstream row state", () => {
 
     const state = requestBoardState(detail, new Map(), { blockerCount: 0, guidanceCount: 0 }, 50);
 
-    expect(state.kind).toBe("active");
-    expect(state.label).toBe("Active");
-    expect(state.badgeVariant).toBe("info");
-    expect(state.tone).toBe("implementing");
+    expect(state.kind).toBe("planned");
+    expect(state.label).toBe("Planned");
+    expect(state.badgeVariant).toBe("secondary");
+    expect(state.tone).toBe("muted");
   });
 
   it("derives request row state from active child slices before raw request status", () => {

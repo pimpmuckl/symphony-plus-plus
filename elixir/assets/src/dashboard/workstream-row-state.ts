@@ -11,7 +11,7 @@ const MAX_STATUS_BADGE_WIDTH_REM = 11;
 
 export type RowProgressIconState = "active" | "blocked" | "done" | "guidance" | "muted" | "ready";
 export type RowProgressAttentionState = "blocked" | "guidance" | null;
-export type BoardRowStateKind = "active" | "blocked" | "deferred" | "done" | "guidance" | "not_started" | "ready" | "unknown";
+export type BoardRowStateKind = "active" | "blocked" | "deferred" | "done" | "guidance" | "not_started" | "partial" | "planned" | "ready" | "unknown";
 export type BoardRowState = {
   badgeVariant: BadgeTone;
   kind: BoardRowStateKind;
@@ -25,7 +25,9 @@ const BOARD_ROW_STATES: Record<BoardRowStateKind, BoardRowState> = {
   deferred: { badgeVariant: "secondary", kind: "deferred", label: "Deferred", tone: "muted" },
   done: { badgeVariant: "success", kind: "done", label: "Done", tone: "finished" },
   guidance: { badgeVariant: "guidance", kind: "guidance", label: "Guidance Needed", tone: "guidance" },
-  not_started: { badgeVariant: "info", kind: "not_started", label: "Not started", tone: "slice" },
+  not_started: { badgeVariant: "secondary", kind: "not_started", label: "Not started", tone: "muted" },
+  partial: { badgeVariant: "secondary", kind: "partial", label: "Partial", tone: "muted" },
+  planned: { badgeVariant: "secondary", kind: "planned", label: "Planned", tone: "muted" },
   ready: { badgeVariant: "ready", kind: "ready", label: "Ready", tone: "ready" },
   unknown: { badgeVariant: "secondary", kind: "unknown", label: "Unknown", tone: "slice" },
 };
@@ -238,12 +240,13 @@ function aggregateBoardRowState({
   const derived = firstMatchingBoardRowState([
     [completionDone, "done", finishedFallbackLabel(fallbackLabel)],
     [completionDeferred, "deferred", fallbackLabel],
-    [childState.active, "active"],
-    [childState.done, "done", finishedFallbackLabel(fallbackLabel)],
     [blockerCount > 0 || childState.blocked, "blocked"],
     [guidanceCount > 0 || childState.guidance, "guidance"],
+    [childState.active, "active"],
     [childState.ready, "ready"],
-    [progress > 0 || fallbackStatus === "partial", "active"],
+    [childState.planned, "planned"],
+    [childState.done, "done", finishedFallbackLabel(fallbackLabel)],
+    [progress > 0 || fallbackStatus === "partial", "partial"],
     [childState.deferred, "deferred", fallbackLabel],
     [childState.notStarted, "not_started"],
   ]);
@@ -258,6 +261,7 @@ type AggregateChildSliceState = {
   done: boolean;
   guidance: boolean;
   notStarted: boolean;
+  planned: boolean;
   ready: boolean;
 };
 
@@ -269,6 +273,7 @@ function aggregateChildSliceState(slices: PlannedSlice[], packageById: Map<strin
     done: slices.length > 0,
     guidance: false,
     notStarted: false,
+    planned: slices.length > 0,
     ready: false,
   };
 
@@ -279,6 +284,7 @@ function aggregateChildSliceState(slices: PlannedSlice[], packageById: Map<strin
     state.deferred ||= kind === "deferred";
     state.guidance ||= kind === "guidance";
     state.notStarted ||= kind === "not_started";
+    state.planned &&= kind === "planned";
     state.ready ||= kind === "ready";
     state.done &&= kind === "done";
   }
@@ -295,6 +301,7 @@ function sliceBoardStateKind(slice: PlannedSlice, pkg?: WorkPackageCard): BoardR
     [sliceIsBlocked(slice, pkg, status), "blocked"],
     [sliceGuidanceCount(slice, pkg) > 0, "guidance"],
     [statusIn(READY_STATUSES, status), "ready"],
+    [statusIn(PLANNED_STATUSES, status), "planned"],
     [statusIn(DEFERRED_STATUSES, status), "deferred"],
     [statusIn(NOT_STARTED_STATUSES, status), "not_started"],
   ]) ?? "unknown";
@@ -324,9 +331,11 @@ function boardRowStateFromStatus(status?: string | null, label?: string | null):
     [status === "blocked", "blocked"],
     [statusIsGuidance(status), "guidance", label],
     [statusIn(READY_STATUSES, status), "ready", label],
+    [statusIn(PLANNED_STATUSES, status), "planned", label],
     [statusIn(DEFERRED_STATUSES, status), "deferred", label],
     [statusIn(NOT_STARTED_STATUSES, status), "not_started", label],
-    [status === "partial" || status === "in_progress", "active"],
+    [status === "partial", "partial", label],
+    [status === "in_progress", "active", label],
   ]) ?? boardRowState("unknown", label);
 }
 
@@ -360,6 +369,7 @@ const ACTIVE_WORK_STATUSES = new Set([
   "merge_ready",
   "merging",
   "merging_into_phase",
+  "planning",
   "needs_closeout",
   "ready_for_architect_merge",
   "ready_for_human_merge",
@@ -367,7 +377,8 @@ const ACTIVE_WORK_STATUSES = new Set([
 ]);
 
 const READY_STATUSES = new Set(["approved", "ready_for_slicing", "ready_for_worker", "sliced"]);
-const NOT_STARTED_STATUSES = new Set(["created", "not_done", "planned", "planning"]);
+const PLANNED_STATUSES = new Set(["planned"]);
+const NOT_STARTED_STATUSES = new Set(["created", "not_done"]);
 const DEFERRED_STATUSES = new Set(["abandoned", "deferred", "skipped", "superseded"]);
 
 function completionMarkLabel(mark: ProductTreeCompletionMark) {

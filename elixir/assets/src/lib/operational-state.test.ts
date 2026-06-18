@@ -17,6 +17,13 @@ describe("operational state presentation", () => {
       expect(operationalBadgeVariant(slice.operational_state, slice.status)).toBe("ready");
     }
   });
+
+  it("keeps planned slices visually quiet", () => {
+    const slice = plannedSlice("planned");
+
+    expect(sliceCardTone(slice, undefined, sliceLane(slice))).toBe("muted");
+    expect(operationalBadgeVariant(slice.operational_state, slice.status)).toBe("secondary");
+  });
 });
 
 function plannedSlice(status: string): PlannedSlice {

@@ -28,7 +28,7 @@ const CARD_TONES: Record<string, StateCardTone> = {
   merging_into_phase: "merge",
   needs_attention: "queued",
   needs_closeout: "merge",
-  planned: "slice",
+  planned: "muted",
   planning: "queued",
   clarifying: "guidance",
   human_info_needed: "guidance",
