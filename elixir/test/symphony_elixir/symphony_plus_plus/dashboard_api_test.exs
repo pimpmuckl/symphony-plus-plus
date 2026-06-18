@@ -2613,7 +2613,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              )
 
     secret = create_architect_grant_secret(repo, work_package.id)
-    append_ready_evidence_with_review_artifacts(repo, work_package, ["review-log.txt"])
+    append_ready_evidence_without_artifacts(repo, work_package)
 
     assert {:ok, _review_suite_event} =
              PlanningRepository.append_progress_event(repo, %{
@@ -2674,6 +2674,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert payload["metadata"]["review_suite_result"]["anchor"] == "phase_gate-abc123"
     assert Enum.any?(payload["artifacts"], &(&1["kind"] == "review_suite" and &1["path"] == "review-suite-result.json"))
     refute "review_suite_result" in missing["missing"]
+    refute "review_artifacts_attached" in missing["missing"]
     refute inspect(payload) =~ "raw prompt"
     refute inspect(payload) =~ "Bearer "
   end

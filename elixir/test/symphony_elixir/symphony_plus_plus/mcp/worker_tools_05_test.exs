@@ -429,6 +429,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools05Test do
       "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
+    repo.delete_all(Artifact)
+
     missing_response =
       MCPHarness.request(
         %{"jsonrpc" => "2.0", "id" => "missing-review-suite", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
@@ -437,6 +439,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools05Test do
       )
 
     assert "review_suite_result" in get_in(missing_response, ["error", "data", "missing"])
+    assert "review_artifacts_attached" in get_in(missing_response, ["error", "data", "missing"])
+
+    attach_tool(repo, session, "attach_review_suite_result", %{
+      "work_package_id" => package.id,
+      "head_sha" => "suite-head",
+      "suite" => "review-suite",
+      "anchor" => "phase_gate-suite-head-lint",
+      "summary" => "lint is green",
+      "status" => "passed",
+      "verdict" => "green",
+      "lane" => "lint"
+    })
+
+    brief_only_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-review-suite-brief-only", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    brief_only_missing = get_in(brief_only_response, ["error", "data", "missing"])
+    assert "review_artifacts_attached" in brief_only_missing
 
     result_response =
       attach_tool(repo, session, "attach_review_suite_result", %{

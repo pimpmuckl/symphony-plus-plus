@@ -693,7 +693,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
         "head_sha" => string_schema(),
         "acceptance_criteria_met" => boolean_schema()
       }),
-      ["summary", "tests", "artifacts", "head_sha"]
+      ["summary", "tests", "artifacts"]
     )
   end
 
@@ -1390,7 +1390,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
       "type" => "array",
       "items" => %{
         "type" => "object",
-        "additionalProperties" => false,
+        "additionalProperties" => true,
         "properties" => %{"lane" => string_schema(), "verdict" => string_schema()},
         "required" => ["lane", "verdict"]
       }

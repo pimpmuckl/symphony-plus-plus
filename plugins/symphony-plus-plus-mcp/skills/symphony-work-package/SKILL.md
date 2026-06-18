@@ -72,10 +72,11 @@ S++ explicitly gives scoped context.
 - `attach_branch(branch, head_sha)` once implementation branch exists.
 - `attach_pr(url, head_sha)` after PR creation.
 - `sync_pr(url_or_number, metadata)` only for the attached PR.
-- `submit_review_package(summary, tests, artifacts, head_sha)` with current
-  head SHA and required review verdicts.
-- `attach_review_suite_result` when structured Review Suite result evidence is
-  required.
+- `submit_review_package(summary, tests, artifacts)` after branch metadata is
+  current; include required review verdicts when Review Suite evidence will not
+  supply them.
+- `attach_review_suite_result` for passing Review Suite evidence; current
+  results can satisfy the matching review proof.
 
 Run the required Review Suite profile. If unavailable, use the package-approved
 provider and record review progress. After material changes, rerun the same

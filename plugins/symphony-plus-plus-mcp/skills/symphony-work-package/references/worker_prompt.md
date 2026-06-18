@@ -61,7 +61,8 @@ Before ready:
 4. Refresh current PR metadata with `sync_pr(url_or_number, metadata)` when the
    policy requires current PR state; `sync_pr` must target the attached PR.
 5. Submit review evidence when available with
-   `submit_review_package(summary, tests, artifacts, head_sha)`.
+   `submit_review_package(summary, tests, artifacts)` after branch metadata is
+   current.
 6. Call `mark_ready()` only after acceptance criteria, tests, required review
    profile evidence, progress, findings, branch/PR evidence, and blockers are
    settled.

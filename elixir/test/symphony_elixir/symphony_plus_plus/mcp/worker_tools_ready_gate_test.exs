@@ -375,7 +375,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerToolsReadyGateTest do
     reason = response |> get_in(["error", "data", "reasons"]) |> Enum.find(&(&1["code"] == "review_lanes_complete"))
 
     assert reason["required_lanes"] == ["brief", "[REDACTED]"]
-    assert reason["accepted_lane_aliases"] == %{"brief" => ["brief", "normal", "deep"], "[REDACTED]" => ["[REDACTED]"]}
+    refute Map.has_key?(reason, "accepted_lane_aliases")
   end
 
   test "mark_ready does not require review-package metadata for non-merge-gated policies", %{repo: repo} do

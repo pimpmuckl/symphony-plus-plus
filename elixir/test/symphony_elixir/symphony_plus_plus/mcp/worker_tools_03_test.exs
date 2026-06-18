@@ -72,7 +72,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
         session: session
       )
 
-    assert get_in(pre_metadata_review_response, ["error", "data", "reason"]) == "missing_head_sha"
+    assert get_in(pre_metadata_review_response, ["error", "data", "reason"]) == "missing_current_head_sha"
 
     pre_branch_review_response =
       MCPHarness.request(
@@ -101,27 +101,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => " abc123 "})
     sync_pr_state(repo, session, "https://github.com/example/repo/pull/123", "abc123")
 
-    headless_review_response =
-      MCPHarness.request(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => "headless-review",
-          "method" => "tools/call",
-          "params" => %{
-            "name" => "submit_review_package",
-            "arguments" => %{
-              "summary" => "Headless review",
-              "tests" => ["mix test"],
-              "artifacts" => ["review-log.txt"],
-              "reviews" => []
-            }
-          }
-        },
-        repo: repo,
-        session: session
-      )
+    headless_review_args = %{
+      "summary" => "Headless review",
+      "tests" => ["mix test"],
+      "artifacts" => ["review-log.txt"],
+      "reviews" => []
+    }
 
-    assert get_in(headless_review_response, ["error", "data", "reason"]) == "missing_head_sha"
+    headless_review_response = attach_tool(repo, session, "submit_review_package", headless_review_args)
+
+    assert get_in(headless_review_response, ["result", "structuredContent", "progress_event", "payload", "head_sha"]) == "abc123"
 
     missing_acceptance_response =
       MCPHarness.request(
@@ -143,6 +132,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
 
     assert get_in(trimmed_review_response, ["result", "structuredContent", "progress_event", "payload", "tests"]) == ["mix test"]
     assert get_in(trimmed_review_response, ["result", "structuredContent", "progress_event", "payload", "artifacts"]) == ["review-log.txt"]
+
+    explicit_key_review_args = %{
+      "summary" => "Explicit idempotency key review",
+      "tests" => ["mix test"],
+      "artifacts" => ["explicit-key-review.txt"],
+      "head_sha" => "abc123",
+      "idempotency_key" => "explicit-key-review",
+      "reviews" => []
+    }
+
+    attach_tool(repo, session, "submit_review_package", explicit_key_review_args)
 
     assert {:ok, trimmed_artifacts} = PlanningRepository.list_artifacts(repo, package.id)
     assert Enum.any?(trimmed_artifacts, &(&1.path == "review-log.txt"))
@@ -213,28 +213,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
     assert get_in(malformed_review_response, ["error", "data", "reason"]) == "invalid_reviews"
 
     extra_review_key_response =
-      MCPHarness.request(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => "extra-review-key",
-          "method" => "tools/call",
-          "params" => %{
-            "name" => "submit_review_package",
-            "arguments" => %{
-              "summary" => "Extra review key",
-              "tests" => ["mix test"],
-              "artifacts" => ["review-log.txt"],
-              "head_sha" => "abc123",
-              "acceptance_criteria_met" => true,
-              "reviews" => [%{"lane" => "brief", "verdict" => "green", "note" => "typo"}]
-            }
-          }
-        },
-        repo: repo,
-        session: session
-      )
+      attach_tool(repo, session, "submit_review_package", %{
+        "summary" => "Extra review key",
+        "tests" => ["mix test"],
+        "artifacts" => ["review-log.txt"],
+        "head_sha" => "abc123",
+        "acceptance_criteria_met" => true,
+        "reviews" => [%{"lane" => " Brief ", "verdict" => " Green ", "note" => "typo"}]
+      })
 
-    assert get_in(extra_review_key_response, ["error", "data", "reason"]) == "invalid_reviews"
+    assert get_in(extra_review_key_response, ["result", "structuredContent", "progress_event", "payload", "reviews"]) == [
+             %{"lane" => "brief", "verdict" => "green"}
+           ]
 
     duplicate_review_lane_response =
       MCPHarness.request(
@@ -428,14 +418,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
 
     assert get_in(sibling_review_response, ["error", "data", "reason"]) == "outside_session_scope"
 
-    attach_tool(repo, session, "submit_review_package", %{
+    ready_review_args = %{
       "summary" => "Ready",
       "tests" => ["mix test"],
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc123",
       "acceptance_criteria_met" => true,
       "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
-    })
+    }
+
+    ready_review_response = attach_tool(repo, session, "submit_review_package", ready_review_args)
+    ready_review_event_id = get_in(ready_review_response, ["result", "structuredContent", "progress_event", "id"])
 
     handoff_response =
       MCPHarness.request(
@@ -471,6 +464,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
     assert "review_lanes_complete" in latest_missing_lane_missing
     assert "plan_complete" in latest_missing_lane_missing
 
+    review_lane_reason =
+      latest_missing_lane_response
+      |> get_in(["error", "data", "reasons"])
+      |> Enum.find(&(&1["gate"] == "review_lanes_complete"))
+
+    assert Map.has_key?(review_lane_reason, "required_lanes")
+    refute Map.has_key?(review_lane_reason, "accepted_lane_aliases")
+    refute Map.has_key?(review_lane_reason, "accepted_verdicts")
+
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Latest review has findings",
       "tests" => ["mix test"],
@@ -492,6 +494,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => "def456"})
     sync_pr_state(repo, session, "https://github.com/example/repo/pull/123", "def456")
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker", "head_sha" => "def456"})
+
+    replay_headless_after_head_advance_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "headless-cross-head-review-submit",
+          "method" => "tools/call",
+          "params" => %{"name" => "submit_review_package", "arguments" => headless_review_args}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(replay_headless_after_head_advance_response, ["error", "data", "reason"]) == "idempotency_conflict"
+
+    replay_after_head_advance_response = attach_tool(repo, session, "submit_review_package", ready_review_args)
+
+    assert get_in(replay_after_head_advance_response, ["result", "structuredContent", "progress_event", "id"]) == ready_review_event_id
+
+    explicit_key_cross_head_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "explicit-key-cross-head-review-submit",
+          "method" => "tools/call",
+          "params" => %{"name" => "submit_review_package", "arguments" => Map.put(explicit_key_review_args, "head_sha", "def456")}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(explicit_key_cross_head_response, ["error", "data", "reason"]) == "idempotency_conflict"
 
     stale_submit_response =
       MCPHarness.request(

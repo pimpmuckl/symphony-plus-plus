@@ -249,7 +249,7 @@
     {"name": "attach_branch", "required_arguments": ["branch", "head_sha"], "optional_arguments": ["body", "idempotency_key", "payload", "status", "summary", "work_package_id"]},
     {"name": "attach_pr", "required_arguments": [], "optional_arguments": ["body", "head_sha", "idempotency_key", "metadata", "number", "payload", "repository", "status", "summary", "url", "work_package_id"]},
     {"name": "sync_pr", "required_arguments": ["metadata"], "optional_arguments": ["body", "head_sha", "idempotency_key", "number", "payload", "repository", "status", "summary", "url", "work_package_id"]},
-    {"name": "submit_review_package", "required_arguments": ["artifacts", "head_sha", "summary", "tests"], "optional_arguments": ["acceptance_criteria_met", "body", "idempotency_key", "payload", "reviews", "status", "work_package_id"]},
+    {"name": "submit_review_package", "required_arguments": ["artifacts", "summary", "tests"], "optional_arguments": ["acceptance_criteria_met", "body", "head_sha", "idempotency_key", "payload", "reviews", "status", "work_package_id"]},
     {"name": "attach_review_suite_result", "required_arguments": [], "optional_arguments": ["anchor", "head_sha", "idempotency_key", "lane", "profile", "reviewer", "round_id", "status", "suite", "summary", "verdict", "work_package_id"]},
     {"name": "mark_ready", "required_arguments": [], "optional_arguments": []},
     {"name": "create_child_work_package", "required_arguments": ["package"], "optional_arguments": []},
