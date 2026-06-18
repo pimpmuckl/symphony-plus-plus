@@ -14,6 +14,7 @@ scratch/
 *.log
 log/
 logs/
+**/output/playwright/
 tmp/
 temp/
 
