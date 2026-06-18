@@ -30,15 +30,12 @@ defmodule SymphonyElixir.TestSupport do
           path_with_prepended: 2,
           shell_path: 1,
           shell_script_command: 1,
-          symlink_supported?: 0
+          symlink_supported?: 0,
+          unique_tmp_path: 1
         ]
 
       setup do
-        workflow_root =
-          Path.join(
-            System.tmp_dir!(),
-            "symphony-elixir-workflow-#{System.unique_integer([:positive])}"
-          )
+        workflow_root = unique_tmp_path("symphony-elixir-workflow")
 
         File.mkdir_p!(workflow_root)
         workflow_file = Path.join(workflow_root, "WORKFLOW.md")
@@ -80,11 +77,7 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, value), do: System.put_env(key, value)
 
   def symlink_supported? do
-    test_root =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-elixir-symlink-capability-#{System.unique_integer([:positive])}"
-      )
+    test_root = unique_tmp_path("symphony-elixir-symlink-capability")
 
     try do
       target = Path.join(test_root, "target")
@@ -113,6 +106,10 @@ defmodule SymphonyElixir.TestSupport do
     "sh #{shell_path(path)}"
   end
 
+  def unique_tmp_path(prefix) when is_binary(prefix) do
+    Path.join(System.tmp_dir!(), unique_tmp_segment(prefix))
+  end
+
   def path_with_prepended(path, nil), do: path
 
   def path_with_prepended(path, existing_path) when is_binary(existing_path) do
@@ -121,7 +118,7 @@ defmodule SymphonyElixir.TestSupport do
 
   def git_repo_fixture!(base_branch, opts \\ []) when is_binary(base_branch) do
     prefix = Keyword.get(opts, :prefix, "sympp-git-fixture")
-    root = Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
+    root = unique_tmp_path(prefix)
     origin = Path.join(root, "origin.git")
     repo_root = Path.join(root, "repo")
 
@@ -146,7 +143,7 @@ defmodule SymphonyElixir.TestSupport do
 
   def git_repo_with_origin_fixture!(origin, opts \\ []) when is_binary(origin) do
     prefix = Keyword.get(opts, :prefix, "sympp-git-origin-fixture")
-    repo_root = Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
+    repo_root = unique_tmp_path(prefix)
 
     File.mkdir_p!(repo_root)
     git!(repo_root, ["init", "-q"])
@@ -174,6 +171,12 @@ defmodule SymphonyElixir.TestSupport do
       _ ->
         :ok
     end
+  end
+
+  defp unique_tmp_segment(prefix) do
+    id = "#{System.pid()}-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+    safe_id = String.replace(id, ~r/[^A-Za-z0-9_.-]/, "-")
+    "#{prefix}-#{safe_id}"
   end
 
   defp workflow_content(overrides) do

@@ -118,11 +118,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
   test "workspace rejects symlink escapes under the configured root" do
     if symlink_supported?() do
-      test_root =
-        Path.join(
-          System.tmp_dir!(),
-          "symphony-elixir-workspace-symlink-#{System.unique_integer([:positive])}"
-        )
+      test_root = unique_tmp_path("symphony-elixir-workspace-symlink")
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
@@ -148,11 +144,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
   test "workspace canonicalizes symlinked workspace roots before creating issue directories" do
     if symlink_supported?() do
-      test_root =
-        Path.join(
-          System.tmp_dir!(),
-          "symphony-elixir-workspace-root-symlink-#{System.unique_integer([:positive])}"
-        )
+      test_root = unique_tmp_path("symphony-elixir-workspace-root-symlink")
 
       try do
         actual_root = Path.join(test_root, "actual-workspaces")

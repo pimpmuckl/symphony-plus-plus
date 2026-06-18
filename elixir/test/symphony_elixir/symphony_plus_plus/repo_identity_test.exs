@@ -218,7 +218,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentityTest do
 
   test "derives canonical identity from local bare git repo paths" do
     origin = "https://github.com/Pimpmuckl/nextide-saas-live-chat.git"
-    repo_path = Path.join(System.tmp_dir!(), "sympp-repo-identity-bare-#{System.unique_integer([:positive])}.git")
+    repo_path = TestSupport.unique_tmp_path("sympp-repo-identity-bare") <> ".git"
 
     ExUnit.Callbacks.on_exit(fn -> File.rm_rf(repo_path) end)
 
