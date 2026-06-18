@@ -2764,6 +2764,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_001, "Unauthorized", %{"resource" => name, "reason" => "claim_required", "action" => @local_architect_assignment_claim_tool}}
   end
 
+  defp authorize_architect_tool_call(%__MODULE__{config: config, session: session}, "approve_scope_expansion") do
+    with {:ok, _session} <- approve_scope_expansion_session(config.repo, session) do
+      :ok
+    end
+  end
+
   defp authorize_architect_tool_call(%__MODULE__{config: config, session: session}, name) do
     with {:ok, _session} <- architect_session(config.repo, session, architect_tool_required_capabilities(name)) do
       :ok
@@ -4207,12 +4213,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool("approve_scope_expansion", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "approve:scope_expansion"),
+    with {:ok, session} <- approve_scope_expansion_session(config.repo, session),
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
-         :ok <- require_architect_work_package_scope(session, work_package_id),
+         {:ok, work_package, work_request} <- approve_scope_expansion_work_package(config.repo, session, work_package_id),
          {:ok, allowed_file_globs} <- required_string_list(arguments, "allowed_file_globs"),
+         :ok <- require_scope_expansion_work_request_scope(work_request, allowed_file_globs),
          {:ok, rationale} <- required_argument(arguments, "rationale"),
-         {:ok, result} <- approve_scope_expansion_transaction(config.repo, session, arguments, allowed_file_globs, rationale) do
+         {:ok, result} <-
+           approve_scope_expansion_transaction(
+             config.repo,
+             session,
+             work_package,
+             work_request,
+             arguments,
+             allowed_file_globs,
+             rationale
+           ) do
       {:ok, tool_result(result)}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "approve_scope_expansion", "reason" => reason}}
@@ -9343,19 +9359,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp guidance_request_blocker_id(guidance_request_id), do: "guidance_request:#{guidance_request_id}"
 
-  defp approve_scope_expansion_transaction(repo, %Session{} = session, arguments, allowed_file_globs, rationale) do
+  defp approve_scope_expansion_transaction(
+         repo,
+         %Session{} = session,
+         %WorkPackage{} = work_package,
+         work_request,
+         arguments,
+         allowed_file_globs,
+         rationale
+       ) do
     repo.transaction(fn ->
-      work_package_id = Session.work_package_id(session)
-
       with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
-           :ok <- lock_work_package(repo, work_package_id),
-           {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
+           :ok <- lock_work_package(repo, work_package.id),
+           {:ok, state} <- PlanningRepository.get_state(repo, work_package.id),
            :ok <- require_scope_guard_package(state.work_package),
            {:ok, result} <-
              approve_scope_expansion_result(
                repo,
                session,
                state.work_package,
+               work_request,
                arguments,
                allowed_file_globs,
                rationale
@@ -9378,6 +9401,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          repo,
          %Session{} = session,
          %WorkPackage{} = work_package,
+         work_request,
          arguments,
          allowed_file_globs,
          rationale
@@ -9396,12 +9420,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, :not_found} ->
         with :ok <- reject_ready_work_package(work_package),
              {:ok, effective_globs} <- ScopeGuard.approve_file_globs(work_package, allowed_file_globs),
+             {:ok, effective_globs} <- scope_expansion_effective_work_request_globs(work_request, effective_globs),
              {:ok, updated_work_package} <-
                WorkPackageRepository.update(repo, work_package.id, %{"allowed_file_globs" => effective_globs}),
              {:ok, event} <-
-               PlanningRepository.append_audit_progress_event(
+               PlanningRepository.append_audit_progress_event_for_work_package(
                  repo,
                  session.assignment,
+                 work_package.id,
                  scope_expansion_approval_attrs(
                    work_package,
                    updated_work_package,
@@ -9444,7 +9470,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         validate_scope_expansion_approval_event(event, session, arguments, allowed_file_globs, rationale)
 
       {:error, :not_found} ->
-        with {:ok, event} <- existing_work_package_progress_event(repo, session, idempotency_key) do
+        with {:ok, event} <- existing_work_package_progress_event(repo, work_package_id, idempotency_key) do
           validate_scope_expansion_approval_event(event, session, arguments, allowed_file_globs, rationale)
         end
 
@@ -9706,6 +9732,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp approve_scope_expansion_session(repo, session) do
+    with {:ok, session} <- Auth.require_session(session, repo),
+         :ok <- require_architect_assignment(session.assignment),
+         :ok <- require_scope_expansion_approval_authority(repo, session) do
+      {:ok, session}
+    end
+  end
+
+  defp require_scope_expansion_approval_authority(repo, %Session{} = session) do
+    case require_architect_capabilities(repo, session.assignment, ["approve:scope_expansion"]) do
+      :ok -> :ok
+      {:error, :insufficient_capability} -> require_work_request_handoff_write_authority(repo, session)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_work_request_handoff_write_authority(repo, %Session{} = session) do
+    with :ok <- require_architect_capabilities(repo, session.assignment, ["write:work_request"]),
+         {:ok, grant} <- require_live_architect_grant(repo, session),
+         {:ok, true} <- ArchitectHandoff.handoff_phase_grant?(repo, grant) do
+      :ok
+    else
+      {:ok, false} -> {:error, :insufficient_capability}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp require_architect_capabilities(assignment, capabilities) do
     Enum.reduce_while(capabilities, :ok, fn capability, :ok ->
       case require_architect_capability(assignment, capability) do
@@ -9713,6 +9766,74 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
+  end
+
+  defp approve_scope_expansion_work_package(repo, %Session{} = session, work_package_id) do
+    if Session.work_package_id(session) == work_package_id do
+      with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
+           {:ok, work_request} <- optional_scope_expansion_linked_work_request(repo, work_package_id) do
+        {:ok, work_package, work_request}
+      end
+    else
+      approve_scope_expansion_linked_work_package(repo, session, work_package_id)
+    end
+  end
+
+  defp approve_scope_expansion_linked_work_package(repo, %Session{} = session, work_package_id) do
+    with :ok <- require_scope_expansion_handoff_package_scope(repo, session),
+         {:ok, work_package, _scope} <- scoped_worktree_work_package(repo, session, work_package_id),
+         {:ok, work_request} <- scope_expansion_linked_work_request(repo, work_package_id) do
+      {:ok, work_package, work_request}
+    else
+      {:error, :not_found} -> {:error, :phase_scope_not_available}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_scope_expansion_handoff_package_scope(repo, %Session{} = session) do
+    with {:ok, grant} <- require_live_architect_grant(repo, session),
+         {:ok, true} <- ArchitectHandoff.handoff_phase_grant?(repo, grant),
+         :ok <- require_architect_capabilities(repo, session.assignment, ["write:work_request"]) do
+      :ok
+    else
+      {:ok, false} -> {:error, :phase_scope_not_available}
+      {:error, :insufficient_capability} -> {:error, :phase_scope_not_available}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp scope_expansion_linked_work_request(repo, work_package_id) do
+    case optional_scope_expansion_linked_work_request(repo, work_package_id) do
+      {:ok, %WorkRequest{} = work_request} -> {:ok, work_request}
+      {:ok, nil} -> {:error, :phase_scope_not_available}
+    end
+  end
+
+  defp optional_scope_expansion_linked_work_request(repo, work_package_id) do
+    case linked_planned_slice_work_request_for_work_package(repo, work_package_id) do
+      {%PlannedSlice{}, %WorkRequest{} = work_request} -> {:ok, work_request}
+      nil -> {:ok, nil}
+    end
+  end
+
+  defp require_scope_expansion_work_request_scope(nil, _allowed_file_globs), do: :ok
+
+  defp require_scope_expansion_work_request_scope(%WorkRequest{} = work_request, allowed_file_globs) do
+    case ScopeConstraints.validate_owned_file_globs(work_request, allowed_file_globs) do
+      :ok -> :ok
+      {:error, _errors} -> {:tool_error, "scope_expansion_outside_work_request"}
+    end
+  end
+
+  defp scope_expansion_effective_work_request_globs(nil, effective_globs), do: {:ok, effective_globs}
+
+  defp scope_expansion_effective_work_request_globs(%WorkRequest{} = work_request, effective_globs) do
+    scoped_globs =
+      Enum.filter(effective_globs, fn glob ->
+        ScopeConstraints.validate_owned_file_globs(work_request, [glob]) == :ok
+      end)
+
+    {:ok, scoped_globs}
   end
 
   defp effective_architect_assignment(repo, %{grant_role: "architect", grant_id: grant_id} = assignment) do
@@ -10593,7 +10714,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp existing_work_package_progress_event(repo, %Session{} = session, idempotency_key) do
-    case PlanningRepository.list_progress_events(repo, Session.work_package_id(session)) do
+    existing_work_package_progress_event(repo, Session.work_package_id(session), idempotency_key)
+  end
+
+  defp existing_work_package_progress_event(repo, work_package_id, idempotency_key) do
+    case PlanningRepository.list_progress_events(repo, work_package_id) do
       {:ok, progress_events} ->
         matching_progress_event(progress_events, idempotency_key)
 
