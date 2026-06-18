@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
   @moduledoc false
-  @git_origin_timeout_ms 1_000
+  @git_origin_timeout_ms 5_000
   @max_git_origin_output_bytes 8_192
 
   @type identity :: %{
