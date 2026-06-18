@@ -1561,7 +1561,8 @@
     --v3-row-kind-width: 3.25rem;
     --v3-row-kind-control-width: 2.25rem;
     --v3-row-progress-icon-width: 1.75rem;
-    --v3-row-status-width: calc(4.75rem + var(--v3-row-badge-width) + 0.7rem);
+    --v3-row-status-leading-space: 0.5rem;
+    --v3-row-status-width: calc(var(--v3-row-status-leading-space) + 4.75rem + var(--v3-row-badge-width) + 0.7rem);
     display: grid;
     width: 100%;
     min-width: 0;
@@ -1978,19 +1979,20 @@
 
   .v3-row-status {
     display: grid;
+    box-sizing: border-box;
     min-width: var(--v3-row-status-width);
     grid-template-columns: 4.75rem minmax(var(--v3-row-badge-width), 1fr);
     align-items: center;
     justify-content: end;
     gap: 0.7rem;
     font-size: 0.75rem;
-    margin-inline-start: 0.5rem;
+    padding-inline-start: var(--v3-row-status-leading-space);
   }
 
   .v3-slice-status {
     min-width: var(--v3-row-badge-width);
     grid-template-columns: minmax(var(--v3-row-badge-width), 1fr);
-    margin-inline-start: 0;
+    padding-inline-start: 0;
   }
 
   .v3-row-badge-slot {
@@ -2418,7 +2420,7 @@
     .v3-entity-row {
       --v3-row-actions-width: 5.5rem;
       --v3-row-kind-width: 2.875rem;
-      --v3-row-status-width: calc(4.5rem + var(--v3-row-badge-width) + 0.7rem);
+      --v3-row-status-width: calc(var(--v3-row-status-leading-space) + 4.5rem + var(--v3-row-badge-width) + 0.7rem);
     }
 
     .v3-row-status {
