@@ -17,7 +17,9 @@ import { CardDetailDialog } from "./card-detail-dialog";
 import { CardDetailSelection, DASHBOARD_LOGO_URL, DashboardConnectionIssue, DashboardTheme, DashboardUpdateAnimations, LOCAL_OPERATOR_AUTH_REQUIRED_MESSAGE, ResolveContextComment, SubmitContextComment, TopPanelKey, WorkPackageArchiveMutation, WorkPackageBlockerClearMutation, WorkPackageStateMutation, WorkRequestMutation, WorkRequestStateMutation, WorkspaceTab, isLocalOperatorAuthRequiredMessage } from "./runtime";
 import { LiveLedgerBadge } from "./status-cards";
 import { RepoSummary } from "./dashboard-data";
-import { AttentionBarControls, StatusRail, UpdateSimulationControls } from "./status-rail";
+import { AttentionBarControls } from "./attention-bar-controls";
+import { StatusRail } from "./status-rail";
+import { UpdateSimulationControls } from "./update-simulation-controls";
 import { WorkspaceTabCarousel } from "./workspace-tabs";
 import { readStoredTopPanel, writeDashboardUiStateValue } from "./dashboard-persistence";
 

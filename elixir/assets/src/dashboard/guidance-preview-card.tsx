@@ -1,10 +1,7 @@
-import { Route } from "lucide-react";
-import { AnimatedBadge } from "@/components/dashboard/motion";
 import type { UpdateMotion } from "@/components/dashboard/motion";
 import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
 import { StateCard } from "@/components/dashboard/state-card";
 import type { StateCardTone } from "@/components/dashboard/state-card-style";
-import { Badge } from "@/components/ui/badge";
 import type { GuidanceItem } from "@/types/dashboard";
 import { stripMarkdown } from "./dashboard-text";
 import { guidanceUpdateKey } from "./update-animations";
@@ -21,6 +18,8 @@ export function GuidancePreviewCard({
   motion?: UpdateMotion;
 }) {
   const tone: StateCardTone = item.source === "guidance" ? "guidance" : "queued";
+  const title = stripMarkdown(item.prompt?.tl_dr || item.title);
+  const detail = guidancePreviewText(item.prompt?.details || item.detail);
 
   return (
     <StateCard
@@ -32,25 +31,15 @@ export function GuidancePreviewCard({
       data-flip-id={guidanceUpdateKey(item)}
       {...updateMotionAttributes(motion)}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-violet-50 text-violet-700 dark:bg-violet-950/70 dark:text-violet-200">
-              <Route className="size-4" />
-            </div>
-            <p className="truncate text-sm font-semibold">{item.repo}</p>
-            <Badge variant="secondary">{item.source === "guidance" ? "Package" : "Request"}</Badge>
-          </div>
-          <p className="mt-4 text-sm font-medium">TL;DR</p>
-          <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{stripMarkdown(item.prompt?.tl_dr || item.title)}</p>
-          <p className="mt-4 text-sm font-medium">Description</p>
-          <p className="mt-1 line-clamp-3 text-sm text-muted-foreground">{stripMarkdown(item.prompt?.details || item.detail)}</p>
-        </div>
-        <AnimatedBadge
-          label={item.source === "guidance" ? "Guidance Needed" : "Clarify"}
-          variant={item.source === "guidance" ? "danger" : "warning"}
-        />
+      <div className="min-w-0">
+        <p className="truncate text-xs text-muted-foreground">{item.repo}</p>
+        <p className="mt-1 line-clamp-2 text-sm font-semibold">{title}</p>
+        {detail ? <p className="mt-3 line-clamp-2 text-sm text-muted-foreground">{detail}</p> : null}
       </div>
     </StateCard>
   );
+}
+
+function guidancePreviewText(value: string) {
+  return stripMarkdown(value).trim();
 }

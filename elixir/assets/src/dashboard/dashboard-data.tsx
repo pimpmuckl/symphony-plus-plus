@@ -97,7 +97,10 @@ export function activeBlockerItems(
     return edgesById;
   }, new Map());
 
-  return packages.flatMap((pkg) => activeBlockerItemsForPackage(pkg, packageSelections, edgesByPackageId));
+  return sortedCopy(
+    packages.flatMap((pkg) => activeBlockerItemsForPackage(pkg, packageSelections, edgesByPackageId)),
+    compareBlockerItems,
+  );
 }
 
 function activeBlockerPackageIds(edge: ActiveBlockingEdge) {
@@ -220,6 +223,29 @@ function uniqueBlockerEdges(edges: ActiveBlockingEdge[]) {
     seen.add(key);
     return true;
   });
+}
+
+function compareBlockerItems(left: BlockerItem, right: BlockerItem) {
+  const leftRank = left.selection.kind === "blocker" ? 0 : 1;
+  const rightRank = right.selection.kind === "blocker" ? 0 : 1;
+  if (leftRank !== rightRank) return leftRank - rightRank;
+
+  const recency = blockerItemTimestamp(right) - blockerItemTimestamp(left);
+  if (recency !== 0) return recency;
+
+  return left.repo.localeCompare(right.repo) || left.title.localeCompare(right.title) || left.id.localeCompare(right.id);
+}
+
+function blockerItemTimestamp(item: BlockerItem) {
+  const selection = item.selection;
+  const value =
+    selection.kind === "blocker"
+      ? selection.blocker.updated_at || selection.pkg?.latest_progress_at || selection.pkg?.updated_at
+      : selection.kind === "package"
+        ? selection.pkg.latest_progress_at || selection.pkg.updated_at
+        : null;
+
+  return value ? Date.parse(value) || 0 : 0;
 }
 
 export function recentFinishedHighlights(

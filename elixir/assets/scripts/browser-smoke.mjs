@@ -21,12 +21,13 @@ const browser = await launchBrowser();
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.on("pageerror", (error) => errors.push(error.message));
-  page.on("requestfailed", (request) => failures.push(`${request.method()} ${request.url()} ${request.failure()?.errorText || ""}`));
+  page.on("requestfailed", (request) => recordFailure(`${request.method()} ${request.url()} ${request.failure()?.errorText || ""}`));
   page.on("response", (response) => {
-    if (response.status() >= 500) failures.push(`${response.status()} ${response.url()}`);
+    if (isFailedAppResponse(response)) recordFailure(`${response.status()} ${response.url()}`);
   });
 
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  const mainResponse = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  if (mainResponse && !mainResponse.ok()) recordFailure(`${mainResponse.status()} ${mainResponse.url()}`);
   await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
   await page.locator("body").waitFor({ timeout: 10_000 });
 
@@ -58,6 +59,17 @@ function finish({ title }) {
   }
 
   console.log(JSON.stringify({ ok: true, url, title, screenshot }, null, 2));
+}
+
+function isFailedAppResponse(response) {
+  if (response.status() < 400) return false;
+
+  const appResourceTypes = new Set(["document", "script", "stylesheet", "fetch", "xhr"]);
+  return appResourceTypes.has(response.request().resourceType());
+}
+
+function recordFailure(message) {
+  if (!failures.includes(message)) failures.push(message);
 }
 
 function option(name) {

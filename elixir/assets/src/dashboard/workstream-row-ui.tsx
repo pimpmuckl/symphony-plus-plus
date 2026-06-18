@@ -1,6 +1,6 @@
 import type { CopyArchitectHandoff, PlannedSlice, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
 import type { ProductTreeNode } from "@/types/product-tree";
-import { AlertTriangle, CheckCircle2, ChevronRight, CircleAlert, CircleDashed, CircleHelp, ClipboardCopy, Info, Layers3, MessageSquareText, Package, Split } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronRight, CircleAlert, CircleDashed, CircleHelp, Circle, ClipboardCopy, Info, Layers3, MessageSquareText, Package, Split } from "lucide-react";
 import type { ComponentProps, CSSProperties, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -27,6 +27,7 @@ const PROGRESS_STATE_ICON: Record<RowProgressIconState, ReactNode> = {
   done: <CheckCircle2 className="size-4" />,
   guidance: <CircleHelp className="size-4" />,
   muted: <CircleDashed className="size-4" />,
+  ready: <Circle className="size-4" />,
 };
 
 const PROGRESS_ATTENTION_OVERLAY: Record<NonNullable<RowProgressAttentionState>, { className: string; label: string; text: string }> = {

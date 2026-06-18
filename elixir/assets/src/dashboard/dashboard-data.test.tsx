@@ -162,6 +162,22 @@ describe("dashboard data helpers", () => {
     expect(items.find((item) => item.selection.kind === "blocker" && item.selection.pkg?.id === blocked.id)?.id).toBe(edge.id);
   });
 
+  it("orders specific blocker edges before package-only blocker cards", () => {
+    const source: WorkPackageCard = { id: "pkg-source", title: "Source", status: "blocked", active_blocker_count: 1 };
+    const blocked: WorkPackageCard = { id: "pkg-blocked", title: "Blocked", status: "blocked", active_blocker_count: 1 };
+    const edge: ActiveBlockingEdge = {
+      id: "edge-blocked",
+      blocker_id: "blocker-blocked",
+      from: { kind: "work_package", id: source.id },
+      to: { kind: "work_package", id: blocked.id },
+      summary: "Blocked waits on source",
+    };
+
+    const items = activeBlockerItems([source, blocked], new Map(), [edge]);
+
+    expect(items.map((item) => item.id)).toEqual([edge.id, source.id]);
+  });
+
   it("shows edge-backed blockers even when package status has not caught up", () => {
     const blocked: WorkPackageCard = { id: "pkg-edge-only", title: "Edge-only package", status: "active", active_blocker_count: 0 };
     const edge: ActiveBlockingEdge = {

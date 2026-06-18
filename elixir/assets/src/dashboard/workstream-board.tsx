@@ -428,7 +428,7 @@ function ProductTreeNodeRow({
   useAutoCollapseWhenDone(nodeFinished, expanded, collapseNode, nodeFinished);
 
   return (
-    <div className="v3-product-node" style={{ "--tree-depth": depth } as CSSProperties} data-mark={nodeState.mark} data-tone={nodeState.tone} data-v3-context-path={contextPathValue(nodePath)}>
+    <div className="v3-product-node" style={{ "--tree-depth": depth } as CSSProperties} data-tone={nodeState.tone} data-v3-context-path={contextPathValue(nodePath)}>
       <ProductNodeHeader
         node={node}
         nodeSliceCount={nodeState.nodeSliceCount}

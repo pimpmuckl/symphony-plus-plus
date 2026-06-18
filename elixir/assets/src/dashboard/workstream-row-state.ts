@@ -9,7 +9,7 @@ const MIN_STATUS_LABEL_LENGTH = 8;
 const MIN_STATUS_BADGE_WIDTH_REM = 6.1;
 const MAX_STATUS_BADGE_WIDTH_REM = 11;
 
-export type RowProgressIconState = "active" | "blocked" | "done" | "guidance" | "muted";
+export type RowProgressIconState = "active" | "blocked" | "done" | "guidance" | "muted" | "ready";
 export type RowProgressAttentionState = "blocked" | "guidance" | null;
 export type BoardRowStateKind = "active" | "blocked" | "deferred" | "done" | "guidance" | "not_started" | "ready" | "unknown";
 export type BoardRowState = {
@@ -46,6 +46,7 @@ export function rowProgressIconState({
   if (progress > 0) return "active";
   if (blockerCount > 0 || tone === "blocked") return "blocked";
   if (guidanceCount > 0 || tone === "guidance") return "guidance";
+  if (tone === "ready") return "ready";
   return "active";
 }
 
@@ -199,7 +200,6 @@ export function productNodeState(
     badgeVariant: boardState.badgeVariant,
     blockerCount,
     guidanceCount,
-    mark,
     nodeSliceCount: node.slice_count || nodeSliceCount,
     progress,
     statusKind: boardState.kind,

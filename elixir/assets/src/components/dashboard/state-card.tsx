@@ -18,12 +18,12 @@ type StateCardProps =
 export function StateCard(props: StateCardProps) {
   const { as = "div", children, className, style, tone, ...elementProps } = props;
   const toneStyle = STATE_CARD_TONES[tone];
+  const frameStyle = { ...style, "--state-accent": toneStyle.accent } as CSSProperties;
   const frameClassName = cn(
-    "min-w-0 max-w-full rounded-lg border border-l-4 shadow-sm transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out",
+    "min-w-0 max-w-full rounded-lg border shadow-sm transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out",
     toneStyle.card,
     className,
   );
-  const frameStyle = { ...style, "--state-accent": toneStyle.accent, borderLeftColor: toneStyle.accent } as CSSProperties;
 
   if (as === "button") {
     const { type = "button", ...buttonProps } = elementProps as ButtonHTMLAttributes<HTMLButtonElement>;

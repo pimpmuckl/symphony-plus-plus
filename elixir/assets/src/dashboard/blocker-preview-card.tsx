@@ -1,9 +1,9 @@
 import { AlertTriangle } from "lucide-react";
-import { AnimatedBadge } from "@/components/dashboard/motion";
 import type { UpdateMotion } from "@/components/dashboard/motion";
 import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
 import { StateCard } from "@/components/dashboard/state-card";
 import { cn } from "@/lib/utils";
+import type { ActiveBlockingEdgeEndpoint } from "@/types/dashboard";
 import { interactiveCardProps } from "./card-helpers";
 import { BlockerItem } from "./dashboard-state";
 import { stripMarkdown } from "./dashboard-text";
@@ -21,6 +21,10 @@ export function BlockerPreviewCard({
   onSelectCard?: () => void;
   motion?: UpdateMotion;
 }) {
+  const detail = blockerPreviewText(item.detail);
+  const blocker = item.selection.kind === "blocker" ? item.selection.blocker : null;
+  const blockedBy = blocker ? blockedByText(blocker.from, blocker.to) : "";
+
   return (
     <StateCard
       tone="blocked"
@@ -33,24 +37,28 @@ export function BlockerPreviewCard({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold">{item.title}</p>
+          <p className="line-clamp-2 text-sm font-semibold">{item.title}</p>
           <p className="mt-1 truncate text-xs text-muted-foreground">{item.repo}</p>
         </div>
-        <AnimatedBadge label={blockerBadgeLabel(item)} variant="danger" className="shrink-0" />
+        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-rose-600 dark:text-rose-300" aria-hidden="true" />
       </div>
-      <p className="mt-4 line-clamp-3 text-sm text-muted-foreground">{stripMarkdown(item.detail)}</p>
-      <div className="mt-4 flex items-center gap-2 text-xs text-amber-800 dark:text-amber-200">
-        <AlertTriangle className="size-4" />
-        {item.blockerCount} active blocker{item.blockerCount === 1 ? "" : "s"}
-      </div>
+      {blockedBy ? <p className="mt-2 truncate text-xs font-medium text-muted-foreground">{blockedBy}</p> : null}
+      {detail ? <p className="mt-3 line-clamp-2 text-sm text-muted-foreground">{detail}</p> : null}
     </StateCard>
   );
 }
 
-function blockerBadgeLabel(item: BlockerItem) {
-  return item.blockerCount > 1 ? `${item.blockerCount} blockers` : "Blocked";
+function blockerPreviewText(value: string) {
+  const text = stripMarkdown(value).trim();
+  if (!text || /^raw lifecycle status is /i.test(text) || /^this work package has active blockers?/i.test(text)) return "";
+  return text;
 }
 
 function cardDetailDataKind(selection: CardDetailSelection) {
   return selection.kind;
+}
+
+function blockedByText(from?: ActiveBlockingEdgeEndpoint, to?: ActiveBlockingEdgeEndpoint) {
+  if (!from || (to && from.kind === to.kind && from.id === to.id)) return "";
+  return `Blocked by ${from.id}`;
 }

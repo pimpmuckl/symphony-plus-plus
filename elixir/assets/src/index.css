@@ -675,6 +675,12 @@
       hsl(var(--background) / 0.34);
   }
 
+  .top-tray-preview-grid {
+    --top-tray-card-min: min(21rem, 100%);
+    align-items: start;
+    grid-template-columns: repeat(auto-fill, minmax(var(--top-tray-card-min), 1fr));
+  }
+
   .workspace-tab-viewport {
     --dashboard-motion-shadow-gutter: 1.25rem;
     position: relative;
@@ -1658,6 +1664,10 @@
     --v3-progress-state-color: 215 12% 52%;
   }
 
+  .v3-progress-state-ready {
+    --v3-progress-state-color: 84 70% 42%;
+  }
+
   .v3-progress-state-active {
     --v3-progress-state-color: 204 90% 48%;
   }
@@ -2053,7 +2063,6 @@
     min-width: 0;
     margin-left: calc(var(--tree-depth) * 0.875rem);
     border: 1px solid hsl(var(--v3-tone-hsl) / var(--v3-tone-border));
-    border-left: 3px solid hsl(var(--border));
     border-right: 0;
     border-radius: calc(var(--radius) - 2px) 0 0 calc(var(--radius) - 2px);
     background:
@@ -2065,18 +2074,6 @@
   .dark .v3-product-node {
     --v3-tone-fill: 0.1;
     --v3-tone-border: 0.34;
-  }
-
-  .v3-product-node[data-mark="done"] {
-    border-left-color: hsl(151 58% 38%);
-  }
-
-  .v3-product-node[data-mark="partial"] {
-    border-left-color: hsl(42 86% 48%);
-  }
-
-  .v3-product-node[data-mark="deferred"] {
-    border-left-color: hsl(var(--muted-foreground) / 0.7);
   }
 
   .v3-product-node-header {
@@ -2543,8 +2540,7 @@
     transition: height var(--dashboard-modal-size-ms) var(--dashboard-modal-ease);
   }
 
-  .dialog-content::-webkit-scrollbar,
-  .dialog-content .dashboard-scrollbar {
+  .dialog-content::-webkit-scrollbar {
     display: none;
   }
 
