@@ -10836,21 +10836,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp review_package_requested_head_sha(arguments) do
-    case optional_head_sha(arguments) do
-      {:ok, nil} -> {:tool_error, "missing_head_sha"}
-      result -> result
+  defp review_package_head_sha(nil, progress_events, %WorkPackage{} = work_package) do
+    case latest_current_head_sha(progress_events) do
+      current_head_sha when is_binary(current_head_sha) -> {:ok, current_head_sha}
+      _missing_head -> missing_review_package_head_sha(work_package)
     end
   end
 
-  defp review_package_head_sha(head_sha, progress_events, %WorkPackage{} = work_package) do
+  defp review_package_head_sha(head_sha, progress_events, %WorkPackage{} = work_package) when is_binary(head_sha) do
     current_head_sha = latest_current_head_sha(progress_events)
 
     cond do
       is_binary(current_head_sha) and head_sha == current_head_sha ->
         {:ok, head_sha}
 
-      is_binary(current_head_sha) ->
+      is_binary(current_head_sha) and is_binary(head_sha) ->
         {:tool_error, "stale_head_sha"}
 
       merge_required?(work_package) ->
@@ -10858,6 +10858,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
       true ->
         {:ok, head_sha}
+    end
+  end
+
+  defp missing_review_package_head_sha(%WorkPackage{} = work_package) do
+    if merge_required?(work_package) do
+      {:tool_error, "missing_current_head_sha"}
+    else
+      {:tool_error, "missing_head_sha"}
     end
   end
 
@@ -10896,8 +10904,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
          :ok <- lock_work_package(repo, work_package_id),
          {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
-         {:ok, requested_head_sha} <- review_package_requested_head_sha(arguments) do
-      payload = Map.put(payload, "head_sha", requested_head_sha)
+         {:ok, requested_head_sha} <- optional_head_sha(arguments) do
+      replay_head_sha = requested_head_sha || latest_current_head_sha(state.progress_events)
+      arguments = maybe_put_headless_review_idempotency_key(arguments, requested_head_sha, payload)
+      arguments = maybe_put_review_head_sha(arguments, replay_head_sha)
+      payload = maybe_put_review_head_sha(payload, replay_head_sha)
 
       submit_or_replay_review_package(
         repo,
@@ -10905,7 +10916,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         arguments,
         artifacts,
         payload,
-        requested_head_sha,
+        replay_head_sha,
         state.work_package,
         state.progress_events
       )
@@ -10964,6 +10975,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         repo.rollback({:mcp_error, -32_602, "Invalid params", %{"tool" => "submit_review_package", "reason" => reason}})
     end
   end
+
+  defp maybe_put_review_head_sha(map, head_sha) when is_binary(head_sha), do: Map.put(map, "head_sha", head_sha)
+  defp maybe_put_review_head_sha(map, _head_sha), do: map
+
+  defp maybe_put_headless_review_idempotency_key(arguments, nil, payload) do
+    Map.put_new(arguments, "idempotency_key", metadata_idempotency_key(Map.put(payload, "source_tool", "submit_review_package")))
+  end
+
+  defp maybe_put_headless_review_idempotency_key(arguments, _requested_head_sha, _payload), do: arguments
 
   defp replay_existing_metadata_event(repo, %Session{} = session, arguments, tool, status, payload, progress_events) do
     case metadata_event_attrs(session, arguments, tool, status, payload) do
@@ -11547,20 +11567,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> readiness_failure_reason()
     |> Map.merge(%{
       "required_lanes" => redacted_review_lanes(required_lanes),
-      "accepted_lane_aliases" => redacted_accepted_lane_aliases(required_lanes),
-      "accepted_verdicts" => ReviewProfiles.passing_verdicts(),
       "latest_attached_review_round" => latest_review_suite_round_summary(state)
     })
     |> drop_nil_values()
   end
 
   defp redacted_review_lanes(lanes), do: Redactor.redact_output(lanes)
-
-  defp redacted_accepted_lane_aliases(required_lanes) do
-    required_lanes
-    |> ReviewProfiles.accepted_lane_aliases()
-    |> Map.new(fn {lane, aliases} -> {Redactor.redact_text(lane), redacted_review_lanes(aliases)} end)
-  end
 
   defp readiness_failure_message("status_ci_waiting"), do: "Package must be waiting on validation."
   defp readiness_failure_message("status_reviewing"), do: "Package must be in review or validation."
@@ -11647,7 +11659,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp review_artifacts_missing?(state, required_review_lanes) do
     merge_required?(state.work_package) and required_review_lanes != [] and
-      not review_artifacts_present?(state.progress_events, state.artifacts, state.work_package.id)
+      not review_artifacts_present?(state, required_review_lanes)
   end
 
   defp review_lanes_missing?(state, required_review_lanes), do: not review_lanes_present?(state, required_review_lanes)
@@ -11776,14 +11788,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp generic_append_progress_event?(%ProgressEvent{payload: nil}), do: true
   defp generic_append_progress_event?(%ProgressEvent{}), do: false
 
-  defp review_artifacts_present?(progress_events, artifacts, work_package_id) do
-    current_head_sha = latest_current_head_sha(progress_events)
-    artifact_references = current_head_review_artifact_references(progress_events, current_head_sha)
+  defp review_artifacts_present?(state, required_review_lanes) do
+    current_head_sha = latest_current_head_sha(state.progress_events)
+    artifact_references = current_head_review_artifact_references(state.progress_events, current_head_sha)
 
-    artifact_references != [] and
-      Enum.all?(artifact_references, fn {path, artifact_head_sha} ->
-        persisted_review_artifact?(artifacts, work_package_id, artifact_head_sha, path)
-      end)
+    review_package_artifacts_present =
+      artifact_references != [] and
+        Enum.all?(artifact_references, fn {path, artifact_head_sha} ->
+          persisted_review_artifact?(state.artifacts, state.work_package.id, artifact_head_sha, path)
+        end)
+
+    review_package_artifacts_present or
+      review_suite_result_lanes_present?(state, required_review_lanes)
   end
 
   defp current_head_review_artifact_references(progress_events, current_head_sha) do
@@ -11867,7 +11883,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp normalize_review_entries(reviews) do
     reviews
-    |> Enum.filter(&valid_review_entry?/1)
+    |> Enum.filter(&usable_review_entry?/1)
     |> Enum.map(fn review ->
       %{
         "lane" => review |> Map.get("lane", "") |> String.trim() |> String.downcase(),
@@ -11876,12 +11892,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end)
   end
 
-  defp valid_review_entry?(%{"lane" => lane, "verdict" => verdict} = review) do
-    Map.keys(review) |> Enum.sort() == ["lane", "verdict"] and
-      is_binary(lane) and String.trim(lane) != "" and is_binary(verdict) and String.trim(verdict) != ""
+  defp usable_review_entry?(%{"lane" => lane, "verdict" => verdict}) do
+    is_binary(lane) and String.trim(lane) != "" and is_binary(verdict) and String.trim(verdict) != ""
   end
 
-  defp valid_review_entry?(_review), do: false
+  defp usable_review_entry?(_review), do: false
 
   defp latest_current_head_sha(progress_events) do
     latest_metadata_head_sha(progress_events, "branch", "attach_branch")
@@ -13069,8 +13084,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp required_review_list(arguments, key) do
     with {:ok, values} <- required_list(arguments, key) do
-      if Enum.all?(values, &valid_review_entry?/1) and unique_review_lanes?(values) do
-        {:ok, values}
+      reviews = normalize_review_entries(values)
+
+      if length(reviews) == length(values) and unique_review_lanes?(reviews) do
+        {:ok, reviews}
       else
         {:tool_error, "invalid_#{key}"}
       end
@@ -13080,7 +13097,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp unique_review_lanes?(reviews) do
     lanes =
       Enum.map(reviews, fn %{"lane" => lane} ->
-        lane |> String.trim() |> String.downcase()
+        lane
       end)
 
     Enum.uniq(lanes) == lanes

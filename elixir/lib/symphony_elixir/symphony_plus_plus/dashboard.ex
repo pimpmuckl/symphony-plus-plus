@@ -3626,7 +3626,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp review_artifacts_missing?(context, required_lanes) do
     merge_required?(context.work_package) and review_lanes_required?(required_lanes) and
-      not review_artifacts_present?(context.progress_events, context.artifacts, context.work_package.id)
+      not review_artifacts_present?(context, required_lanes)
   end
 
   defp review_lanes_missing?(context, required_lanes) do
@@ -3892,14 +3892,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end)
   end
 
-  defp review_artifacts_present?(progress_events, artifacts, work_package_id) do
-    current_head_sha = latest_current_head_sha(progress_events)
-    artifact_references = current_head_review_artifact_references(progress_events, current_head_sha)
+  defp review_artifacts_present?(context, required_lanes) do
+    current_head_sha = latest_current_head_sha(context.progress_events)
+    artifact_references = current_head_review_artifact_references(context.progress_events, current_head_sha)
 
-    artifact_references != [] and
-      Enum.all?(artifact_references, fn {path, artifact_head_sha} ->
-        persisted_review_artifact?(artifacts, work_package_id, artifact_head_sha, path)
-      end)
+    review_package_artifacts_present =
+      artifact_references != [] and
+        Enum.all?(artifact_references, fn {path, artifact_head_sha} ->
+          persisted_review_artifact?(context.artifacts, context.work_package.id, artifact_head_sha, path)
+        end)
+
+    review_package_artifacts_present or
+      review_suite_result_lanes_present?(context, required_lanes)
   end
 
   defp current_head_review_artifact_references(progress_events, current_head_sha) do

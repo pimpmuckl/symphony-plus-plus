@@ -73,10 +73,10 @@ other compact labels plain.
 - Attach the PR with `attach_pr(url, head_sha)` after it exists.
 - Refresh the attached PR metadata with `sync_pr(url_or_number, metadata)` when
   current PR state is required; `sync_pr` must target the already attached PR.
-- Submit review evidence with
-  `submit_review_package(summary, tests, artifacts, head_sha)`.
-- Attach structured Review Suite result evidence with
-  `attach_review_suite_result` when required.
+- Submit review evidence with `submit_review_package(summary, tests, artifacts)`
+  after branch metadata is current.
+- Attach passing Review Suite result evidence with `attach_review_suite_result`
+  when required.
 - If Review Suite is installed, run the current orchestrator with the required
   profile: `review.py --mode brief|normal|deep|emergency`.
 - If Review Suite is not installed, use the package-approved review provider

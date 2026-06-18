@@ -331,7 +331,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
              %{"type" => "string", "pattern" => "^[1-9][0-9]*$"}
            ]
 
-    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts", "head_sha"]
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "minItems"]) == 1
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "items", "type"]) == "string"
@@ -340,6 +340,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "artifacts", "items", "type"]) == "string"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "artifacts", "items", "pattern"]) == "\\S"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "items", "required"]) == ["lane", "verdict"]
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "items", "additionalProperties"]) == true
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "head_sha", "type"]) == "string"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "acceptance_criteria_met", "type"]) == "boolean"
 
