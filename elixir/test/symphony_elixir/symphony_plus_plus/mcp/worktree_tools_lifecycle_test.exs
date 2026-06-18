@@ -3,6 +3,11 @@ Code.require_file("../../../support/symphony_plus_plus/mcp_case.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorktreeToolsLifecycleTest do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service, as: ClaimLeaseService
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.SessionBinding
+
   @moduletag :ci_slow
 
   test "WorkPackage worktree MCP tools prepare, audit, and cleanup a linked package", %{repo: repo} do
@@ -69,6 +74,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorktreeToolsLifecycleTest do
     try do
       System.put_env("CODEX_HOME", codex_home)
 
+      assert {:ok, guarded_grant} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+      assert {:ok, guarded_claim_lease} =
+               ClaimLeaseService.claim(
+                 repo,
+                 package.id,
+                 %{"actor_kind" => "agent", "actor_id" => "local:live-grant-cleanup", "actor_display_name" => "live-grant-cleanup"},
+                 stale_after_ms: 60_000
+               )
+
+      guarded_clean_response =
+        mcp_tool(
+          repo,
+          session,
+          "cleanup_work_package_worktree",
+          %{
+            "work_package_id" => package.id
+          },
+          config: config
+        )
+
+      guarded_clean_payload = get_in(guarded_clean_response, ["result", "structuredContent"])
+      assert guarded_clean_payload["worktree"]["status"] == "already_clean"
+      assert %ClaimLease{status: "active"} = repo.get!(ClaimLease, guarded_claim_lease.id)
+      assert {:ok, _released_guarded_claim} = ClaimLeaseService.release(repo, guarded_claim_lease.id, reason: "test cleanup")
+      assert {:ok, _revoked_guarded_grant} = AccessGrantService.revoke(repo, guarded_grant.grant.id)
+
+      assert {:ok, already_clean_claim_lease} =
+               ClaimLeaseService.claim(
+                 repo,
+                 package.id,
+                 %{"actor_kind" => "agent", "actor_id" => "local:already-clean", "actor_display_name" => "already-clean"},
+                 stale_after_ms: 60_000
+               )
+
       already_clean_response =
         mcp_tool(
           repo,
@@ -83,6 +123,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorktreeToolsLifecycleTest do
       already_clean_payload = get_in(already_clean_response, ["result", "structuredContent"])
       assert already_clean_payload["worktree"]["status"] == "already_clean"
       assert already_clean_payload["work_package"]["worktree_path"] == nil
+      assert %ClaimLease{status: "released", release_reason: "work_request_runtime_cleanup"} = repo.get!(ClaimLease, already_clean_claim_lease.id)
 
       scope_mismatch_response =
         mcp_tool(
@@ -169,6 +210,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorktreeToolsLifecycleTest do
       assert File.dir?(prepare_payload["worktree"]["path"])
       assert {:ok, _restored_root_package} = WorkPackageRepository.update(repo, package.id, %{worktree_target_repo_root: fixture.repo_root})
 
+      assert {:ok, cleanup_claim_lease} =
+               ClaimLeaseService.claim(
+                 repo,
+                 package.id,
+                 %{"actor_kind" => "agent", "actor_id" => "local:worktree-cleanup", "actor_display_name" => "worktree-cleanup"},
+                 stale_after_ms: 60_000
+               )
+
+      cleanup_binding_id = SessionBinding.binding_id("cleanup-client", "cleanup-state")
+
+      assert {:ok, cleanup_binding} =
+               %SessionBinding{}
+               |> SessionBinding.changeset(%{
+                 id: cleanup_binding_id,
+                 client_key_hash: SessionBinding.client_key_hash("cleanup-client"),
+                 initialized: true,
+                 recoverable: true,
+                 claim_lease_id: cleanup_claim_lease.id,
+                 work_package_id: package.id,
+                 grant_role: "worker",
+                 claimed_by: "worktree-cleanup",
+                 last_seen_at: DateTime.utc_now(:microsecond)
+               })
+               |> repo.insert()
+
       cleanup_response =
         mcp_tool(
           repo,
@@ -188,6 +254,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorktreeToolsLifecycleTest do
       assert cleanup_payload["audit_event"]["payload"]["worktree_path"] == "[REDACTED]"
       assert cleanup_payload["audit_event"]["payload"]["target_repo_root"] == "[REDACTED]"
       refute File.exists?(prepare_payload["worktree"]["path"])
+      assert %ClaimLease{status: "released", release_reason: "work_request_runtime_cleanup"} = repo.get!(ClaimLease, cleanup_claim_lease.id)
+      refute repo.get(SessionBinding, cleanup_binding.id)
 
       stale_prepare_response =
         mcp_tool(
@@ -219,6 +287,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorktreeToolsLifecycleTest do
 
       assert get_in(wrong_stale_cleanup_response, ["error", "data", "reason"]) == "target_repo_root_required"
 
+      assert {:ok, stale_cleanup_claim_lease} =
+               ClaimLeaseService.claim(
+                 repo,
+                 package.id,
+                 %{"actor_kind" => "agent", "actor_id" => "local:stale-worktree-cleanup", "actor_display_name" => "stale-worktree-cleanup"},
+                 stale_after_ms: 60_000
+               )
+
+      assert {:ok, paused_stale_cleanup_claim_lease} =
+               ClaimLeaseService.pause(
+                 repo,
+                 stale_cleanup_claim_lease.id,
+                 %{"actor_kind" => "operator", "actor_id" => "operator:pause"},
+                 reason: "operator pause"
+               )
+
       stale_cleanup_response =
         mcp_tool(
           repo,
@@ -236,6 +320,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorktreeToolsLifecycleTest do
       assert stale_cleanup_payload["work_package"]["worktree_path"] == nil
       assert stale_cleanup_payload["audit_event"]["payload"]["source_tool"] == "cleanup_work_package_worktree"
       assert stale_cleanup_payload["audit_event"]["payload"]["status"] == "stale_record_cleared"
+      assert %ClaimLease{status: "paused"} = repo.get!(ClaimLease, paused_stale_cleanup_claim_lease.id)
     after
       restore_env("CODEX_HOME", previous_codex_home)
     end
@@ -252,7 +337,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorktreeToolsLifecycleTest do
       )
 
     assert Enum.map(events, & &1.payload["source_tool"]) == [
+             "cleanup_work_request_planned_slice_runtime",
              "prepare_work_package_worktree",
+             "cleanup_work_request_planned_slice_runtime",
              "cleanup_work_package_worktree",
              "cleanup_work_package_worktree"
            ]
