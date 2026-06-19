@@ -1,27 +1,24 @@
-import { Badge } from "@/components/ui/badge";
-import type { CopyArchitectHandoff, GuidanceItem, PlannedSlice, SoloSession, SoloSessionDetailPayload, WorkPackageCard, WorkPackageDetailPayload, WorkRequestDetail } from "@/types/dashboard";
+import type { CopyArchitectHandoff, GuidanceItem, SoloSessionDetailPayload, WorkPackageDetailPayload, WorkRequestDetail } from "@/types/dashboard";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Loader2 } from "lucide-react";
 import type * as React from "react";
 import { dashboardPrefersReducedMotion } from "@/components/dashboard/motion-utils";
-import { formatStatus } from "@/lib/status-labels";
-import { operationalBadgeVariant, operationalLabel, sliceOperationalState } from "@/lib/operational-state";
 import { useEffect, useReducer, useState } from "react";
 import { CARD_DETAIL_HEIGHT_MS, CARD_DETAIL_LOADING_HOLD_MS, CARD_DETAIL_WIDTH_MS, CardDetailSelection, CardDetailStage, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageBlockerClearMutation, WorkPackageStateMutation, WorkRequestMutation, WorkRequestStateMutation, ensureDashboardRuntimeConfig, jsonHeaders, operatorApiUrl, operatorFetch, readDashboardApiResponse, withLocalOperatorReconnect } from "./runtime";
+import { CardDetailLoadingContent } from "./card-detail-loading";
 import { BlockerDetailContent, PackageDetailContent, SliceDetailContent } from "./package-detail";
 import { RequestDetailContent } from "./request-detail";
 import { SoloSessionDetailContent } from "./solo-detail";
-import { repoDisplayName } from "./dashboard-persistence";
-import { soloSessionStatusVariant } from "./solo-session-utils";
 
 export type DetailResourceState<T> = {
   payload: T | null;
   loading: boolean;
   error: string | null;
+  resourceKey?: string | null;
 };
 
 export type CardDetailDialogState = {
   package: DetailResourceState<WorkPackageDetailPayload>;
+  request: DetailResourceState<WorkRequestDetail>;
   solo: DetailResourceState<SoloSessionDetailPayload>;
 };
 
@@ -30,12 +27,22 @@ export type CardDetailDialogAction =
   | { type: "loadPackage" }
   | { type: "packageSuccess"; payload: WorkPackageDetailPayload }
   | { type: "packageError"; error: string }
+  | { type: "resetRequest" }
+  | { type: "loadRequest"; requestId: string }
+  | { type: "requestSuccess"; payload: WorkRequestDetail }
+  | { type: "requestError"; requestId: string; error: string }
   | { type: "resetSolo" }
   | { type: "loadSolo" }
   | { type: "soloSuccess"; payload: SoloSessionDetailPayload }
   | { type: "soloError"; error: string };
 
 const emptyPackageDetailState: DetailResourceState<WorkPackageDetailPayload> = {
+  payload: null,
+  loading: false,
+  error: null,
+};
+
+const emptyRequestDetailState: DetailResourceState<WorkRequestDetail> = {
   payload: null,
   loading: false,
   error: null,
@@ -49,6 +56,7 @@ const emptySoloDetailState: DetailResourceState<SoloSessionDetailPayload> = {
 
 const initialCardDetailDialogState: CardDetailDialogState = {
   package: emptyPackageDetailState,
+  request: emptyRequestDetailState,
   solo: emptySoloDetailState,
 };
 
@@ -62,6 +70,14 @@ function cardDetailDialogReducer(state: CardDetailDialogState, action: CardDetai
       return { ...state, package: { payload: action.payload, loading: false, error: null } };
     case "packageError":
       return { ...state, package: { payload: null, loading: false, error: action.error } };
+    case "resetRequest":
+      return { ...state, request: emptyRequestDetailState };
+    case "loadRequest":
+      return { ...state, request: { payload: null, loading: true, error: null, resourceKey: action.requestId } };
+    case "requestSuccess":
+      return { ...state, request: { payload: action.payload, loading: false, error: null, resourceKey: action.payload.work_request.id } };
+    case "requestError":
+      return { ...state, request: { payload: null, loading: false, error: action.error, resourceKey: action.requestId } };
     case "resetSolo":
       return { ...state, solo: emptySoloDetailState };
     case "loadSolo":
@@ -118,6 +134,7 @@ export function CardDetailDialog({
 }) {
   const [state, dispatch] = useReducer(cardDetailDialogReducer, initialCardDetailDialogState);
   const packageId = cardDetailPackageId(selection);
+  const requestId = cardDetailRequestId(selection);
   const soloSessionId = selection?.kind === "solo" ? selection.session.id : null;
   const selectionIdentity = cardDetailSelectionIdentity(selection);
   const prefersReducedDetailMotion = useDashboardReducedMotionPreference();
@@ -143,6 +160,27 @@ export function CardDetailDialog({
 
     return () => controller.abort();
   }, [packageId]);
+
+  useEffect(() => {
+    if (!requestId) {
+      dispatch({ type: "resetRequest" });
+      return;
+    }
+
+    const controller = new AbortController();
+    dispatch({ type: "loadRequest", requestId });
+
+    loadOperatorPayload<WorkRequestDetail>(`/work-requests/${encodeURIComponent(requestId)}`, controller.signal, "WorkRequest detail unavailable")
+      .then((payload) => {
+        if (!controller.signal.aborted) dispatch({ type: "requestSuccess", payload });
+      })
+      .catch((caught) => {
+        if (caught instanceof DOMException && caught.name === "AbortError") return;
+        if (!controller.signal.aborted) dispatch({ type: "requestError", requestId, error: caught instanceof Error ? caught.message : "WorkRequest detail unavailable" });
+      });
+
+    return () => controller.abort();
+  }, [requestId]);
 
   useEffect(() => {
     if (!soloSessionId) {
@@ -232,9 +270,12 @@ export function CardDetailDialog({
   const showStagedLoadingHeader = Boolean(selection && (activeDetailStage === "loading" || activeDetailStage === "width"));
   const detailMotionKey = cardDetailMotionKey(selection, {
     loadingPackage: selection?.kind === "package" && showStagedLoadingHeader,
+    loadingRequest: (selection?.kind === "request" || selection?.kind === "slice") && showStagedLoadingHeader,
     loadingSolo: selection?.kind === "solo" && showStagedLoadingHeader,
     packageDetail: state.package.payload,
     packageError: state.package.error,
+    requestDetail: state.request.payload,
+    requestError: state.request.error,
     soloDetail: state.solo.payload,
     soloError: state.solo.error,
   });
@@ -303,21 +344,22 @@ function CardDetailReadyContent({
 
   switch (selection.kind) {
     case "request":
-      return (
-        <RequestDetailContent
-          detail={selection.detail}
-          onSelectGuidance={onSelectGuidance}
-          onCopyArchitectHandoff={onCopyArchitectHandoff}
-          onArchiveWorkRequest={onArchiveWorkRequest}
-          onChangeWorkRequestState={onChangeWorkRequestState}
-          canMutateOperatorActions={canMutateOperatorActions}
-          onSubmitComment={onSubmitComment}
-          onResolveComment={onResolveComment}
-          canMutateComments={canMutateComments}
-        />
-      );
+      return renderRequestDetailContent(selection, state, {
+        onSelectGuidance,
+        onCopyArchitectHandoff,
+        onArchiveWorkRequest,
+        onChangeWorkRequestState,
+        canMutateOperatorActions,
+        onSubmitComment,
+        onResolveComment,
+        canMutateComments,
+      });
     case "slice":
-      return <SliceDetailContent detail={selection.detail} slice={selection.slice} pkg={selection.pkg} onSubmitComment={onSubmitComment} onResolveComment={onResolveComment} canMutateComments={canMutateComments} />;
+      return renderSliceDetailContent(selection, state, {
+        onSubmitComment,
+        onResolveComment,
+        canMutateComments,
+      });
     case "package":
       return (
         <PackageDetailContent
@@ -339,6 +381,73 @@ function CardDetailReadyContent({
     case "solo":
       return <SoloSessionDetailContent session={selection.session} detailPayload={state.solo.payload} loading={!state.solo.payload && !state.solo.error ? true : state.solo.loading} error={state.solo.error} />;
   }
+}
+
+function renderRequestDetailContent(
+  selection: Extract<CardDetailSelection, { kind: "request" }>,
+  state: CardDetailDialogState,
+  props: {
+    onSelectGuidance: (item: GuidanceItem) => void;
+    onCopyArchitectHandoff: CopyArchitectHandoff;
+    onArchiveWorkRequest: WorkRequestMutation;
+    onChangeWorkRequestState: WorkRequestStateMutation;
+    canMutateOperatorActions: boolean;
+    onSubmitComment: SubmitContextComment;
+    onResolveComment: ResolveContextComment;
+    canMutateComments: boolean;
+  },
+) {
+  const error = matchingRequestError(selection, state);
+  if (error) return <RequestDetailLoadError selection={selection} error={error} />;
+
+  const detail = matchingRequestDetail(selection, state);
+  if (!detail) return <CardDetailLoadingContent selection={selection} stage="loading" />;
+
+  return <RequestDetailContent detail={detail} {...props} />;
+}
+
+function renderSliceDetailContent(
+  selection: Extract<CardDetailSelection, { kind: "slice" }>,
+  state: CardDetailDialogState,
+  props: {
+    onSubmitComment: SubmitContextComment;
+    onResolveComment: ResolveContextComment;
+    canMutateComments: boolean;
+  },
+) {
+  const error = matchingRequestError(selection, state);
+  if (error) return <RequestDetailLoadError selection={selection} error={error} />;
+
+  const detail = matchingRequestDetail(selection, state);
+  if (!detail) return <CardDetailLoadingContent selection={selection} stage="loading" />;
+
+  const slice = detail.planned_slices?.find((candidate) => candidate.id === selection.slice.id) || selection.slice;
+
+  return <SliceDetailContent detail={detail} slice={slice} pkg={selection.pkg} {...props} />;
+}
+
+function matchingRequestDetail(selection: Extract<CardDetailSelection, { kind: "request" | "slice" }>, state: CardDetailDialogState) {
+  const payload = state.request.payload;
+  if (!payload) return null;
+  return payload.work_request.id === selection.detail.work_request.id ? payload : null;
+}
+
+function matchingRequestError(selection: Extract<CardDetailSelection, { kind: "request" | "slice" }>, state: CardDetailDialogState) {
+  if (!state.request.error) return null;
+  return state.request.resourceKey === selection.detail.work_request.id ? state.request.error : null;
+}
+
+function RequestDetailLoadError({ selection, error }: { selection: Extract<CardDetailSelection, { kind: "request" | "slice" }>; error: string }) {
+  const request = selection.detail.work_request;
+
+  return (
+    <DialogHeader className="detail-loading-header" data-guidance-section style={{ animationDelay: "35ms" }}>
+      <div className="min-w-0">
+        <DialogTitle className="detail-loading-title">{request.title || request.id}</DialogTitle>
+        <DialogDescription className="detail-loading-eyebrow">{error}</DialogDescription>
+      </div>
+    </DialogHeader>
+  );
 }
 
 function useDashboardReducedMotionPreference() {
@@ -385,6 +494,11 @@ function cardDetailPackageId(selection: CardDetailSelection | null) {
   );
 }
 
+function cardDetailRequestId(selection: CardDetailSelection | null) {
+  if (selection?.kind === "request" || selection?.kind === "slice") return selection.detail.work_request.id;
+  return null;
+}
+
 function cardDetailContentReady(selection: CardDetailSelection | null, state: CardDetailDialogState) {
   if (!selection) return false;
 
@@ -392,8 +506,12 @@ function cardDetailContentReady(selection: CardDetailSelection | null, state: Ca
 
   switch (selection.kind) {
     case "request":
-    case "slice":
-      return true;
+    case "slice": {
+      if (matchingRequestError(selection, state)) return true;
+      const payload = state.request.payload;
+      if (!payload) return false;
+      return payload.work_request.id === selection.detail.work_request.id;
+    }
     case "package": {
       if (state.package.error) return true;
       const payload = state.package.payload;
@@ -429,9 +547,12 @@ function cardDetailMotionKey(
   selection: CardDetailSelection | null,
   state: {
     loadingPackage: boolean;
+    loadingRequest: boolean;
     loadingSolo: boolean;
     packageDetail: WorkPackageDetailPayload | null;
     packageError: string | null;
+    requestDetail: WorkRequestDetail | null;
+    requestError: string | null;
     soloDetail: SoloSessionDetailPayload | null;
     soloError: string | null;
   },
@@ -440,9 +561,9 @@ function cardDetailMotionKey(
 
   switch (selection.kind) {
     case "request":
-      return `request:${selection.detail.work_request.id}`;
+      return `request:${selection.detail.work_request.id}:${detailLoadState(state.loadingRequest, state.requestDetail, state.requestError)}`;
     case "slice":
-      return `slice:${selection.slice.id}:${selection.pkg?.id || "undispatched"}`;
+      return `slice:${selection.slice.id}:${selection.pkg?.id || "undispatched"}:${detailLoadState(state.loadingRequest, state.requestDetail, state.requestError)}`;
     case "package":
       return `package:${selection.pkg.id}:${detailLoadState(state.loadingPackage, state.packageDetail, state.packageError)}`;
     case "blocker":
@@ -456,119 +577,4 @@ function detailLoadState(loading: boolean, payload: unknown, error: string | nul
   if (error) return "error";
   if (payload) return "loaded";
   return loading ? "loading" : "summary";
-}
-
-function CardDetailLoadingContent({ selection, stage }: { selection: CardDetailSelection; stage: CardDetailStage }) {
-  switch (selection.kind) {
-    case "request":
-      return <RequestDetailLoadingContent detail={selection.detail} stage={stage} />;
-    case "slice":
-      return <SliceDetailLoadingContent detail={selection.detail} slice={selection.slice} pkg={selection.pkg} stage={stage} />;
-    case "package":
-      return <PackageDetailLoadingContent selection={selection} stage={stage} />;
-    case "blocker":
-      return <BlockerDetailLoadingContent selection={selection} stage={stage} />;
-    case "solo":
-      return <SoloSessionDetailLoadingContent session={selection.session} stage={stage} />;
-  }
-}
-
-function DetailLoadingHeader({ title, eyebrow, badge, stage }: { title: string; eyebrow: string; badge: React.ReactNode; stage: CardDetailStage }) {
-  return (
-    <DialogHeader className="detail-loading-header" data-guidance-section style={{ animationDelay: "35ms" }}>
-      <div className="min-w-0">
-        <DialogTitle className="detail-loading-title">{title}</DialogTitle>
-        <DialogDescription className="detail-loading-eyebrow">{eyebrow}</DialogDescription>
-      </div>
-      <div className="detail-loading-actions">
-        <output
-          className="detail-loading-progress"
-          data-progress-state={stage === "width" ? "exiting" : "active"}
-          aria-label="Loading detail"
-          aria-live="polite"
-          aria-atomic="true"
-        >
-          <Loader2 className="size-3.5" aria-hidden="true" />
-        </output>
-        <div className="shrink-0">{badge}</div>
-      </div>
-    </DialogHeader>
-  );
-}
-
-function RequestDetailLoadingContent({ detail, stage }: { detail: WorkRequestDetail; stage: CardDetailStage }) {
-  const request = detail.work_request;
-  const operational = request.operational_state || null;
-
-  return (
-    <DetailLoadingHeader
-      title={request.title || request.id}
-      eyebrow={`${repoDisplayName(request)} / ${request.base_branch || "main"} / ${request.work_type || "feature"}`}
-      badge={<Badge variant={operationalBadgeVariant(operational, request.status)}>{operationalLabel(operational, request.status)}</Badge>}
-      stage={stage}
-    />
-  );
-}
-
-function SliceDetailLoadingContent({
-  detail,
-  slice,
-  pkg,
-  stage,
-}: {
-  detail: WorkRequestDetail;
-  slice: PlannedSlice;
-  pkg?: WorkPackageCard;
-  stage: CardDetailStage;
-}) {
-  const request = detail.work_request;
-  const operational = sliceOperationalState(slice, pkg);
-
-  return (
-    <DetailLoadingHeader
-      title={slice.title || slice.id}
-      eyebrow={`${repoDisplayName(request)} / ${request.base_branch || "main"} / planned slice`}
-      badge={<Badge variant={operationalBadgeVariant(operational, slice.status)}>{operationalLabel(operational, slice.status)}</Badge>}
-      stage={stage}
-    />
-  );
-}
-
-function PackageDetailLoadingContent({ selection, stage }: { selection: Extract<CardDetailSelection, { kind: "package" }>; stage: CardDetailStage }) {
-  const pkg = selection.pkg;
-  const operational = pkg.operational_state || null;
-
-  return (
-    <DetailLoadingHeader
-      title={pkg.title || pkg.id}
-      eyebrow={`${repoDisplayName(pkg)} / ${pkg.base_branch || "main"} / ${pkg.kind || "work package"}`}
-      badge={<Badge variant={operationalBadgeVariant(operational, pkg.status)}>{operationalLabel(operational, pkg.status)}</Badge>}
-      stage={stage}
-    />
-  );
-}
-
-function BlockerDetailLoadingContent({ selection, stage }: { selection: Extract<CardDetailSelection, { kind: "blocker" }>; stage: CardDetailStage }) {
-  const blocker = selection.blocker;
-  const pkg = selection.pkg;
-
-  return (
-    <DetailLoadingHeader
-      title={blocker.summary || pkg?.title || blocker.blocker_id || blocker.id}
-      eyebrow={`${pkg ? repoDisplayName(pkg) : selection.detail ? repoDisplayName(selection.detail.work_request) : "Work package"} / active blocker`}
-      badge={<Badge variant="danger">Blocked</Badge>}
-      stage={stage}
-    />
-  );
-}
-
-function SoloSessionDetailLoadingContent({ session, stage }: { session: SoloSession; stage: CardDetailStage }) {
-  return (
-    <DetailLoadingHeader
-      title={session.title || session.id}
-      eyebrow={`${repoDisplayName(session)} / ${session.base_branch || "main"} / ${session.caller_id || "solo"}`}
-      badge={<Badge variant={soloSessionStatusVariant(session.status)}>{formatStatus(session.status)}</Badge>}
-      stage={stage}
-    />
-  );
 }
