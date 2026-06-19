@@ -231,7 +231,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
             [
               "-NoProfile",
               "-Command",
-              "& { param($ScriptPath, $ErrorLog) $writer = [System.IO.StreamWriter]::new($ErrorLog); [Console]::SetError($writer); try { & $ScriptPath } finally { $writer.Flush(); $writer.Dispose() } }",
+              "& { param($ScriptPath, $ErrorLog) $originalError = [Console]::Error; $writer = [System.IO.StreamWriter]::new($ErrorLog); [Console]::SetError($writer); try { & $ScriptPath } finally { [Console]::SetError($originalError); $writer.Flush(); $writer.Dispose() } }",
               script_path,
               setup_stderr_log
             ],
