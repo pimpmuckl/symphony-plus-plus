@@ -23,6 +23,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository, as: GuidanceRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.OperatorAudit
   alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Repository, as: OperatorSettingsRepository
+  alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.RetentionThrottle
   alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings, as: OperatorSettings
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
@@ -220,6 +221,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     repo.delete_all(ClarificationQuestion)
     repo.delete_all(WorkRequest)
     repo.delete_all(OperatorSettings)
+    RetentionThrottle.reset(repo)
     :ok
   end
 
@@ -5498,6 +5500,85 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator dashboard retention skips repeated polls inside the throttle window", %{repo: repo} do
+    with_retention_throttle_ms(60_000, fn ->
+      with_local_operator_endpoint(fn ->
+        assert {:ok, _settings} =
+                 OperatorSettingsRepository.update(repo, %{
+                   "work_request_archive_after_days" => 1,
+                   "solo_session_delete_after_days" => 1
+                 })
+
+        stale_at = DateTime.add(DateTime.utc_now(:microsecond), -2 * 24 * 60 * 60, :second)
+
+        first_request = create_completed_skipped_work_request!(repo, "WR-LOCAL-THROTTLE-FIRST", stale_at)
+
+        first_solo =
+          repo
+          |> create_solo_session!("solo-retention-throttle-first")
+          |> set_solo_session_last_activity!(repo, stale_at)
+
+        first_payload =
+          local_operator_conn()
+          |> get("/api/v1/sympp/operator/dashboard")
+          |> json_response(200)
+
+        assert Enum.any?(first_payload["archived_work_requests"]["work_requests"], &(&1["id"] == first_request.id))
+        assert Enum.any?(first_payload["solo_sessions"]["solo_sessions"], &(&1["id"] == first_solo.id and &1["status"] == "archived"))
+
+        second_request = create_completed_skipped_work_request!(repo, "WR-LOCAL-THROTTLE-SECOND", stale_at)
+
+        second_solo =
+          repo
+          |> create_solo_session!("solo-retention-throttle-second")
+          |> set_solo_session_last_activity!(repo, stale_at)
+
+        second_payload =
+          local_operator_conn()
+          |> get("/api/v1/sympp/operator/dashboard")
+          |> json_response(200)
+
+        assert Enum.any?(second_payload["work_requests"]["work_requests"], &(&1["id"] == second_request.id))
+        refute Enum.any?(second_payload["archived_work_requests"]["work_requests"], &(&1["id"] == second_request.id))
+        assert Enum.any?(second_payload["solo_sessions"]["solo_sessions"], &(&1["id"] == second_solo.id and &1["status"] == "active"))
+      end)
+    end)
+  end
+
+  test "local operator dashboard retention runs after the throttle window expires", %{repo: repo} do
+    with_retention_throttle_ms(10, fn ->
+      with_local_operator_endpoint(fn ->
+        assert {:ok, _settings} =
+                 OperatorSettingsRepository.update(repo, %{
+                   "work_request_archive_after_days" => 1,
+                   "solo_session_delete_after_days" => 1
+                 })
+
+        stale_at = DateTime.add(DateTime.utc_now(:microsecond), -2 * 24 * 60 * 60, :second)
+        first_request = create_completed_skipped_work_request!(repo, "WR-LOCAL-THROTTLE-EXPIRED-FIRST", stale_at)
+
+        first_payload =
+          local_operator_conn()
+          |> get("/api/v1/sympp/operator/dashboard")
+          |> json_response(200)
+
+        assert Enum.any?(first_payload["archived_work_requests"]["work_requests"], &(&1["id"] == first_request.id))
+
+        second_request = create_completed_skipped_work_request!(repo, "WR-LOCAL-THROTTLE-EXPIRED-SECOND", stale_at)
+
+        Process.sleep(25)
+
+        second_payload =
+          local_operator_conn()
+          |> get("/api/v1/sympp/operator/dashboard")
+          |> json_response(200)
+
+        refute Enum.any?(second_payload["work_requests"]["work_requests"], &(&1["id"] == second_request.id))
+        assert Enum.any?(second_payload["archived_work_requests"]["work_requests"], &(&1["id"] == second_request.id))
+      end)
+    end)
+  end
+
   test "local operator dashboard retention hides stale terminal unlinked WorkPackages only", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       assert {:ok, _settings} = OperatorSettingsRepository.update(repo, %{"work_request_archive_after_days" => 1})
@@ -7168,6 +7249,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     assert {:ok, grant} = AccessGrantRepository.get(repo, grant.id)
     {grant, work_key}
+  end
+
+  defp with_retention_throttle_ms(window_ms, fun) when is_integer(window_ms) and is_function(fun, 0) do
+    original = Application.fetch_env(:symphony_elixir, :sympp_operator_retention_throttle_ms)
+    Application.put_env(:symphony_elixir, :sympp_operator_retention_throttle_ms, window_ms)
+
+    try do
+      fun.()
+    after
+      restore_fetched_app_env(:sympp_operator_retention_throttle_ms, original)
+    end
   end
 
   defp with_trusted_repo_remotes(remotes, fun) when is_list(remotes) and is_function(fun, 0) do

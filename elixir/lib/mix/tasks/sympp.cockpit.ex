@@ -6,6 +6,7 @@ defmodule Mix.Tasks.Sympp.Cockpit do
   alias SymphonyElixir.HttpServer
   alias SymphonyElixir.SymphonyPlusPlus.MCP.Config, as: MCPConfig
   alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Repository, as: OperatorSettingsRepository
+  alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.RetentionThrottle
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service, as: SoloSessionService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
@@ -398,8 +399,10 @@ defmodule Mix.Tasks.Sympp.Cockpit do
   end
 
   defp run_operator_retention(settings) do
-    now = DateTime.utc_now(:microsecond)
+    RetentionThrottle.run(Repo, settings, &run_operator_retention_pass(settings, &1), force: true)
+  end
 
+  defp run_operator_retention_pass(settings, now) do
     with {:ok, _work_request_summary} <-
            WorkRequestService.retention_pass(Repo,
              archive_after_days: settings.work_request_archive_after_days,
