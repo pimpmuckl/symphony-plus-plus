@@ -1,14 +1,86 @@
 $ErrorActionPreference = "Stop"
 
+function Invoke-LoggedSetupProcess([string]$FilePath, [string[]]$ArgumentList, [string]$WorkingDirectory, [hashtable]$Environment, [string]$LogPrefix, [string]$LogDir, [int]$TimeoutSec) {
+  New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+  $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+  $stdoutPath = Join-Path $LogDir "$LogPrefix-$stamp.out.log"
+  $stderrPath = Join-Path $LogDir "$LogPrefix-$stamp.err.log"
+  $startCommand = Get-StartProcessCommand $FilePath $ArgumentList
+  $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+
+  $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = $startCommand.file
+  $startInfo.WorkingDirectory = $WorkingDirectory
+  $startInfo.UseShellExecute = $false
+  $startInfo.RedirectStandardInput = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $startInfo.CreateNoWindow = $true
+
+  $argumentListProperty = $startInfo.GetType().GetProperty("ArgumentList")
+  if ($null -ne $argumentListProperty) {
+    foreach ($arg in @($startCommand.args)) {
+      [void]$startInfo.ArgumentList.Add([string]$arg)
+    }
+  } else {
+    $startInfo.Arguments = Join-ProcessArgumentList @($startCommand.args)
+  }
+
+  $environmentProperty = $startInfo.GetType().GetProperty("Environment")
+  $environmentMap = if ($null -ne $environmentProperty) { $startInfo.Environment } else { $startInfo.EnvironmentVariables }
+  foreach ($key in @($Environment.Keys)) {
+    $environmentMap[[string]$key] = [string]$Environment[$key]
+  }
+
+  $process = [System.Diagnostics.Process]::new()
+  $process.StartInfo = $startInfo
+  $timedOut = $false
+
+  try {
+    if (-not $process.Start()) {
+      throw "failed to start logged setup process: $($startCommand.file)"
+    }
+
+    $process.StandardInput.Close()
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+
+    if (-not $process.WaitForExit($TimeoutSec * 1000)) {
+      $timedOut = $true
+      try { $process.Kill($true) } catch { try { $process.Kill() } catch {} }
+      try { [void]$process.WaitForExit(5000) } catch {}
+    }
+
+    try { [void]$stdoutTask.Wait(5000) } catch {}
+    try { [void]$stderrTask.Wait(5000) } catch {}
+    $stdout = if ($stdoutTask.IsCompleted -and -not $stdoutTask.IsFaulted -and -not $stdoutTask.IsCanceled) { [string]$stdoutTask.Result } else { "" }
+    $stderr = if ($stderrTask.IsCompleted -and -not $stderrTask.IsFaulted -and -not $stderrTask.IsCanceled) { [string]$stderrTask.Result } else { "" }
+    [System.IO.File]::WriteAllText($stdoutPath, $stdout, $utf8NoBom)
+    [System.IO.File]::WriteAllText($stderrPath, $stderr, $utf8NoBom)
+
+    return [pscustomobject]@{
+      process = $process
+      stdout = $stdoutPath
+      stderr = $stderrPath
+      timed_out = $timedOut
+    }
+  } catch {
+    if ($process -and -not $process.HasExited) {
+      try { $process.Kill($true) } catch { try { $process.Kill() } catch {} }
+    }
+    if (-not (Test-Path -LiteralPath $stdoutPath)) { [System.IO.File]::WriteAllText($stdoutPath, "", $utf8NoBom) }
+    if (-not (Test-Path -LiteralPath $stderrPath)) { [System.IO.File]::WriteAllText($stderrPath, "", $utf8NoBom) }
+    throw
+  }
+}
+
 function Invoke-ElixirSetupCommand([string]$ElixirDir, [string]$Launcher, [string]$MixCommand, [string]$MiseCommand, [string[]]$MixArgs, [string]$LogPrefix, [string]$LogDir, [int]$TimeoutSec) {
   Assert-LauncherAvailable $Launcher $MixCommand $MiseCommand
   $command = Get-LauncherCommand $Launcher $MixCommand $MiseCommand $MixArgs
 
-  $launch = Start-LoggedProcess $command.file $command.args $ElixirDir @{} $LogPrefix $LogDir
-  $completed = $false
+  $launch = Invoke-LoggedSetupProcess $command.file $command.args $ElixirDir @{} $LogPrefix $LogDir $TimeoutSec
   try {
-    $completed = $launch.process.WaitForExit($TimeoutSec * 1000)
-    if (-not $completed) {
+    if ($launch.timed_out) {
       throw "Timed out after $TimeoutSec seconds."
     }
 
@@ -18,10 +90,6 @@ function Invoke-ElixirSetupCommand([string]$ElixirDir, [string]$Launcher, [strin
 
     return $launch
   } catch {
-    if (-not $completed) {
-      Stop-LoggedProcess $launch
-    }
-
     throw "$LogPrefix failed. detail=$($_.Exception.Message) stdout_log=$($launch.stdout) stderr_log=$($launch.stderr)"
   }
 }
