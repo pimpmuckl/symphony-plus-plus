@@ -1,8 +1,8 @@
-import type { ArchitectHandoffPayload, ContextComment, CopyArchitectHandoff, CreateWorkRequestPayload, DashboardPayload, GuidanceAnswerSubmission, GuidanceItem } from "@/types/dashboard";
+import type { ArchitectHandoffPayload, ContextComment, CopyArchitectHandoff, CreateWorkRequestPayload, DashboardMutationPayload, DashboardPayload, GuidanceAnswerSubmission, GuidanceItem } from "@/types/dashboard";
 import type { NewRequestForm } from "@/components/dashboard/new-request-dialog";
 import type * as React from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { CardDetailSelection, DASHBOARD_POLL_INTERVAL_MS, DASHBOARD_RECONNECT_GRACE_MS, DashboardConnectionIssue, DashboardResponseSelector, DashboardRuntimeConfig, PR_SYNC_INTERVAL_MS, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageBlockerClearMutation, WorkPackageStateMutation, WorkRequestMutation, WorkRequestStateMutation, WorkspaceTab, copyTextToClipboard, dashboardCaughtMessage, dashboardFromEnvelope, dashboardRuntimeConfig, ensureDashboardRuntimeConfig, isReconnectableLocalOperatorError, jsonHeaders, mutationHeaders, operatorApiUrl, operatorFetch, readDashboardApiResponse, reconnectLocalOperatorSession, withLocalOperatorReconnect } from "./runtime";
+import { CardDetailSelection, DASHBOARD_POLL_INTERVAL_MS, DASHBOARD_RECONNECT_GRACE_MS, DashboardConnectionIssue, DashboardResponseSelector, DashboardRuntimeConfig, PR_SYNC_INTERVAL_MS, ResolveContextComment, SubmitContextComment, WorkPackageArchiveMutation, WorkPackageBlockerClearMutation, WorkPackageStateMutation, WorkRequestMutation, WorkRequestStateMutation, WorkspaceTab, copyTextToClipboard, dashboardCaughtMessage, dashboardRuntimeConfig, ensureDashboardRuntimeConfig, isReconnectableLocalOperatorError, jsonHeaders, mutationHeaders, mutationShouldRefreshDashboard, operatorApiUrl, operatorFetch, readDashboardApiResponse, reconnectLocalOperatorSession, withLocalOperatorReconnect } from "./runtime";
 import { DashboardShell } from "./dashboard-shell";
 import { SoloSessions } from "./solo-sessions";
 import { WorkstreamsPane } from "./workspace-tabs";
@@ -138,84 +138,6 @@ function useDashboardController() {
     [setDashboard, setError],
   );
 
-  const submitGuidanceAnswer = useCallback(async (item: GuidanceItem, submission: GuidanceAnswerSubmission) => {
-    await withLocalOperatorReconnect(async () => {
-      const response = await operatorFetch(guidanceAnswerUrl(item), {
-        method: "POST",
-        headers: await mutationHeaders(),
-        body: JSON.stringify(submission),
-      });
-      await applyDashboardResponse(response, "Answer was not recorded", dashboardFromEnvelope);
-    });
-    setSelectedGuidance(null);
-  }, [applyDashboardResponse, setSelectedGuidance]);
-
-  const createWorkRequest = useCallback(async (form: NewRequestForm) => {
-    const payload = (await withLocalOperatorReconnect(async () => {
-      const response = await operatorFetch(operatorApiUrl("/work-requests"), {
-        method: "POST",
-        headers: await mutationHeaders(),
-        body: JSON.stringify(form),
-      });
-      return readDashboardApiResponse(response, "Request was not created");
-    })) as CreateWorkRequestPayload;
-
-    if (!payload.dashboard || !payload.work_request) {
-      throw new Error("Request was created, but the dashboard response was incomplete");
-    }
-
-    setDashboard(payload.dashboard);
-    setConnectionIssue(null);
-    setError(null);
-    return payload.work_request;
-  }, [setDashboard, setError]);
-
-  const submitComment = useCallback<SubmitContextComment>(async (target, body) => {
-    const payload = (await withLocalOperatorReconnect(async () => {
-      const response = await operatorFetch(operatorApiUrl("/comments"), {
-        method: "POST",
-        headers: await mutationHeaders(),
-        body: JSON.stringify({
-          target_kind: target.target_kind,
-          target_id: target.target_id,
-          body,
-        }),
-      });
-      return readDashboardApiResponse(response, "Comment was not recorded");
-    })) as { comment?: ContextComment; dashboard?: DashboardPayload };
-
-    if (!payload.dashboard || !payload.comment) {
-      throw new Error("Comment was recorded, but the dashboard response was incomplete");
-    }
-
-    setDashboard(payload.dashboard);
-    setConnectionIssue(null);
-    setError(null);
-    return payload.comment;
-  }, [setDashboard, setError]);
-
-  const resolveComment = useCallback<ResolveContextComment>(async (commentId, resolutionNote) => {
-    const payload = (await withLocalOperatorReconnect(async () => {
-      const response = await operatorFetch(operatorApiUrl(`/comments/${encodeURIComponent(commentId)}/resolve`), {
-        method: "POST",
-        headers: await mutationHeaders(),
-        body: JSON.stringify({
-          resolution_note: resolutionNote || "",
-        }),
-      });
-      return readDashboardApiResponse(response, "Comment was not resolved");
-    })) as { comment?: ContextComment; dashboard?: DashboardPayload };
-
-    if (!payload.dashboard || !payload.comment) {
-      throw new Error("Comment was resolved, but the dashboard response was incomplete");
-    }
-
-    setDashboard(payload.dashboard);
-    setConnectionIssue(null);
-    setError(null);
-    return payload.comment;
-  }, [setDashboard, setError]);
-
   const loadDashboard = useCallback(async (mode: "initial" | "refresh" | "silent" | "reconnect" = "refresh") => {
     if (loadInFlightRef.current && mode === "silent") return;
     loadInFlightRef.current = true;
@@ -246,6 +168,96 @@ function useDashboardController() {
     }
   }, [applyDashboardResponse, recordConnectionFailure, setLoading, setRefreshing]);
 
+  const refreshAfterMutation = useCallback(async (payload?: DashboardMutationPayload) => {
+    if (payload?.dashboard) {
+      setDashboard(payload.dashboard);
+      setConnectionIssue(null);
+      setError(null);
+      return;
+    }
+
+    if (!mutationShouldRefreshDashboard(payload)) {
+      setConnectionIssue(null);
+      setError(null);
+      return;
+    }
+
+    await loadDashboard("refresh");
+  }, [loadDashboard, setDashboard, setError]);
+
+  const submitGuidanceAnswer = useCallback(async (item: GuidanceItem, submission: GuidanceAnswerSubmission) => {
+    await withLocalOperatorReconnect(async () => {
+      const response = await operatorFetch(guidanceAnswerUrl(item), {
+        method: "POST",
+        headers: await mutationHeaders(),
+        body: JSON.stringify(submission),
+      });
+      const payload = (await readDashboardApiResponse(response, "Answer was not recorded")) as DashboardMutationPayload;
+      await refreshAfterMutation(payload);
+    });
+    setSelectedGuidance(null);
+  }, [refreshAfterMutation, setSelectedGuidance]);
+
+  const createWorkRequest = useCallback(async (form: NewRequestForm) => {
+    const payload = (await withLocalOperatorReconnect(async () => {
+      const response = await operatorFetch(operatorApiUrl("/work-requests"), {
+        method: "POST",
+        headers: await mutationHeaders(),
+        body: JSON.stringify(form),
+      });
+      return readDashboardApiResponse(response, "Request was not created");
+    })) as CreateWorkRequestPayload;
+
+    if (!payload.work_request) {
+      throw new Error("Request was created, but the dashboard response was incomplete");
+    }
+
+    await refreshAfterMutation(payload);
+    return payload.work_request;
+  }, [refreshAfterMutation]);
+
+  const submitComment = useCallback<SubmitContextComment>(async (target, body) => {
+    const payload = (await withLocalOperatorReconnect(async () => {
+      const response = await operatorFetch(operatorApiUrl("/comments"), {
+        method: "POST",
+        headers: await mutationHeaders(),
+        body: JSON.stringify({
+          target_kind: target.target_kind,
+          target_id: target.target_id,
+          body,
+        }),
+      });
+      return readDashboardApiResponse(response, "Comment was not recorded");
+    })) as { comment?: ContextComment } & DashboardMutationPayload;
+
+    if (!payload.comment) {
+      throw new Error("Comment was recorded, but the dashboard response was incomplete");
+    }
+
+    await refreshAfterMutation(payload);
+    return payload.comment;
+  }, [refreshAfterMutation]);
+
+  const resolveComment = useCallback<ResolveContextComment>(async (commentId, resolutionNote) => {
+    const payload = (await withLocalOperatorReconnect(async () => {
+      const response = await operatorFetch(operatorApiUrl(`/comments/${encodeURIComponent(commentId)}/resolve`), {
+        method: "POST",
+        headers: await mutationHeaders(),
+        body: JSON.stringify({
+          resolution_note: resolutionNote || "",
+        }),
+      });
+      return readDashboardApiResponse(response, "Comment was not resolved");
+    })) as { comment?: ContextComment } & DashboardMutationPayload;
+
+    if (!payload.comment) {
+      throw new Error("Comment was resolved, but the dashboard response was incomplete");
+    }
+
+    await refreshAfterMutation(payload);
+    return payload.comment;
+  }, [refreshAfterMutation]);
+
   const syncPullRequests = useCallback(async () => {
     if (prSyncInFlightRef.current) return;
     prSyncInFlightRef.current = true;
@@ -258,7 +270,8 @@ function useDashboardController() {
           headers,
           body: JSON.stringify({ mode: "auto" }),
         });
-        await applyDashboardResponse(response, "GitHub PR sync unavailable", dashboardFromEnvelope);
+        const payload = (await readDashboardApiResponse(response, "GitHub PR sync unavailable")) as DashboardMutationPayload;
+        await refreshAfterMutation(payload);
       });
     } catch (caught) {
       recordConnectionFailure(
@@ -269,7 +282,7 @@ function useDashboardController() {
     } finally {
       prSyncInFlightRef.current = false;
     }
-  }, [applyDashboardResponse, recordConnectionFailure]);
+  }, [recordConnectionFailure, refreshAfterMutation]);
 
   const copyArchitectHandoff = useCallback<CopyArchitectHandoff>(async (workRequestId, cachedHandoff) => {
     let handoff = cachedHandoff || null;
@@ -286,9 +299,7 @@ function useDashboardController() {
 
       handoff = payload.architect_handoff || null;
 
-      if (payload.dashboard) {
-        setDashboard(payload.dashboard);
-      }
+      await refreshAfterMutation(payload);
     }
 
     const prompt = handoff?.prompt?.trim();
@@ -306,7 +317,7 @@ function useDashboardController() {
         copyError: caught instanceof Error ? caught.message : "Clipboard copy unavailable",
       };
     }
-  }, [setDashboard]);
+  }, [refreshAfterMutation]);
 
   const updateRetentionSetting = useCallback(async (payload: { work_request_archive_after_days?: number; solo_session_delete_after_days?: number }) => {
     await withLocalOperatorReconnect(async () => {
@@ -315,9 +326,10 @@ function useDashboardController() {
         headers: await mutationHeaders(),
         body: JSON.stringify(payload),
       });
-      await applyDashboardResponse(response, "Settings were not saved", dashboardFromEnvelope);
+      const responsePayload = (await readDashboardApiResponse(response, "Settings were not saved")) as DashboardMutationPayload;
+      await refreshAfterMutation(responsePayload);
     });
-  }, [applyDashboardResponse]);
+  }, [refreshAfterMutation]);
 
   const updateArchiveAfterDays = useCallback(
     (archiveAfterDays: number) => updateRetentionSetting({ work_request_archive_after_days: archiveAfterDays }),
@@ -336,10 +348,11 @@ function useDashboardController() {
         headers: await mutationHeaders(),
         body: JSON.stringify({}),
       });
-      await applyDashboardResponse(response, "WorkRequest was not archived", dashboardFromEnvelope);
+      const payload = (await readDashboardApiResponse(response, "WorkRequest was not archived")) as DashboardMutationPayload;
+      await refreshAfterMutation(payload);
     });
     setSelectedCardDetail(null);
-  }, [applyDashboardResponse, setSelectedCardDetail]);
+  }, [refreshAfterMutation, setSelectedCardDetail]);
 
   const restoreWorkRequest = useCallback<WorkRequestMutation>(async (workRequestId) => {
     await withLocalOperatorReconnect(async () => {
@@ -348,9 +361,10 @@ function useDashboardController() {
         headers: await mutationHeaders(),
         body: JSON.stringify({}),
       });
-      await applyDashboardResponse(response, "WorkRequest was not restored", dashboardFromEnvelope);
+      const payload = (await readDashboardApiResponse(response, "WorkRequest was not restored")) as DashboardMutationPayload;
+      await refreshAfterMutation(payload);
     });
-  }, [applyDashboardResponse]);
+  }, [refreshAfterMutation]);
 
   const changeWorkRequestState = useCallback<WorkRequestStateMutation>(async (workRequestId, nextState) => {
     await withLocalOperatorReconnect(async () => {
@@ -359,10 +373,11 @@ function useDashboardController() {
         headers: await mutationHeaders(),
         body: JSON.stringify({ state: nextState }),
       });
-      await applyDashboardResponse(response, "WorkRequest state was not changed", dashboardFromEnvelope);
+      const payload = (await readDashboardApiResponse(response, "WorkRequest state was not changed")) as DashboardMutationPayload;
+      await refreshAfterMutation(payload);
     });
     setSelectedCardDetail(null);
-  }, [applyDashboardResponse, setSelectedCardDetail]);
+  }, [refreshAfterMutation, setSelectedCardDetail]);
 
   const changeWorkPackageState = useCallback<WorkPackageStateMutation>(async (workPackageId, action, options) => {
     await withLocalOperatorReconnect(async () => {
@@ -371,10 +386,11 @@ function useDashboardController() {
         headers: await mutationHeaders(),
         body: JSON.stringify({ status: action, no_pr_evidence: options?.noPrEvidence }),
       });
-      await applyDashboardResponse(response, "WorkPackage state was not changed", dashboardFromEnvelope);
+      const payload = (await readDashboardApiResponse(response, "WorkPackage state was not changed")) as DashboardMutationPayload;
+      await refreshAfterMutation(payload);
     });
     setSelectedCardDetail(null);
-  }, [applyDashboardResponse, setSelectedCardDetail]);
+  }, [refreshAfterMutation, setSelectedCardDetail]);
 
   const archiveWorkPackage = useCallback<WorkPackageArchiveMutation>(async (workPackageId) => {
     await withLocalOperatorReconnect(async () => {
@@ -383,10 +399,11 @@ function useDashboardController() {
         headers: await mutationHeaders(),
         body: JSON.stringify({}),
       });
-      await applyDashboardResponse(response, "WorkPackage was not archived", dashboardFromEnvelope);
+      const payload = (await readDashboardApiResponse(response, "WorkPackage was not archived")) as DashboardMutationPayload;
+      await refreshAfterMutation(payload);
     });
     setSelectedCardDetail(null);
-  }, [applyDashboardResponse, setSelectedCardDetail]);
+  }, [refreshAfterMutation, setSelectedCardDetail]);
 
   const clearWorkPackageBlocker = useCallback<WorkPackageBlockerClearMutation>(async (workPackageId, blockerId) => {
     await withLocalOperatorReconnect(async () => {
@@ -395,10 +412,11 @@ function useDashboardController() {
         headers: await mutationHeaders(),
         body: JSON.stringify({}),
       });
-      await applyDashboardResponse(response, "Blocker was not cleared", dashboardFromEnvelope);
+      const payload = (await readDashboardApiResponse(response, "Blocker was not cleared")) as DashboardMutationPayload;
+      await refreshAfterMutation(payload);
     });
     setSelectedCardDetail(null);
-  }, [applyDashboardResponse, setSelectedCardDetail]);
+  }, [refreshAfterMutation, setSelectedCardDetail]);
 
   useEffect(() => {
     let cancelled = false;

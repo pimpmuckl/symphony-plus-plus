@@ -218,6 +218,7 @@ export type ArchitectHandoff = {
 export type ArchitectHandoffPayload = {
   architect_handoff?: ArchitectHandoff;
   dashboard?: DashboardPayload;
+  refresh?: DashboardMutationRefresh;
 };
 
 export type ArchitectHandoffCopyResult = {
@@ -233,6 +234,7 @@ export type HandoffCopyState = "idle" | "copying" | "copied" | "error";
 export type CreateWorkRequestPayload = {
   work_request?: WorkRequestDetail;
   dashboard?: DashboardPayload;
+  refresh?: DashboardMutationRefresh;
 };
 
 export type DashboardSettings = {
@@ -602,4 +604,19 @@ export type DashboardPayload = {
     solo_sessions?: SoloSession[];
     total_count?: number;
   };
+};
+
+export type DashboardMutationRefresh = {
+  dashboard?: boolean;
+  work_request_id?: string;
+  work_package_id?: string;
+  planned_slice_id?: string;
+  comment_target_kind?: string | null;
+  comment_target_id?: string | null;
+};
+
+export type DashboardMutationPayload = {
+  ok?: boolean;
+  dashboard?: DashboardPayload;
+  refresh?: DashboardMutationRefresh;
 };

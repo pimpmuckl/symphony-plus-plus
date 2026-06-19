@@ -353,6 +353,11 @@ export function dashboardFromEnvelope(payload: DashboardApiResponse) {
   return payload.dashboard as DashboardPayload;
 }
 
+export function mutationShouldRefreshDashboard(payload: DashboardApiResponse) {
+  if (!isRecord(payload) || !isRecord(payload.refresh)) return true;
+  return payload.refresh.dashboard !== false;
+}
+
 function invalidateDashboardRuntimeAuth() {
   dashboardRuntimeConfigGeneration += 1;
   dashboardRuntimeConfigPromise = null;
