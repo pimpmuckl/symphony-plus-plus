@@ -210,9 +210,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiLocalOperatorVisibilityTes
         |> post("/api/v1/sympp/operator/work-packages/#{delivered_package.id}/archive", %{})
         |> json_response(200)
 
-      assert get_in(archive_payload, ["dashboard", "settings", "hidden_work_package_ids"]) == [delivered_package.id]
-      assert active_package.id in board_work_package_ids(archive_payload["dashboard"])
-      refute delivered_package.id in board_work_package_ids(archive_payload["dashboard"])
+      refute Map.has_key?(archive_payload, "dashboard")
+      assert archive_payload["ok"] == true
+      assert archive_payload["work_package_id"] == delivered_package.id
+      assert get_in(archive_payload, ["refresh", "dashboard"]) == true
+      assert get_in(archive_payload, ["refresh", "work_package_id"]) == delivered_package.id
+
+      dashboard_payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      assert get_in(dashboard_payload, ["settings", "hidden_work_package_ids"]) == [delivered_package.id]
+      assert active_package.id in board_work_package_ids(dashboard_payload)
+      refute delivered_package.id in board_work_package_ids(dashboard_payload)
 
       assert {:ok, persisted_package} = WorkPackageRepository.get(repo, delivered_package.id)
       assert persisted_package.status == "merged"

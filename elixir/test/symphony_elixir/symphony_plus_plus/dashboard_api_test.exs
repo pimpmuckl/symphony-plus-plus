@@ -5080,7 +5080,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
-  test "local operator can sync GitHub PR merge state and receive refreshed dashboard", %{repo: repo} do
+  test "local operator can sync GitHub PR merge state and request dashboard refresh", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       with_operator_github_client(fn ->
         work_package =
@@ -5116,7 +5116,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
         assert payload["sync"]["merged_count"] == 1
         assert [%{"work_package_id" => "SYMPP-LOCAL-OPERATOR-GH-SYNC", "status" => "merged"}] = payload["sync"]["results"]
-        assert payload["dashboard"]["generated_at"]
+        refute Map.has_key?(payload, "dashboard")
+        assert get_in(payload, ["refresh", "dashboard"]) == true
 
         assert {:ok, updated} = WorkPackageRepository.get(repo, work_package.id)
         assert updated.status == "merged"
@@ -5162,7 +5163,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
           assert payload["sync"]["merged_count"] == 1
           assert [%{"work_package_id" => "SYMPP-LOCAL-OPERATOR-GH-CLI-AUTO", "status" => "merged"}] = payload["sync"]["results"]
-          assert payload["dashboard"]["generated_at"]
+          refute Map.has_key?(payload, "dashboard")
+          assert get_in(payload, ["refresh", "dashboard"]) == true
 
           assert {:ok, updated} = WorkPackageRepository.get(repo, work_package.id)
           assert updated.status == "merged"
@@ -5267,7 +5269,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         |> json_response(201)
 
       assert payload["work_request"]["work_request"]["status"] == "ready_for_clarification"
-      assert payload["dashboard"]["work_requests"]["total_count"] == 1
+      refute Map.has_key?(payload, "dashboard")
+      assert get_in(payload, ["refresh", "dashboard"]) == true
+
+      dashboard_payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      assert dashboard_payload["work_requests"]["total_count"] == 1
 
       assert {:ok, [stored]} = WorkRequestRepository.list(repo)
       assert stored.title == "Fresh dashboard request"
@@ -5321,8 +5331,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
       assert archive_payload["settings"]["work_request_archive_after_days"] == 1
       assert archive_payload["settings"]["solo_session_delete_after_days"] == 30
-      refute Enum.any?(archive_payload["dashboard"]["work_requests"]["work_requests"], &(&1["id"] == request.id))
-      assert [%{"id" => "WR-LOCAL-ARCHIVE-SETTINGS", "archived_at" => archived_at}] = archive_payload["dashboard"]["archived_work_requests"]["work_requests"]
+      refute Map.has_key?(archive_payload, "dashboard")
+
+      archived_dashboard_payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      refute Enum.any?(archived_dashboard_payload["work_requests"]["work_requests"], &(&1["id"] == request.id))
+      assert [%{"id" => "WR-LOCAL-ARCHIVE-SETTINGS", "archived_at" => archived_at}] = archived_dashboard_payload["archived_work_requests"]["work_requests"]
       assert is_binary(archived_at)
 
       restore_payload =
@@ -5330,9 +5347,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         |> post("/api/v1/sympp/operator/work-requests/#{request.id}/restore", %{})
         |> json_response(200)
 
-      assert Enum.any?(restore_payload["dashboard"]["work_requests"]["work_requests"], &(&1["id"] == request.id))
-      refute Enum.any?(restore_payload["dashboard"]["archived_work_requests"]["work_requests"], &(&1["id"] == request.id))
-      assert get_in(restore_payload, ["work_request", "work_request", "archived_at"]) == nil
+      refute Map.has_key?(restore_payload, "dashboard")
+      assert get_in(restore_payload, ["work_request", "archived_at"]) == nil
+
+      restored_dashboard_payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      assert Enum.any?(restored_dashboard_payload["work_requests"]["work_requests"], &(&1["id"] == request.id))
+      refute Enum.any?(restored_dashboard_payload["archived_work_requests"]["work_requests"], &(&1["id"] == request.id))
     end)
   end
 
@@ -5705,8 +5729,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         |> post("/api/v1/sympp/operator/work-requests/#{completed.id}/archive", %{})
         |> json_response(200)
 
-      refute Enum.any?(archive_payload["dashboard"]["work_requests"]["work_requests"], &(&1["id"] == completed.id))
-      assert [%{"id" => "WR-LOCAL-MANUAL-ARCHIVE"}] = archive_payload["dashboard"]["archived_work_requests"]["work_requests"]
+      refute Map.has_key?(archive_payload, "dashboard")
+      assert get_in(archive_payload, ["refresh", "work_request_id"]) == completed.id
+
+      dashboard_payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      refute Enum.any?(dashboard_payload["work_requests"]["work_requests"], &(&1["id"] == completed.id))
+      assert [%{"id" => "WR-LOCAL-MANUAL-ARCHIVE"}] = dashboard_payload["archived_work_requests"]["work_requests"]
 
       delivered = create_work_request!(repo, id: "WR-LOCAL-MANUAL-ARCHIVE-DELIVERED", status: "ready_for_slicing")
 
@@ -5732,8 +5764,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         |> post("/api/v1/sympp/operator/work-requests/#{delivered.id}/archive", %{})
         |> json_response(200)
 
-      refute Enum.any?(delivered_archive_payload["dashboard"]["work_requests"]["work_requests"], &(&1["id"] == delivered.id))
-      assert Enum.any?(delivered_archive_payload["dashboard"]["archived_work_requests"]["work_requests"], &(&1["id"] == delivered.id and is_binary(&1["archived_at"])))
+      refute Map.has_key?(delivered_archive_payload, "dashboard")
+
+      delivered_dashboard_payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      refute Enum.any?(delivered_dashboard_payload["work_requests"]["work_requests"], &(&1["id"] == delivered.id))
+      assert Enum.any?(delivered_dashboard_payload["archived_work_requests"]["work_requests"], &(&1["id"] == delivered.id and is_binary(&1["archived_at"])))
 
       incomplete = create_work_request!(repo, id: "WR-LOCAL-MANUAL-NOT-COMPLETE", status: "ready_for_slicing")
 
@@ -5771,7 +5810,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       assert {:ok, persisted_package} = WorkPackageRepository.get(repo, work_package.id)
       assert persisted_package.status == "merged"
 
-      assert get_in(work_request_detail(payload["dashboard"], work_request.id), ["work_request", "operational_state", "key"]) ==
+      refute Map.has_key?(payload, "dashboard")
+
+      dashboard_payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      assert get_in(work_request_detail(dashboard_payload, work_request.id), ["work_request", "operational_state", "key"]) ==
                "needs_closeout"
     end)
   end
@@ -5835,7 +5881,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       assert {:ok, persisted_package} = WorkPackageRepository.get(repo, work_package.id)
       assert persisted_package.status == "implementing"
 
-      package_card = second_payload["dashboard"]["board"]["groups"] |> Map.values() |> List.flatten() |> Enum.find(&(&1["id"] == work_package.id))
+      refute Map.has_key?(second_payload, "dashboard")
+
+      dashboard_payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      package_card = dashboard_payload["board"]["groups"] |> Map.values() |> List.flatten() |> Enum.find(&(&1["id"] == work_package.id))
       assert package_card["active_blocker_count"] == 0
       assert package_card["active_blockers"] == []
     end)
@@ -5897,7 +5950,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         |> json_response(200)
 
       assert %{"progress_event" => %{"blocker_id" => "local-clear-blocker-stale-dashboard"}} = payload
-      assert get_in(payload, ["dashboard", "settings", "hidden_work_package_ids"]) == []
+      refute Map.has_key?(payload, "dashboard")
       refute Map.has_key?(payload, "error")
 
       assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, work_package.id)
@@ -5912,8 +5965,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         |> post("/api/v1/sympp/operator/work-packages/#{archive_package.id}/archive", %{})
         |> json_response(200)
 
-      assert get_in(archive_payload, ["dashboard", "settings", "hidden_work_package_ids"]) == [archive_package.id]
-      refute archive_package.id in board_work_package_ids(archive_payload["dashboard"])
+      refute Map.has_key?(archive_payload, "dashboard")
+
+      refreshed_dashboard_payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      assert get_in(refreshed_dashboard_payload, ["settings", "hidden_work_package_ids"]) == [archive_package.id]
+      refute archive_package.id in board_work_package_ids(refreshed_dashboard_payload)
     end)
   end
 
@@ -5950,7 +6010,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       assert {:ok, persisted_package} = WorkPackageRepository.get(repo, work_package.id)
       assert persisted_package.status == "closed"
 
-      detail = work_request_detail(payload["dashboard"], work_request.id)
+      refute Map.has_key?(payload, "dashboard")
+
+      dashboard_payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      detail = work_request_detail(dashboard_payload, work_request.id)
       assert get_in(detail, ["planned_slices", Access.at(0), "delivery", "outcome"]) == "completed_no_pr"
     end)
   end
@@ -6013,10 +6080,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         |> post("/api/v1/sympp/operator/work-packages/#{close_package.id}/state", %{"status" => "closed_and_archive"})
         |> json_response(200)
 
-      assert get_in(close_payload, ["dashboard", "settings", "hidden_work_package_ids"]) == [merge_package.id, close_package.id]
-      refute merge_package.id in board_work_package_ids(merge_payload["dashboard"])
-      refute merge_package.id in board_work_package_ids(close_payload["dashboard"])
-      refute close_package.id in board_work_package_ids(close_payload["dashboard"])
+      refute Map.has_key?(merge_payload, "dashboard")
+      refute Map.has_key?(close_payload, "dashboard")
+
+      dashboard_payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      assert get_in(dashboard_payload, ["settings", "hidden_work_package_ids"]) == [merge_package.id, close_package.id]
+      refute merge_package.id in board_work_package_ids(dashboard_payload)
+      refute close_package.id in board_work_package_ids(dashboard_payload)
 
       assert {:ok, persisted_merge_package} = WorkPackageRepository.get(repo, merge_package.id)
       assert persisted_merge_package.status == "merged"
@@ -6099,8 +6173,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         |> post("/api/v1/sympp/operator/work-requests/#{work_request.id}/state", %{"state" => "completed"})
         |> json_response(200)
 
-      assert get_in(payload, ["work_request", "work_request", "operational_state", "key"]) == "completed"
-      assert get_in(payload, ["work_request", "work_request", "completion_source"]) == "operator"
+      refute Map.has_key?(payload, "dashboard")
+      assert payload["work_request_id"] == work_request.id
+      assert get_in(payload, ["refresh", "work_request_id"]) == work_request.id
+
+      detail_payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/work-requests/#{work_request.id}")
+        |> json_response(200)
+
+      assert get_in(detail_payload, ["work_request", "operational_state", "key"]) == "completed"
+      assert get_in(detail_payload, ["work_request", "completion_source"]) == "operator"
 
       assert {:ok, persisted_request} = WorkRequestRepository.get(repo, work_request.id)
       assert %DateTime{} = persisted_request.completed_at
@@ -6153,7 +6236,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       assert get_in(create_payload, ["comment", "body"]) == "Operator note [REDACTED]"
       assert get_in(create_payload, ["comment", "source_type"]) == "operator"
       assert get_in(create_payload, ["comment", "author_name"]) == "local-operator"
-      assert get_in(work_request_detail(create_payload["dashboard"], work_request.id), ["summary", "open_comment_count"]) == 1
+      refute Map.has_key?(create_payload, "dashboard")
+      assert get_in(create_payload, ["refresh", "comment_target_kind"]) == "work_request"
+      assert get_in(create_payload, ["refresh", "comment_target_id"]) == work_request.id
+
+      created_detail_payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/work-requests/#{work_request.id}")
+        |> json_response(200)
+
+      assert get_in(created_detail_payload, ["summary", "open_comment_count"]) == 1
 
       assert {:ok, %Comment{source_type: "operator", author_name: "local-operator", body: "Operator note [REDACTED]"}} = CommentService.get(repo, comment_id)
 
@@ -6170,8 +6262,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       assert get_in(resolve_payload, ["comment", "resolved_by"]) == "local-operator"
       assert get_in(resolve_payload, ["comment", "resolved_source_type"]) == "operator"
       assert get_in(resolve_payload, ["comment", "resolution_note"]) == "Handled [REDACTED]"
-      assert get_in(work_request_detail(resolve_payload["dashboard"], work_request.id), ["summary", "comment_count"]) == 1
-      assert get_in(work_request_detail(resolve_payload["dashboard"], work_request.id), ["summary", "open_comment_count"]) == 0
+      refute Map.has_key?(resolve_payload, "dashboard")
+
+      resolved_detail_payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/work-requests/#{work_request.id}")
+        |> json_response(200)
+
+      assert get_in(resolved_detail_payload, ["summary", "comment_count"]) == 1
+      assert get_in(resolved_detail_payload, ["summary", "open_comment_count"]) == 0
       assert {:ok, %Comment{resolution_note: "Handled [REDACTED]"}} = CommentService.get(repo, comment_id)
 
       overlong_payload =

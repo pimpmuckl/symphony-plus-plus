@@ -699,9 +699,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @spec operator_sync_github_prs(Conn.t(), map()) :: Conn.t()
   def operator_sync_github_prs(conn, params) do
     send_local_operator_response(conn, :delivery_reconcile_apply, Target.new(:dashboard), :operator_sync_github_prs, fn repo ->
-      with {:ok, sync} <- MergeReconciler.reconcile(repo, github_sync_opts(params)),
-           {:ok, dashboard} <- operator_dashboard_payload(repo) do
-        json(conn, %{sync: sync, dashboard: dashboard})
+      with {:ok, sync} <- MergeReconciler.reconcile(repo, github_sync_opts(params)) do
+        json(conn, mutation_success_payload(%{sync: sync}))
       end
     end)
   end
@@ -723,11 +722,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       attrs = work_request_attrs(params)
 
       with {:ok, work_request} <- WorkRequestService.create(repo, attrs),
-           {:ok, dashboard} <- operator_dashboard_payload(repo),
            {:ok, detail} <- operator_work_request_detail_payload(repo, work_request.id) do
         conn
         |> put_status(201)
-        |> json(%{work_request: detail, dashboard: dashboard})
+        |> json(mutation_success_payload(%{work_request: detail}, %{work_request_id: work_request.id}))
       end
     end)
   end
@@ -736,9 +734,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   def operator_update_settings(conn, params) do
     send_local_operator_response(conn, :dangerous_override, Target.ledger(), :operator_update_settings, fn repo ->
       with {:ok, settings} <- OperatorSettingsRepository.update(repo, operator_settings_attrs(params)),
-           :ok <- run_operator_retention(repo, settings, force: true),
-           {:ok, dashboard} <- operator_dashboard_payload(repo) do
-        json(conn, %{settings: operator_settings_payload(settings), dashboard: dashboard})
+           :ok <- run_operator_retention(repo, settings, force: true) do
+        json(conn, mutation_success_payload(%{settings: operator_settings_payload(settings)}))
       end
     end)
   end
@@ -751,9 +748,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       work_request_target(work_request_id),
       :operator_archive_work_request,
       fn repo ->
-        with {:ok, work_request} <- WorkRequestService.archive(repo, work_request_id),
-             {:ok, dashboard} <- operator_dashboard_payload(repo) do
-          json(conn, %{work_request: archived_work_request_payload(work_request), dashboard: dashboard})
+        with {:ok, work_request} <- WorkRequestService.archive(repo, work_request_id) do
+          json(conn, mutation_success_payload(%{work_request: archived_work_request_payload(work_request)}, %{work_request_id: work_request.id}))
         end
       end
     )
@@ -767,10 +763,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       work_request_target(work_request_id),
       :operator_restore_work_request,
       fn repo ->
-        with {:ok, work_request} <- WorkRequestService.restore(repo, work_request_id),
-             {:ok, dashboard} <- operator_dashboard_payload(repo),
-             {:ok, detail} <- operator_work_request_detail_payload(repo, work_request.id) do
-          json(conn, %{work_request: detail, dashboard: dashboard})
+        with {:ok, work_request} <- WorkRequestService.restore(repo, work_request_id) do
+          json(conn, mutation_success_payload(%{work_request: archived_work_request_payload(work_request)}, %{work_request_id: work_request.id}))
         end
       end
     )
@@ -785,10 +779,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       :operator_update_work_request_state,
       fn repo ->
         with {:ok, "completed"} <- local_operator_work_request_state(params),
-             {:ok, work_request} <- WorkRequestService.force_complete(repo, work_request_id),
-             {:ok, dashboard} <- operator_dashboard_payload(repo),
-             {:ok, detail} <- operator_work_request_detail_payload(repo, work_request.id) do
-          json(conn, %{work_request: detail, dashboard: dashboard})
+             {:ok, work_request} <- WorkRequestService.force_complete(repo, work_request_id) do
+          json(conn, mutation_success_payload(%{work_request_id: work_request.id}, %{work_request_id: work_request.id}))
         end
       end
     )
@@ -809,9 +801,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
                  normalize_package_route_id(work_package_id),
                  action,
                  params
-               ),
-             {:ok, dashboard} <- operator_dashboard_payload(repo) do
-          json(conn, %{work_package_id: work_package.id, dashboard: dashboard})
+               ) do
+          json(conn, mutation_success_payload(%{work_package_id: work_package.id}, %{work_package_id: work_package.id}))
         end
       end
     )
@@ -827,9 +818,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       fn repo ->
         work_package_id = normalize_package_route_id(work_package_id)
 
-        with {:ok, event} <- clear_work_package_blocker_for_local_operator(repo, work_package_id, blocker_id, params),
-             {:ok, dashboard} <- operator_dashboard_payload(repo) do
-          json(conn, %{progress_event: %{id: event.id, blocker_id: blocker_id}, dashboard: dashboard})
+        with {:ok, event} <- clear_work_package_blocker_for_local_operator(repo, work_package_id, blocker_id, params) do
+          json(conn, mutation_success_payload(%{progress_event: %{id: event.id, blocker_id: blocker_id}}, %{work_package_id: work_package_id}))
         end
       end
     )
@@ -845,9 +835,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       fn repo ->
         work_package_id = normalize_package_route_id(work_package_id)
 
-        with {:ok, work_package} <- hide_work_package_for_local_operator(repo, work_package_id),
-             {:ok, dashboard} <- operator_dashboard_payload(repo) do
-          json(conn, %{work_package_id: work_package.id, dashboard: dashboard})
+        with {:ok, work_package} <- hide_work_package_for_local_operator(repo, work_package_id) do
+          json(conn, mutation_success_payload(%{work_package_id: work_package.id}, %{work_package_id: work_package.id}))
         end
       end
     )
@@ -856,23 +845,32 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @spec operator_create_comment(Conn.t(), map()) :: Conn.t()
   def operator_create_comment(conn, params) do
     send_local_operator_response(conn, :comment_add, comment_target(params), :operator_create_comment, fn repo ->
-      with {:ok, comment} <- CommentService.create(repo, local_operator_comment_attrs(params)),
-           {:ok, dashboard} <- operator_dashboard_payload(repo) do
+      with {:ok, comment} <- CommentService.create(repo, local_operator_comment_attrs(params)) do
+        refresh = %{comment_target_kind: comment.target_kind, comment_target_id: comment.target_id}
+
         conn
         |> put_status(201)
-        |> json(%{comment: comment_payload(comment), dashboard: dashboard})
+        |> json(mutation_success_payload(%{comment: comment_payload(comment)}, refresh))
       end
     end)
   end
 
   @spec operator_resolve_comment(Conn.t(), map()) :: Conn.t()
   def operator_resolve_comment(conn, %{"comment_id" => comment_id} = params) do
-    send_local_operator_response(conn, :comment_resolve, Target.new(:comment, comment_id), :operator_resolve_comment, fn repo ->
-      with {:ok, comment} <- CommentService.resolve(repo, comment_id, local_operator_comment_resolution_attrs(params)),
-           {:ok, dashboard} <- operator_dashboard_payload(repo) do
-        json(conn, %{comment: comment_payload(comment), dashboard: dashboard})
+    send_local_operator_response(
+      conn,
+      :comment_resolve,
+      Target.new(:comment, comment_id),
+      :operator_resolve_comment,
+      fn repo ->
+        with {:ok, comment} <-
+               CommentService.resolve(repo, comment_id, local_operator_comment_resolution_attrs(params)) do
+          refresh = %{comment_target_kind: comment.target_kind, comment_target_id: comment.target_id}
+
+          json(conn, mutation_success_payload(%{comment: comment_payload(comment)}, refresh))
+        end
       end
-    end)
+    )
   end
 
   @spec operator_answer_question(Conn.t(), map()) :: Conn.t()
@@ -886,10 +884,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         with {:ok, question} <- scoped_question(repo, work_request_id, question_id),
              :ok <- require_open_question(question),
              {:ok, attrs} <- local_operator_question_answer_attrs(question, params),
-             {:ok, _answered} <- WorkRequestService.answer_question(repo, question.id, question.status, attrs),
-             {:ok, dashboard} <- operator_dashboard_payload(repo),
-             {:ok, detail} <- operator_work_request_detail_payload(repo, work_request_id) do
-          json(conn, %{work_request: detail, dashboard: dashboard})
+             {:ok, _answered} <- WorkRequestService.answer_question(repo, question.id, question.status, attrs) do
+          json(conn, mutation_success_payload(%{work_request_id: work_request_id, question_id: question.id}, %{work_request_id: work_request_id}))
         end
       end
     )
@@ -911,9 +907,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
                  :local_operator,
                  guidance_request_id,
                  attrs
-               ),
-             {:ok, dashboard} <- operator_dashboard_payload(repo) do
-          json(conn, %{guidance_request_id: result.guidance_request.id, dashboard: dashboard})
+               ) do
+          json(conn, mutation_success_payload(%{guidance_request_id: result.guidance_request.id}, %{work_package_id: work_package_id}))
         end
       end
     )
@@ -931,9 +926,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
                ArchitectHandoff.create_or_replay(repo, work_request_id,
                  local_operator?: true,
                  handoff_opts: architect_handoff_opts(repo)
-               ),
-             {:ok, dashboard} <- operator_dashboard_payload(repo) do
-          json(conn, %{architect_handoff: handoff, dashboard: dashboard})
+               ) do
+          json(conn, mutation_success_payload(%{architect_handoff: handoff}, %{work_request_id: work_request_id}))
         end
       end
     )
@@ -948,9 +942,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       :operator_dispatch_planned_slice,
       fn repo ->
         with {:ok, dispatch} <-
-               PlannedSliceDispatch.dispatch(repo, work_request_id, planned_slice_id, dispatch_handoff_opts(repo)),
-             {:ok, dashboard} <- operator_dashboard_payload(repo) do
-          json(conn, %{dispatch: PlannedSliceDispatch.response_payload(dispatch), dashboard: dashboard})
+               PlannedSliceDispatch.dispatch(repo, work_request_id, planned_slice_id, dispatch_handoff_opts(repo)) do
+          refresh = %{work_request_id: work_request_id, planned_slice_id: planned_slice_id}
+          payload = %{dispatch: PlannedSliceDispatch.response_payload(dispatch)}
+
+          json(conn, mutation_success_payload(payload, refresh))
         end
       end
     )
@@ -1108,6 +1104,12 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       logoUrl: prefixed_path(conn, "/splusplus-logo.png"),
       operatorMode: local_operator_api_request?(conn)
     }
+  end
+
+  defp mutation_success_payload(payload, refresh \\ %{}) when is_map(payload) and is_map(refresh) do
+    payload
+    |> Map.put(:ok, true)
+    |> Map.put(:refresh, Map.merge(%{dashboard: true}, refresh))
   end
 
   defp script_name_prefix(%Conn{script_name: []}), do: ""
