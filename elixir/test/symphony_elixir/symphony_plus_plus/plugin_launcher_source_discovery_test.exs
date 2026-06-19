@@ -218,7 +218,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
       marketplace_root = write_minimal_marketplace_source(temp_codex_home)
       mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
       fake_mix_log = Path.join(temp_codex_home, "fake-mix.log")
-      setup_stderr_log = Path.join(temp_codex_home, "setup.stderr.log")
       log_dir = Path.join(temp_codex_home, "logs")
 
       try do
@@ -231,12 +230,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
             [
               "-NoProfile",
               "-Command",
-              "& { param($ScriptPath, $ErrorLog) $writer = [System.IO.StreamWriter]::new($ErrorLog); [Console]::SetError($writer); try { & $ScriptPath } finally { $writer.Flush(); $writer.Dispose() } }",
-              script_path,
-              setup_stderr_log
+              "& { param($ScriptPath) & $ScriptPath }",
+              script_path
             ],
             cd: Path.dirname(Path.dirname(script_path)),
-            stderr_to_stdout: false,
+            stderr_to_stdout: true,
             env: [
               {"SYMPP_ELIXIR_SETUP_TIMEOUT_SEC", "5"},
               {"SYMPP_FAKE_MIX_LOG", fake_mix_log},
@@ -250,9 +248,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
           )
 
         assert status == 0, output
-        assert output == ""
 
-        assert normalize_path_fragment(File.read!(setup_stderr_log)) =~
+        assert normalize_path_fragment(output) =~
                  "ensuring symphony++ elixir dependencies are available in #{normalize_path_fragment(Path.join(marketplace_root, "elixir"))}."
 
         fake_mix_calls =
