@@ -7,6 +7,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
   @plugin_version @plugin_manifest_path |> File.read!() |> Jason.decode!() |> Map.fetch!("version")
   @mcp_plugin_start_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1")
 
+  test "installed MCP launcher treats artifact release listeners as managed backends" do
+    script = File.read!(@mcp_plugin_start_script_path)
+
+    assert script =~ "artifacts[\\\\/]mcp"
+    assert script =~ "start-runtime\\.ps1"
+    assert script =~ "symphony_elixir"
+    assert script =~ "Test-ProcessOwnsTcpPort"
+    assert script =~ "Stop-ManagedRuntimeProcess $Role $listenerPid $entryPort"
+  end
+
   test "installed MCP launcher falls back to marketplace source when artifact manifest is missing" do
     powershell = System.find_executable("pwsh")
     temp_codex_home = unique_temp_path("sympp-plugin-artifact-missing")

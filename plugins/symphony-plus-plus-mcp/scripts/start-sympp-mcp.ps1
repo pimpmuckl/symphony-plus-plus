@@ -65,7 +65,48 @@ function Test-SymppBackendCommandLine([string]$CommandLine) {
     return $false
   }
 
-  return $CommandLine -match "(?i)\bsympp\.cockpit\b"
+  if ($CommandLine -match "(?i)\bsympp\.cockpit\b") {
+    return $true
+  }
+
+  return $CommandLine -match "(?i)(^|[\\/])artifacts[\\/]mcp[\\/]" -and
+    $CommandLine -match "(?i)(start-runtime\.ps1|symphony_elixir(\.bat)?|[\\/]erts-[^\\/]+[\\/]bin[\\/]erl(\.exe)?)"
+}
+
+function Test-ManagedRuntimeCommandLine([string]$Role, [string]$CommandLine) {
+  if ($Role -eq "backend") {
+    return Test-SymppBackendCommandLine $CommandLine
+  }
+
+  return -not [string]::IsNullOrWhiteSpace($CommandLine) -and $CommandLine -match "(?i)\bvite\b"
+}
+
+function Test-ManagedRuntimePortCommandLine([string]$Role, [string]$CommandLine, [int]$Port) {
+  if ($Port -le 0) {
+    return $true
+  }
+
+  $portPattern = if ($Role -eq "backend") {
+    "(?i)(--port|-Port)\s+`"?$Port`"?(?=\s|$)"
+  } else {
+    "(?i)--port\s+`"?$Port`"?(?=\s|$)"
+  }
+  return -not [string]::IsNullOrWhiteSpace($CommandLine) -and $CommandLine -match $portPattern
+}
+
+function Test-ProcessOwnsTcpPort([int]$ProcessId, [int]$Port) {
+  if ($ProcessId -le 0 -or $Port -le 0) {
+    return $false
+  }
+
+  foreach ($owner in @(Get-TcpPortOwners $Port)) {
+    $ownerPid = 0
+    if ([int]::TryParse([string]$owner.pid, [ref]$ownerPid) -and $ownerPid -eq $ProcessId) {
+      return $true
+    }
+  }
+
+  return $false
 }
 
 function Test-SymppBackendOwners([object[]]$Owners) {
@@ -972,9 +1013,9 @@ function Stop-ManagedRuntimeProcess([string]$Role, $ProcessIdValue, [int]$Port) 
     return $false
   }
 
-  $rolePattern = if ($Role -eq "backend") { "sympp\.cockpit" } else { "vite" }
-  $portPattern = if ($Port -gt 0) { "(--port\s+$Port|--port\s+`"$Port`")" } else { $null }
-  if ($commandLine -notmatch $rolePattern -or ($portPattern -and $commandLine -notmatch $portPattern)) {
+  if (-not (Test-ManagedRuntimeCommandLine $Role $commandLine) -or
+      (-not (Test-ManagedRuntimePortCommandLine $Role $commandLine $Port) -and
+       -not (Test-ProcessOwnsTcpPort $managedPid $Port))) {
     Write-Diagnostic "Skipping $Role shutdown for pid=$managedPid because it no longer matches the managed Symphony++ command."
     return $false
   }
@@ -1010,7 +1051,8 @@ function Stop-ManagedRuntimeEntry([string]$Role, $Entry) {
   if (-not [int]::TryParse([string]$Entry.pid, [ref]$managedPid) -or $managedPid -le 0) {
     $listenerPid = if ($entryPort -gt 0) { Get-ManagedListenerPid $Role $entryPort } else { $null }
     if ($listenerPid) {
-      Write-Diagnostic "Pruning stale managed Symphony++ $Role runtime entry with missing pid; matching listener pid=$listenerPid remains unmanaged because ownership cannot be proven from the stale record."
+      Write-Diagnostic "Stopping managed Symphony++ $Role listener pid=$listenerPid for stale runtime entry with missing pid."
+      return Stop-ManagedRuntimeProcess $Role $listenerPid $entryPort
     } else {
       Write-Diagnostic "Pruning stale managed Symphony++ $Role runtime entry with missing pid."
     }
@@ -1021,7 +1063,8 @@ function Stop-ManagedRuntimeEntry([string]$Role, $Entry) {
   if (-not (Test-ProcessAlive $managedPid)) {
     $listenerPid = if ($entryPort -gt 0) { Get-ManagedListenerPid $Role $entryPort } else { $null }
     if ($listenerPid) {
-      Write-Diagnostic "Pruning stale managed Symphony++ $Role runtime entry for exited pid=$managedPid; matching listener pid=$listenerPid remains unmanaged because ownership cannot be proven from the stale record."
+      Write-Diagnostic "Stopping managed Symphony++ $Role listener pid=$listenerPid for stale runtime entry with exited pid=$managedPid."
+      return Stop-ManagedRuntimeProcess $Role $listenerPid $entryPort
     } else {
       Write-Diagnostic "Pruning stale managed Symphony++ $Role runtime entry for exited pid=$managedPid."
     }
@@ -1029,7 +1072,13 @@ function Stop-ManagedRuntimeEntry([string]$Role, $Entry) {
     return $true
   }
 
-  return Stop-ManagedRuntimeProcess $Role $managedPid $entryPort
+  $stopped = Stop-ManagedRuntimeProcess $Role $managedPid $entryPort
+  $listenerPid = if ($entryPort -gt 0) { Get-ManagedListenerPid $Role $entryPort } else { $null }
+  if ($listenerPid -and $listenerPid -ne $managedPid) {
+    $stopped = (Stop-ManagedRuntimeProcess $Role $listenerPid $entryPort) -or $stopped
+  }
+
+  return $stopped
 }
 
 function Test-RuntimeStateExternalLoopback($RuntimeState) {
@@ -1336,10 +1385,9 @@ function Stop-CurrentManagedRuntimeStateEntries($State, $ActiveLeases) {
 }
 
 function Get-ManagedListenerPid([string]$Role, [int]$Port) {
-  $rolePattern = if ($Role -eq "backend") { "sympp\.cockpit" } else { "vite" }
   foreach ($owner in @(Get-TcpPortOwners $Port)) {
     $commandLine = Get-ProcessCommandLine ([int]$owner.pid)
-    if (-not [string]::IsNullOrWhiteSpace($commandLine) -and $commandLine -match $rolePattern) {
+    if (Test-ManagedRuntimeCommandLine $Role $commandLine) {
       return [int]$owner.pid
     }
   }
