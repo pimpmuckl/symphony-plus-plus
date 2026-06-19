@@ -1811,7 +1811,8 @@ if ([string]::IsNullOrWhiteSpace($expectedContractFingerprint)) {
   throw "Symphony++ MCP launcher expected MCP contract fingerprint is invalid."
 }
 $expectedSourceRevision = Resolve-ExpectedSourceRevision $pluginRoot
-$artifactRuntimeAllowed = Test-ArtifactRuntimeAllowed $pluginRoot
+$bridgeMode = Get-EnvMode "SYMPP_MCP_BRIDGE_MODE" "http" @("http", "direct_stdio")
+$artifactRuntimeAllowed = if ($bridgeMode -eq "direct_stdio") { $false } else { Test-ArtifactRuntimeAllowed $pluginRoot }
 $artifactRuntime = $null
 $runtimeMode = "source"
 
@@ -1864,7 +1865,6 @@ $elixirDir = if ([string]::IsNullOrWhiteSpace($repoRoot)) { $null } else { Join-
 $assetsDir = if ([string]::IsNullOrWhiteSpace($elixirDir)) { $null } else { Join-Path $elixirDir "assets" }
 $mix = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MIX)) { "mix" } else { $env:SYMPP_MIX }
 $mise = if ([string]::IsNullOrWhiteSpace($env:SYMPP_MISE)) { "mise" } else { $env:SYMPP_MISE }
-$bridgeMode = Get-EnvMode "SYMPP_MCP_BRIDGE_MODE" "http" @("http", "direct_stdio")
 $defaultLauncher = if ($sourceFallbackAllowed -and -not [string]::IsNullOrWhiteSpace($elixirDir) -and (Test-Path -LiteralPath $elixirDir)) { Resolve-SymppDefaultLauncher $elixirDir $mise } else { "direct" }
 $launcher = Get-EnvMode "SYMPP_LAUNCHER" $defaultLauncher @("direct", "mise")
 Set-SymppSourceRevisionEnvironment $expectedSourceRevision
