@@ -466,6 +466,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.exists?(@mcp_plugin_helper_path)
     assert File.read!(@mcp_plugin_start_cmd_path) =~ "start-sympp-mcp.ps1"
     assert File.read!(@mcp_plugin_start_cmd_path) =~ "powershell.exe"
+    assert File.read!(@mcp_plugin_start_cmd_path) =~ "-NonInteractive"
     assert File.read!(@mcp_plugin_start_cmd_path) =~ "goto :run_pwsh"
     refute File.read!(@mcp_plugin_start_cmd_path) =~ "if %ERRORLEVEL%==0 ("
     assert File.read!(@mcp_plugin_solo_script_path) =~ "sympp.solo"

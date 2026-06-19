@@ -399,14 +399,19 @@ function Invoke-McpClientHeartbeatIfDue([string]$McpUrl, [string]$ClientId, [int
   return $now
 }
 
+function New-McpStdinReader {
+  return [System.IO.StreamReader]::new([Console]::OpenStandardInput())
+}
+
 function Invoke-HttpMcpBridge([string]$McpUrl, [int]$TimeoutSec, [string]$ClientId = $null, [int]$HeartbeatIntervalSec = 300, [bool]$ShutdownOnIdle = $false) {
   $sessionId = $null
   $protocolVersion = $null
+  $stdinReader = New-McpStdinReader
   $lease = Invoke-McpClientLease $McpUrl $ClientId "attach" $true $ShutdownOnIdle
   $heartbeatIntervalMs = Resolve-McpClientHeartbeatIntervalMs $HeartbeatIntervalSec $lease
   $lastHeartbeatMs = Get-McpNowMs
   try {
-    $readTask = [Console]::In.ReadLineAsync()
+    $readTask = $stdinReader.ReadLineAsync()
     while ($true) {
       if (-not $readTask.Wait($heartbeatIntervalMs)) {
         Invoke-McpClientLease $McpUrl $ClientId "heartbeat" $false $ShutdownOnIdle | Out-Null
@@ -418,7 +423,7 @@ function Invoke-HttpMcpBridge([string]$McpUrl, [int]$TimeoutSec, [string]$Client
       if ($null -eq $line) {
         break
       }
-      $readTask = [Console]::In.ReadLineAsync()
+      $readTask = $stdinReader.ReadLineAsync()
       if ([string]::IsNullOrWhiteSpace($line)) {
         continue
       }
@@ -454,6 +459,9 @@ function Invoke-HttpMcpBridge([string]$McpUrl, [int]$TimeoutSec, [string]$Client
       }
     }
   } finally {
+    if ($null -ne $stdinReader) {
+      $stdinReader.Dispose()
+    }
     Invoke-McpClientLease $McpUrl $ClientId "detach" $false $ShutdownOnIdle | Out-Null
   }
 }

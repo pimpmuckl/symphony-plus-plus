@@ -1426,6 +1426,7 @@ function Start-LoggedProcess([string]$FilePath, [string[]]$ArgumentList, [string
   $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
   $stdoutPath = Join-Path $LogDir "$LogPrefix-$stamp.out.log"
   $stderrPath = Join-Path $LogDir "$LogPrefix-$stamp.err.log"
+  $stdinPath = Join-Path $LogDir "$LogPrefix-$stamp.in.log"
   $startCommand = Get-StartProcessCommand $FilePath $ArgumentList
 
   $oldEnvironment = @{}
@@ -1435,11 +1436,12 @@ function Start-LoggedProcess([string]$FilePath, [string[]]$ArgumentList, [string
   }
 
   try {
+    "" | Set-Content -LiteralPath $stdinPath -Encoding utf8NoBOM
     $startArgs = @{
       FilePath = $startCommand.file
       ArgumentList = (Join-ProcessArgumentList @($startCommand.args))
       WorkingDirectory = $WorkingDirectory
-      RedirectStandardOutput = $stdoutPath; RedirectStandardError = $stderrPath; PassThru = $true
+      RedirectStandardInput = $stdinPath; RedirectStandardOutput = $stdoutPath; RedirectStandardError = $stderrPath; PassThru = $true
     }
     if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) { $startArgs["WindowStyle"] = "Hidden" }
     $process = Start-Process @startArgs

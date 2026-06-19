@@ -15,6 +15,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
     assert script =~ "symphony_elixir"
     assert script =~ "Test-ProcessOwnsTcpPort"
     assert script =~ "Stop-ManagedRuntimeProcess $Role $listenerPid $entryPort"
+    assert script =~ "RedirectStandardInput"
+
+    process_runtime =
+      File.read!(Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-mcp-process-runtime.ps1"))
+
+    assert process_runtime =~ "New-McpStdinReader"
+    assert process_runtime =~ "OpenStandardInput"
   end
 
   test "installed MCP launcher falls back to marketplace source when artifact manifest is missing" do
