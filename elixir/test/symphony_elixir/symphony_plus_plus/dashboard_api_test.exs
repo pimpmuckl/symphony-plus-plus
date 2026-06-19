@@ -5535,6 +5535,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       refute Enum.any?(archive_payload["dashboard"]["work_requests"]["work_requests"], &(&1["id"] == completed.id))
       assert [%{"id" => "WR-LOCAL-MANUAL-ARCHIVE"}] = archive_payload["dashboard"]["archived_work_requests"]["work_requests"]
 
+      delivered = create_work_request!(repo, id: "WR-LOCAL-MANUAL-ARCHIVE-DELIVERED", status: "ready_for_slicing")
+
+      assert {:ok, delivered_slice} =
+               WorkRequestRepository.add_planned_slice(repo, delivered.id, planned_slice_attrs(id: "WRS-LOCAL-MANUAL-ARCHIVE-DELIVERED"))
+
+      assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, delivered.id, delivered_slice.id, "planned")
+
+      assert {:ok, _delivery} =
+               WorkRequestRepository.record_planned_slice_delivery(
+                 repo,
+                 delivered.id,
+                 approved_slice.id,
+                 delivery_attrs(%{
+                   outcome: "completed_no_pr",
+                   idempotency_key: "local-manual-archive-delivered",
+                   no_pr_evidence: "Dashboard operator archive regression coverage."
+                 })
+               )
+
+      delivered_archive_payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-requests/#{delivered.id}/archive", %{})
+        |> json_response(200)
+
+      refute Enum.any?(delivered_archive_payload["dashboard"]["work_requests"]["work_requests"], &(&1["id"] == delivered.id))
+      assert Enum.any?(delivered_archive_payload["dashboard"]["archived_work_requests"]["work_requests"], &(&1["id"] == delivered.id and is_binary(&1["archived_at"])))
+
       incomplete = create_work_request!(repo, id: "WR-LOCAL-MANUAL-NOT-COMPLETE", status: "ready_for_slicing")
 
       error_payload =

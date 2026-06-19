@@ -940,6 +940,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert state.completed_at == completed_at
   end
 
+  test "visible completion treats delivery-backed approved slices as terminal" do
+    completed_at = utc_usec(~U[2026-05-23 12:00:00Z])
+    archived_at = utc_usec(~U[2026-05-24 12:00:00Z])
+
+    work_request = %WorkRequest{
+      id: "WR-COMPLETE-DELIVERED-APPROVED",
+      status: "ready_for_slicing",
+      completed_at: completed_at,
+      archived_at: archived_at,
+      updated_at: completed_at
+    }
+
+    planned_slice = %PlannedSlice{
+      id: "WRS-COMPLETE-DELIVERED-APPROVED",
+      work_request_id: work_request.id,
+      status: "approved",
+      updated_at: completed_at
+    }
+
+    state =
+      Completion.visible_state(
+        work_request,
+        %{open_count: 0, latest_gate_at: nil},
+        [planned_slice],
+        %{},
+        %{planned_slice.id => %{outcome: "completed_no_pr"}}
+      )
+
+    assert state.completed? == true
+    assert state.completed_at == completed_at
+    assert state.archived_at == archived_at
+
+    derived_state =
+      Completion.visible_state(
+        %{work_request | completed_at: nil, archived_at: nil},
+        %{open_count: 0, latest_gate_at: nil},
+        [planned_slice],
+        %{},
+        %{planned_slice.id => %{outcome: "completed_no_pr"}}
+      )
+
+    assert derived_state.completed? == true
+    assert derived_state.completed_at == completed_at
+  end
+
   test "returns not found for missing work requests", %{repo: repo} do
     assert {:error, :not_found} = Repository.get(repo, "missing")
     assert {:error, :not_found} = Repository.update(repo, "missing", %{title: "Nope"})

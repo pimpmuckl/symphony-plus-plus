@@ -43,8 +43,7 @@ export function packageSelectionIndex(details: WorkRequestDetail[], packages: Wo
 }
 
 export function packageHasActiveBlocker(pkg: WorkPackageCard) {
-  const operational = pkg.operational_state || null;
-  return operational?.key === "blocked" || pkg.status === "blocked" || (pkg.active_blocker_count || 0) > 0;
+  return (pkg.active_blocker_count || 0) > 0 || (pkg.active_blockers || []).some((blocker) => blocker.active !== false);
 }
 
 export function sliceSuccessorLabel(slice: PlannedSlice) {

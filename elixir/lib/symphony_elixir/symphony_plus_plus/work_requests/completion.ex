@@ -134,11 +134,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   end
 
   @spec visible_state(WorkRequest.t(), map(), [PlannedSlice.t()], %{optional(String.t()) => context()}) :: state()
-  def visible_state(%WorkRequest{} = work_request, question_state, planned_slices, work_package_contexts)
-      when is_map(question_state) and is_list(planned_slices) and is_map(work_package_contexts) do
+  @spec visible_state(WorkRequest.t(), map(), [PlannedSlice.t()], %{optional(String.t()) => context()}, map()) :: state()
+  def visible_state(%WorkRequest{} = work_request, question_state, planned_slices, work_package_contexts, deliveries_by_slice_id \\ %{})
+      when is_map(question_state) and is_list(planned_slices) and is_map(work_package_contexts) and is_map(deliveries_by_slice_id) do
     work_request
-    |> state(question_state, planned_slices, work_package_contexts)
-    |> preserve_persisted_visible_state(work_request, question_state, planned_slices, work_package_contexts)
+    |> state(question_state, planned_slices, work_package_contexts, deliveries_by_slice_id)
+    |> preserve_persisted_visible_state(work_request, question_state, planned_slices, work_package_contexts, deliveries_by_slice_id)
   end
 
   @spec refresh(Repository.repo(), String.t()) :: {:ok, WorkRequest.t()} | {:error, Repository.error()}
@@ -268,17 +269,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
          %WorkRequest{completed_at: %DateTime{} = completed_at} = work_request,
          question_state,
          planned_slices,
-         work_package_contexts
+         work_package_contexts,
+         deliveries_by_slice_id
        ) do
     if completion_status_allowed?(work_request) and
-         filtered_completion_context?(question_state, planned_slices, work_package_contexts) do
+         filtered_completion_context?(question_state, planned_slices, work_package_contexts, deliveries_by_slice_id) do
       %{state | completed?: true, completed_at: completed_at, archived_at: work_request.archived_at}
     else
       state
     end
   end
 
-  defp preserve_persisted_visible_state(state, %WorkRequest{}, _question_state, _planned_slices, _work_package_contexts), do: state
+  defp preserve_persisted_visible_state(state, %WorkRequest{}, _question_state, _planned_slices, _work_package_contexts, _deliveries_by_slice_id), do: state
 
   defp force_complete_work_request(repo, %WorkRequest{} = work_request) do
     attrs = %{
@@ -296,19 +298,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   defp operator_completed?(%WorkRequest{completed_at: %DateTime{}, completion_source: @operator_completion_source}), do: true
   defp operator_completed?(%WorkRequest{}), do: false
 
-  defp filtered_completion_context?(question_state, planned_slices, work_package_contexts) do
+  defp filtered_completion_context?(question_state, planned_slices, work_package_contexts, deliveries_by_slice_id) do
     Map.get(question_state, :open_count, 0) == 0 and planned_slices != [] and
-      Enum.all?(planned_slices, &terminal_or_filtered_slice?(&1, work_package_contexts))
+      Enum.all?(planned_slices, &terminal_or_filtered_slice?(&1, work_package_contexts, deliveries_by_slice_id))
   end
 
-  defp terminal_or_filtered_slice?(%PlannedSlice{status: status}, _work_package_contexts) when status in @terminal_planned_slice_statuses, do: true
+  defp terminal_or_filtered_slice?(%PlannedSlice{status: status}, _work_package_contexts, _deliveries_by_slice_id)
+       when status in @terminal_planned_slice_statuses,
+       do: true
 
-  defp terminal_or_filtered_slice?(%PlannedSlice{status: "dispatched", work_package_id: work_package_id}, work_package_contexts) do
+  defp terminal_or_filtered_slice?(%PlannedSlice{status: status} = planned_slice, work_package_contexts, deliveries_by_slice_id)
+       when status in ["approved", "dispatched"] do
+    if terminal_delivery?(Map.get(deliveries_by_slice_id, planned_slice.id)) do
+      true
+    else
+      terminal_or_filtered_dispatched_slice?(planned_slice, work_package_contexts)
+    end
+  end
+
+  defp terminal_or_filtered_slice?(%PlannedSlice{}, _work_package_contexts, _deliveries_by_slice_id), do: false
+
+  defp terminal_or_filtered_dispatched_slice?(%PlannedSlice{status: "dispatched", work_package_id: work_package_id}, work_package_contexts) do
     context = Map.get(work_package_contexts, work_package_id)
     is_nil(context) or terminal_slice?(%PlannedSlice{status: "dispatched"}, context)
   end
 
-  defp terminal_or_filtered_slice?(%PlannedSlice{}, _work_package_contexts), do: false
+  defp terminal_or_filtered_dispatched_slice?(%PlannedSlice{}, _work_package_contexts), do: false
 
   defp completion_status_allowed?(%WorkRequest{status: status}), do: status not in @completion_blocking_work_request_statuses
 
@@ -706,6 +721,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
        when status in ["approved", "dispatched"] and outcome in @terminal_delivery_outcomes,
        do: true
 
+  defp terminal_slice?(%PlannedSlice{status: status}, _context, delivery)
+       when status in ["approved", "dispatched"] and is_map(delivery),
+       do: terminal_delivery?(delivery)
+
   defp terminal_slice?(%PlannedSlice{status: "dispatched"}, context, _delivery) when is_map(context) do
     terminal_work_package?(context) and not active_blocker_context?(context) and not active_runtime_context?(context)
   end
@@ -723,6 +742,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   end
 
   defp terminal_work_package?(_context), do: false
+
+  defp terminal_delivery?(%PlannedSliceDelivery{outcome: outcome}), do: outcome in @terminal_delivery_outcomes
+
+  defp terminal_delivery?(delivery) when is_map(delivery) do
+    map_value(delivery, :outcome) in @terminal_delivery_outcomes
+  end
+
+  defp terminal_delivery?(_delivery), do: false
 
   defp active_blocker_context?(%{active_blocker?: true}), do: true
   defp active_blocker_context?(%{blocker_state: %{active?: true}}), do: true
@@ -770,11 +797,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     delivery_timestamps =
       deliveries_by_slice_id
       |> Map.values()
-      |> Enum.flat_map(&[&1.recorded_at, &1.updated_at])
+      |> Enum.flat_map(&delivery_timestamps/1)
 
     latest_timestamp([work_request.updated_at, question_gate_at] ++ Enum.map(planned_slices, & &1.updated_at) ++ work_package_timestamps ++ gate_timestamps ++ delivery_timestamps) ||
       DateTime.utc_now(:microsecond)
   end
+
+  defp delivery_timestamps(%PlannedSliceDelivery{} = delivery), do: [delivery.recorded_at, delivery.updated_at]
+
+  defp delivery_timestamps(delivery) when is_map(delivery) do
+    [map_value(delivery, :recorded_at), map_value(delivery, :updated_at)]
+  end
+
+  defp delivery_timestamps(_delivery), do: []
 
   defp latest_timestamp(timestamps) do
     timestamps

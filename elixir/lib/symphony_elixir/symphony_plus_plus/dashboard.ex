@@ -1597,7 +1597,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
         completion_state =
           work_request
-          |> WorkRequestCompletion.visible_state(question_state, planned_slices, work_package_contexts)
+          |> WorkRequestCompletion.visible_state(
+            question_state,
+            planned_slices,
+            work_package_contexts,
+            completion_deliveries_by_slice_id(Map.get(delivery_boards, work_request.id))
+          )
 
         operational_state =
           work_request_operational_state(
@@ -1704,6 +1709,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
     Enum.filter(planned_slices, &Map.has_key?(visible_by_id, &1.id))
   end
+
+  defp completion_deliveries_by_slice_id(delivery_board) do
+    delivery_board
+    |> DeliverySliceProjection.slices_by_id()
+    |> Enum.flat_map(fn {slice_id, delivery_slice} ->
+      case completion_delivery_outcome(delivery_slice) do
+        outcome when is_binary(outcome) and outcome != "" -> [{slice_id, %{outcome: outcome}}]
+        _outcome -> []
+      end
+    end)
+    |> Map.new()
+  end
+
+  defp completion_delivery_outcome(%{} = delivery_slice) do
+    map_value(delivery_slice, "delivery_outcome") ||
+      case map_value(delivery_slice, "delivery") do
+        %{} = delivery -> map_value(delivery, "outcome")
+        _delivery -> nil
+      end
+  end
+
+  defp completion_delivery_outcome(_delivery_slice), do: nil
 
   defp include_planning_scratch?(opts), do: Keyword.get(opts, :include_planning_scratch?, false) == true
 
@@ -2108,7 +2135,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
     completion_state =
       work_request
-      |> WorkRequestCompletion.visible_state(question_state, planned_slices, work_package_contexts)
+      |> WorkRequestCompletion.visible_state(
+        question_state,
+        planned_slices,
+        work_package_contexts,
+        completion_deliveries_by_slice_id(Keyword.get(opts, :delivery_board))
+      )
 
     work_request
     |> work_request_payload(repo_identity_catalog)

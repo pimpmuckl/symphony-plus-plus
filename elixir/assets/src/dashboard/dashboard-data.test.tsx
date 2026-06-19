@@ -80,6 +80,18 @@ describe("dashboard data helpers", () => {
     ]);
   });
 
+  it("does not create active blocker items from stale blocked package status alone", () => {
+    const pkg: WorkPackageCard = {
+      id: "pkg-resolved-blocker",
+      title: "Resolved blocker package",
+      status: "blocked",
+      active_blocker_count: 0,
+      active_blockers: [{ id: "blocker-1", active: false, summary: "Already resolved" }],
+    };
+
+    expect(activeBlockerItems([pkg])).toEqual([]);
+  });
+
   it("keeps blocker list item ids unique across packages", () => {
     const packages: WorkPackageCard[] = [
       {
