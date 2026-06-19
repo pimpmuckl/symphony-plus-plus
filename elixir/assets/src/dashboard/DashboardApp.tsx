@@ -286,6 +286,7 @@ function useDashboardController() {
 
   const copyArchitectHandoff = useCallback<CopyArchitectHandoff>(async (workRequestId, cachedHandoff) => {
     let handoff = cachedHandoff || null;
+    let refreshPayload: DashboardMutationPayload | undefined;
 
     if (!handoff) {
       const payload = (await withLocalOperatorReconnect(async () => {
@@ -298,8 +299,7 @@ function useDashboardController() {
       })) as ArchitectHandoffPayload;
 
       handoff = payload.architect_handoff || null;
-
-      await refreshAfterMutation(payload);
+      refreshPayload = payload;
     }
 
     const prompt = handoff?.prompt?.trim();
@@ -307,16 +307,23 @@ function useDashboardController() {
       throw new Error("Architect handoff did not include a copyable prompt");
     }
 
+    let result;
     try {
       await copyTextToClipboard(prompt);
-      return { handoff, copied: true };
+      result = { handoff, copied: true };
     } catch (caught) {
-      return {
+      result = {
         handoff,
         copied: false,
         copyError: caught instanceof Error ? caught.message : "Clipboard copy unavailable",
       };
     }
+
+    if (refreshPayload) {
+      await refreshAfterMutation(refreshPayload);
+    }
+
+    return result;
   }, [refreshAfterMutation]);
 
   const updateRetentionSetting = useCallback(async (payload: { work_request_archive_after_days?: number; solo_session_delete_after_days?: number }) => {
