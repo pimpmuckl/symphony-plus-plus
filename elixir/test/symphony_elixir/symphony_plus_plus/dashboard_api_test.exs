@@ -4089,6 +4089,98 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator dashboard returns compact WorkRequest board details and lazy full detail", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      work_request =
+        create_work_request!(
+          repo,
+          id: "WR-LOCAL-COMPACT-DETAIL",
+          status: "ready_for_slicing",
+          human_description: "Full operator detail should stay lazy.",
+          constraints: %{heavy: "constraint"}
+        )
+
+      assert {:ok, _decision} =
+               WorkRequestRepository.record_decision(repo, work_request.id, decision_attrs(id: "WRD-LOCAL-COMPACT-DETAIL"))
+
+      assert {:ok, planned_slice} =
+               WorkRequestRepository.add_planned_slice(
+                 repo,
+                 work_request.id,
+                 planned_slice_attrs(
+                   id: "WRS-LOCAL-COMPACT-DETAIL",
+                   acceptance_criteria: ["Large acceptance text"],
+                   validation_steps: ["Large validation text"],
+                   owned_file_globs: ["large/**"],
+                   stop_conditions: ["Large stop condition"]
+                 )
+               )
+
+      assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+      work_package =
+        create_matching_work_package!(repo, work_request, approved_slice,
+          id: "SYMPP-LOCAL-COMPACT-DETAIL",
+          status: "ready_for_worker"
+        )
+
+      assert {:ok, _dispatched_slice} =
+               WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", work_package.id)
+
+      assert {:ok, _delivery} =
+               WorkRequestRepository.record_planned_slice_delivery(
+                 repo,
+                 work_request.id,
+                 approved_slice.id,
+                 delivery_attrs(%{
+                   outcome: "completed_no_pr",
+                   idempotency_key: "local-operator-compact-detail",
+                   no_pr_evidence: "Full delivery evidence should stay lazy."
+                 })
+               )
+
+      assert {:ok, _comment} =
+               CommentService.create(repo, %{
+                 target_kind: "work_request",
+                 target_id: work_request.id,
+                 body: "Full comment should stay lazy.",
+                 source_type: "operator",
+                 author_name: "operator"
+               })
+
+      dashboard = json_response(get(local_operator_conn(), "/api/v1/sympp/operator/dashboard"), 200)
+      compact_detail = work_request_detail(dashboard, work_request.id)
+      [compact_slice] = compact_detail["planned_slices"]
+
+      refute Map.has_key?(compact_detail, "decision_logs")
+      refute Map.has_key?(compact_detail, "comments")
+      refute Map.has_key?(compact_detail["work_request"], "human_description")
+      refute Map.has_key?(compact_detail["work_request"], "constraints")
+      refute Map.has_key?(compact_slice, "acceptance_criteria")
+      refute Map.has_key?(compact_slice, "validation_steps")
+      refute Map.has_key?(compact_slice, "owned_file_globs")
+      refute Map.has_key?(compact_slice, "stop_conditions")
+      refute Map.has_key?(compact_slice["delivery"], "no_pr_evidence")
+      assert compact_slice["operational_state"]["key"] == "completed_no_pr"
+
+      full_detail =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/work-requests/#{work_request.id}")
+        |> json_response(200)
+
+      assert [%{"id" => "WRD-LOCAL-COMPACT-DETAIL"}] = full_detail["decision_logs"]
+      assert [%{"body" => "Full comment should stay lazy."}] = full_detail["comments"]
+      assert full_detail["work_request"]["human_description"] == "Full operator detail should stay lazy."
+      assert full_detail["work_request"]["constraints"] == %{"heavy" => "constraint"}
+      assert [full_slice] = full_detail["planned_slices"]
+      assert full_slice["acceptance_criteria"] == ["Large acceptance text"]
+      assert full_slice["validation_steps"] == ["Large validation text"]
+      assert full_slice["owned_file_globs"] == ["large/**"]
+      assert full_slice["stop_conditions"] == ["Large stop condition"]
+      assert full_slice["delivery"]["no_pr_evidence"] == "Full delivery evidence should stay lazy."
+    end)
+  end
+
   test "local operator dashboard projects delivery closeout states into slice cards", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       work_request = create_work_request!(repo, id: "WR-LOCAL-DELIVERY", status: "ready_for_slicing")
