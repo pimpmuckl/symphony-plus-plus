@@ -133,13 +133,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
       )
   end
 
-  @spec visible_state(WorkRequest.t(), map(), [PlannedSlice.t()], %{optional(String.t()) => context()}) :: state()
-  @spec visible_state(WorkRequest.t(), map(), [PlannedSlice.t()], %{optional(String.t()) => context()}, map()) :: state()
-  def visible_state(%WorkRequest{} = work_request, question_state, planned_slices, work_package_contexts, deliveries_by_slice_id \\ %{})
-      when is_map(question_state) and is_list(planned_slices) and is_map(work_package_contexts) and is_map(deliveries_by_slice_id) do
+  @spec visible_state(WorkRequest.t(), map(), [PlannedSlice.t()], %{optional(String.t()) => context()}) ::
+          state()
+  @spec visible_state(WorkRequest.t(), map(), [PlannedSlice.t()], %{optional(String.t()) => context()}, map()) ::
+          state()
+  def visible_state(
+        %WorkRequest{} = work_request,
+        question_state,
+        planned_slices,
+        work_package_contexts,
+        deliveries_by_slice_id \\ %{}
+      )
+      when is_map(question_state) and is_list(planned_slices) and is_map(work_package_contexts) and
+             is_map(deliveries_by_slice_id) do
     work_request
     |> state(question_state, planned_slices, work_package_contexts, deliveries_by_slice_id)
-    |> preserve_persisted_visible_state(work_request, question_state, planned_slices, work_package_contexts, deliveries_by_slice_id)
+    |> preserve_persisted_visible_state(
+      work_request,
+      question_state,
+      planned_slices,
+      work_package_contexts,
+      deliveries_by_slice_id
+    )
   end
 
   @spec refresh(Repository.repo(), String.t()) :: {:ok, WorkRequest.t()} | {:error, Repository.error()}
