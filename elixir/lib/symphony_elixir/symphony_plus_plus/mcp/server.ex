@@ -80,6 +80,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.RuntimeCleanup, as: WorkRequestRuntimeCleanup
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
   @protocol_version "2025-03-26"
@@ -4149,6 +4150,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              work_package_id,
              cleanup_worktree_opts(cleanup_target_repo_root)
            ),
+         {:ok, _runtime_cleanup} <- cleanup_worktree_runtime(config.repo, session, work_package),
          {:ok, audit_event} <- maybe_append_cleanup_worktree_audit(config.repo, session, work_package_id, result) do
       {:ok, tool_result(worktree_lifecycle_payload(result, scope, audit_event))}
     else
@@ -4539,6 +4541,71 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp cleanup_worktree_opts(nil), do: []
   defp cleanup_worktree_opts(target_repo_root), do: [target_repo_root: target_repo_root]
+
+  defp cleanup_worktree_runtime(repo, %Session{} = session, %WorkPackage{} = work_package) do
+    run_architect_transaction(repo, fn ->
+      cleanup_worktree_runtime_in_transaction(repo, session, work_package.id)
+    end)
+  end
+
+  defp cleanup_worktree_runtime_in_transaction(repo, %Session{} = session, work_package_id) do
+    with :ok <- lock_access_grant(repo, session.assignment.grant_id),
+         {:ok, _architect_grant} <- require_live_architect_grant(repo, session),
+         :ok <- lock_work_package(repo, Session.work_package_id(session)),
+         :ok <- lock_work_package(repo, work_package_id),
+         {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
+         {:ok, work_request, planned_slice} <- cleanup_worktree_runtime_scope(repo, work_package_id),
+         true <- cleanup_worktree_claim_only_runtime?(repo, work_package_id) do
+      WorkRequestRuntimeCleanup.cleanup(
+        repo,
+        work_request,
+        planned_slice,
+        work_package,
+        session.assignment,
+        reason: "cleanup_work_package_worktree",
+        delivery_evidence: %{"outcome" => "worktree_cleanup"}
+      )
+    else
+      false -> {:ok, nil}
+      {:error, :not_found} -> {:ok, nil}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp cleanup_worktree_runtime_scope(repo, work_package_id) do
+    query =
+      from(planned_slice in PlannedSlice,
+        join: work_request in WorkRequest,
+        on: work_request.id == planned_slice.work_request_id,
+        where: planned_slice.work_package_id == ^work_package_id,
+        select: {work_request, planned_slice},
+        limit: 1
+      )
+
+    case repo.one(query) do
+      {%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice} -> {:ok, work_request, planned_slice}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp cleanup_worktree_claim_only_runtime?(repo, work_package_id) do
+    now = DateTime.utc_now(:microsecond)
+    context = WorkPackageActivity.context(repo, work_package_id)
+    reason_codes = List.wrap(get_in(context, [:runtime_state, :reason_codes]))
+
+    with {:ok, grants} <- AccessGrantRepository.list_for_work_package(repo, work_package_id) do
+      not Enum.any?(grants, &live_worker_grant?(&1, now)) and get_in(context, [:runtime_state, :paused?]) != true and
+        reason_codes -- ["claim_lease_active", "claim_lease_stale", "worker_recycled", "package_terminal"] == []
+    end
+  end
+
+  defp live_worker_grant?(%AccessGrant{grant_role: "worker", revoked_at: nil, expires_at: nil}, _now), do: true
+
+  defp live_worker_grant?(%AccessGrant{grant_role: "worker", revoked_at: nil, expires_at: %DateTime{} = expires_at}, now) do
+    DateTime.compare(expires_at, now) == :gt
+  end
+
+  defp live_worker_grant?(%AccessGrant{}, _now), do: false
 
   defp cleanup_worktree_target_repo_root(target_repo_root, %WorkPackage{}, %Config{}) when is_binary(target_repo_root),
     do: {:ok, target_repo_root}
