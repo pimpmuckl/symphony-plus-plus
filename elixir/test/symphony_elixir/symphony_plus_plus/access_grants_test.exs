@@ -565,6 +565,59 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     assert [%GrantScope{scope_type: "work_request", scope_id: "wr-local-architect-scope"}] = Enum.filter(scope_rows, &(&1.scope_type == "work_request"))
   end
 
+  test "local architect repo alias filtering happens before selecting a grant", %{repo: repo} do
+    {phase, work_package, _work_request} = create_handoff_anchor!(repo, "wr-local-architect-repo-alias-order")
+
+    assert {:ok, matching} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               work_request_id: "wr-local-architect-repo-alias-order",
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+
+    assert {:ok, newer_unmatched} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               work_request_id: "wr-local-architect-repo-alias-order",
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+
+    newer_unmatched.grant
+    |> Ecto.Changeset.change(scope_repo: "elsewhere/other")
+    |> repo.update!()
+
+    assert {:ok, %AccessGrant{} = first_claim} =
+             Service.claim_local_architect_grant(repo, work_package.id, phase.id,
+               claimed_by: "architect-1",
+               scope_repo: work_package.repo,
+               scope_base_branch: work_package.base_branch,
+               work_request_id: "wr-local-architect-repo-alias-order"
+             )
+
+    assert first_claim.id == matching.grant.id
+
+    assert {:ok, newer_claimed_unmatched} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               work_request_id: "wr-local-architect-repo-alias-order",
+               capabilities: ["read:work_request", "write:work_request"]
+             )
+
+    newer_claimed_unmatched.grant
+    |> Ecto.Changeset.change(scope_repo: "elsewhere/other", claimed_by: "architect-1", claimed_at: DateTime.add(DateTime.utc_now(:microsecond), 1, :second))
+    |> repo.update!()
+
+    assert {:ok, %AccessGrant{} = reconnect} =
+             Service.claim_local_architect_grant(repo, work_package.id, phase.id,
+               claimed_by: "architect-1",
+               scope_repo: work_package.repo,
+               scope_base_branch: work_package.base_branch,
+               work_request_id: "wr-local-architect-repo-alias-order"
+             )
+
+    assert reconnect.id == matching.grant.id
+  end
+
   test "local architect reconnect rejects work request scope drift", %{repo: repo} do
     {phase, work_package, _work_request} = create_handoff_anchor!(repo, "wr-architect-scope-original")
     insert_work_request!(repo, "wr-architect-scope-drift", work_package.repo, work_package.base_branch)

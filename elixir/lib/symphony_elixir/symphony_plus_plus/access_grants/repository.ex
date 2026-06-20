@@ -11,6 +11,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
   alias SymphonyElixir.SymphonyPlusPlus.Authorization.Scope, as: AuthScope
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
+  alias SymphonyElixir.SymphonyPlusPlus.RepoIdentity
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
@@ -405,20 +406,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
         where: grant.work_package_id == ^work_package_id,
         where: grant.phase_id == ^phase_id,
         where: grant.grant_role == "architect",
-        where: grant.scope_repo == ^scope_repo,
         where: grant.scope_base_branch == ^scope_base_branch,
         where: not is_nil(grant.claimed_at),
         where: grant.claimed_by != ^claimed_by,
         where: is_nil(grant.revoked_at),
         where: is_nil(grant.expires_at) or grant.expires_at > ^now,
-        select: 1,
-        limit: 1
+        select: grant
       )
       |> scope_live_package_authority(terminal_statuses)
 
-    case repo.one(query) do
-      nil -> :ok
-      1 -> {:error, :already_claimed}
+    if query |> repo.all() |> Enum.any?(&grant_repo_scope_matches?(&1, scope_repo)) do
+      {:error, :already_claimed}
+    else
+      :ok
     end
   end
 
@@ -476,9 +476,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
           context,
           attrs
         )
-
-      {:error, _reason} = error ->
-        error
     end
   end
 
@@ -488,21 +485,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
         where: grant.work_package_id == ^work_package_id,
         where: grant.phase_id == ^phase_id,
         where: grant.grant_role == "architect",
-        where: grant.scope_repo == ^scope_repo,
         where: grant.scope_base_branch == ^scope_base_branch,
         where: grant.claimed_by == ^claimed_by,
         where: not is_nil(grant.claimed_at),
         where: is_nil(grant.revoked_at),
         where: is_nil(grant.expires_at) or grant.expires_at > ^now,
-        order_by: [desc: grant.claimed_at, desc: grant.updated_at, asc: grant.id],
-        limit: 1
+        order_by: [desc: grant.claimed_at, desc: grant.updated_at, asc: grant.id]
       )
       |> scope_live_package_authority(terminal_statuses)
 
-    case repo.one(query) do
+    case query |> repo.all() |> Enum.find(&grant_repo_scope_matches?(&1, scope_repo)) do
       %AccessGrant{} = grant -> {:ok, grant}
       nil -> {:error, :not_found}
-      {:error, _reason} = error -> error
     end
   end
 
@@ -560,17 +554,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
         where: grant.work_package_id == ^work_package_id,
         where: grant.phase_id == ^phase_id,
         where: grant.grant_role == "architect",
-        where: grant.scope_repo == ^scope_repo,
         where: grant.scope_base_branch == ^scope_base_branch,
         where: is_nil(grant.claimed_at),
         where: is_nil(grant.revoked_at),
         where: is_nil(grant.expires_at) or grant.expires_at > ^now,
-        order_by: [desc: grant.inserted_at, desc: grant.id],
-        limit: 1
+        order_by: [desc: grant.inserted_at, desc: grant.id]
       )
       |> scope_live_package_authority(terminal_statuses)
 
-    case repo.one(query) do
+    case query |> repo.all() |> Enum.find(&grant_repo_scope_matches?(&1, scope_repo)) do
       %AccessGrant{} = grant ->
         {:ok, grant}
 
@@ -600,14 +592,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
         where: grant.work_package_id == ^work_package_id,
         where: grant.phase_id == ^phase_id,
         where: grant.grant_role == "architect",
-        where: grant.scope_repo == ^scope_repo,
         where: grant.scope_base_branch == ^scope_base_branch,
-        select: {count(grant.id), count(grant.revoked_at)}
+        select: grant
       )
 
-    case repo.one(query) do
+    grants = query |> repo.all() |> Enum.filter(&grant_repo_scope_matches?(&1, scope_repo))
+    revoked_count = Enum.count(grants, &match?(%DateTime{}, &1.revoked_at))
+
+    case {length(grants), revoked_count} do
       {0, _revoked_count} -> :architect_grant_required
-      {grant_count, grant_count} -> :revoked
+      {grant_count, revoked_count} when grant_count == revoked_count -> :revoked
       {_grant_count, _revoked_count} -> :expired
     end
   end
@@ -738,7 +732,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
        do: :ok
 
   defp validate_explicit_architect_scope(%AccessGrant{} = access_grant, %AuthScope{type: :repo} = scope) do
-    if scope.repo == access_grant.scope_repo and scope.base_branch == access_grant.scope_base_branch do
+    if repo_scope_match?(scope.repo, access_grant.scope_repo) and scope.base_branch == access_grant.scope_base_branch do
       :ok
     else
       {:error, :invalid_scope}
@@ -878,13 +872,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     anchor.id == access_grant.work_package_id and
       anchor.phase_id == access_grant.phase_id and
       anchor.kind == @architect_handoff_anchor_kind and
-      anchor.repo == access_grant.scope_repo and
+      repo_scope_match?(anchor.repo, access_grant.scope_repo) and
       anchor.base_branch == access_grant.scope_base_branch
   end
 
   defp work_request_matches_grant_scope?(work_request, %AccessGrant{} = access_grant) do
-    work_request.repo == access_grant.scope_repo and
+    repo_scope_match?(work_request.repo, access_grant.scope_repo) and
       work_request.base_branch == access_grant.scope_base_branch
+  end
+
+  defp grant_repo_scope_matches?(%AccessGrant{scope_repo: scope_repo}, expected_repo), do: repo_scope_match?(scope_repo, expected_repo)
+
+  defp repo_scope_match?(expected_repo, actual_repo) when is_binary(expected_repo) and is_binary(actual_repo) do
+    RepoIdentity.scope_match?(expected_repo, actual_repo,
+      trusted_remotes: repo_scope_trusted_remotes(),
+      local_path_remotes?: true
+    )
+  end
+
+  defp repo_scope_match?(_expected_repo, _actual_repo), do: false
+
+  defp repo_scope_trusted_remotes do
+    :symphony_elixir
+    |> Application.get_env(:sympp_repo_identity_trusted_remotes, [])
+    |> List.wrap()
+    |> Enum.filter(&is_binary/1)
   end
 
   defp architect_handoff_anchor_id(work_request_id) do

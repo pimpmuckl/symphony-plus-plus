@@ -8,6 +8,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo, as: SymppRepo
+  alias SymphonyElixir.SymphonyPlusPlus.RepoIdentity
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.{ArchitectHandoffClaimLease, ScopeConstraints, WorkRequest}
@@ -189,7 +190,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   defp verified_handoff_phase_grant?(repo, %AccessGrant{} = grant) do
     with {:ok, anchor} <- WorkPackageRepository.get(repo, grant.work_package_id),
          true <- handoff_anchor_matches_grant?(anchor, grant),
-         {:ok, work_requests} <- WorkRequestRepository.list(repo, %{"repo" => anchor.repo, "base_branch" => anchor.base_branch}) do
+         {:ok, work_requests} <- WorkRequestRepository.list(repo, %{"base_branch" => anchor.base_branch}) do
       if Enum.any?(work_requests, &work_request_matches_handoff_anchor?(&1, anchor)) do
         {:ok, true}
       else
@@ -214,7 +215,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     with true <- eligible_status?(work_request.status),
          true <- phase_id(work_request) == anchor.phase_id,
          true <- anchor_id(work_request) == anchor.id,
-         true <- work_request.repo == anchor.repo,
+         true <- repo_scope_match?(work_request.repo, anchor.repo),
          true <- work_request.base_branch == anchor.base_branch,
          {:ok, allowed_file_globs} <- work_request_allowed_file_globs(work_request) do
       normalized_strings(anchor.allowed_file_globs || []) == allowed_file_globs
@@ -610,7 +611,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       valid_anchor? =
         anchor.phase_id == phase.id and
           anchor.kind == @anchor_kind and
-          anchor.repo == work_request.repo and
+          repo_scope_match?(anchor.repo, work_request.repo) and
           anchor.base_branch == work_request.base_branch and
           normalized_strings(anchor.allowed_file_globs || []) == allowed_file_globs
 
@@ -882,7 +883,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
 
   defp matching_handoff_grant(repo, %AccessGrant{} = grant, %WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, now) do
     if active_unclaimed_handoff_grant?(grant, phase, anchor, now) and
-         grant.scope_repo == work_request.repo and
+         repo_scope_match?(grant.scope_repo, work_request.repo) and
          grant.scope_base_branch == work_request.base_branch and
          required_capabilities?(grant.capabilities) do
       scoped_to_work_request(repo, grant, work_request)
@@ -899,6 +900,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       {:error, _reason} = error ->
         error
     end
+  end
+
+  defp repo_scope_match?(expected_repo, actual_repo) when is_binary(expected_repo) and is_binary(actual_repo) do
+    RepoIdentity.scope_match?(expected_repo, actual_repo,
+      trusted_remotes: repo_scope_trusted_remotes(),
+      local_path_remotes?: true
+    )
+  end
+
+  defp repo_scope_match?(_expected_repo, _actual_repo), do: false
+
+  defp repo_scope_trusted_remotes do
+    :symphony_elixir
+    |> Application.get_env(:sympp_repo_identity_trusted_remotes, [])
+    |> List.wrap()
+    |> Enum.filter(&is_binary/1)
   end
 
   defp work_request_scope_ids(repo, %AccessGrant{} = grant) do

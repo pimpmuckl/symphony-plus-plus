@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.LocalArchitectGrantClaim do
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
+  alias SymphonyElixir.SymphonyPlusPlus.RepoIdentity
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.CompletionRecovery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
@@ -74,16 +75,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.LocalArchitectGrantClaim do
         where: grant.work_package_id == ^anchor.id,
         where: grant.phase_id == ^anchor.phase_id,
         where: grant.grant_role == "architect",
-        where: grant.scope_repo == ^claim.repo,
         where: grant.scope_base_branch == ^claim.base_branch,
         where: grant.claimed_by == ^claim.claimed_by,
         where: not is_nil(grant.claimed_at),
         where: is_nil(grant.revoked_at),
         where: is_nil(grant.expires_at) or grant.expires_at > ^now,
-        select: grant.id
+        select: grant
       )
 
-    repo.all(query)
+    query
+    |> repo.all()
+    |> Enum.filter(&grant_repo_scope_matches?(&1, claim.repo))
+    |> Enum.map(& &1.id)
   end
 
   defp recover_released_handoff_owner(repo, %WorkPackage{} = anchor, claim, %DateTime{} = now, validate_grant) do
@@ -113,17 +116,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.LocalArchitectGrantClaim do
         where: grant.work_package_id == ^anchor.id,
         where: grant.phase_id == ^anchor.phase_id,
         where: grant.grant_role == "architect",
-        where: grant.scope_repo == ^claim.repo,
         where: grant.scope_base_branch == ^claim.base_branch,
         where: not is_nil(grant.claimed_at),
         where: grant.claimed_by != ^claim.claimed_by,
         where: is_nil(grant.revoked_at),
         where: is_nil(grant.expires_at) or grant.expires_at > ^now,
-        order_by: [desc: grant.claimed_at, desc: grant.updated_at, asc: grant.id],
-        limit: 1
+        order_by: [desc: grant.claimed_at, desc: grant.updated_at, asc: grant.id]
       )
 
-    repo.one(query)
+    query
+    |> repo.all()
+    |> Enum.find(&grant_repo_scope_matches?(&1, claim.repo))
+  end
+
+  defp grant_repo_scope_matches?(%AccessGrant{scope_repo: scope_repo}, expected_repo) when is_binary(scope_repo) and is_binary(expected_repo) do
+    RepoIdentity.scope_match?(scope_repo, expected_repo,
+      trusted_remotes: repo_scope_trusted_remotes(),
+      local_path_remotes?: true
+    )
+  end
+
+  defp grant_repo_scope_matches?(%AccessGrant{}, _expected_repo), do: false
+
+  defp repo_scope_trusted_remotes do
+    :symphony_elixir
+    |> Application.get_env(:sympp_repo_identity_trusted_remotes, [])
+    |> List.wrap()
+    |> Enum.filter(&is_binary/1)
   end
 
   defp recover_released_handoff_owner_id(repo, id, claim, %DateTime{} = now) when is_binary(id) do

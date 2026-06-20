@@ -703,6 +703,68 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
     assert get_in(same_repo_write, ["error", "data", "reason"]) == "not_found"
   end
 
+  test "claim_local_architect_assignment accepts stale local checkout repo scopes for owner repo WorkRequests", %{repo: repo} do
+    checkout_path =
+      TestSupport.git_repo_with_origin_fixture!("https://github.com/Pimpmuckl/nextide-saas-vod-intelligence.git",
+        prefix: "sympp-local-architect-repo-alias"
+      )
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-REPO-ALIAS",
+        repo: "Pimpmuckl/nextide-saas-vod-intelligence",
+        base_branch: "main",
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               handoff_opts: handoff_opts(repo)
+             )
+
+    {1, _rows} =
+      repo.update_all(
+        from(package in WorkPackage, where: package.id == ^handoff.anchor_package.id),
+        set: [repo: checkout_path]
+      )
+
+    {1, _rows} =
+      repo.update_all(
+        from(grant in AccessGrant, where: grant.id == ^handoff.grant.id),
+        set: [scope_repo: checkout_path]
+      )
+
+    {claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-repo-alias-claim",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_architect_assignment",
+            "arguments" => %{"work_request_id" => work_request.id, "claimed_by" => "local-architect-1"}
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-architect-repo-alias-state")
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+
+    read_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-architect-repo-alias-read",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_work_request", "arguments" => %{"work_request_id" => work_request.id}}
+        },
+        claimed_server
+      )
+
+    assert get_in(read_response, ["result", "structuredContent", "work_request", "id"]) == work_request.id
+  end
+
   test "claim_local_architect_assignment rejects mismatched optional scope hints", %{repo: repo} do
     work_request =
       create_work_request!(repo,

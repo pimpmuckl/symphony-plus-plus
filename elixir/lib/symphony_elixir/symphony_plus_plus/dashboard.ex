@@ -1295,7 +1295,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp phase_work_package_matches_filters?(%WorkPackage{} = work_package, filters) do
     Enum.all?(filters, fn
-      {:repo, repo} when is_binary(repo) -> work_package.repo == repo
+      {:repo, repo} when is_binary(repo) -> repo_scope_match?(work_package.repo, repo)
       {:base_branch, base_branch} when is_binary(base_branch) -> work_package.base_branch == base_branch
       _filter -> true
     end)
@@ -1321,7 +1321,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp work_request_matches_filters?(%WorkRequest{} = work_request, filters) do
     Enum.all?(filters, fn
-      {:repo, repo} when is_binary(repo) -> work_request.repo == repo
+      {:repo, repo} when is_binary(repo) -> repo_scope_match?(work_request.repo, repo)
       {:base_branch, base_branch} when is_binary(base_branch) -> work_request.base_branch == base_branch
       _filter -> true
     end)
@@ -1365,12 +1365,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp frozen_scope_value(_value), do: {:error, :forbidden}
 
   defp require_frozen_scope_match(%WorkPackage{} = anchor, %AccessGrant{} = grant) do
-    if grant.scope_repo == anchor.repo and grant.scope_base_branch == anchor.base_branch do
+    if repo_scope_match?(grant.scope_repo, anchor.repo) and grant.scope_base_branch == anchor.base_branch do
       :ok
     else
       {:error, :forbidden}
     end
   end
+
+  defp repo_scope_match?(expected_repo, actual_repo) when is_binary(expected_repo) and is_binary(actual_repo) do
+    RepoIdentity.scope_match?(expected_repo, actual_repo,
+      trusted_remotes: configured_trusted_repo_remotes(),
+      local_path_remotes?: true
+    )
+  end
+
+  defp repo_scope_match?(_expected_repo, _actual_repo), do: false
 
   defp cards_for_packages(repo, work_packages, repo_identity_catalog) do
     with {:ok, contexts} <- card_contexts_for_packages(repo, work_packages, repo_identity_catalog) do
