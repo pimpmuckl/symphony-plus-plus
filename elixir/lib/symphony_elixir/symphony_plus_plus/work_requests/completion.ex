@@ -527,12 +527,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   end
 
   defp delete_archived_work_request_with_cleanup(repo, work_request_id, cutoff) do
-    with {:ok, _current} <- require_archived_before(repo, work_request_id, cutoff),
-         {planned_slice_ids, linked_work_package_ids} <- archived_planned_slice_context(repo, [work_request_id]),
+    {planned_slice_ids, linked_work_package_ids} = archived_planned_slice_context(repo, [work_request_id])
+
+    with {:ok, _current} <- claim_archived_before(repo, work_request_id, cutoff),
          :ok <- validate_linked_work_package_worktrees(repo, linked_work_package_ids),
-         {:ok, _current} <- require_archived_before(repo, work_request_id, cutoff),
-         :ok <- cleanup_linked_work_package_worktrees(repo, linked_work_package_ids),
-         {:ok, _current} <- require_archived_before(repo, work_request_id, cutoff) do
+         :ok <- cleanup_linked_work_package_worktrees(repo, linked_work_package_ids) do
       repo.transaction(fn ->
         delete_archived_work_request_after_dependents(
           repo,
@@ -627,8 +626,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     end
   end
 
-  defp delete_archived_comments(_repo, [], []), do: :ok
-
   defp delete_archived_comments(repo, work_request_ids, planned_slice_ids) do
     targets =
       Enum.map(work_request_ids, &{"work_request", &1}) ++
@@ -686,10 +683,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   end
 
   defp archive_completed(repo, %WorkRequest{archived_at: %DateTime{}, id: id} = work_request, _archive_reason) do
-    with :ok <- validate_work_request_linked_worktrees(repo, id),
-         {:ok, _current} <- require_archived_completed(repo, id),
-         :ok <- cleanup_work_request_linked_worktrees(repo, id) do
-      {:ok, work_request}
+    with :ok <- validate_work_request_linked_worktrees(repo, id) do
+      with {:ok, _current} <- claim_archived_completed(repo, id),
+           :ok <- cleanup_work_request_linked_worktrees(repo, id) do
+        {:ok, work_request}
+      end
     end
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
@@ -698,11 +696,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   defp archive_completed(repo, %WorkRequest{id: id}, archive_reason) when is_binary(id) do
     now = DateTime.utc_now(:microsecond)
 
-    with :ok <- validate_work_request_linked_worktrees(repo, id),
-         {:ok, archived, _archived_by_this_call?} <- archive_completed_update(repo, id, archive_reason, now),
-         {:ok, _current} <- require_archived_completed(repo, id),
-         :ok <- cleanup_work_request_linked_worktrees(repo, id) do
-      {:ok, archived}
+    with :ok <- validate_work_request_linked_worktrees(repo, id) do
+      with {:ok, archived, _archived_by_this_call?} <- archive_completed_update(repo, id, archive_reason, now),
+           :ok <- cleanup_work_request_linked_worktrees(repo, id) do
+        {:ok, archived}
+      end
     end
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
@@ -720,6 +718,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
       )
 
     archive_update_result(result, repo, id)
+  end
+
+  defp claim_archived_completed(repo, work_request_id) do
+    now = DateTime.utc_now(:microsecond)
+
+    {count, _rows} =
+      repo.update_all(
+        from(work_request in WorkRequest,
+          where: work_request.id == ^work_request_id,
+          where: not is_nil(work_request.completed_at),
+          where: not is_nil(work_request.archived_at)
+        ),
+        set: [updated_at: now]
+      )
+
+    case count do
+      1 -> Repository.get(repo, work_request_id)
+      0 -> require_archived_completed(repo, work_request_id)
+    end
+  end
+
+  defp claim_archived_before(repo, work_request_id, %DateTime{} = cutoff) do
+    now = DateTime.utc_now(:microsecond)
+
+    {count, _rows} =
+      repo.update_all(
+        from(work_request in WorkRequest,
+          where: work_request.id == ^work_request_id,
+          where: not is_nil(work_request.completed_at),
+          where: not is_nil(work_request.archived_at),
+          where: work_request.archived_at < ^cutoff
+        ),
+        set: [updated_at: now]
+      )
+
+    case count do
+      1 -> Repository.get(repo, work_request_id)
+      0 -> require_archived_before(repo, work_request_id, cutoff)
+    end
   end
 
   defp require_archived_completed(repo, work_request_id) do
