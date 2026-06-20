@@ -12,12 +12,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
+  alias SymphonyElixir.TestSupport
   alias SymphonyElixir.WorkPackageFactory
 
   setup_all do
@@ -751,6 +753,55 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_human_merge"
   end
 
+  test "delivery transaction failures preserve linked worktrees", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-DELIVERY-MISMATCH-PRESERVES-WORKTREE",
+        status: "ready_for_human_merge"
+      )
+
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-closeout-mismatch-worktree")
+    codex_home = Path.join(fixture.root, "codex-home")
+    previous_codex_home = System.get_env("CODEX_HOME")
+
+    try do
+      System.put_env("CODEX_HOME", codex_home)
+
+      assert {:ok, prepared} =
+               WorktreeLifecycle.prepare(
+                 repo,
+                 linked_package.id,
+                 %{
+                   "repo_root" => fixture.repo_root,
+                   "base_branch" => "main",
+                   "branch" => "feat/mismatch-preserves-worktree"
+                 },
+                 codex_home: codex_home
+               )
+
+      assert {:ok, _drifted_package} = WorkPackageRepository.update(repo, linked_package.id, %{title: "Drifted after dispatch"})
+
+      assert {:error, :work_package_mismatch} =
+               Service.record_planned_slice_delivery(
+                 repo,
+                 work_request.id,
+                 planned_slice.id,
+                 delivery_attrs(%{
+                   outcome: "completed_no_pr",
+                   idempotency_key: "delivery-mismatch-preserves-worktree",
+                   no_pr_evidence: "The linked package drifted after dispatch."
+                 })
+               )
+
+      assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+      assert File.dir?(prepared.worktree_path)
+      assert repo.get!(WorkPackage, linked_package.id).worktree_path == prepared.worktree_path
+    after
+      restore_env("CODEX_HOME", previous_codex_home)
+    end
+  end
+
   test "delivery on a non-terminal unlinked planned slice does not complete the request", %{repo: repo} do
     work_request = create_work_request!(repo, id: "WR-DELIVERY-UNLINKED", status: "ready_for_slicing")
     planned_slice = create_planned_slice!(repo, work_request, id: "WRS-DELIVERY-UNLINKED")
@@ -1116,7 +1167,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert repo.get!(WorkPackage, linked_package.id).status == "implementing"
   end
 
-  test "abandoned closeout retires unclaimed stale runtime evidence after worktree cleanup", %{repo: repo} do
+  test "abandoned closeout clears missing managed worktree after durable closeout", %{repo: repo} do
     {work_request, planned_slice, linked_package} =
       linked_slice!(
         repo,
@@ -1124,58 +1175,73 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
         status: "ready_for_worker"
       )
 
-    assert {:ok, _with_worktree} =
-             WorkPackageRepository.update(repo, linked_package.id, %{
-               worktree_path: Path.join(System.tmp_dir!(), "sympp-abandoned-not-cleaned")
-             })
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-closeout-missing-worktree")
+    codex_home = Path.join(fixture.root, "codex-home")
+    previous_codex_home = System.get_env("CODEX_HOME")
 
-    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    try do
+      System.put_env("CODEX_HOME", codex_home)
 
-    attrs =
-      delivery_attrs(%{
-        outcome: "abandoned",
-        idempotency_key: "delivery-abandoned-stale-runtime",
-        abandoned_rationale: "Worker bootstrap failed before implementation; operator cleaned the worktree."
-      })
+      assert {:ok, prepared} =
+               WorktreeLifecycle.prepare(
+                 repo,
+                 linked_package.id,
+                 %{
+                   "repo_root" => fixture.repo_root,
+                   "base_branch" => "main",
+                   "branch" => "feat/abandoned-stale-runtime"
+                 },
+                 codex_home: codex_home
+               )
 
-    assert {:error, :active_runtime} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
-    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+      File.rm_rf!(prepared.worktree_path)
 
-    assert {:ok, _cleaned_worktree} = WorkPackageRepository.update(repo, linked_package.id, %{worktree_path: nil})
+      assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
 
-    assert {:ok, claim_lease} =
-             ClaimLeaseService.claim(
-               repo,
-               linked_package.id,
-               %{
-                 "actor_kind" => "agent",
-                 "actor_id" => "local:stale-abandoned-claim",
-                 "actor_display_name" => "stale-abandoned-worker"
-               },
-               now: DateTime.add(DateTime.utc_now(:microsecond), -10, :second),
-               stale_after_ms: 1
-             )
+      assert {:ok, claim_lease} =
+               ClaimLeaseService.claim(
+                 repo,
+                 linked_package.id,
+                 %{
+                   "actor_kind" => "agent",
+                   "actor_id" => "local:stale-abandoned-claim",
+                   "actor_display_name" => "stale-abandoned-worker"
+                 },
+                 now: DateTime.add(DateTime.utc_now(:microsecond), -10, :second),
+                 stale_after_ms: 1
+               )
 
-    assert {:ok, agent_run} =
-             AgentRunRepository.start_run(repo, %{
-               work_package_id: linked_package.id,
-               status: "running",
-               last_seen_at: DateTime.add(DateTime.utc_now(:microsecond), -301, :second)
-             })
+      assert {:ok, agent_run} =
+               AgentRunRepository.start_run(repo, %{
+                 work_package_id: linked_package.id,
+                 status: "running",
+                 last_seen_at: DateTime.add(DateTime.utc_now(:microsecond), -301, :second)
+               })
 
-    assert {:ok, delivery} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
-    assert delivery.outcome == "abandoned"
-    assert repo.get!(WorkPackage, linked_package.id).status == "abandoned"
-    assert %AccessGrant{revoked_at: %DateTime{}, claimed_at: nil} = repo.get!(AccessGrant, minted.grant.id)
-    assert %ClaimLease{status: "released", release_reason: "abandoned_delivery_closeout"} = repo.get!(ClaimLease, claim_lease.id)
+      attrs =
+        delivery_attrs(%{
+          outcome: "abandoned",
+          idempotency_key: "delivery-abandoned-stale-runtime",
+          abandoned_rationale: "Worker bootstrap failed before implementation; operator cleaned the worktree."
+        })
 
-    events = repo.all(ProgressEvent)
-    closeout_event = Enum.find(events, &(&1.payload["type"] == "work_request_delivery_closeout"))
-    assert closeout_event.payload["retired_worker_grant_ids"] == [minted.grant.id]
-    assert closeout_event.payload["retired_claim_lease_ids"] == [claim_lease.id]
-    assert closeout_event.payload["ignored_stale_agent_run_ids"] == [agent_run.id]
-    assert "claim_lease_stale" in closeout_event.payload["runtime_reason_codes_before_closeout"]
-    assert "agent_run_stale" in closeout_event.payload["runtime_reason_codes_before_closeout"]
+      assert {:ok, delivery} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+      assert delivery.outcome == "abandoned"
+      assert repo.get!(WorkPackage, linked_package.id).status == "abandoned"
+      assert repo.get!(WorkPackage, linked_package.id).worktree_path == nil
+      assert %AccessGrant{revoked_at: %DateTime{}, claimed_at: nil} = repo.get!(AccessGrant, minted.grant.id)
+      assert %ClaimLease{status: "released", release_reason: "abandoned_delivery_closeout"} = repo.get!(ClaimLease, claim_lease.id)
+
+      events = repo.all(ProgressEvent)
+      closeout_event = Enum.find(events, &(&1.payload["type"] == "work_request_delivery_closeout"))
+      assert closeout_event.payload["retired_worker_grant_ids"] == [minted.grant.id]
+      assert closeout_event.payload["retired_claim_lease_ids"] == [claim_lease.id]
+      assert closeout_event.payload["ignored_stale_agent_run_ids"] == [agent_run.id]
+      assert "claim_lease_stale" in closeout_event.payload["runtime_reason_codes_before_closeout"]
+      assert "agent_run_stale" in closeout_event.payload["runtime_reason_codes_before_closeout"]
+    after
+      restore_env("CODEX_HOME", previous_codex_home)
+    end
   end
 
   test "abandoned closeout still rejects claimed worker authority after cleanup", %{repo: repo} do
@@ -1438,6 +1504,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
   defp database_path do
     Path.join(System.tmp_dir!(), "sympp-work-request-delivery-closeout-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}.sqlite3")
   end
+
+  defp restore_env(key, nil), do: System.delete_env(key)
+  defp restore_env(key, value), do: System.put_env(key, value)
 
   defmodule RaceRepo do
     @moduledoc false

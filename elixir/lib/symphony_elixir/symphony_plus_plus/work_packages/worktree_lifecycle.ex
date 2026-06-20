@@ -72,6 +72,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     end
   end
 
+  @spec validate_cleanup(repo(), String.t()) :: {:ok, lifecycle_result()} | {:error, error()}
+  @spec validate_cleanup(repo(), String.t(), keyword()) :: {:ok, lifecycle_result()} | {:error, error()}
+  def validate_cleanup(repo, work_package_id, opts \\ [])
+      when is_atom(repo) and is_binary(work_package_id) and is_list(opts) do
+    with {:ok, %WorkPackage{} = work_package} <- Repository.get(repo, work_package_id) do
+      validate_recorded_worktree_cleanup(work_package, opts)
+    end
+  end
+
   @spec worktree_root(keyword()) :: {:ok, Path.t()} | {:error, error()}
   def worktree_root(opts \\ []) when is_list(opts) do
     opts
@@ -335,6 +344,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     end
   end
 
+  defp validate_recorded_worktree_cleanup(%WorkPackage{worktree_path: nil} = work_package, _opts) do
+    {:ok, result(work_package, "already_clean", nil, nil, nil, nil)}
+  end
+
+  defp validate_recorded_worktree_cleanup(%WorkPackage{} = work_package, opts) do
+    with {:ok, root} <- worktree_root(opts),
+         {:ok, worktree_path} <- canonicalize(work_package.worktree_path),
+         :ok <- require_inside_root(worktree_path, root),
+         {:ok, opts} <- cleanup_validation_target_repo_root_opts(work_package, opts, worktree_path) do
+      validate_existing_or_missing_worktree_cleanup(work_package, worktree_path, opts)
+    end
+  end
+
   defp cleanup_existing_or_missing_worktree(repo, %WorkPackage{} = work_package, worktree_path, opts) do
     cond do
       File.dir?(worktree_path) and not WorktreeTargetRoot.git_metadata_present?(worktree_path) ->
@@ -348,6 +370,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
 
       true ->
         clear_missing_recorded_worktree(repo, work_package, worktree_path, opts)
+    end
+  end
+
+  defp validate_existing_or_missing_worktree_cleanup(%WorkPackage{} = work_package, worktree_path, opts) do
+    cond do
+      File.dir?(worktree_path) and not WorktreeTargetRoot.git_metadata_present?(worktree_path) ->
+        validate_non_git_recorded_worktree_directory_cleanup(work_package, worktree_path, opts)
+
+      File.dir?(worktree_path) ->
+        validate_existing_worktree_cleanup(work_package, worktree_path, opts)
+
+      File.exists?(worktree_path) ->
+        {:error, :invalid_worktree_path}
+
+      true ->
+        validate_missing_recorded_worktree_cleanup(work_package, worktree_path, opts)
     end
   end
 
@@ -365,6 +403,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     end
   end
 
+  defp validate_non_git_recorded_worktree_directory_cleanup(%WorkPackage{} = work_package, worktree_path, opts) do
+    with {:ok, _stale_metadata_paths} <- require_removable_non_git_directory(worktree_path),
+         {:ok, repo_root} <- cleanup_repo_root(opts),
+         opts <- cleanup_context_opts(opts, repo_root, worktree_path),
+         compact_owner? <- compact_worktree_owner?(work_package, repo_root, worktree_path),
+         :ok <- require_missing_recorded_worktree_owner(repo_root, worktree_path, opts, compact_owner?) do
+      {:ok, result(work_package, "stale_record_cleared", nil, nil, nil, repo_root)}
+    end
+  end
+
   defp cleanup_existing_worktree(repo, %WorkPackage{} = work_package, worktree_path, opts) do
     opts = cleanup_status_context_opts(opts, worktree_path)
 
@@ -378,6 +426,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
          :ok <- git(repo_root, ["worktree", "prune"], opts),
          {:ok, updated_work_package} <- Repository.update(repo, work_package.id, cleared_worktree_attrs()) do
       {:ok, result(updated_work_package, "cleaned", worktree_path, nil, nil, repo_root)}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_existing_worktree_cleanup(%WorkPackage{} = work_package, worktree_path, opts) do
+    opts = cleanup_status_context_opts(opts, worktree_path)
+
+    with {:ok, status_output} <- git_output(worktree_path, ["status", "--porcelain"], opts),
+         :ok <- require_clean(status_output),
+         {:ok, repo_root} <- cleanup_repo_root(opts),
+         opts <- cleanup_context_opts(opts, repo_root, worktree_path),
+         :ok <- require_recorded_worktree_owner(repo_root, worktree_path, opts),
+         :ok <- require_git_worktree(worktree_path, repo_root, opts) do
+      {:ok, result(work_package, "cleaned", worktree_path, nil, nil, repo_root)}
     else
       {:error, reason} -> {:error, reason}
     end
@@ -434,6 +497,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     end
   end
 
+  defp validate_missing_recorded_worktree_cleanup(%WorkPackage{} = work_package, worktree_path, opts) do
+    with {:ok, repo_root} <- cleanup_repo_root(opts),
+         opts <- cleanup_context_opts(opts, repo_root, worktree_path),
+         compact_owner? <- compact_worktree_owner?(work_package, repo_root, worktree_path),
+         :ok <- require_missing_recorded_worktree_owner(repo_root, worktree_path, opts, compact_owner?) do
+      {:ok, result(work_package, "stale_record_cleared", nil, nil, nil, repo_root)}
+    end
+  end
+
   defp compact_worktree_owner?(%WorkPackage{} = work_package, repo_root, worktree_path) do
     recorded_target_repo_root_matches?(work_package, repo_root) or
       WorktreeTargetRoot.target_root_matches_worktree?(repo_root, work_package, worktree_path)
@@ -478,6 +550,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   end
 
   defp backfill_recorded_target_repo_root(_repo, work_package, opts, _result), do: {:ok, work_package, opts}
+
+  defp cleanup_validation_target_repo_root_opts(%WorkPackage{worktree_target_repo_root: target_repo_root}, opts, _worktree_path)
+       when is_binary(target_repo_root) do
+    {:ok, recorded_target_repo_root_opts(opts, %WorkPackage{worktree_target_repo_root: target_repo_root})}
+  end
+
+  defp cleanup_validation_target_repo_root_opts(%WorkPackage{} = work_package, opts, worktree_path) do
+    if Keyword.has_key?(opts, :target_repo_root) or Keyword.has_key?(opts, :repo_root) do
+      {:ok, opts}
+    else
+      case WorktreeTargetRoot.from_package(work_package, worktree_path) do
+        {:ok, repo_root} -> {:ok, Keyword.put(opts, :target_repo_root, repo_root)}
+        _result -> {:ok, opts}
+      end
+    end
+  end
 
   defp git_common_dir(path, opts) do
     with {:ok, common_dir} <- git_output(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], opts),
