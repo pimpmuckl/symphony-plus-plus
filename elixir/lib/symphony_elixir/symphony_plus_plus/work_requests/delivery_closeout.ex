@@ -70,9 +70,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
          {:ok, delivery} <- validate_delivery_input(work_request_id, planned_slice_id, attrs),
          :ok <- validate_pre_cleanup_closeout(repo, planned_slice, delivery, delivery_closeout_opts(attrs)),
          :ok <- validate_linked_worktree_cleanup(repo, planned_slice),
+         {:ok, delivery} <-
+           repo.transaction(fn -> record_in_transaction(repo, work_request_id, planned_slice_id, attrs) end)
+           |> normalize_transaction_result(),
          {:ok, _cleanup} <- cleanup_linked_worktree(repo, planned_slice) do
-      repo.transaction(fn -> record_in_transaction(repo, work_request_id, planned_slice_id, attrs) end)
-      |> normalize_transaction_result()
+      {:ok, delivery}
     end
   rescue
     error in Ecto.ConstraintError -> normalize_constraint_error(error)

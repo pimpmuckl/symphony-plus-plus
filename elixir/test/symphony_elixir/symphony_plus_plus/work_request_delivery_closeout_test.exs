@@ -753,6 +753,55 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_human_merge"
   end
 
+  test "delivery transaction failures preserve linked worktrees", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-DELIVERY-MISMATCH-PRESERVES-WORKTREE",
+        status: "ready_for_human_merge"
+      )
+
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-closeout-mismatch-worktree")
+    codex_home = Path.join(fixture.root, "codex-home")
+    previous_codex_home = System.get_env("CODEX_HOME")
+
+    try do
+      System.put_env("CODEX_HOME", codex_home)
+
+      assert {:ok, prepared} =
+               WorktreeLifecycle.prepare(
+                 repo,
+                 linked_package.id,
+                 %{
+                   "repo_root" => fixture.repo_root,
+                   "base_branch" => "main",
+                   "branch" => "feat/mismatch-preserves-worktree"
+                 },
+                 codex_home: codex_home
+               )
+
+      assert {:ok, _drifted_package} = WorkPackageRepository.update(repo, linked_package.id, %{title: "Drifted after dispatch"})
+
+      assert {:error, :work_package_mismatch} =
+               Service.record_planned_slice_delivery(
+                 repo,
+                 work_request.id,
+                 planned_slice.id,
+                 delivery_attrs(%{
+                   outcome: "completed_no_pr",
+                   idempotency_key: "delivery-mismatch-preserves-worktree",
+                   no_pr_evidence: "The linked package drifted after dispatch."
+                 })
+               )
+
+      assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+      assert File.dir?(prepared.worktree_path)
+      assert repo.get!(WorkPackage, linked_package.id).worktree_path == prepared.worktree_path
+    after
+      restore_env("CODEX_HOME", previous_codex_home)
+    end
+  end
+
   test "delivery on a non-terminal unlinked planned slice does not complete the request", %{repo: repo} do
     work_request = create_work_request!(repo, id: "WR-DELIVERY-UNLINKED", status: "ready_for_slicing")
     planned_slice = create_planned_slice!(repo, work_request, id: "WRS-DELIVERY-UNLINKED")
@@ -1118,7 +1167,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert repo.get!(WorkPackage, linked_package.id).status == "implementing"
   end
 
-  test "abandoned closeout clears missing managed worktree before retiring stale runtime evidence", %{repo: repo} do
+  test "abandoned closeout clears missing managed worktree after durable closeout", %{repo: repo} do
     {work_request, planned_slice, linked_package} =
       linked_slice!(
         repo,
