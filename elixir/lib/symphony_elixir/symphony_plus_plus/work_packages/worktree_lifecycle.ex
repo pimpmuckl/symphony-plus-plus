@@ -56,7 +56,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
          :ok <- require_base_branch(work_package, base_branch),
          {:ok, branch} <- ref_name(attrs, "branch", :invalid_branch, target_repo_root, opts),
          {:ok, worktree_parent} <- worktree_parent(attrs, opts),
-         {:ok, worktree_path} <- worktree_path(work_package, target_repo_root, branch, worktree_parent),
+         {:ok, worktree_path} <- worktree_path(work_package, target_repo_root, branch, worktree_parent, opts),
          {:ok, worktree_path} <-
            validate_recorded_prepare_path(work_package, worktree_path, target_repo_root, branch, worktree_parent) do
       maybe_replay_prepared(repo, work_package, target_repo_root, base_branch, branch, worktree_path, opts)
@@ -161,16 +161,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     end
   end
 
-  defp worktree_path(%WorkPackage{} = work_package, repo_root, branch, worktree_parent) do
-    with {:ok, branch_segment} <- WorktreePath.unique_segment(branch, branch),
-         {:ok, package_segment} <- WorktreePath.unique_segment(work_package.id, work_package.id),
-         {:ok, repo_segment} <- WorktreePath.repo_segment(repo_root),
-         candidate <- Path.join([worktree_parent, repo_segment, "#{package_segment}_#{branch_segment}"]),
+  defp worktree_path(%WorkPackage{} = work_package, repo_root, branch, worktree_parent, opts) do
+    with {:ok, leaf} <- worktree_leaf(work_package, repo_root, branch, worktree_parent, opts),
+         candidate <- Path.join(worktree_parent, leaf),
          {:ok, candidate} <- canonicalize(candidate),
          :ok <- require_inside_root(candidate, worktree_parent) do
       {:ok, candidate}
     end
   end
+
+  defp worktree_leaf(%WorkPackage{} = work_package, repo_root, branch, worktree_parent, opts) do
+    with {:ok, leaves} <- WorktreePath.collision_worktree_leaves(repo_root, work_package.id, branch) do
+      worktree_list = reserved_worktree_list(repo_root, opts)
+
+      case Enum.find_value(leaves, &available_worktree_leaf(&1, work_package, worktree_parent, worktree_list)) do
+        nil -> {:error, :worktree_path_exists}
+        leaf -> {:ok, leaf}
+      end
+    end
+  end
+
+  defp reserved_worktree_list(repo_root, opts) do
+    case git_output(repo_root, ["worktree", "list", "--porcelain"], opts) do
+      {:ok, output} -> output
+      {:error, _reason} -> ""
+    end
+  end
+
+  defp available_worktree_leaf({leaf, _length}, %WorkPackage{} = work_package, worktree_parent, worktree_list) do
+    candidate = Path.join(worktree_parent, leaf)
+
+    path_unavailable? = File.exists?(candidate) or worktree_list_includes?(worktree_list, candidate)
+
+    if path_unavailable? and not same_recorded_path?(work_package.worktree_path, candidate), do: nil, else: leaf
+  end
+
+  defp same_recorded_path?(recorded_path, candidate) when is_binary(recorded_path), do: same_path?(recorded_path, candidate)
+  defp same_recorded_path?(_recorded_path, _candidate), do: false
 
   defp validate_recorded_prepare_path(%WorkPackage{worktree_path: nil}, worktree_path, _repo_root, _branch, _worktree_parent), do: {:ok, worktree_path}
 
@@ -261,12 +288,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
 
   defp add_worktree(repo_root, worktree_path, base_branch, branch, true, opts) do
     with :ok <- require_existing_branch_matches_base(repo_root, branch, base_branch, opts) do
-      git(repo_root, ["worktree", "add", worktree_path, branch], opts)
+      add_worktree_or_existing_path_error(repo_root, ["worktree", "add", worktree_path, branch], opts)
     end
   end
 
   defp add_worktree(repo_root, worktree_path, base_branch, branch, false, opts) do
     git(repo_root, ["worktree", "add", "-b", branch, worktree_path, "origin/#{base_branch}"], opts)
+  end
+
+  defp add_worktree_or_existing_path_error(repo_root, args, opts) do
+    case git(repo_root, args, opts) do
+      {:error, {:git_failed, 128, %{stderr: stderr}} = reason} when is_binary(stderr) ->
+        if String.contains?(stderr, "already used by worktree"), do: {:error, :worktree_path_exists}, else: {:error, reason}
+
+      result ->
+        result
+    end
   end
 
   defp maybe_delete_created_branch(repo_root, branch, true, opts) do
@@ -356,7 +393,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     with {:ok, stale_metadata_paths} <- require_removable_non_git_directory(worktree_path),
          {:ok, repo_root} <- cleanup_repo_root(opts),
          opts <- cleanup_context_opts(opts, repo_root, worktree_path),
-         :ok <- require_missing_recorded_worktree_owner(repo_root, worktree_path, opts),
+         compact_owner? <- compact_worktree_owner?(work_package, repo_root, worktree_path),
+         :ok <- require_missing_recorded_worktree_owner(repo_root, worktree_path, opts, compact_owner?),
          :ok <- remove_stale_metadata_paths(stale_metadata_paths),
          :ok <- remove_empty_directory(worktree_path),
          :ok <- git(repo_root, ["worktree", "prune"], opts),
@@ -369,7 +407,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     with {:ok, _stale_metadata_paths} <- require_removable_non_git_directory(worktree_path),
          {:ok, repo_root} <- cleanup_repo_root(opts),
          opts <- cleanup_context_opts(opts, repo_root, worktree_path),
-         :ok <- require_missing_recorded_worktree_owner(repo_root, worktree_path, opts) do
+         compact_owner? <- compact_worktree_owner?(work_package, repo_root, worktree_path),
+         :ok <- require_missing_recorded_worktree_owner(repo_root, worktree_path, opts, compact_owner?) do
       {:ok, result(work_package, "stale_record_cleared", nil, nil, nil, repo_root)}
     end
   end
@@ -450,7 +489,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   defp clear_missing_recorded_worktree(repo, %WorkPackage{} = work_package, worktree_path, opts) do
     with {:ok, repo_root} <- cleanup_repo_root(opts),
          opts <- cleanup_context_opts(opts, repo_root, worktree_path),
-         :ok <- require_missing_recorded_worktree_owner(repo_root, worktree_path, opts),
+         compact_owner? <- compact_worktree_owner?(work_package, repo_root, worktree_path),
+         :ok <- require_missing_recorded_worktree_owner(repo_root, worktree_path, opts, compact_owner?),
          :ok <- git(repo_root, ["worktree", "prune"], opts),
          {:ok, updated_work_package} <- Repository.update(repo, work_package.id, cleared_worktree_attrs()) do
       {:ok, result(updated_work_package, "stale_record_cleared", nil, nil, nil, repo_root)}
@@ -460,10 +500,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   defp validate_missing_recorded_worktree_cleanup(%WorkPackage{} = work_package, worktree_path, opts) do
     with {:ok, repo_root} <- cleanup_repo_root(opts),
          opts <- cleanup_context_opts(opts, repo_root, worktree_path),
-         :ok <- require_missing_recorded_worktree_owner(repo_root, worktree_path, opts) do
+         compact_owner? <- compact_worktree_owner?(work_package, repo_root, worktree_path),
+         :ok <- require_missing_recorded_worktree_owner(repo_root, worktree_path, opts, compact_owner?) do
       {:ok, result(work_package, "stale_record_cleared", nil, nil, nil, repo_root)}
     end
   end
+
+  defp compact_worktree_owner?(%WorkPackage{} = work_package, repo_root, worktree_path) do
+    recorded_target_repo_root_matches?(work_package, repo_root) or
+      WorktreeTargetRoot.target_root_matches_worktree?(repo_root, work_package, worktree_path)
+  end
+
+  defp recorded_target_repo_root_matches?(%WorkPackage{worktree_target_repo_root: target_repo_root}, repo_root) when is_binary(target_repo_root) do
+    same_path?(target_repo_root, repo_root)
+  end
+
+  defp recorded_target_repo_root_matches?(%WorkPackage{}, _repo_root), do: false
 
   defp recorded_target_repo_root_opts(opts, %WorkPackage{worktree_target_repo_root: target_repo_root}) when is_binary(target_repo_root) do
     if Keyword.has_key?(opts, :target_repo_root) or Keyword.has_key?(opts, :repo_root) do
@@ -548,9 +600,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     end
   end
 
-  defp require_missing_recorded_worktree_owner(repo_root, worktree_path, opts) do
+  defp require_missing_recorded_worktree_owner(repo_root, worktree_path, opts, compact_owner?) do
     with {:ok, output} <- git_output(repo_root, ["worktree", "list", "--porcelain"], opts) do
-      known_managed_path? = WorktreePath.managed_path_matches_repo_hash?(repo_root, worktree_path)
+      known_managed_path? =
+        WorktreePath.managed_path_matches_repo_hash?(repo_root, worktree_path) or
+          compact_owner?
 
       if worktree_list_includes?(output, worktree_path) or known_managed_path? do
         :ok
@@ -573,14 +627,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   end
 
   defp replayable_legacy_worktree_paths(%WorkPackage{} = work_package, repo_root, branch, worktree_parent) do
-    [
-      legacy_worktree_path(work_package, repo_root, branch, worktree_parent),
-      previous_worktree_path(work_package, repo_root, branch, worktree_parent)
-    ]
-    |> Enum.flat_map(fn
-      {:ok, path} -> [path]
+    legacy_paths =
+      [
+        previous_compact_worktree_path(work_package, repo_root, branch, worktree_parent),
+        legacy_worktree_path(work_package, repo_root, branch, worktree_parent),
+        previous_worktree_path(work_package, repo_root, branch, worktree_parent)
+      ]
+      |> Enum.flat_map(fn
+        {:ok, path} -> [path]
+        {:error, _reason} -> []
+      end)
+
+    current_worktree_paths(work_package, repo_root, branch, worktree_parent) ++ legacy_paths
+  end
+
+  defp current_worktree_paths(%WorkPackage{} = work_package, repo_root, branch, worktree_parent) do
+    case WorktreePath.collision_worktree_leaves(repo_root, work_package.id, branch) do
+      {:ok, leaves} -> Enum.flat_map(leaves, &current_worktree_path(&1, worktree_parent))
       {:error, _reason} -> []
-    end)
+    end
+  end
+
+  defp current_worktree_path({leaf, _length}, worktree_parent) do
+    candidate = Path.join(worktree_parent, leaf)
+
+    with {:ok, candidate} <- canonicalize(candidate),
+         :ok <- require_inside_root(candidate, worktree_parent) do
+      [candidate]
+    else
+      _result -> []
+    end
+  end
+
+  defp previous_compact_worktree_path(%WorkPackage{} = work_package, repo_root, branch, worktree_parent) do
+    with {:ok, branch_segment} <- WorktreePath.previous_compact_unique_segment(branch, branch),
+         {:ok, package_segment} <- WorktreePath.previous_compact_unique_segment(work_package.id, work_package.id),
+         {:ok, repo_segment} <- WorktreePath.previous_compact_unique_segment(Path.basename(repo_root), repo_root),
+         candidate <- Path.join([worktree_parent, repo_segment, "#{package_segment}_#{branch_segment}"]),
+         {:ok, candidate} <- canonicalize(candidate),
+         :ok <- require_inside_root(candidate, worktree_parent) do
+      {:ok, candidate}
+    end
   end
 
   defp legacy_worktree_path(%WorkPackage{} = work_package, repo_root, branch, worktree_parent) do

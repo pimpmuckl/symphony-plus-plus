@@ -309,10 +309,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorktreeToolsLifecycleTest do
           session,
           "cleanup_work_package_worktree",
           %{
-            "work_package_id" => package.id,
-            "target_repo_root" => fixture.repo_root
+            "work_package_id" => package.id
           },
-          config: config
+          config: Config.default(repo: repo, repo_root: fixture.repo_root)
         )
 
       stale_cleanup_payload = get_in(stale_cleanup_response, ["result", "structuredContent"])

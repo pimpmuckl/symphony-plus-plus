@@ -4668,13 +4668,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> Enum.filter(&is_binary/1)
     |> Enum.flat_map(fn target_repo_root ->
       with {:ok, target_repo_root} <- PathSafety.canonicalize(target_repo_root),
-           true <- WorktreePath.managed_path_matches_repo_hash?(target_repo_root, worktree_path) do
+           true <- recorded_worktree_matches_target_repo_root?(target_repo_root, work_package, worktree_path) do
         [target_repo_root]
       else
         _result -> []
       end
     end)
     |> Enum.uniq()
+  end
+
+  defp recorded_worktree_matches_target_repo_root?(target_repo_root, %WorkPackage{} = work_package, worktree_path) do
+    WorktreeTargetRoot.target_root_matches_worktree?(target_repo_root, work_package, worktree_path) or
+      recorded_flat_worktree_matches_target_repo_root?(target_repo_root, work_package, worktree_path)
+  end
+
+  defp recorded_flat_worktree_matches_target_repo_root?(target_repo_root, %WorkPackage{} = work_package, worktree_path) do
+    case worktree_prepare_branch(work_package, nil) do
+      {:ok, branch} -> WorktreePath.current_worktree_path?(target_repo_root, work_package.id, branch, worktree_path)
+      _result -> false
+    end
   end
 
   defp live_worktree_target_repo_root(worktree_path) do

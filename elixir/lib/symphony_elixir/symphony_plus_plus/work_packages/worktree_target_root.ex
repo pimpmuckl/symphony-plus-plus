@@ -33,13 +33,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeTargetRoot do
   end
 
   @spec from_package(WorkPackage.t(), Path.t()) :: {:ok, Path.t()} | :error
-  def from_package(%WorkPackage{repo: repo}, worktree_path) do
+  def from_package(%WorkPackage{repo: repo} = work_package, worktree_path) do
     repo
     |> checkout_candidates()
     |> Enum.find_value(fn candidate ->
       with {:ok, candidate} <- canonicalize(candidate),
            true <- File.dir?(candidate),
-           true <- WorktreePath.managed_path_matches_repo_hash?(candidate, worktree_path) do
+           true <- target_root_matches_worktree?(candidate, work_package, worktree_path) do
         {:ok, candidate}
       else
         _result -> nil
@@ -81,6 +81,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeTargetRoot do
   end
 
   defp usable_gitdir_file?({:error, _reason}, _worktree_path), do: false
+
+  @spec target_root_matches_worktree?(Path.t(), WorkPackage.t(), Path.t()) :: boolean()
+  def target_root_matches_worktree?(candidate, %WorkPackage{} = work_package, worktree_path) do
+    WorktreePath.managed_path_matches_repo_hash?(candidate, worktree_path) or
+      candidate_worktree_list_includes?(candidate, worktree_path) or
+      WorktreePath.current_worktree_path?(candidate, work_package.id, work_package.branch_pattern, worktree_path)
+  end
+
+  defp candidate_worktree_list_includes?(candidate, worktree_path) do
+    case git_output(candidate, ["worktree", "list", "--porcelain"], []) do
+      {:ok, output} -> worktree_list_includes?(output, worktree_path)
+      {:error, _reason} -> false
+    end
+  end
+
+  defp worktree_list_includes?(output, expected_path) do
+    output
+    |> String.split(~r/\R/)
+    |> Enum.filter(&String.starts_with?(&1, "worktree "))
+    |> Enum.any?(fn "worktree " <> path -> WorktreePath.same_existing_path?(path, expected_path) end)
+  end
 
   defp git_common_dir(path, opts) do
     with {:ok, common_dir} <- git_output(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], opts),
