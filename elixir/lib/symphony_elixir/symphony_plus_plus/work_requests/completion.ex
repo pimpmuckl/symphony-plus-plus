@@ -504,17 +504,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
         )
       )
 
-    delete_archived_work_requests_with_cleanup(repo, archived)
+    delete_archived_work_requests_with_cleanup(repo, archived, cutoff)
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
-  defp delete_archived_work_requests_with_cleanup(repo, work_request_ids) do
+  defp delete_archived_work_requests_with_cleanup(repo, work_request_ids, cutoff) do
     work_request_ids
     |> Enum.reduce_while({:ok, []}, fn work_request_id, {:ok, deleted_ids} ->
-      case delete_archived_work_request_with_cleanup(repo, work_request_id) do
+      case delete_archived_work_request_with_cleanup(repo, work_request_id, cutoff) do
         {:ok, nil} -> {:cont, {:ok, deleted_ids}}
         {:ok, deleted_id} -> {:cont, {:ok, [deleted_id | deleted_ids]}}
+        {:error, :not_completed} -> {:cont, {:ok, deleted_ids}}
         {:error, :active_runtime} -> {:cont, {:ok, deleted_ids}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -525,34 +526,60 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     end
   end
 
-  defp delete_archived_work_request_with_cleanup(repo, work_request_id) do
-    {planned_slice_ids, linked_work_package_ids} = archived_planned_slice_context(repo, [work_request_id])
-
-    with :ok <- validate_linked_work_package_worktrees(repo, linked_work_package_ids),
-         :ok <- cleanup_linked_work_package_worktrees(repo, linked_work_package_ids) do
+  defp delete_archived_work_request_with_cleanup(repo, work_request_id, cutoff) do
+    with {:ok, _current} <- require_archived_before(repo, work_request_id, cutoff),
+         {planned_slice_ids, linked_work_package_ids} <- archived_planned_slice_context(repo, [work_request_id]),
+         :ok <- validate_linked_work_package_worktrees(repo, linked_work_package_ids),
+         {:ok, _current} <- require_archived_before(repo, work_request_id, cutoff),
+         :ok <- cleanup_linked_work_package_worktrees(repo, linked_work_package_ids),
+         {:ok, _current} <- require_archived_before(repo, work_request_id, cutoff) do
       repo.transaction(fn ->
         delete_archived_work_request_after_dependents(
           repo,
           work_request_id,
           planned_slice_ids,
-          linked_work_package_ids
+          linked_work_package_ids,
+          cutoff
         )
       end)
     end
   end
 
-  defp delete_archived_work_request_after_dependents(repo, work_request_id, planned_slice_ids, linked_work_package_ids) do
-    case delete_archived_dependents(repo, [work_request_id], planned_slice_ids, linked_work_package_ids) do
-      :ok -> delete_archived_work_request(repo, work_request_id)
-      {:error, reason} -> repo.rollback(reason)
+  defp delete_archived_work_request_after_dependents(repo, work_request_id, planned_slice_ids, linked_work_package_ids, cutoff) do
+    case require_archived_before(repo, work_request_id, cutoff) do
+      {:ok, _current} ->
+        case delete_archived_dependents(repo, [work_request_id], planned_slice_ids, linked_work_package_ids) do
+          :ok -> delete_archived_work_request(repo, work_request_id, cutoff)
+          {:error, reason} -> repo.rollback(reason)
+        end
+
+      {:error, :not_completed} ->
+        nil
+
+      {:error, reason} ->
+        repo.rollback(reason)
     end
   end
 
-  defp delete_archived_work_request(repo, work_request_id) do
-    case delete_archived_work_requests(repo, [work_request_id]) do
-      [^work_request_id] -> work_request_id
-      [] -> nil
+  defp delete_archived_work_request(repo, work_request_id, cutoff) do
+    case delete_archived_work_request_if_still_archived(repo, work_request_id, cutoff) do
+      1 -> work_request_id
+      0 -> nil
     end
+  end
+
+  defp delete_archived_work_request_if_still_archived(repo, work_request_id, cutoff) do
+    {count, _rows} =
+      repo.delete_all(
+        from(work_request in WorkRequest,
+          where: work_request.id == ^work_request_id,
+          where: not is_nil(work_request.completed_at),
+          where: not is_nil(work_request.archived_at),
+          where: work_request.archived_at < ^cutoff
+        )
+      )
+
+    count
   end
 
   defp archived_planned_slice_context(repo, work_request_ids) do
@@ -643,22 +670,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     end)
   end
 
-  defp delete_archived_work_requests(repo, work_request_ids) do
-    deleted_count =
-      work_request_ids
-      |> Enum.chunk_every(@delete_work_request_chunk_size)
-      |> Enum.reduce(0, fn ids, deleted_count ->
-        {count, _rows} = repo.delete_all(from(work_request in WorkRequest, where: work_request.id in ^ids))
-        deleted_count + count
-      end)
-
-    if deleted_count == length(work_request_ids) do
-      work_request_ids
-    else
-      repo.rollback({:constraint_failed, "archived_work_request_delete_count"})
-    end
-  end
-
   defp completed_sort_key(%WorkRequest{} = work_request) do
     {timestamp_sort_value(work_request.completed_at), timestamp_sort_value(work_request.inserted_at), work_request.id || ""}
   end
@@ -676,6 +687,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
 
   defp archive_completed(repo, %WorkRequest{archived_at: %DateTime{}, id: id} = work_request, _archive_reason) do
     with :ok <- validate_work_request_linked_worktrees(repo, id),
+         {:ok, _current} <- require_archived_completed(repo, id),
          :ok <- cleanup_work_request_linked_worktrees(repo, id) do
       {:ok, work_request}
     end
@@ -688,6 +700,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
 
     with :ok <- validate_work_request_linked_worktrees(repo, id),
          {:ok, archived, _archived_by_this_call?} <- archive_completed_update(repo, id, archive_reason, now),
+         {:ok, _current} <- require_archived_completed(repo, id),
          :ok <- cleanup_work_request_linked_worktrees(repo, id) do
       {:ok, archived}
     end
@@ -707,6 +720,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
       )
 
     archive_update_result(result, repo, id)
+  end
+
+  defp require_archived_completed(repo, work_request_id) do
+    case Repository.get(repo, work_request_id) do
+      {:ok, %WorkRequest{completed_at: %DateTime{}, archived_at: %DateTime{}} = current} -> {:ok, current}
+      {:ok, %WorkRequest{}} -> {:error, :not_completed}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_archived_before(repo, work_request_id, %DateTime{} = cutoff) do
+    with {:ok, %WorkRequest{archived_at: %DateTime{} = archived_at} = current} <-
+           require_archived_completed(repo, work_request_id),
+         true <- DateTime.compare(archived_at, cutoff) == :lt do
+      {:ok, current}
+    else
+      false -> {:error, :not_completed}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp validate_work_request_linked_worktrees(repo, work_request_id) when is_binary(work_request_id) do
