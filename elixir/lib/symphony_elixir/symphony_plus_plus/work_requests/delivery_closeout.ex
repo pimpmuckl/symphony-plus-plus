@@ -6,6 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository, as: ClaimLeaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Service, as: WorkPackageService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
@@ -18,6 +19,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
 
   @abandonable_no_code_statuses ["planning", "ready_for_worker"]
   @abandoned_no_code_status "abandoned"
+  @planned_slice_delivery_replay_fields [
+    :work_request_id,
+    :planned_slice_id,
+    :outcome,
+    :idempotency_key,
+    :recorded_by,
+    :pr_url,
+    :pr_number,
+    :pr_repository,
+    :pr_merged_at,
+    :merge_commit_sha,
+    :no_pr_evidence,
+    :successor_planned_slice_id,
+    :successor_work_package_id,
+    :superseded_reason,
+    :abandoned_rationale
+  ]
   @non_abandonable_history_statuses [
     "blocked",
     "implementing",
@@ -48,8 +66,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
           {:ok, PlannedSliceDelivery.t()} | {:error, error()}
   def record(repo, work_request_id, planned_slice_id, attrs)
       when is_atom(repo) and is_binary(work_request_id) and is_binary(planned_slice_id) and is_map(attrs) do
-    repo.transaction(fn -> record_in_transaction(repo, work_request_id, planned_slice_id, attrs) end)
-    |> normalize_transaction_result()
+    with {:ok, planned_slice} <- Repository.get_planned_slice(repo, work_request_id, planned_slice_id),
+         {:ok, delivery} <- validate_delivery_input(work_request_id, planned_slice_id, attrs),
+         :ok <- validate_pre_cleanup_closeout(repo, planned_slice, delivery, delivery_closeout_opts(attrs)),
+         :ok <- validate_linked_worktree_cleanup(repo, planned_slice),
+         {:ok, _cleanup} <- cleanup_linked_worktree(repo, planned_slice) do
+      repo.transaction(fn -> record_in_transaction(repo, work_request_id, planned_slice_id, attrs) end)
+      |> normalize_transaction_result()
+    end
   rescue
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
     error in Exqlite.Error -> normalize_exqlite_error(error)
@@ -70,6 +94,150 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
       delivery
     else
       {:error, reason} -> repo.rollback(reason)
+    end
+  end
+
+  defp validate_delivery_input(work_request_id, planned_slice_id, attrs) do
+    attrs =
+      attrs
+      |> Map.drop(["id", :id, "inserted_at", :inserted_at, "recorded_at", :recorded_at, "updated_at", :updated_at])
+      |> Map.put("work_request_id", work_request_id)
+      |> Map.put("planned_slice_id", planned_slice_id)
+
+    PlannedSliceDelivery.create_changeset(attrs)
+    |> Ecto.Changeset.apply_action(:insert)
+  end
+
+  defp validate_pre_cleanup_closeout(repo, %PlannedSlice{} = planned_slice, %PlannedSliceDelivery{} = delivery, opts) do
+    case existing_delivery_state(repo, planned_slice, delivery) do
+      :replayed_closeout -> :ok
+      :new_or_unclosed_replay -> validate_new_closeout_pre_cleanup(repo, planned_slice, delivery, opts)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_new_closeout_pre_cleanup(repo, %PlannedSlice{} = planned_slice, %PlannedSliceDelivery{} = delivery, opts) do
+    with :ok <- validate_delivery_scope(repo, planned_slice, delivery),
+         :ok <- validate_closeout_progress_slot(repo, planned_slice, delivery),
+         :ok <- validate_terminal_evidence(planned_slice, delivery) do
+      validate_linked_closeout_preconditions(repo, planned_slice, delivery, opts)
+    end
+  end
+
+  defp validate_delivery_scope(repo, %PlannedSlice{work_request_id: work_request_id}, %PlannedSliceDelivery{outcome: "superseded"} = delivery) do
+    with %PlannedSlice{work_request_id: ^work_request_id} = successor_slice <-
+           repo.get(PlannedSlice, delivery.successor_planned_slice_id),
+         true <- delivery.successor_work_package_id in [nil, successor_slice.work_package_id] do
+      :ok
+    else
+      _result -> {:error, :not_found}
+    end
+  end
+
+  defp validate_delivery_scope(_repo, %PlannedSlice{}, %PlannedSliceDelivery{}), do: :ok
+
+  defp validate_closeout_progress_slot(repo, %PlannedSlice{work_package_id: work_package_id} = planned_slice, %PlannedSliceDelivery{} = delivery) do
+    with true <- filled_string?(work_package_id),
+         {:ok, event} <-
+           PlanningRepository.get_progress_event_by_idempotency_key(
+             repo,
+             work_package_id,
+             closeout_idempotency_key(delivery)
+           ) do
+      if closeout_progress_slot_matches?(event, planned_slice, delivery) do
+        :ok
+      else
+        {:error, :idempotency_key_conflict}
+      end
+    else
+      false -> :ok
+      {:error, :not_found} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp closeout_progress_slot_matches?(event, %PlannedSlice{} = planned_slice, %PlannedSliceDelivery{} = delivery) do
+    closeout_progress_event_matches?(event, planned_slice, delivery, terminal_status_for_outcome(delivery.outcome))
+  end
+
+  defp existing_delivery_state(repo, %PlannedSlice{} = planned_slice, %PlannedSliceDelivery{} = delivery) do
+    case existing_planned_slice_delivery(repo, delivery.planned_slice_id) do
+      nil ->
+        :new_or_unclosed_replay
+
+      %PlannedSliceDelivery{} = existing ->
+        cond do
+          not planned_slice_delivery_replay?(existing, delivery) -> {:error, :delivery_outcome_conflict}
+          closeout_progress_replay?(repo, planned_slice, existing) -> :replayed_closeout
+          true -> :new_or_unclosed_replay
+        end
+    end
+  end
+
+  defp existing_planned_slice_delivery(repo, planned_slice_id) do
+    repo.one(
+      from(delivery in PlannedSliceDelivery,
+        where: delivery.planned_slice_id == ^planned_slice_id,
+        limit: 1
+      )
+    )
+  end
+
+  defp planned_slice_delivery_replay?(%PlannedSliceDelivery{} = existing, %PlannedSliceDelivery{} = candidate) do
+    Enum.all?(@planned_slice_delivery_replay_fields, fn field ->
+      Map.get(existing, field) == Map.get(candidate, field)
+    end)
+  end
+
+  defp validate_linked_closeout_preconditions(
+         repo,
+         %PlannedSlice{work_package_id: work_package_id},
+         %PlannedSliceDelivery{} = delivery,
+         opts
+       ) do
+    case filled_string?(work_package_id) do
+      true -> validate_linked_package_closeout_preconditions(repo, work_package_id, delivery, opts)
+      false -> :ok
+    end
+  end
+
+  defp validate_linked_package_closeout_preconditions(repo, work_package_id, %PlannedSliceDelivery{} = delivery, opts) do
+    context = WorkPackageActivity.context(repo, work_package_id)
+
+    case recovery_closeout_mode(delivery) do
+      :pr_merged -> validate_pr_merged_closeout_preconditions(context, opts)
+      :superseded -> validate_superseded_closeout_preconditions(repo, work_package_id, context)
+      :abandoned -> validate_abandoned_closeout_preconditions(repo, work_package_id, context)
+      :normal -> validate_normal_closeout_preconditions(repo, work_package_id, context, opts)
+    end
+  end
+
+  defp validate_pr_merged_closeout_preconditions(context, opts) do
+    allow_active_blockers? = Keyword.get(opts, :allow_active_blockers?, false)
+
+    with :ok <- maybe_reject_active_blocker_context(context, allow_active_blockers?) do
+      reject_non_recoverable_pr_runtime_context(context)
+    end
+  end
+
+  defp validate_superseded_closeout_preconditions(repo, work_package_id, context) do
+    with :ok <- reject_non_recoverable_superseded_runtime_context(context) do
+      reject_claimed_live_worker_grants(repo, work_package_id)
+    end
+  end
+
+  defp validate_abandoned_closeout_preconditions(repo, work_package_id, context) do
+    with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
+         :ok <- require_abandonable_no_code_status(repo, work_package, context),
+         :ok <- reject_non_recoverable_abandoned_runtime_context(context) do
+      reject_claimed_live_worker_grants(repo, work_package_id)
+    end
+  end
+
+  defp validate_normal_closeout_preconditions(repo, work_package_id, context, opts) do
+    case reject_active_linked_closeout_context(repo, work_package_id, context, opts) do
+      {:ok, _context} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -285,7 +453,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   defp prepare_abandoned_closeout_context(repo, work_package_id, context) do
     with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
          :ok <- require_abandonable_no_code_status(repo, work_package, context),
-         :ok <- require_cleaned_worktree(work_package),
          :ok <- reject_non_recoverable_abandoned_runtime_context(context),
          :ok <- reject_claimed_live_worker_grants(repo, work_package_id),
          {:ok, retired_worker_grant_ids} <- retire_unclaimed_worker_grants(repo, work_package_id),
@@ -353,9 +520,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   defp progress_history_statuses(%{status: status}) when is_binary(status), do: [status]
   defp progress_history_statuses(_event), do: []
 
-  defp require_cleaned_worktree(%{worktree_path: worktree_path}) do
-    if filled_string?(worktree_path), do: {:error, :active_runtime}, else: :ok
+  defp validate_linked_worktree_cleanup(_repo, %PlannedSlice{work_package_id: work_package_id}) when not is_binary(work_package_id), do: :ok
+  defp validate_linked_worktree_cleanup(_repo, %PlannedSlice{work_package_id: ""}), do: :ok
+
+  defp validate_linked_worktree_cleanup(repo, %PlannedSlice{work_package_id: work_package_id}) do
+    case WorkPackageService.validate_worktree_cleanup(repo, work_package_id) do
+      {:ok, _cleanup} -> :ok
+      {:error, reason} -> {:error, closeout_worktree_cleanup_error(reason)}
+    end
   end
+
+  defp cleanup_linked_worktree(_repo, %PlannedSlice{work_package_id: work_package_id}) when not is_binary(work_package_id), do: {:ok, nil}
+  defp cleanup_linked_worktree(_repo, %PlannedSlice{work_package_id: ""}), do: {:ok, nil}
+
+  defp cleanup_linked_worktree(repo, %PlannedSlice{work_package_id: work_package_id}) do
+    cleanup_linked_worktree(repo, work_package_id)
+  end
+
+  defp cleanup_linked_worktree(repo, work_package_id) do
+    case WorkPackageService.cleanup_worktree(repo, work_package_id) do
+      {:ok, cleanup} -> {:ok, cleanup}
+      {:error, reason} -> {:error, closeout_worktree_cleanup_error(reason)}
+    end
+  end
+
+  defp closeout_worktree_cleanup_error(:database_busy), do: :database_busy
+  defp closeout_worktree_cleanup_error(:not_found), do: :not_found
+  defp closeout_worktree_cleanup_error({:constraint_failed, _constraint} = reason), do: reason
+  defp closeout_worktree_cleanup_error({:storage_failed, _message} = reason), do: reason
+  defp closeout_worktree_cleanup_error(%Ecto.Changeset{} = reason), do: reason
+  defp closeout_worktree_cleanup_error(_reason), do: :active_runtime
 
   defp reject_non_recoverable_abandoned_runtime_context(context) do
     reject_non_recoverable_runtime_context(context, recoverable_recut_runtime_reason_codes())

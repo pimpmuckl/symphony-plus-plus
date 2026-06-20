@@ -3,6 +3,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
 
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Repository, as: OperatorSettingsRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Service, as: WorkPackageService
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
@@ -216,10 +217,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
 
   @spec retention_pass(Repository.repo()) ::
           {:ok, retention_summary()}
-          | {:error, Repository.error() | :invalid_archive_after_days | :invalid_delete_after_days | :not_completed}
+          | {:error, Repository.error() | :active_runtime | :invalid_archive_after_days | :invalid_delete_after_days | :not_completed}
   @spec retention_pass(Repository.repo(), keyword()) ::
           {:ok, retention_summary()}
-          | {:error, Repository.error() | :invalid_archive_after_days | :invalid_delete_after_days | :not_completed}
+          | {:error, Repository.error() | :active_runtime | :invalid_archive_after_days | :invalid_delete_after_days | :not_completed}
   def retention_pass(repo, opts \\ []) when is_atom(repo) and is_list(opts) do
     now = Keyword.get_lazy(opts, :now, fn -> DateTime.utc_now(:microsecond) end)
 
@@ -403,12 +404,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   defp archive_overflow(repo, work_requests) do
     work_requests
     |> Enum.group_by(&{&1.repo, &1.base_branch})
-    |> Enum.flat_map(fn {_scope, scoped_work_requests} ->
-      scoped_work_requests
-      |> Enum.sort_by(&completed_sort_key/1)
-      |> Enum.drop(-@completed_visible_limit)
+    |> Enum.reduce_while({:ok, []}, fn {_scope, scoped_work_requests}, {:ok, archived_ids} ->
+      case archive_overflow_scope(repo, scoped_work_requests) do
+        {:ok, scoped_archived_ids} -> {:cont, {:ok, archived_ids ++ scoped_archived_ids}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
     end)
-    |> archive_all(repo, "limit")
+    |> case do
+      {:ok, archived_ids} -> {:ok, archived_ids}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp archive_overflow_scope(repo, work_requests) do
+    sorted_work_requests = Enum.sort_by(work_requests, &completed_sort_key/1)
+    archive_count = max(length(sorted_work_requests) - @completed_visible_limit, 0)
+
+    archive_overflow_candidates(repo, sorted_work_requests, archive_count, [])
+  end
+
+  defp archive_overflow_candidates(_repo, _work_requests, 0, archived_ids), do: {:ok, Enum.reverse(archived_ids)}
+  defp archive_overflow_candidates(_repo, [], _archive_count, archived_ids), do: {:ok, Enum.reverse(archived_ids)}
+
+  defp archive_overflow_candidates(repo, [work_request | rest], archive_count, archived_ids) do
+    case archive_completed(repo, work_request, "limit") do
+      {:ok, %WorkRequest{id: id}} -> archive_overflow_candidates(repo, rest, archive_count - 1, [id | archived_ids])
+      {:error, :not_completed} -> archive_overflow_candidates(repo, rest, archive_count, archived_ids)
+      {:error, :active_runtime} -> archive_overflow_candidates(repo, rest, archive_count, archived_ids)
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp archive_all(work_requests, repo, archive_reason \\ "age") do
@@ -417,6 +441,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
       case archive_completed(repo, work_request, archive_reason) do
         {:ok, %WorkRequest{id: id}} -> {:cont, {:ok, [id | archived_ids]}}
         {:error, :not_completed} -> {:cont, {:ok, archived_ids}}
+        {:error, :active_runtime} -> {:cont, {:ok, archived_ids}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
@@ -469,29 +494,66 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   defp delete_expired_archived(repo, now, delete_after_days) do
     cutoff = DateTime.add(now, -delete_after_days * 24 * 60 * 60, :second)
 
-    repo.transaction(fn ->
-      archived =
-        repo.all(
-          from(work_request in WorkRequest,
-            where: not is_nil(work_request.archived_at),
-            where: work_request.archived_at < ^cutoff,
-            order_by: [asc: work_request.archived_at, asc: work_request.id],
-            select: work_request.id
-          )
+    archived =
+      repo.all(
+        from(work_request in WorkRequest,
+          where: not is_nil(work_request.archived_at),
+          where: work_request.archived_at < ^cutoff,
+          order_by: [asc: work_request.archived_at, asc: work_request.id],
+          select: work_request.id
         )
+      )
 
-      {planned_slice_ids, linked_work_package_ids} = archived_planned_slice_context(repo, archived)
-
-      case delete_archived_dependents(repo, archived, planned_slice_ids, linked_work_package_ids) do
-        :ok -> delete_archived_work_requests(repo, archived)
-        {:error, reason} -> repo.rollback(reason)
-      end
-    end)
+    delete_archived_work_requests_with_cleanup(repo, archived)
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
-  defp archived_planned_slice_context(_repo, []), do: {[], []}
+  defp delete_archived_work_requests_with_cleanup(repo, work_request_ids) do
+    work_request_ids
+    |> Enum.reduce_while({:ok, []}, fn work_request_id, {:ok, deleted_ids} ->
+      case delete_archived_work_request_with_cleanup(repo, work_request_id) do
+        {:ok, nil} -> {:cont, {:ok, deleted_ids}}
+        {:ok, deleted_id} -> {:cont, {:ok, [deleted_id | deleted_ids]}}
+        {:error, :active_runtime} -> {:cont, {:ok, deleted_ids}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, deleted_ids} -> {:ok, Enum.reverse(deleted_ids)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_archived_work_request_with_cleanup(repo, work_request_id) do
+    {planned_slice_ids, linked_work_package_ids} = archived_planned_slice_context(repo, [work_request_id])
+
+    with :ok <- validate_linked_work_package_worktrees(repo, linked_work_package_ids),
+         :ok <- cleanup_linked_work_package_worktrees(repo, linked_work_package_ids) do
+      repo.transaction(fn ->
+        delete_archived_work_request_after_dependents(
+          repo,
+          work_request_id,
+          planned_slice_ids,
+          linked_work_package_ids
+        )
+      end)
+    end
+  end
+
+  defp delete_archived_work_request_after_dependents(repo, work_request_id, planned_slice_ids, linked_work_package_ids) do
+    case delete_archived_dependents(repo, [work_request_id], planned_slice_ids, linked_work_package_ids) do
+      :ok -> delete_archived_work_request(repo, work_request_id)
+      {:error, reason} -> repo.rollback(reason)
+    end
+  end
+
+  defp delete_archived_work_request(repo, work_request_id) do
+    case delete_archived_work_requests(repo, [work_request_id]) do
+      [^work_request_id] -> work_request_id
+      [] -> nil
+    end
+  end
 
   defp archived_planned_slice_context(repo, work_request_ids) do
     rows =
@@ -581,8 +643,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     end)
   end
 
-  defp delete_archived_work_requests(_repo, []), do: []
-
   defp delete_archived_work_requests(repo, work_request_ids) do
     deleted_count =
       work_request_ids
@@ -614,30 +674,91 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     end
   end
 
-  defp archive_completed(_repo, %WorkRequest{archived_at: %DateTime{}} = work_request, _archive_reason), do: {:ok, work_request}
-
-  defp archive_completed(repo, %WorkRequest{id: id}, archive_reason) when is_binary(id) do
-    now = DateTime.utc_now(:microsecond)
-
-    repo.update_all(
-      from(work_request in WorkRequest,
-        where: work_request.id == ^id,
-        where: not is_nil(work_request.completed_at),
-        where: is_nil(work_request.archived_at)
-      ),
-      set: [archived_at: now, archive_reason: archive_reason, updated_at: now]
-    )
-    |> archive_update_result(repo, id)
+  defp archive_completed(repo, %WorkRequest{archived_at: %DateTime{}, id: id} = work_request, _archive_reason) do
+    with :ok <- validate_work_request_linked_worktrees(repo, id),
+         :ok <- cleanup_work_request_linked_worktrees(repo, id) do
+      {:ok, work_request}
+    end
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
-  defp archive_update_result({1, _rows}, repo, id), do: Repository.get(repo, id)
+  defp archive_completed(repo, %WorkRequest{id: id}, archive_reason) when is_binary(id) do
+    now = DateTime.utc_now(:microsecond)
+
+    with :ok <- validate_work_request_linked_worktrees(repo, id),
+         :ok <- cleanup_work_request_linked_worktrees(repo, id),
+         {:ok, archived, _archived_by_this_call?} <- archive_completed_update(repo, id, archive_reason, now) do
+      {:ok, archived}
+    end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp archive_completed_update(repo, id, archive_reason, now) do
+    result =
+      repo.update_all(
+        from(work_request in WorkRequest,
+          where: work_request.id == ^id,
+          where: not is_nil(work_request.completed_at),
+          where: is_nil(work_request.archived_at)
+        ),
+        set: [archived_at: now, archive_reason: archive_reason, updated_at: now]
+      )
+
+    archive_update_result(result, repo, id)
+  end
+
+  defp validate_work_request_linked_worktrees(repo, work_request_id) when is_binary(work_request_id) do
+    {_planned_slice_ids, linked_work_package_ids} = archived_planned_slice_context(repo, [work_request_id])
+    validate_linked_work_package_worktrees(repo, linked_work_package_ids)
+  end
+
+  defp cleanup_work_request_linked_worktrees(repo, work_request_id) when is_binary(work_request_id) do
+    {_planned_slice_ids, linked_work_package_ids} = archived_planned_slice_context(repo, [work_request_id])
+    cleanup_linked_work_package_worktrees(repo, linked_work_package_ids)
+  end
+
+  defp validate_linked_work_package_worktrees(repo, work_package_ids) do
+    work_package_ids
+    |> Enum.uniq()
+    |> Enum.reduce_while(:ok, fn work_package_id, :ok ->
+      case WorkPackageService.validate_worktree_cleanup(repo, work_package_id) do
+        {:ok, _cleanup} -> {:cont, :ok}
+        {:error, :not_found} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, closeout_worktree_cleanup_error(reason)}}
+      end
+    end)
+  end
+
+  defp cleanup_linked_work_package_worktrees(repo, work_package_ids) do
+    work_package_ids
+    |> Enum.uniq()
+    |> Enum.reduce_while(:ok, fn work_package_id, :ok ->
+      case WorkPackageService.cleanup_worktree(repo, work_package_id) do
+        {:ok, _cleanup} -> {:cont, :ok}
+        {:error, :not_found} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, closeout_worktree_cleanup_error(reason)}}
+      end
+    end)
+  end
+
+  defp closeout_worktree_cleanup_error(:database_busy), do: :database_busy
+  defp closeout_worktree_cleanup_error({:constraint_failed, _constraint} = reason), do: reason
+  defp closeout_worktree_cleanup_error({:storage_failed, _message} = reason), do: reason
+  defp closeout_worktree_cleanup_error(%Ecto.Changeset{} = reason), do: reason
+  defp closeout_worktree_cleanup_error(_reason), do: :active_runtime
+
+  defp archive_update_result({1, _rows}, repo, id) do
+    with {:ok, %WorkRequest{} = current} <- Repository.get(repo, id) do
+      {:ok, current, true}
+    end
+  end
 
   defp archive_update_result({0, _rows}, repo, id) do
     with {:ok, %WorkRequest{} = current} <- Repository.get(repo, id) do
       if current.archived_at do
-        {:ok, current}
+        {:ok, current, false}
       else
         {:error, :not_completed}
       end

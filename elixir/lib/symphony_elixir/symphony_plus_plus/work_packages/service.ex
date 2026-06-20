@@ -28,4 +28,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Service do
   @spec cleanup_worktree(Repository.repo(), String.t(), keyword()) ::
           {:ok, WorktreeLifecycle.lifecycle_result()} | {:error, error()}
   def cleanup_worktree(repo, id, opts \\ []), do: WorktreeLifecycle.cleanup(repo, id, opts)
+
+  @spec validate_worktree_cleanup(Repository.repo(), String.t()) ::
+          {:ok, WorktreeLifecycle.lifecycle_result()} | {:error, error()}
+  @spec validate_worktree_cleanup(Repository.repo(), String.t(), keyword()) ::
+          {:ok, WorktreeLifecycle.lifecycle_result()} | {:error, error()}
+  def validate_worktree_cleanup(repo, id, opts \\ []), do: WorktreeLifecycle.validate_cleanup(repo, id, opts)
 end
