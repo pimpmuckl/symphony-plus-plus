@@ -3,6 +3,8 @@ Code.require_file("../../support/mcp_harness.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
   use ExUnit.Case, async: false
 
+  import Ecto.Query, only: [from: 2]
+
   alias SymphonyElixir.MCPHarness
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
@@ -20,6 +22,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
+  alias SymphonyElixir.TestSupport
   alias SymphonyElixir.WorkPackageFactory
 
   @phase_id "phase-guidance-requests-test"
@@ -286,6 +289,64 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
       mcp_tool(repo, architect_session, "answer_guidance_request", %{
         "guidance_request_id" => guidance_request_id,
         "answer" => "Abandon the failed dispatch and continue with the recut slice."
+      })
+
+    assert get_in(answer_response, ["result", "structuredContent", "guidance_request", "status"]) == "answered"
+  end
+
+  test "WorkRequest architect guidance accepts local checkout repo scope aliases", %{repo: repo} do
+    checkout_path =
+      TestSupport.git_repo_with_origin_fixture!("https://github.com/Pimpmuckl/nextide-saas-vod-intelligence.git",
+        prefix: "sympp-guidance-repo-alias"
+      )
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-GUIDANCE-WR-REPO-ALIAS",
+        repo: "Pimpmuckl/nextide-saas-vod-intelligence",
+        base_branch: "main"
+      )
+
+    planned_slice = create_planned_slice!(repo, work_request, id: "WRS-GUIDANCE-WR-REPO-ALIAS")
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    package =
+      create_matching_work_package!(repo, work_request, approved_slice,
+        id: "WP-GUIDANCE-WR-REPO-ALIAS",
+        phase_id: nil,
+        status: "planning"
+      )
+
+    assert {:ok, _dispatched_slice} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", package.id)
+
+    worker_session = create_worker_session_for_package(repo, package, "repo-alias-worker")
+
+    guidance_request_id =
+      create_guidance_request(repo, worker_session, %{
+        "summary" => "Need WorkRequest architect guidance through repo alias",
+        "question" => "Can the architect answer this through a checkout-path grant?",
+        "context" => "The WorkRequest is stored as owner/repo while the live grant carries a local checkout path.",
+        "idempotency_key" => "wr-linked-guidance-repo-alias"
+      })
+
+    {_anchor, architect_session} = create_work_request_architect_session(repo, work_request)
+
+    {1, _rows} =
+      repo.update_all(
+        from(grant in AccessGrant, where: grant.id == ^architect_session.assignment.grant_id),
+        set: [scope_repo: checkout_path]
+      )
+
+    list_response = mcp_tool(repo, architect_session, "list_guidance_requests", %{"status" => "open"})
+    assert list_response["error"] == nil
+    listed_ids = list_response |> get_in(["result", "structuredContent", "guidance_requests"]) |> Enum.map(& &1["id"])
+
+    assert listed_ids == [guidance_request_id]
+
+    answer_response =
+      mcp_tool(repo, architect_session, "answer_guidance_request", %{
+        "guidance_request_id" => guidance_request_id,
+        "answer" => "The checkout-path grant is scoped to the same repository."
       })
 
     assert get_in(answer_response, ["result", "structuredContent", "guidance_request", "status"]) == "answered"

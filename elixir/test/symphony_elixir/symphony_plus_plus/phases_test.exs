@@ -12,6 +12,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.TestSupport
   alias SymphonyElixir.WorkPackageFactory
 
   defmodule LockedPhaseRepo do
@@ -239,6 +240,57 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
       end
 
     assert get_in(materialization_response, ["result", "structuredContent", "total_count"]) == 2
+  end
+
+  test "explicit phase grant phase board accepts local checkout repo scope aliases", %{repo: repo} do
+    checkout_path =
+      TestSupport.git_repo_with_origin_fixture!("https://github.com/nextide/symphony-plus-plus.git",
+        prefix: "sympp-phase-board-repo-alias"
+      )
+
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-board-repo-alias", title: "Repo alias board"})
+
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P7-BOARD-ALIAS-ANCHOR",
+                 kind: "phase_child",
+                 phase_id: phase.id,
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main",
+                 status: "planning"
+               )
+             )
+
+    assert {:ok, sibling} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P7-BOARD-ALIAS-SIBLING",
+                 kind: "phase_child",
+                 phase_id: phase.id,
+                 repo: anchor.repo,
+                 base_branch: anchor.base_branch,
+                 status: "blocked"
+               )
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_architect_grant(repo, phase.id, work_package_id: anchor.id)
+
+    minted.grant
+    |> Ecto.Changeset.change(scope_repo: checkout_path)
+    |> repo.update!()
+
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "architect-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    response = read_phase_board(repo, session, phase.id)
+    encoded = Jason.encode!(get_in(response, ["result", "structuredContent"]))
+
+    assert get_in(response, ["result", "structuredContent", "total_count"]) == 2
+    assert encoded =~ anchor.id
+    assert encoded =~ sibling.id
   end
 
   test "explicit phase grant without frozen scope snapshot fails phase board closed", %{repo: repo} do

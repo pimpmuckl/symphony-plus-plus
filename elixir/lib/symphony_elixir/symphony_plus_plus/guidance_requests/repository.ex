@@ -6,6 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository do
   alias Ecto.Changeset
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.Repo.Migrations
+  alias SymphonyElixir.SymphonyPlusPlus.RepoIdentity
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
   @type repo :: module()
@@ -73,10 +74,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository do
   @spec list_visible_to_architect(repo(), map()) :: {:ok, [GuidanceRequest.t()]} | {:error, error()}
   def list_visible_to_architect(repo, filters) when is_atom(repo) and is_map(filters) do
     filters = normalize_keys(filters)
+    work_package_ids = visible_to_architect_work_package_ids(repo, filters)
 
     guidance_requests =
       repo.all(
-        filters
+        work_package_ids
         |> visible_to_architect_query()
         |> maybe_filter_status(Map.get(filters, "status"))
         |> maybe_filter_work_packages(Map.get(filters, "filter_work_package_ids"))
@@ -155,17 +157,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository do
     end
   end
 
-  defp visible_to_architect_query(%{"phase_id" => phase_id, "repo" => repo_name, "base_branch" => base_branch} = filters) do
+  defp visible_to_architect_work_package_ids(
+         repo,
+         %{"phase_id" => phase_id, "repo" => repo_name, "base_branch" => base_branch} = filters
+       ) do
     work_package_ids = normalized_work_package_ids(Map.get(filters, "work_package_ids"))
 
+    repo.all(
+      from(work_package in WorkPackage,
+        where: work_package.base_branch == ^base_branch,
+        where: work_package.phase_id == ^phase_id or (is_nil(work_package.phase_id) and work_package.id in ^work_package_ids),
+        select: {work_package.id, work_package.repo}
+      )
+    )
+    |> Enum.filter(fn {_id, package_repo} -> repo_scope_match?(repo_name, package_repo) end)
+    |> Enum.map(fn {id, _repo} -> id end)
+    |> Enum.uniq()
+  end
+
+  defp visible_to_architect_work_package_ids(_repo, _filters), do: []
+
+  defp visible_to_architect_query(work_package_ids) do
     from(guidance_request in GuidanceRequest,
-      join: work_package in WorkPackage,
-      on: work_package.id == guidance_request.work_package_id,
-      where: work_package.repo == ^repo_name,
-      where: work_package.base_branch == ^base_branch,
-      where: work_package.phase_id == ^phase_id or (is_nil(work_package.phase_id) and work_package.id in ^work_package_ids),
+      where: guidance_request.work_package_id in ^work_package_ids,
       order_by: [asc: guidance_request.inserted_at, asc: guidance_request.id]
     )
+  end
+
+  defp repo_scope_match?(expected_repo, actual_repo) when is_binary(expected_repo) and is_binary(actual_repo) do
+    RepoIdentity.scope_match?(expected_repo, actual_repo,
+      trusted_remotes: repo_scope_trusted_remotes(),
+      local_path_remotes?: true
+    )
+  end
+
+  defp repo_scope_match?(_expected_repo, _actual_repo), do: false
+
+  defp repo_scope_trusted_remotes do
+    :symphony_elixir
+    |> Application.get_env(:sympp_repo_identity_trusted_remotes, [])
+    |> List.wrap()
+    |> Enum.filter(&is_binary/1)
   end
 
   defp normalized_work_package_ids(ids) when is_list(ids) do

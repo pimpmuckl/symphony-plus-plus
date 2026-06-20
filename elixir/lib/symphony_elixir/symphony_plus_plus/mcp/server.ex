@@ -1978,7 +1978,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp validate_local_assignment_scope(repo, %WorkPackage{} = work_package, claim) do
-    with :ok <- require_local_value_match(work_package.repo, claim.repo, :repo_scope_mismatch),
+    with :ok <- require_local_repo_scope_match(work_package.repo, claim.repo, :repo_scope_mismatch),
          :ok <- require_local_value_match(work_package.base_branch, claim.base_branch, :base_branch_scope_mismatch),
          :ok <- require_optional_local_worktree_scope(work_package, claim.worktree_path),
          :ok <- require_optional_local_branch_scope(work_package, claim.branch, claim.worktree_path),
@@ -1989,6 +1989,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_local_value_match(value, value, _reason) when is_binary(value), do: :ok
   defp require_local_value_match(_expected, _actual, reason), do: {:error, reason}
+
+  defp require_local_repo_scope_match(expected_repo, actual_repo, reason) do
+    if repo_scope_name_matches?(expected_repo, actual_repo, []), do: :ok, else: {:error, reason}
+  end
 
   defp require_optional_local_branch_scope(%WorkPackage{}, nil, _worktree_path), do: :ok
   defp require_optional_local_branch_scope(%WorkPackage{} = work_package, branch, worktree_path), do: require_local_branch_scope(work_package, branch, worktree_path)
@@ -2457,9 +2461,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp validate_local_architect_assignment_scope(%WorkRequest{} = work_request, %WorkPackage{} = anchor, claim) do
     expected_phase_id = ArchitectHandoff.phase_id_for_work_request(work_request)
 
-    with :ok <- require_local_value_match(work_request.repo, claim.repo, :repo_scope_mismatch),
+    with :ok <- require_local_repo_scope_match(work_request.repo, claim.repo, :repo_scope_mismatch),
          :ok <- require_local_value_match(work_request.base_branch, claim.base_branch, :base_branch_scope_mismatch),
-         :ok <- require_local_value_match(anchor.repo, work_request.repo, :architect_anchor_scope_mismatch),
+         :ok <- require_local_repo_scope_match(anchor.repo, work_request.repo, :architect_anchor_scope_mismatch),
          :ok <-
            require_local_value_match(
              anchor.base_branch,
@@ -2484,7 +2488,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     expected_anchor_id = ArchitectHandoff.anchor_id_for_work_request(work_request)
     expected_phase_id = ArchitectHandoff.phase_id_for_work_request(work_request)
 
-    with :ok <- require_local_value_match(work_request.repo, claim.repo, :repo_scope_mismatch),
+    with :ok <- require_local_repo_scope_match(work_request.repo, claim.repo, :repo_scope_mismatch),
          :ok <- require_local_value_match(work_request.base_branch, claim.base_branch, :base_branch_scope_mismatch),
          :ok <-
            require_local_value_match(
@@ -2550,7 +2554,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp validate_local_architect_assignment_grant(repo, %AccessGrant{} = grant, %WorkPackage{} = anchor, claim) do
     with :ok <- require_local_value_match(grant.work_package_id, anchor.id, :architect_grant_scope_mismatch),
          :ok <- require_local_value_match(grant.phase_id, anchor.phase_id, :architect_grant_scope_mismatch),
-         :ok <- require_local_value_match(grant.scope_repo, claim.repo, :architect_grant_scope_mismatch),
+         :ok <- require_local_repo_scope_match(grant.scope_repo, claim.repo, :architect_grant_scope_mismatch),
          :ok <- require_local_value_match(grant.scope_base_branch, claim.base_branch, :architect_grant_scope_mismatch),
          :ok <- AccessGrantService.require_live_package_authority(repo, grant) do
       require_local_architect_handoff_grant(repo, grant)
@@ -5137,13 +5141,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         from(planned_slice in PlannedSlice,
           join: work_request in WorkRequest,
           on: work_request.id == planned_slice.work_request_id,
-          where: work_request.repo == ^repo_name,
           where: work_request.base_branch == ^base_branch,
           where: not is_nil(planned_slice.work_package_id),
           select: {work_request, planned_slice.work_package_id}
         )
       )
-      |> Enum.filter(fn {work_request, _work_package_id} -> ArchitectHandoff.phase_id_for_work_request(work_request) == phase_id end)
+      |> Enum.filter(fn {work_request, _work_package_id} ->
+        ArchitectHandoff.phase_id_for_work_request(work_request) == phase_id and
+          repo_scope_name_matches?(repo_name, work_request.repo, [])
+      end)
       |> Enum.map(fn {_work_request, work_package_id} -> work_package_id end)
       |> Enum.uniq()
 
@@ -6627,10 +6633,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp repo_scope_name_matches?(repo, repo, _opts) when is_binary(repo), do: true
 
   defp repo_scope_name_matches?(expected_repo, actual_repo, opts) when is_binary(expected_repo) and is_binary(actual_repo) do
-    RepoIdentity.scope_match?(expected_repo, actual_repo, trusted_remotes: Keyword.get(opts, :repo_scope_trusted_remotes, []))
+    RepoIdentity.scope_match?(expected_repo, actual_repo,
+      trusted_remotes: Keyword.get(opts, :repo_scope_trusted_remotes, default_repo_scope_trusted_remotes()),
+      local_path_remotes?: true
+    )
   end
 
   defp repo_scope_name_matches?(_expected_repo, _actual_repo, _opts), do: false
+
+  defp default_repo_scope_trusted_remotes do
+    :symphony_elixir
+    |> Application.get_env(:sympp_repo_identity_trusted_remotes, [])
+    |> List.wrap()
+    |> Enum.filter(&is_binary/1)
+  end
 
   defp work_request_repo_scope_opts(%Config{} = config) do
     [repo_scope_trusted_remotes: work_request_repo_scope_trusted_remotes(config)]
@@ -10011,7 +10027,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp explicit_phase_id?(_phase_id), do: false
 
   defp require_frozen_anchor_scope(%WorkPackage{} = anchor, %AccessGrant{} = grant) do
-    if grant.phase_id == anchor.phase_id and grant.scope_repo == anchor.repo and grant.scope_base_branch == anchor.base_branch do
+    if grant.phase_id == anchor.phase_id and repo_scope_name_matches?(grant.scope_repo, anchor.repo, []) and grant.scope_base_branch == anchor.base_branch do
       :ok
     else
       {:error, :phase_scope_not_available}
