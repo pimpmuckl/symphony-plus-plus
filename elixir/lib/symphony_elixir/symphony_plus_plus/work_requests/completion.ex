@@ -687,8 +687,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     now = DateTime.utc_now(:microsecond)
 
     with :ok <- validate_work_request_linked_worktrees(repo, id),
-         :ok <- cleanup_work_request_linked_worktrees(repo, id),
-         {:ok, archived, _archived_by_this_call?} <- archive_completed_update(repo, id, archive_reason, now) do
+         {:ok, archived, _archived_by_this_call?} <- archive_completed_update(repo, id, archive_reason, now),
+         :ok <- cleanup_work_request_linked_worktrees(repo, id) do
       {:ok, archived}
     end
   rescue

@@ -358,7 +358,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert DateTime.compare(restored.completed_at, completed.completed_at) in [:gt, :eq]
   end
 
-  test "archive cleans linked package worktrees before hiding a completed WorkRequest", %{repo: repo} do
+  test "archive cleans linked package worktrees after hiding a completed WorkRequest", %{repo: repo} do
     fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-archive-worktree")
     codex_home = Path.join(fixture.root, "codex-home")
     previous_codex_home = System.get_env("CODEX_HOME")
