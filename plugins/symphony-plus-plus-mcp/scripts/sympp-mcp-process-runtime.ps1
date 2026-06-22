@@ -467,6 +467,58 @@ function Invoke-McpClientHeartbeatIfDue([string]$McpUrl, [string]$ClientId, [int
   return $now
 }
 
+function Test-McpRecoverableSessionNotFound($Response, [string]$SessionId, [string]$RequestProtocolVersion) {
+  if ([string]::IsNullOrWhiteSpace($SessionId) -or -not [string]::IsNullOrWhiteSpace($RequestProtocolVersion)) {
+    return $false
+  }
+  if ($null -eq $Response -or $Response.ok) {
+    return $false
+  }
+
+  $statusCode = 0
+  if (-not [int]::TryParse([string]$Response.statusCode, [ref]$statusCode)) {
+    return $false
+  }
+
+  return $statusCode -eq 404
+}
+
+function Invoke-McpBridgeInitialize([string]$McpUrl, [int]$TimeoutSec, [string]$ClientId, [int]$HeartbeatIntervalMs, [bool]$ShutdownOnIdle) {
+  $initializeBody = ConvertTo-JsonBody (New-InitializeRequest)
+  $initializeProtocolVersion = Get-InitializeProtocolVersion $initializeBody
+  $response = Invoke-McpPost $McpUrl $initializeBody $null $null $TimeoutSec $ClientId $HeartbeatIntervalMs $ShutdownOnIdle
+  if (-not $response.ok) {
+    return [pscustomobject]@{
+      ok = $false
+      response = $response
+      session_id = $null
+      protocol_version = $null
+    }
+  }
+
+  $sessionId = Get-ResponseHeaderValue $response.headers "Mcp-Session-Id"
+  if ([string]::IsNullOrWhiteSpace($sessionId)) {
+    return [pscustomobject]@{
+      ok = $false
+      response = $response
+      session_id = $null
+      protocol_version = $null
+    }
+  }
+
+  $protocolVersion = Get-ResponseProtocolVersion @($response.content_lines)
+  if ([string]::IsNullOrWhiteSpace($protocolVersion)) {
+    $protocolVersion = $initializeProtocolVersion
+  }
+
+  return [pscustomobject]@{
+    ok = $true
+    response = $response
+    session_id = $sessionId
+    protocol_version = $protocolVersion
+  }
+}
+
 function New-McpStdinReader {
   return [System.IO.StreamReader]::new([Console]::OpenStandardInput())
 }
@@ -503,6 +555,21 @@ function Invoke-HttpMcpBridge([string]$McpUrl, [int]$TimeoutSec, [string]$Client
       $nextSessionId = Get-ResponseHeaderValue $response.headers "Mcp-Session-Id"
       if (-not [string]::IsNullOrWhiteSpace($nextSessionId)) {
         $sessionId = $nextSessionId
+      }
+
+      if (Test-McpRecoverableSessionNotFound $response $sessionId $requestProtocolVersion) {
+        $bridgeInitialize = Invoke-McpBridgeInitialize $McpUrl $TimeoutSec $ClientId $heartbeatIntervalMs $ShutdownOnIdle
+        $lastHeartbeatMs = Invoke-McpClientHeartbeatIfDue $McpUrl $ClientId $lastHeartbeatMs $heartbeatIntervalMs $ShutdownOnIdle
+        if ($bridgeInitialize.ok) {
+          $sessionId = $bridgeInitialize.session_id
+          $protocolVersion = $bridgeInitialize.protocol_version
+          $response = Invoke-McpPost $McpUrl $line $sessionId $protocolVersion $TimeoutSec $ClientId $heartbeatIntervalMs $ShutdownOnIdle
+          $lastHeartbeatMs = Invoke-McpClientHeartbeatIfDue $McpUrl $ClientId $lastHeartbeatMs $heartbeatIntervalMs $ShutdownOnIdle
+          $nextSessionId = Get-ResponseHeaderValue $response.headers "Mcp-Session-Id"
+          if (-not [string]::IsNullOrWhiteSpace($nextSessionId)) {
+            $sessionId = $nextSessionId
+          }
+        }
       }
 
       if (-not $response.ok) {
