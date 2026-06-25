@@ -5731,6 +5731,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
       refute Map.has_key?(archive_payload, "dashboard")
       assert get_in(archive_payload, ["refresh", "work_request_id"]) == completed.id
+      assert get_in(archive_payload, ["refresh", "dashboard"]) == true
+      assert get_in(archive_payload, ["work_request", "id"]) == completed.id
+      assert is_binary(get_in(archive_payload, ["work_request", "archived_at"]))
 
       dashboard_payload =
         local_operator_conn()
@@ -5765,6 +5768,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         |> json_response(200)
 
       refute Map.has_key?(delivered_archive_payload, "dashboard")
+      assert get_in(delivered_archive_payload, ["refresh", "dashboard"]) == true
+      assert get_in(delivered_archive_payload, ["work_request", "id"]) == delivered.id
+      assert is_binary(get_in(delivered_archive_payload, ["work_request", "archived_at"]))
 
       delivered_dashboard_payload =
         local_operator_conn()
@@ -6174,8 +6180,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         |> json_response(200)
 
       refute Map.has_key?(payload, "dashboard")
-      assert payload["work_request_id"] == work_request.id
       assert get_in(payload, ["refresh", "work_request_id"]) == work_request.id
+      assert get_in(payload, ["refresh", "dashboard"]) == false
+      assert get_in(payload, ["work_request", "id"]) == work_request.id
+      assert get_in(payload, ["work_request", "completion_source"]) == "operator"
+      assert get_in(payload, ["work_request", "operational_state", "key"]) == "completed"
 
       detail_payload =
         local_operator_conn()

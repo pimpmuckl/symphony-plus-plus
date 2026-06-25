@@ -2640,6 +2640,16 @@
     animation-name: semantic-card-added;
   }
 
+  .stagger-item[data-update-kind="removed"] {
+    animation-name: semantic-card-removed;
+    animation-duration: 320ms;
+    pointer-events: none;
+  }
+
+  .stagger-item[data-update-kind="removed"]::after {
+    animation-duration: 320ms;
+  }
+
   .stagger-item[data-update-kind] [data-card-signal] {
     animation: card-signal-open 560ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
@@ -3612,6 +3622,26 @@
     100% {
       box-shadow: 0 1px 2px hsl(224 27% 12% / 0.04);
       opacity: 1;
+    }
+  }
+
+  @keyframes semantic-card-removed {
+    0% {
+      max-height: 48rem;
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+
+    58% {
+      max-height: 48rem;
+      opacity: 0;
+      transform: translateY(-0.3rem) scale(0.992);
+    }
+
+    100% {
+      max-height: 0;
+      opacity: 0;
+      transform: translateY(-0.45rem) scale(0.99);
     }
   }
 

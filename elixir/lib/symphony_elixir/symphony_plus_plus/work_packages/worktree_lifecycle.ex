@@ -416,13 +416,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   defp cleanup_existing_worktree(repo, %WorkPackage{} = work_package, worktree_path, opts) do
     opts = cleanup_status_context_opts(opts, worktree_path)
 
-    with {:ok, status_output} <- git_output(worktree_path, ["status", "--porcelain"], opts),
-         :ok <- require_clean(status_output),
+    with :ok <- maybe_require_clean(worktree_path, opts),
          {:ok, repo_root} <- cleanup_repo_root(opts),
          opts <- cleanup_context_opts(opts, repo_root, worktree_path),
          :ok <- require_recorded_worktree_owner(repo_root, worktree_path, opts),
          :ok <- require_git_worktree(worktree_path, repo_root, opts),
-         :ok <- git(repo_root, ["worktree", "remove", worktree_path], opts),
+         :ok <- git(repo_root, worktree_remove_args(worktree_path, opts), opts),
          :ok <- git(repo_root, ["worktree", "prune"], opts),
          {:ok, updated_work_package} <- Repository.update(repo, work_package.id, cleared_worktree_attrs()) do
       {:ok, result(updated_work_package, "cleaned", worktree_path, nil, nil, repo_root)}
@@ -589,6 +588,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
 
   defp require_clean(""), do: :ok
   defp require_clean(_status_output), do: {:error, :dirty_worktree}
+
+  defp maybe_require_clean(worktree_path, opts) do
+    if Keyword.get(opts, :force), do: :ok, else: require_clean_status(opts, worktree_path)
+  end
+
+  defp require_clean_status(opts, worktree_path) do
+    with {:ok, status_output} <- git_output(worktree_path, ["status", "--porcelain"], opts) do
+      require_clean(status_output)
+    end
+  end
+
+  defp worktree_remove_args(worktree_path, opts) do
+    if Keyword.get(opts, :force),
+      do: ["worktree", "remove", "--force", worktree_path],
+      else: ["worktree", "remove", worktree_path]
+  end
 
   defp require_recorded_worktree_owner(repo_root, worktree_path, opts) do
     with {:ok, output} <- git_output(repo_root, ["worktree", "list", "--porcelain"], opts) do

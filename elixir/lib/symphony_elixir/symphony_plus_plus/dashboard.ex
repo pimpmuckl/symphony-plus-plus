@@ -573,17 +573,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp build_work_request_board_details(repo, %{work_requests: work_requests} = context, opts) do
+    with {:ok, delivery_boards} <- work_request_board_delivery_boards(repo, context, opts) do
+      context = Map.put(context, :delivery_boards, delivery_boards)
+
+      work_requests
+      |> Enum.map(fn work_request ->
+        build_work_request_board_detail(repo, work_request, context, opts, Map.fetch(delivery_boards, work_request.id))
+      end)
+      |> collect_or_error()
+    end
+  end
+
+  defp work_request_board_delivery_boards(_repo, %{work_requests: []}, _opts), do: {:ok, %{}}
+
+  defp work_request_board_delivery_boards(
+         repo,
+         %{
+           work_requests: work_requests,
+           planned_slices_by_request: planned_slices_by_request,
+           work_package_contexts: work_package_contexts
+         },
+         opts
+       ) do
     work_requests
-    |> Enum.reduce_while([], fn %WorkRequest{} = work_request, details ->
-      case build_work_request_board_detail(repo, work_request, context, opts) do
-        {:ok, detail} -> {:cont, [detail | details]}
+    |> Enum.group_by(&{&1.repo, &1.base_branch})
+    |> Enum.reduce_while({:ok, %{}}, fn {_scope, scoped_work_requests}, {:ok, acc} ->
+      scoped_planned_slices = all_planned_slices(scoped_work_requests, planned_slices_by_request)
+      scoped_work_package_contexts = request_work_package_contexts(scoped_planned_slices, work_package_contexts)
+
+      with {:ok, delivery_board_contexts} <-
+             delivery_board_work_package_contexts(repo, scoped_work_requests, scoped_work_package_contexts),
+           {:ok, delivery_boards} <-
+             DeliveryBoard.project_many(
+               repo,
+               scoped_work_requests,
+               planned_slices_by_request,
+               delivery_board_many_opts(delivery_board_contexts, opts)
+             ) do
+        {:cont, {:ok, Map.merge(acc, delivery_boards)}}
+      else
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
-    |> case do
-      {:error, reason} -> {:error, reason}
-      details -> {:ok, Enum.reverse(details)}
-    end
   end
 
   defp build_work_request_board_detail(
@@ -596,54 +627,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            repo_identity_catalog: repo_identity_catalog,
            comment_context: comment_context
          },
-         opts
+         _opts,
+         {:ok, delivery_board}
        ) do
     questions = Map.get(questions_by_request, work_request.id, [])
     planned_slices = Map.get(planned_slices_by_request, work_request.id, [])
     request_work_package_contexts = request_work_package_contexts(planned_slices, work_package_contexts)
 
-    with {:ok, delivery_board_contexts} <-
-           delivery_board_work_package_contexts(repo, work_request, request_work_package_contexts),
-         delivery_board_opts = delivery_board_opts(work_request, planned_slices, delivery_board_contexts, opts),
-         {:ok, delivery_board} <- DeliveryBoard.project(repo, work_request.id, delivery_board_opts) do
-      questions = ordered_sequence_records(questions)
-      all_planned_slices = ordered_sequence_records(planned_slices)
-      planned_slices = ordered_sequence_records(visible_planned_slices(planned_slices, delivery_board))
-      work_request_comment_context = request_comment_context(comment_context, work_request, all_planned_slices)
+    questions = ordered_sequence_records(questions)
+    all_planned_slices = ordered_sequence_records(planned_slices)
+    planned_slices = ordered_sequence_records(visible_planned_slices(planned_slices, delivery_board))
+    work_request_comment_context = request_comment_context(comment_context, work_request, all_planned_slices)
 
-      work_request_payload =
-        work_request
-        |> work_request_payload(
-          questions,
-          planned_slices,
-          request_work_package_contexts,
-          repo_identity_catalog,
-          work_request_comment_context,
-          delivery_board: delivery_board,
-          comment_planned_slices: all_planned_slices
-        )
-        |> Map.drop([:human_description, :constraints, :creator])
+    work_request_payload =
+      work_request
+      |> work_request_payload(
+        questions,
+        planned_slices,
+        request_work_package_contexts,
+        repo_identity_catalog,
+        work_request_comment_context,
+        delivery_board: delivery_board,
+        comment_planned_slices: all_planned_slices
+      )
+      |> Map.drop([:human_description, :constraints, :creator])
 
-      planned_slice_payloads =
-        planned_slices
-        |> planned_slice_payloads(
-          request_work_package_contexts,
-          true,
-          work_request_comment_context,
-          delivery_board: delivery_board
-        )
-        |> Enum.map(&compact_planned_slice/1)
+    planned_slice_payloads =
+      planned_slices
+      |> planned_slice_payloads(
+        request_work_package_contexts,
+        true,
+        work_request_comment_context,
+        delivery_board: delivery_board
+      )
+      |> Enum.map(&compact_planned_slice/1)
 
-      {:ok,
-       %{
-         work_request: work_request_payload,
-         clarification_questions: Enum.map(questions, &clarification_question/1),
-         planned_slices: planned_slice_payloads,
-         product_tree: ProductTree.project(repo, work_request.id, planned_slice_payloads),
-         delivery_board: compact_delivery_evidence(redacted_json(delivery_board)),
-         summary: work_request_board_summary(questions, planned_slices, work_request_comment_context)
-       }}
-    end
+    {:ok,
+     %{
+       work_request: work_request_payload,
+       clarification_questions: Enum.map(questions, &clarification_question/1),
+       planned_slices: planned_slice_payloads,
+       product_tree: ProductTree.project(repo, work_request.id, planned_slice_payloads),
+       delivery_board: compact_delivery_evidence(redacted_json(delivery_board)),
+       summary: work_request_board_summary(questions, planned_slices, work_request_comment_context)
+     }}
+  end
+
+  defp build_work_request_board_detail(_repo, %WorkRequest{}, _context, _opts, :error) do
+    {:error, :not_found}
   end
 
   defp work_request_board_detail_comment_context(repo, work_requests, planned_slices) do
@@ -764,6 +795,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     ]
   end
 
+  defp delivery_board_many_opts(work_package_contexts, opts) do
+    [
+      visible_work_package_ids: Map.keys(work_package_contexts),
+      work_package_contexts: work_package_contexts,
+      include_planning_scratch?: include_planning_scratch?(opts)
+    ]
+  end
+
+  defp delivery_board_work_package_contexts(repo, work_requests, work_package_contexts) when is_list(work_requests) do
+    loaded_ids = Map.keys(work_package_contexts)
+    successor_ids = delivery_board_successor_work_package_ids(repo, Enum.map(work_requests, & &1.id))
+    missing_successor_ids = Enum.reject(successor_ids, &(&1 in loaded_ids))
+
+    successor_contexts =
+      repo
+      |> work_packages_by_ids(missing_successor_ids)
+      |> Enum.filter(&delivery_board_successor_visible?(&1, work_requests))
+      |> then(&linked_work_package_contexts(repo, &1))
+
+    {:ok, Map.merge(work_package_contexts, successor_contexts)}
+  end
+
   defp delivery_board_work_package_contexts(repo, %WorkRequest{} = work_request, work_package_contexts) do
     loaded_ids = Map.keys(work_package_contexts)
     successor_ids = delivery_board_successor_work_package_ids(repo, work_request.id)
@@ -782,6 +835,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     phase_work_package_matches_filters?(work_package, repo: work_request.repo, base_branch: work_request.base_branch)
   end
 
+  defp delivery_board_successor_visible?(%WorkPackage{} = work_package, work_requests) when is_list(work_requests) do
+    Enum.any?(work_requests, &delivery_board_successor_visible?(work_package, &1))
+  end
+
   defp work_packages_by_ids(_repo, []), do: []
 
   defp work_packages_by_ids(repo, work_package_ids) do
@@ -792,14 +849,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     )
   end
 
-  defp delivery_board_successor_work_package_ids(repo, work_request_id) do
+  defp delivery_board_successor_work_package_ids(_repo, []), do: []
+
+  defp delivery_board_successor_work_package_ids(repo, work_request_ids) when is_list(work_request_ids) do
     repo.all(
       from(delivery in PlannedSliceDelivery,
-        where: delivery.work_request_id == ^work_request_id,
+        where: delivery.work_request_id in ^work_request_ids,
+        where: not is_nil(delivery.successor_work_package_id),
         select: delivery.successor_work_package_id
       )
     )
     |> Enum.filter(&filled_string?/1)
+    |> Enum.uniq()
+  end
+
+  defp delivery_board_successor_work_package_ids(repo, work_request_id) do
+    delivery_board_successor_work_package_ids(repo, [work_request_id])
   end
 
   @spec work_request_filters_for_grant(repo(), AccessGrant.t()) :: {:ok, keyword()} | {:error, dashboard_error()}

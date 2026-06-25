@@ -358,7 +358,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert DateTime.compare(restored.completed_at, completed.completed_at) in [:gt, :eq]
   end
 
-  test "archive cleans linked package worktrees after hiding a completed WorkRequest", %{repo: repo} do
+  test "archive starts best-effort linked worktree cleanup after hiding a completed WorkRequest", %{repo: repo} do
     fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-archive-worktree")
     codex_home = Path.join(fixture.root, "codex-home")
     previous_codex_home = System.get_env("CODEX_HOME")
@@ -372,15 +372,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
       assert File.dir?(prepared.worktree_path)
       assert {:ok, archived} = Service.archive(repo, request.id)
       assert %DateTime{} = archived.archived_at
-      refute File.exists?(prepared.worktree_path)
-      assert repo.get!(WorkPackage, package.id).worktree_path == nil
-      assert repo.get!(WorkPackage, package.id).worktree_target_repo_root == nil
+
+      assert_eventually(fn ->
+        refute File.exists?(prepared.worktree_path)
+        assert repo.get!(WorkPackage, package.id).worktree_path == nil
+        assert repo.get!(WorkPackage, package.id).worktree_target_repo_root == nil
+      end)
     after
       restore_env("CODEX_HOME", previous_codex_home)
     end
   end
 
-  test "archive refuses dirty linked worktrees before removing clean sibling worktrees", %{repo: repo} do
+  test "archive ignores dirty linked worktree cleanup failures and keeps trying siblings", %{repo: repo} do
     completed_at = utc_usec(~U[2026-05-01 00:00:00Z])
     assert {:ok, request} = Repository.create(repo, attrs(id: "WR-ARCHIVE-MULTI-WORKTREE", status: "ready_for_slicing"))
 
@@ -415,12 +418,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
       dirty_worktree = prepare_managed_worktree!(repo, dirty_package, fixture.repo_root, codex_home, "feat/archive-multi-dirty")
       File.write!(Path.join(dirty_worktree.worktree_path, "dirty.txt"), "dirty\n")
 
-      assert {:error, :active_runtime} = Service.archive(repo, request.id)
-      assert File.dir?(clean_worktree.worktree_path)
+      assert {:ok, archived} = Service.archive(repo, request.id)
+      assert %DateTime{} = archived.archived_at
+
+      assert_eventually(fn ->
+        refute File.exists?(clean_worktree.worktree_path)
+        assert repo.get!(WorkPackage, clean_package.id).worktree_path == nil
+      end)
+
       assert File.dir?(dirty_worktree.worktree_path)
-      assert repo.get!(WorkPackage, clean_package.id).worktree_path == clean_worktree.worktree_path
       assert repo.get!(WorkPackage, dirty_package.id).worktree_path == dirty_worktree.worktree_path
-      assert repo.get!(WorkRequest, request.id).archived_at == nil
+      assert %DateTime{} = repo.get!(WorkRequest, request.id).archived_at
     after
       restore_env("CODEX_HOME", previous_codex_home)
     end
@@ -451,6 +459,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert reopened.completed_at == nil
     assert reopened.archived_at == nil
     assert reopened.archive_reason == nil
+  end
+
+  test "archive refreshes stale completion evidence before hiding a request", %{repo: repo} do
+    request = completed_skipped_request!(repo, "WR-ARCHIVE-STALE-COMPLETION", utc_usec(~U[2026-05-01 00:00:00Z]))
+    assert {:ok, _question} = Repository.ask_question(repo, request.id, question_attrs(id: "WRQ-ARCHIVE-STALE-COMPLETION"))
+
+    assert {:error, :not_completed} = Service.archive(repo, request.id)
+    assert {:ok, reopened} = Repository.get(repo, request.id)
+    assert reopened.completed_at == nil
+    assert reopened.archived_at == nil
   end
 
   test "retention skips stale archive candidates", %{repo: repo} do
@@ -641,7 +659,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert {:ok, ^recent_archived} = Service.get(repo, recent_archived.id)
   end
 
-  test "retention deletes archived WorkRequests only after linked worktree cleanup", %{repo: repo} do
+  test "retention deletes archived WorkRequests after forcing linked worktree cleanup", %{repo: repo} do
     now = utc_usec(~U[2026-05-23 12:00:00Z])
     stale_at = utc_usec(~U[2026-05-20 12:00:00Z])
     fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-retention-worktree")
@@ -667,13 +685,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
                  delete_after_days: 1
                )
 
-      assert summary.deleted_ids == [clean_request.id]
+      assert summary.deleted_ids == [clean_request.id, dirty_request.id]
       assert {:error, :not_found} = Service.get(repo, clean_request.id)
-      assert {:ok, _dirty_still_archived} = Service.get(repo, dirty_request.id)
+      assert {:error, :not_found} = Service.get(repo, dirty_request.id)
       refute File.exists?(clean_worktree.worktree_path)
-      assert File.dir?(dirty_worktree.worktree_path)
+      refute File.exists?(dirty_worktree.worktree_path)
       assert repo.get!(WorkPackage, clean_package.id).worktree_path == nil
-      assert repo.get!(WorkPackage, dirty_package.id).worktree_path == dirty_worktree.worktree_path
+      assert repo.get!(WorkPackage, dirty_package.id).worktree_path == nil
     after
       restore_env("CODEX_HOME", previous_codex_home)
     end
@@ -714,7 +732,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert first_overflow_after_second_pass.archive_reason == "limit"
   end
 
-  test "retention overflow backfills when a dirty worktree blocks an older candidate", %{repo: repo} do
+  test "retention overflow archives dirty worktree candidates and leaves best-effort cleanup to archive", %{repo: repo} do
     now = utc_usec(~U[2026-05-23 12:00:00Z])
     fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-retention-cap-worktree")
     codex_home = Path.join(fixture.root, "codex-home")
@@ -739,9 +757,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
       end
 
       assert {:ok, summary} = Service.retention_pass(repo, now: now, archive_after_days: 3650)
-      assert summary.archived_ids == ["WR-RETENTION-CAP-BACKFILL-1", "WR-RETENTION-CAP-BACKFILL-2"]
-      assert {:ok, blocked_visible} = Repository.get(repo, blocked_request.id)
-      assert blocked_visible.archived_at == nil
+      assert summary.archived_ids == [blocked_request.id, "WR-RETENTION-CAP-BACKFILL-1"]
+      assert {:ok, blocked_archived} = Repository.get(repo, blocked_request.id)
+      assert %DateTime{} = blocked_archived.archived_at
       assert File.dir?(blocked_worktree.worktree_path)
       assert repo.get!(WorkPackage, blocked_package.id).worktree_path == blocked_worktree.worktree_path
 
@@ -1468,6 +1486,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
 
   defp restore_env(key, nil), do: System.delete_env(key)
   defp restore_env(key, value), do: System.put_env(key, value)
+
+  defp assert_eventually(fun, attempts \\ 40)
+  defp assert_eventually(_fun, 0), do: flunk("condition was not met before timeout")
+
+  defp assert_eventually(fun, attempts) when is_function(fun, 0) do
+    fun.()
+  rescue
+    ExUnit.AssertionError ->
+      Process.sleep(25)
+      assert_eventually(fun, attempts - 1)
+  end
 
   defp create_matching_work_package!(repo, work_request, planned_slice, overrides) do
     attrs =

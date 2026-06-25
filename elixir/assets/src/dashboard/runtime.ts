@@ -1,4 +1,4 @@
-import type { ActiveBlockingEdge, ContextComment, DashboardPayload, HandoffCopyState, PlannedSlice, SoloSession, WorkPackageCard, WorkRequestDetail } from "@/types/dashboard";
+import type { ActiveBlockingEdge, ContextComment, DashboardPayload, HandoffCopyState, PlannedSlice, SoloSession, WorkPackageCard, WorkRequestCard, WorkRequestDetail } from "@/types/dashboard";
 import type { UpdateMotion, UpdateMotionKind } from "@/components/dashboard/motion";
 
 declare global {
@@ -356,6 +356,72 @@ export function dashboardFromEnvelope(payload: DashboardApiResponse) {
 export function mutationShouldRefreshDashboard(payload: DashboardApiResponse) {
   if (!isRecord(payload) || !isRecord(payload.refresh)) return true;
   return payload.refresh.dashboard !== false;
+}
+
+export function shouldSkipDashboardLoad(inFlight: boolean, mode: string, force: boolean) {
+  return inFlight && mode === "silent" && !force;
+}
+
+export type WorkRequestMutationPatch = Partial<WorkRequestCard> & { id: string };
+
+export function dashboardMutationWorkRequest(payload: DashboardApiResponse): WorkRequestMutationPatch | null {
+  if (!isRecord(payload) || !isRecord(payload.work_request)) return null;
+  return typeof payload.work_request.id === "string" ? (payload.work_request as WorkRequestMutationPatch) : null;
+}
+
+export function patchDashboardWorkRequest(
+  dashboard: DashboardPayload | null,
+  workRequest: WorkRequestMutationPatch | null | undefined,
+  options: { archive?: boolean } = {},
+): DashboardPayload | null {
+  if (!dashboard || !workRequest?.id) return dashboard;
+
+  const archive = options.archive || Boolean(workRequest.archived_at);
+  const nextCards = patchWorkRequestCards(dashboard.work_requests?.work_requests ?? [], workRequest, archive);
+  const nextDetails = patchWorkRequestDetails(dashboard.work_request_details ?? [], workRequest, archive);
+  const nextArchivedCards = patchArchivedWorkRequestCards(dashboard, workRequest, archive);
+
+  return {
+    ...dashboard,
+    archived_work_requests: dashboard.archived_work_requests
+      ? { ...dashboard.archived_work_requests, work_requests: nextArchivedCards, total_count: nextArchivedCards.length }
+      : dashboard.archived_work_requests,
+    work_request_details: nextDetails,
+    work_requests: dashboard.work_requests ? { ...dashboard.work_requests, work_requests: nextCards, total_count: nextCards.length } : dashboard.work_requests,
+  };
+}
+
+function patchWorkRequestCards(cards: WorkRequestCard[], workRequest: WorkRequestMutationPatch, archive: boolean) {
+  return archive ? cards.filter((card) => card.id !== workRequest.id) : cards.map((card) => patchWorkRequestCard(card, workRequest));
+}
+
+function patchWorkRequestDetails(details: WorkRequestDetail[], workRequest: WorkRequestMutationPatch, archive: boolean) {
+  return archive
+    ? details.filter((detail) => detail.work_request.id !== workRequest.id)
+    : details.map((detail) => (detail.work_request.id === workRequest.id ? { ...detail, work_request: patchWorkRequestCard(detail.work_request, workRequest) } : detail));
+}
+
+function patchArchivedWorkRequestCards(dashboard: DashboardPayload, workRequest: WorkRequestMutationPatch, archive: boolean) {
+  const cards = dashboard.archived_work_requests?.work_requests ?? [];
+  if (!archive) return cards.map((card) => patchWorkRequestCard(card, workRequest));
+
+  return upsertWorkRequestCard(cards, patchWorkRequestCard(workRequestSourceCard(dashboard, workRequest.id) ?? workRequest, workRequest));
+}
+
+function workRequestSourceCard(dashboard: DashboardPayload, workRequestId: string) {
+  return (
+    dashboard.work_requests?.work_requests?.find((card) => card.id === workRequestId) ||
+    dashboard.archived_work_requests?.work_requests?.find((card) => card.id === workRequestId) ||
+    dashboard.work_request_details?.find((detail) => detail.work_request.id === workRequestId)?.work_request
+  );
+}
+
+function patchWorkRequestCard(card: WorkRequestCard, workRequest: WorkRequestMutationPatch) {
+  return card.id === workRequest.id ? { ...card, ...workRequest } : card;
+}
+
+function upsertWorkRequestCard(cards: WorkRequestCard[], card: WorkRequestCard) {
+  return cards.some((current) => current.id === card.id) ? cards.map((current) => (current.id === card.id ? { ...current, ...card } : current)) : [card, ...cards];
 }
 
 function invalidateDashboardRuntimeAuth() {

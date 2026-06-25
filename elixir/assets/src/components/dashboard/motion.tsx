@@ -21,7 +21,7 @@ const CARD_BODY_CONTENT_MS = TOP_PANEL_SLIDE_MS;
 const BADGE_TEXT_PUSH_MS = 3200;
 const BADGE_RESIZE_MS = 400;
 
-export type UpdateMotionKind = "added" | "changed" | "guidance" | "blocker" | "finished";
+export type UpdateMotionKind = "added" | "changed" | "guidance" | "blocker" | "finished" | "removed";
 export type UpdateMotion = { kind: UpdateMotionKind | "settled"; token: number };
 
 type BadgePushPhase = "idle" | "measure" | "resize-first" | "push" | "resize-last";

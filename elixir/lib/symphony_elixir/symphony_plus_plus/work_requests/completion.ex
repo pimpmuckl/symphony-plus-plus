@@ -430,7 +430,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     case archive_completed(repo, work_request, "limit") do
       {:ok, %WorkRequest{id: id}} -> archive_overflow_candidates(repo, rest, archive_count - 1, [id | archived_ids])
       {:error, :not_completed} -> archive_overflow_candidates(repo, rest, archive_count, archived_ids)
-      {:error, :active_runtime} -> archive_overflow_candidates(repo, rest, archive_count, archived_ids)
       {:error, reason} -> {:error, reason}
     end
   end
@@ -441,7 +440,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
       case archive_completed(repo, work_request, archive_reason) do
         {:ok, %WorkRequest{id: id}} -> {:cont, {:ok, [id | archived_ids]}}
         {:error, :not_completed} -> {:cont, {:ok, archived_ids}}
-        {:error, :active_runtime} -> {:cont, {:ok, archived_ids}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
@@ -530,8 +528,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     {planned_slice_ids, linked_work_package_ids} = archived_planned_slice_context(repo, [work_request_id])
 
     with {:ok, _current} <- claim_archived_before(repo, work_request_id, cutoff),
-         :ok <- validate_linked_work_package_worktrees(repo, linked_work_package_ids),
-         :ok <- cleanup_linked_work_package_worktrees(repo, linked_work_package_ids) do
+         :ok <- cleanup_linked_work_package_worktrees(repo, linked_work_package_ids, force: true) do
       repo.transaction(fn ->
         delete_archived_work_request_after_dependents(
           repo,
@@ -682,12 +679,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     end
   end
 
-  defp archive_completed(repo, %WorkRequest{archived_at: %DateTime{}, id: id} = work_request, _archive_reason) do
-    with :ok <- validate_work_request_linked_worktrees(repo, id) do
-      with {:ok, _current} <- claim_archived_completed(repo, id),
-           :ok <- cleanup_work_request_linked_worktrees(repo, id) do
-        {:ok, work_request}
-      end
+  defp archive_completed(repo, %WorkRequest{archived_at: %DateTime{}, id: id} = work_request, archive_reason) do
+    with {:ok, _current} <- claim_archived_completed(repo, id) do
+      maybe_schedule_work_request_linked_worktree_cleanup(repo, id, archive_reason)
+      {:ok, work_request}
     end
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
@@ -696,11 +691,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   defp archive_completed(repo, %WorkRequest{id: id}, archive_reason) when is_binary(id) do
     now = DateTime.utc_now(:microsecond)
 
-    with :ok <- validate_work_request_linked_worktrees(repo, id) do
-      with {:ok, archived, _archived_by_this_call?} <- archive_completed_update(repo, id, archive_reason, now),
-           :ok <- cleanup_work_request_linked_worktrees(repo, id) do
-        {:ok, archived}
-      end
+    with {:ok, archived, _archived_by_this_call?} <- archive_completed_update(repo, id, archive_reason, now) do
+      maybe_schedule_work_request_linked_worktree_cleanup(repo, id, archive_reason)
+      {:ok, archived}
     end
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
@@ -778,33 +771,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     end
   end
 
-  defp validate_work_request_linked_worktrees(repo, work_request_id) when is_binary(work_request_id) do
-    {_planned_slice_ids, linked_work_package_ids} = archived_planned_slice_context(repo, [work_request_id])
-    validate_linked_work_package_worktrees(repo, linked_work_package_ids)
+  defp maybe_schedule_work_request_linked_worktree_cleanup(repo, work_request_id, "manual") do
+    schedule_work_request_linked_worktree_cleanup(repo, work_request_id)
   end
 
-  defp cleanup_work_request_linked_worktrees(repo, work_request_id) when is_binary(work_request_id) do
-    {_planned_slice_ids, linked_work_package_ids} = archived_planned_slice_context(repo, [work_request_id])
-    cleanup_linked_work_package_worktrees(repo, linked_work_package_ids)
+  defp maybe_schedule_work_request_linked_worktree_cleanup(_repo, _work_request_id, _archive_reason), do: :ok
+
+  defp schedule_work_request_linked_worktree_cleanup(repo, work_request_id) do
+    opts = cleanup_env_opts()
+
+    task = fn ->
+      # ponytail: global cleanup lock; move to per-repo workers if archive throughput matters.
+      :global.trans({__MODULE__, :archive_worktree_cleanup}, fn ->
+        best_effort_cleanup_work_request_linked_worktrees(repo, work_request_id, opts)
+      end)
+    end
+
+    case Process.whereis(SymphonyElixir.TaskSupervisor) do
+      nil -> Task.start(task)
+      _pid -> Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, task)
+    end
+
+    :ok
   end
 
-  defp validate_linked_work_package_worktrees(repo, work_package_ids) do
-    work_package_ids
+  defp best_effort_cleanup_work_request_linked_worktrees(repo, work_request_id, opts) do
+    {_planned_slice_ids, linked_work_package_ids} = archived_planned_slice_context(repo, [work_request_id])
+
+    linked_work_package_ids
     |> Enum.uniq()
-    |> Enum.reduce_while(:ok, fn work_package_id, :ok ->
-      case WorkPackageService.validate_worktree_cleanup(repo, work_package_id) do
-        {:ok, _cleanup} -> {:cont, :ok}
-        {:error, :not_found} -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, closeout_worktree_cleanup_error(reason)}}
-      end
+    |> Enum.each(fn work_package_id ->
+      WorkPackageService.cleanup_worktree(repo, work_package_id, opts)
     end)
   end
 
-  defp cleanup_linked_work_package_worktrees(repo, work_package_ids) do
+  defp cleanup_env_opts do
+    case System.get_env("CODEX_HOME") do
+      nil -> []
+      codex_home -> [codex_home: codex_home]
+    end
+  end
+
+  defp cleanup_linked_work_package_worktrees(repo, work_package_ids, opts) do
     work_package_ids
     |> Enum.uniq()
     |> Enum.reduce_while(:ok, fn work_package_id, :ok ->
-      case WorkPackageService.cleanup_worktree(repo, work_package_id) do
+      case WorkPackageService.cleanup_worktree(repo, work_package_id, opts) do
         {:ok, _cleanup} -> {:cont, :ok}
         {:error, :not_found} -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, closeout_worktree_cleanup_error(reason)}}

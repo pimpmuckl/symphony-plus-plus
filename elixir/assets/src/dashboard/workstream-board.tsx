@@ -4,7 +4,7 @@ import { AlertTriangle, ChevronRight, CircleDashed, GitBranch, Layers3, MessageS
 import type { CSSProperties } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useCallback, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CardDetailSelect, DashboardUpdateAnimations } from "./runtime";
 import { clarificationGuidanceItem } from "./dashboard-data";
 import { firstParagraph, stripMarkdown } from "./dashboard-text";
@@ -14,7 +14,7 @@ import { productNodeState, requestBoardState, rowProgressAttentionState, rowProg
 import { EntityCountChips, EntityKindSlot, ProductNodeHeader, ProgressPill, RequestHeaderActions, RowBadgeSlot } from "./workstream-row-ui";
 import { openBlockersForRequest, openBlockersForSlices, openGuidanceForSlices, productNodeSubtreeSlices, requestGuidanceItem } from "./workstream-board-actions";
 import { requestUpdateKey } from "./update-animations";
-import { updateMotionAttributes } from "@/components/dashboard/motion-utils";
+import { dashboardPrefersReducedMotion, updateMotionAttributes } from "@/components/dashboard/motion-utils";
 import { UnlinkedExecutionSection } from "./workstream-unlinked-section";
 import { useAutoCollapseWhenDone } from "./workstream-auto-collapse";
 import { WorkstreamContextBar } from "./workstream-context-bar";
@@ -23,6 +23,8 @@ import type { ContextPathPart } from "./workstream-context-path";
 import { DirectSliceGroup, ProductSliceRow } from "./workstream-slice-row";
 import { buildTreeIndex } from "./workstream-tree-index";
 import type { TreeIndex } from "./workstream-tree-index";
+
+const REQUEST_EXIT_MOTION_MS = 320;
 
 type ProductTreeRenderContext = {
   detail: WorkRequestDetail;
@@ -71,12 +73,14 @@ export function WorkstreamBoard({
   showContextBar: boolean;
   updateAnimations: DashboardUpdateAnimations;
 }) {
-  const sortedDetails = useMemo(() => sortWorkRequestDetails(repoDetails), [repoDetails]);
+  const [renderDetails, exitingRequestIds] = useExitingRequestDetails(repoDetails);
+  const sortedDetails = useMemo(() => sortWorkRequestDetails(renderDetails), [renderDetails]);
+  const sortedActiveDetails = useMemo(() => sortWorkRequestDetails(repoDetails), [repoDetails]);
   const sortedUnlinkedPackages = useMemo(() => sortPackages(unlinkedPackages), [unlinkedPackages]);
   const packageById = useMemo(() => new Map(packages.map((pkg) => [pkg.id, pkg])), [packages]);
   const blockerCounts = useMemo(() => activeBlockerEntityCounts(activeBlockingEdges, repoDetails), [activeBlockingEdges, repoDetails]);
   const boardRef = useRef<HTMLDivElement | null>(null);
-  const contextSignature = useMemo(() => workstreamContextSignature(sortedDetails), [sortedDetails]);
+  const contextSignature = useMemo(() => workstreamContextSignature(sortedActiveDetails), [sortedActiveDetails]);
 
   return (
     <div className="workstream-board-shell">
@@ -85,11 +89,13 @@ export function WorkstreamBoard({
         {sortedDetails.map((detail, index) => {
           const stateKey = finishedRequestChildrenStorageKey(finishedRequestScopeKey, detail.work_request.id);
           const expanded = expandedFinishedRequests[stateKey] === true;
+          const exiting = exitingRequestIds.has(detail.work_request.id);
 
           return (
             <ProductRequestRow
-              key={detail.work_request.id}
+              key={exiting ? `${detail.work_request.id}:exiting` : detail.work_request.id}
               detail={detail}
+              exiting={exiting}
               packageById={packageById}
               activeBlockerCount={blockerCounts.requests.get(detail.work_request.id) ?? 0}
               activeBlockingEdges={activeBlockingEdges}
@@ -115,6 +121,55 @@ export function WorkstreamBoard({
   );
 }
 
+function useExitingRequestDetails(currentDetails: WorkRequestDetail[]) {
+  const previousDetailsRef = useRef(currentDetails);
+  const timersRef = useRef<number[]>([]);
+  const [exitingDetails, setExitingDetails] = useState<WorkRequestDetail[]>([]);
+
+  useLayoutEffect(() => {
+    const currentIds = new Set(currentDetails.map(requestDetailId));
+    const removedDetails = previousDetailsRef.current.filter((detail) => !currentIds.has(requestDetailId(detail)));
+    previousDetailsRef.current = currentDetails;
+
+    if (removedDetails.length === 0 || dashboardPrefersReducedMotion()) return;
+
+    const removedIds = new Set(removedDetails.map(requestDetailId));
+    setExitingDetails((current) => mergeRequestDetailsWithExiting(current, removedDetails));
+
+    const timer = window.setTimeout(() => {
+      setExitingDetails((current) => current.filter((detail) => !removedIds.has(requestDetailId(detail))));
+    }, REQUEST_EXIT_MOTION_MS);
+
+    timersRef.current.push(timer);
+  }, [currentDetails]);
+
+  useEffect(
+    () => () => {
+      timersRef.current.forEach((timer) => window.clearTimeout(timer));
+      timersRef.current = [];
+    },
+    [],
+  );
+
+  const currentIds = useMemo(() => new Set(currentDetails.map(requestDetailId)), [currentDetails]);
+  const renderDetails = useMemo(() => mergeRequestDetailsWithExiting(currentDetails, exitingDetails), [currentDetails, exitingDetails]);
+  const exitingIds = useMemo(
+    () => new Set(exitingDetails.map(requestDetailId).filter((id) => !currentIds.has(id))),
+    [currentIds, exitingDetails],
+  );
+
+  return [renderDetails, exitingIds] as const;
+}
+
+export function mergeRequestDetailsWithExiting(currentDetails: WorkRequestDetail[], exitingDetails: WorkRequestDetail[]) {
+  const currentIds = new Set(currentDetails.map(requestDetailId));
+  return [...currentDetails, ...exitingDetails.filter((detail) => !currentIds.has(requestDetailId(detail)))];
+}
+
+function requestDetailId(detail: WorkRequestDetail) {
+  return detail.work_request.id;
+}
+
 function workstreamContextSignature(details: WorkRequestDetail[]) {
   return JSON.stringify(
     details.map((detail) => ({
@@ -136,6 +191,7 @@ function workstreamContextSignature(details: WorkRequestDetail[]) {
 
 function ProductRequestRow({
   detail,
+  exiting = false,
   packageById,
   activeBlockerCount,
   activeBlockingEdges,
@@ -152,6 +208,7 @@ function ProductRequestRow({
   updateAnimations,
 }: {
   detail: WorkRequestDetail;
+  exiting?: boolean;
   packageById: Map<string, WorkPackageCard>;
   activeBlockerCount: number;
   activeBlockingEdges: ActiveBlockingEdge[];
@@ -193,15 +250,18 @@ function ProductRequestRow({
   const requestFinished = requestState.kind === "done";
   const collapseRequest = useCallback(() => onSetOpen(false), [onSetOpen]);
   useAutoCollapseWhenDone(requestFinished, expanded, collapseRequest, requestFinished);
+  const updateMotion = requestRowUpdateMotion(exiting, detail, updateAnimations);
 
   return (
     <section
       className="v3-request-row stagger-item"
+      aria-hidden={exiting}
+      inert={exiting}
       data-expanded={expanded ? "true" : "false"}
       data-v3-context-path={contextPathValue(requestPath)}
       data-tone={tone}
       style={rowStyle}
-      {...updateMotionAttributes(updateAnimations.motionFor(requestUpdateKey(detail)))}
+      {...updateMotionAttributes(updateMotion)}
     >
       <div className="v3-request-header v3-entity-row" data-tone={tone}>
         <button type="button" className="v3-request-chevron-button" aria-expanded={expanded} aria-label={`${expanded ? "Collapse" : "Expand"} ${requestTitle}`} onClick={() => onSetOpen(!expanded)}>
@@ -258,6 +318,11 @@ function ProductRequestRow({
       ) : null}
     </section>
   );
+}
+
+function requestRowUpdateMotion(exiting: boolean, detail: WorkRequestDetail, updateAnimations: DashboardUpdateAnimations) {
+  if (exiting) return { kind: "removed" as const, token: 0 };
+  return updateAnimations.motionFor(requestUpdateKey(detail));
 }
 
 function RequestProgressSummary({

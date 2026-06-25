@@ -2,16 +2,16 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
-import { defineConfig } from "vite";
+import { defineConfig, type ProxyOptions } from "vite";
 
 const apiOrigin = process.env.SYMPP_API_ORIGIN || "http://127.0.0.1:19998";
 const dashboardPort = parseDashboardPort(process.env.SYMPP_DASHBOARD_PORT);
 const boardPath = "/sympp/board";
-const operatorProxy = {
-  "/api": apiOrigin,
+const operatorProxy: Record<string, string | ProxyOptions> = {
+  "/api": localOperatorProxy(),
   "/mcp": apiOrigin,
-  "/sympp/board/session": apiOrigin,
-  "/sympp/work-packages": apiOrigin,
+  "/sympp/board/session": localOperatorProxy(),
+  "/sympp/work-packages": localOperatorProxy(),
 };
 
 function parseDashboardPort(value: string | undefined) {
@@ -30,6 +30,18 @@ function redirectBoardRoot(req: IncomingMessage, res: ServerResponse, next: () =
   }
 
   next();
+}
+
+function localOperatorProxy(): ProxyOptions {
+  return {
+    target: apiOrigin,
+    changeOrigin: true,
+    configure(proxy) {
+      proxy.on("proxyReq", (proxyReq) => {
+        proxyReq.setHeader("origin", apiOrigin);
+      });
+    },
+  };
 }
 
 export default defineConfig({

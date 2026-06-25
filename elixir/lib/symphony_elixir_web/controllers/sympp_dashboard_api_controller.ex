@@ -749,7 +749,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       :operator_archive_work_request,
       fn repo ->
         with {:ok, work_request} <- WorkRequestService.archive(repo, work_request_id) do
-          json(conn, mutation_success_payload(%{work_request: archived_work_request_payload(work_request)}, %{work_request_id: work_request.id}))
+          json(conn, mutation_success_payload(%{work_request: work_request_mutation_payload(work_request)}, %{work_request_id: work_request.id}))
         end
       end
     )
@@ -780,7 +780,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       fn repo ->
         with {:ok, "completed"} <- local_operator_work_request_state(params),
              {:ok, work_request} <- WorkRequestService.force_complete(repo, work_request_id) do
-          json(conn, mutation_success_payload(%{work_request_id: work_request.id}, %{work_request_id: work_request.id}))
+          json(conn, mutation_success_payload(%{work_request: work_request_mutation_payload(work_request)}, %{dashboard: false, work_request_id: work_request.id}))
         end
       end
     )
@@ -1373,6 +1373,23 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       archive_reason: work_request.archive_reason
     }
   end
+
+  defp work_request_mutation_payload(%WorkRequest{} = work_request) do
+    %{
+      id: work_request.id,
+      completed_at: timestamp(work_request.completed_at),
+      completion_source: work_request.completion_source,
+      archived_at: timestamp(work_request.archived_at),
+      archive_reason: work_request.archive_reason,
+      operational_state: completed_work_request_mutation_state(work_request)
+    }
+  end
+
+  defp completed_work_request_mutation_state(%WorkRequest{completed_at: %DateTime{}, status: status}) do
+    %{key: "completed", label: "Completed", tone: "success", raw_status: status}
+  end
+
+  defp completed_work_request_mutation_state(%WorkRequest{}), do: nil
 
   defp local_operator_work_request_state(params) do
     case text_param(params, "state") || text_param(params, "status") do

@@ -114,7 +114,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiLocalOperatorVisibilityTes
           status: "ready_for_worker"
         )
 
-      archived_at = ~U[2026-05-25 10:00:00.000000Z]
+      archived_at = DateTime.utc_now(:microsecond)
 
       archived_request
       |> Ecto.Changeset.change(completed_at: archived_at, completion_source: "operator", archived_at: archived_at)
