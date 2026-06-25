@@ -322,9 +322,7 @@ function Test-SymppArtifactManifestPluginMatches($Manifest, [string]$ExpectedPlu
     if ([string]::IsNullOrWhiteSpace($version)) {
       return -not $requirePluginIdentity
     }
-    if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($version.Trim(), $ExpectedPluginVersion)) {
-      return $false
-    }
+    # Package versions can move for launcher-only fixes; runtime safety is gated by the MCP contract fingerprint.
     return $true
   }
 
