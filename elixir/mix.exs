@@ -53,7 +53,8 @@ defmodule SymphonyElixir.MixProject do
         "test/support/symphony_plus_plus/mcp_session_helpers.exs",
         "test/support/snapshot_support.exs",
         "test/support/test_support.exs",
-        "test/support/work_package_factory.exs"
+        "test/support/work_package_factory.exs",
+        "test/symphony_elixir/symphony_plus_plus/dashboard/api_case.exs"
       ],
       dialyzer: [
         plt_add_apps: [:mix]

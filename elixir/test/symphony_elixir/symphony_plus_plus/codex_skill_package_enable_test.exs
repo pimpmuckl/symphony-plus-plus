@@ -3,6 +3,8 @@ Code.require_file("codex_skill_package_case_test.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageEnableTest do
   use SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageCase, async: true
 
+  @moduletag :ci_slow
+
   test "enable command safely mutates only the MCP companion plugin config" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-enable-#{System.unique_integer([:positive])}")
