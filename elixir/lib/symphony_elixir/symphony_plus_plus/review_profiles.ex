@@ -31,18 +31,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewProfiles do
 
   @spec normalize_profile(term()) :: String.t() | nil
   def normalize_profile(profile) when is_binary(profile) do
-    case profile |> String.trim() |> String.downcase() |> String.replace("-", "_") do
-      profile when profile in ["review_t1", "t1"] -> "brief"
-      profile when profile in ["review_t2", "t2"] -> "normal"
-      "review_brief" -> "brief"
-      "review_normal" -> "normal"
-      "review_deep" -> "deep"
-      "review_emergency" -> "emergency"
-      profile -> profile
+    profile = profile |> String.trim() |> String.downcase() |> String.replace("-", "_")
+
+    case profile do
+      profile when profile in ["review_t1", "review_suite_t1", "t1"] -> "brief"
+      profile when profile in ["review_t2", "review_suite_t2", "t2"] -> "normal"
+      profile when profile in ["review_brief", "review_suite_brief"] -> "brief"
+      profile when profile in ["review_normal", "review_suite_normal"] -> "normal"
+      profile when profile in ["review_deep", "review_suite_deep"] -> "deep"
+      profile when profile in ["review_emergency", "review_suite_emergency"] -> "emergency"
+      profile -> review_suite_profile_alias(profile) || profile
     end
   end
 
   def normalize_profile(_profile), do: nil
+
+  @spec normalize_suite(term()) :: String.t() | nil
+  def normalize_suite(suite) when is_binary(suite) do
+    case normalize_suite_label(suite) do
+      suite when suite in ["review_suite", "reviewsuite"] -> "review-suite"
+      _suite -> nil
+    end
+  end
+
+  def normalize_suite(_suite), do: nil
+
+  @spec review_suite?(term()) :: boolean()
+  def review_suite?(suite), do: normalize_suite(suite) == "review-suite"
 
   @spec normalize_status(term()) :: String.t()
   def normalize_status(status) when is_binary(status), do: status |> String.trim() |> String.downcase()
@@ -106,7 +121,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewProfiles do
 
   @spec review_suite_payload_passes?(term()) :: boolean()
   def review_suite_payload_passes?(%{} = payload) do
-    passing_status?(Map.get(payload, "status")) and passing_verdict?(Map.get(payload, "verdict"))
+    review_suite?(Map.get(payload, "suite")) and
+      passing_status?(Map.get(payload, "status")) and
+      passing_verdict?(Map.get(payload, "verdict"))
   end
 
   def review_suite_payload_passes?(_payload), do: false
@@ -183,4 +200,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewProfiles do
   defp legacy_status_prefixes("brief"), do: ["review_t1"]
   defp legacy_status_prefixes("normal"), do: ["review_t2"]
   defp legacy_status_prefixes(_profile), do: []
+
+  defp review_suite_profile_alias(profile) do
+    case Regex.run(~r/\Areview[\s_]+suite[\s_]+(.+)\z/, profile, capture: :all_but_first) do
+      [profile] -> review_suite_profile(String.trim(profile))
+      _no_match -> nil
+    end
+  end
+
+  defp review_suite_profile(profile) when profile in ["t1", "brief"], do: "brief"
+  defp review_suite_profile(profile) when profile in ["t2", "normal"], do: "normal"
+  defp review_suite_profile("deep"), do: "deep"
+  defp review_suite_profile("emergency"), do: "emergency"
+  defp review_suite_profile(_profile), do: nil
+
+  defp normalize_suite_label(label) do
+    label
+    |> String.trim()
+    |> String.downcase()
+    |> String.replace("-", "_")
+    |> String.replace(~r/\s+/, "_")
+  end
 end

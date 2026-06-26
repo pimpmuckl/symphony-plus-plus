@@ -3,6 +3,8 @@ Code.require_file("../../../support/symphony_plus_plus/mcp_case.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
+  alias SymphonyElixir.SymphonyPlusPlus.ReviewProfiles
+
   test "mark_ready enforces worker readiness gates", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-READY-GATES", kind: "mcp", status: "ci_waiting"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -780,6 +782,202 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
     assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
   end
 
+  test "Review Suite round aliases infer evidence and satisfy planned-slice readiness", %{repo: repo} do
+    head_sha = "review-suite-alias-head"
+    branch = "agent/SYMPP-REVIEW-SUITE-ALIAS/worker"
+    work_request = create_work_request!(repo, id: "WR-REVIEW-SUITE-ALIAS", base_branch: "main", status: "ready_for_slicing")
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-REVIEW-SUITE-ALIAS",
+                 target_base_branch: work_request.base_branch,
+                 branch_pattern: branch,
+                 review_lanes: ["review_suite normal"]
+               )
+             )
+
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-REVIEW-SUITE-ALIAS",
+                 kind: planned_slice.work_package_kind,
+                 title: planned_slice.title,
+                 repo: work_request.repo,
+                 base_branch: planned_slice.target_base_branch,
+                 branch_pattern: planned_slice.branch_pattern,
+                 product_description: work_request.human_description,
+                 allowed_file_globs: planned_slice.owned_file_globs,
+                 acceptance_criteria: planned_slice.acceptance_criteria,
+                 status: "ci_waiting",
+                 policy_template: "mcp_review_suite_artifact"
+               )
+             )
+
+    put_review_suite_state!("rvw_alias_normal", "orc-alias-normal", head_sha, "normal", branch: branch, repo: package.repo, work_package_id: package.id)
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+    assert {:ok, _dispatched_slice} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", package.id)
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => branch, "head_sha" => head_sha})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/777", "head_sha" => head_sha})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready except Review Suite round evidence",
+      "tests" => ["mix test"],
+      "artifacts" => ["review-log.txt"],
+      "head_sha" => head_sha,
+      "acceptance_criteria_met" => true,
+      "reviews" => []
+    })
+
+    result =
+      attach_tool(repo, session, "attach_review_suite_result", %{
+        "round_id" => "rvw_alias_normal",
+        "suite" => "github-actions",
+        "profile" => "review_suite normal",
+        "lane" => "review-suite normal"
+      })
+
+    payload = get_in(result, ["result", "structuredContent", "progress_event", "payload"])
+    assert payload["suite"] == "review-suite"
+    assert payload["profile"] == "normal"
+    assert payload["lane"] == "normal"
+    assert payload["head_sha"] == head_sha
+    assert payload["work_package_id"] == package.id
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-review-suite-alias", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+  end
+
+  test "legacy non-Review Suite payloads do not satisfy Review Suite readiness", %{repo: repo} do
+    head_sha = "review-suite-legacy-suite-head"
+
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-REVIEW-SUITE-LEGACY-SUITE",
+                 kind: "mcp",
+                 status: "ci_waiting",
+                 policy_template: "mcp_review_suite_artifact"
+               )
+             )
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/#{package.id}/worker", "head_sha" => head_sha})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/778", "head_sha" => head_sha})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready except Review Suite result",
+      "tests" => ["mix test"],
+      "artifacts" => ["review-log.txt"],
+      "head_sha" => head_sha,
+      "acceptance_criteria_met" => true,
+      "reviews" => []
+    })
+
+    assert {:ok, _artifact} =
+             PlanningRepository.append_artifact(repo, %{
+               "id" => review_suite_artifact_id(package.id, head_sha),
+               "work_package_id" => package.id,
+               "path" => "review-suite-result.json",
+               "title" => "Review Suite result",
+               "kind" => "review_suite"
+             })
+
+    assert {:ok, _event} =
+             PlanningRepository.append_progress_event(repo, %{
+               "work_package_id" => package.id,
+               "idempotency_key" => "attach_review_suite_result:#{package.id}:legacy-github-actions",
+               "summary" => "Legacy review-suite result",
+               "status" => "review_suite_passed",
+               "payload" => %{
+                 "type" => "review_suite_result",
+                 "source_tool" => "attach_review_suite_result",
+                 "work_package_id" => package.id,
+                 "head_sha" => head_sha,
+                 "suite" => "github-actions",
+                 "anchor" => "legacy-github-actions",
+                 "summary" => "Legacy payload used the wrong suite",
+                 "status" => "passed",
+                 "verdict" => "clean",
+                 "profile" => "normal",
+                 "lane" => "normal",
+                 "round_id" => "rvw_legacy_github_actions"
+               }
+             })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-review-suite-legacy-suite", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    missing = get_in(ready_response, ["error", "data", "missing"])
+    assert get_in(ready_response, ["error", "data", "reason"]) == "readiness_failed"
+    assert "review_suite_result" in missing
+    assert "review_lanes_complete" in missing
+  end
+
+  test "Review Suite alias normalization keeps custom whitespace lanes distinct" do
+    assert ReviewProfiles.normalize_profile("review_suite normal") == "normal"
+    assert ReviewProfiles.normalize_profile("review-suite normal") == "normal"
+    assert ReviewProfiles.normalize_profile("security review") == "security review"
+    assert ReviewProfiles.normalize_profile("security_review") == "security_review"
+  end
+
+  test "explicit Review Suite fallback rejects arbitrary suite labels", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-REVIEW-SUITE-SUITE", kind: "mcp", status: "reviewing"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "invalid-suite",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "attach_review_suite_result",
+            "arguments" => %{
+              "head_sha" => "suite-head",
+              "suite" => "github-actions",
+              "anchor" => "suite-anchor",
+              "summary" => "Not Review Suite",
+              "status" => "passed",
+              "verdict" => "clean",
+              "profile" => "normal"
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "invalid_review_suite"
+  end
+
   test "mark_ready still requires ci_waiting when package policy requires CI", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(
@@ -843,4 +1041,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
     ci_waiting_package = %{package | status: "ci_waiting"}
     assert :ok = StateMachine.validate_ready_transition(ci_waiting_package, "ready_for_human_merge", actor)
   end
+
+  defp put_review_suite_state!(public_id, cycle_key, head_sha, profile, opts) do
+    state_dir = Path.join(System.tmp_dir!(), "review-suite-state-#{System.unique_integer([:positive])}")
+    cycles_dir = Path.join([state_dir, "orchestrator", "cycles"])
+    File.mkdir_p!(cycles_dir)
+
+    File.write!(Path.join([state_dir, "orchestrator", "index.json"]), Jason.encode!(%{"public_ids" => %{public_id => cycle_key}}))
+    File.write!(Path.join(cycles_dir, "#{cycle_key}.json"), Jason.encode!(review_suite_cycle(public_id, head_sha, profile, opts)))
+
+    previous = Application.get_env(:symphony_elixir, :sympp_review_suite_state_dir)
+    Application.put_env(:symphony_elixir, :sympp_review_suite_state_dir, state_dir)
+
+    ExUnit.Callbacks.on_exit(fn ->
+      restore_review_suite_state_dir(previous)
+      File.rm_rf(state_dir)
+    end)
+  end
+
+  defp review_suite_cycle(public_id, head_sha, profile, opts) do
+    %{
+      "public_id" => public_id,
+      "stage" => "review-green",
+      "validation" => %{"review_green" => "passed"},
+      "identity" => review_suite_cycle_identity(head_sha, opts),
+      "mode" => %{"effective" => profile, "requested" => profile},
+      "review_heads" => %{"last_reviewed_head" => head_sha},
+      "rounds" => [%{"round_id" => "review_t1", "review_status" => "completed", "reviewed_head" => head_sha}],
+      "decisions" => [%{"round_id" => "review_t1", "command" => "clean", "reviewed_head" => head_sha}]
+    }
+  end
+
+  defp review_suite_cycle_identity(head_sha, opts) do
+    %{"base" => Keyword.get(opts, :base_branch, "main"), "branch" => Keyword.get(opts, :branch, "hotfix/review-suite-round-ux"), "head" => head_sha}
+    |> put_identity("repo", Keyword.get(opts, :repo))
+    |> put_identity("work_package_id", Keyword.get(opts, :work_package_id))
+  end
+
+  defp put_identity(identity, _key, nil), do: identity
+  defp put_identity(identity, key, value), do: Map.put(identity, key, value)
+
+  defp restore_review_suite_state_dir(nil), do: Application.delete_env(:symphony_elixir, :sympp_review_suite_state_dir)
+  defp restore_review_suite_state_dir(value), do: Application.put_env(:symphony_elixir, :sympp_review_suite_state_dir, value)
 end
