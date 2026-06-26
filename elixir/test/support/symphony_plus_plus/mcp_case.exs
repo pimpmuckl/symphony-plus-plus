@@ -143,7 +143,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPCase do
     def get(WorkPackage, "SYMPP-PR-SERVICE-ERROR") do
       %WorkPackage{
         id: "SYMPP-PR-SERVICE-ERROR",
-        kind: "standard_pr",
+        kind: "mcp",
         repo: "nextide/symphony-plus-plus",
         status: "ci_waiting"
       }

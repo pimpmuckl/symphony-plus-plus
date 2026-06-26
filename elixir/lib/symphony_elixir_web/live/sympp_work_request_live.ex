@@ -270,7 +270,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                   <%= dispatch_shape_label(shape) %>
                 </option>
               </select>
-              <small class="sympp-field-help">Choose one package, a feature branch with slices, an investigation-first pass, or review-only work.</small>
+              <small class="sympp-field-help">Choose one package, a feature branch with slices, or an investigation-first pass.</small>
             </label>
 
             <label class="sympp-form-wide">
@@ -2526,7 +2526,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp can_mark_sliced?(work_request), do: value(work_request, :status) == "ready_for_slicing"
 
-  defp work_package_kinds, do: WorkPackage.kinds()
+  defp work_package_kinds, do: WorkPackage.planned_slice_kinds()
 
   defp decision_source_types, do: ["human", "architect", "operator", "ask_pro_advisory"]
 
@@ -3101,7 +3101,6 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp dispatch_shape_label("architect_led_feature_branch"), do: "Feature branch with slices"
   defp dispatch_shape_label("direct_main_fix"), do: "Direct fix on the target branch"
   defp dispatch_shape_label("investigation_first"), do: "Investigate before implementation"
-  defp dispatch_shape_label("review_only"), do: "Review only"
   defp dispatch_shape_label(value), do: label_value(value)
 
   defp advanced_intake_open?(form, form_error) do

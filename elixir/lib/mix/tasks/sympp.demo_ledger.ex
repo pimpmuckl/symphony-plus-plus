@@ -352,17 +352,17 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
 
   defp product_description(_id), do: "Synthetic package for local cockpit visual QA."
 
-  defp work_package_kind("SYMPP-DEMO-WP-ACTIVE"), do: "dashboard"
-  defp work_package_kind("SYMPP-DEMO-WP-QUEUED"), do: "delegation"
-  defp work_package_kind("SYMPP-DEMO-WP-PLANNING"), do: "integration"
+  defp work_package_kind("SYMPP-DEMO-WP-ACTIVE"), do: "mcp"
+  defp work_package_kind("SYMPP-DEMO-WP-QUEUED"), do: "mcp"
+  defp work_package_kind("SYMPP-DEMO-WP-PLANNING"), do: "mcp"
   defp work_package_kind("SYMPP-DEMO-WP-REVIEW"), do: "docs"
-  defp work_package_kind("SYMPP-DEMO-WP-CI"), do: "e2e"
-  defp work_package_kind("SYMPP-DEMO-WP-READY"), do: "standard_pr"
-  defp work_package_kind("SYMPP-DEMO-WP-ARCH-READY"), do: "hardening"
-  defp work_package_kind("SYMPP-DEMO-WP-BLOCKED"), do: "product"
-  defp work_package_kind("SYMPP-DEMO-WP-MERGED"), do: "hardening"
+  defp work_package_kind("SYMPP-DEMO-WP-CI"), do: "mcp"
+  defp work_package_kind("SYMPP-DEMO-WP-READY"), do: "mcp"
+  defp work_package_kind("SYMPP-DEMO-WP-ARCH-READY"), do: "mcp"
+  defp work_package_kind("SYMPP-DEMO-WP-BLOCKED"), do: "investigation"
+  defp work_package_kind("SYMPP-DEMO-WP-MERGED"), do: "mcp"
   defp work_package_kind("SYMPP-DEMO-WP-MERGED-DOCS"), do: "docs"
-  defp work_package_kind("SYMPP-DEMO-WP-CLOSED-SPIKE"), do: "analysis"
+  defp work_package_kind("SYMPP-DEMO-WP-CLOSED-SPIKE"), do: "investigation"
 
   defp branch_pattern(id), do: "feat/#{String.downcase(id)}/demo"
 
@@ -541,7 +541,7 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
       id: id,
       title: title,
       goal: "#{title}. Synthetic planned slice for demo ledger visual QA.",
-      work_package_kind: "dashboard",
+      work_package_kind: "mcp",
       target_base_branch: @demo_base_branch,
       branch_pattern: "feat/#{String.downcase(id)}/demo",
       owned_file_globs: ["elixir/lib/symphony_elixir_web/live/sympp_*"],

@@ -9,7 +9,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
   alias SymphonyElixir.SymphonyPlusPlus.Id
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.StringList
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
-  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
   @primary_key {:id, :string, autogenerate: false}
@@ -74,10 +73,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
   @spec statuses() :: [String.t()]
   def statuses, do: @statuses
 
-  @spec skipped_scratch?(t(), PlannedSliceDelivery.t() | nil) :: boolean()
-  def skipped_scratch?(%__MODULE__{status: "skipped", work_package_id: nil, dispatched_at: nil}, nil), do: true
-  def skipped_scratch?(%__MODULE__{}, _delivery), do: false
-
   @spec delivery_repo(WorkRequest.t(), t()) :: String.t() | nil
   def delivery_repo(%WorkRequest{repo: repo}, %__MODULE__{delivery_repo: delivery_repo}) do
     nonblank_or_nil(delivery_repo) || repo
@@ -136,7 +131,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
       :status
     ])
     |> validate_number(:sequence, greater_than: 0)
-    |> validate_inclusion(:work_package_kind, WorkPackage.kinds())
+    |> validate_inclusion(:work_package_kind, WorkPackage.planned_slice_kinds())
     |> validate_inclusion(:status, @statuses)
     |> validate_branch_pattern()
   end

@@ -51,13 +51,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
     :ok
   end
 
-  test "standalone hotfix runs through MCP with fake GitHub and review evidence", %{repo: repo} do
+  test "hotfix package runs through MCP with fake GitHub and review evidence", %{repo: repo} do
     assert {:ok, creation} =
              CreateWork.create(repo, %{
                kind: "hotfix",
                repo: "nextide/symphony-plus-plus",
                base_branch: "symphony-plus-plus/beta",
-               title: "Fix standalone incident",
+               title: "Fix hotfix incident",
                product_description: "A pilot endpoint returns stale data.",
                engineering_scope: "Touch only the cache invalidation path.",
                acceptance_criteria: ["Endpoint returns fresh data.", "Hotfix review evidence exists."],
@@ -65,10 +65,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
              })
 
     session = claim_worker_grant(repo, creation.worker_grant.id, "hotfix-worker")
-    assert read_resource(repo, session, "sympp://work-packages/#{creation.work_package.id}/context.md") =~ "Fix standalone incident"
+    assert read_resource(repo, session, "sympp://work-packages/#{creation.work_package.id}/context.md") =~ "Fix hotfix incident"
 
     update_plan(repo, session)
-    append_progress(repo, session, "Standalone hotfix regression passed", "tests_passed", "hotfix-tests")
+    append_progress(repo, session, "Hotfix regression passed", "tests_passed", "hotfix-tests")
     advance_worker_to_ci_waiting(repo, session)
 
     head_sha = "p8-001-hotfix-head"

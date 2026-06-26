@@ -62,17 +62,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.DeliverySliceProjection do
     end
   end
 
-  @spec put_planning_classification(map(), term()) :: map()
-  def put_planning_classification(payload, delivery_slice) do
-    case map_value(delivery_slice, "planning_classification") do
-      classification when is_binary(classification) and classification != "" ->
-        Map.put(payload, :planning_classification, classification)
-
-      _classification ->
-        payload
-    end
-  end
-
   @spec put_delivery_operational_state(map(), term()) :: map()
   def put_delivery_operational_state(payload, delivery_slice) do
     case primary_operational_state(delivery_slice, include_package_fields?: false) do
@@ -168,5 +157,4 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.DeliverySliceProjection do
   defp attention_item_payload(_item, _opts), do: []
 
   defp map_value(%{} = map, key) when is_binary(key), do: Map.get(map, key) || Map.get(map, String.to_atom(key))
-  defp map_value(_value, _key), do: nil
 end

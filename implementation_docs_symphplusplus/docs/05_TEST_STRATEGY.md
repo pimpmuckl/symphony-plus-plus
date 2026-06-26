@@ -6,7 +6,7 @@ Symphony++ must prove three things:
 
 1. It preserves upstream Symphony behavior.
 2. It enforces scoped work-package permissions.
-3. It supports both quick standalone work and phase/architect delegation.
+3. It supports single-slice WorkRequests and phase/architect delegation.
 
 ## Test categories
 
@@ -34,7 +34,7 @@ Symphony++ must prove three things:
 
 ### End-to-end tests
 
-- Standalone hotfix lifecycle.
+- Single-slice hotfix WorkRequest lifecycle.
 - Worker claim and virtual-file update lifecycle.
 - PR attachment and readiness check.
 - Scope guard rejects out-of-scope changed files.
@@ -65,7 +65,7 @@ Every work package must specify:
 ## E2E milestone scenario
 
 ```text
-Create hotfix work package.
+Create hotfix WorkRequest and direct planned slice.
 Mint worker key.
 Claim through MCP.
 Read virtual files.
@@ -96,7 +96,7 @@ workers, or production services.
 
 Covered scenarios:
 
-- Standalone hotfix creation, MCP worker claim, virtual-file access, local
+- Hotfix planned-slice dispatch, MCP worker claim, virtual-file access, local
   progress evidence, fake GitHub metadata, fake review evidence, and readiness.
 - MCP package readiness through changed-file scope, current PR metadata, and
   persisted review-suite artifacts.

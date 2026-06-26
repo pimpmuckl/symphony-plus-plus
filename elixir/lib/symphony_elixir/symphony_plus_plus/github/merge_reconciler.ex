@@ -51,7 +51,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.MergeReconciler do
   end
 
   defp merge_ready_candidate?(%WorkPackage{status: "ready_for_human_merge", kind: kind}) do
-    kind in StateMachine.standalone_kinds()
+    kind in StateMachine.dispatchable_kinds()
   end
 
   defp merge_ready_candidate?(%WorkPackage{}), do: false

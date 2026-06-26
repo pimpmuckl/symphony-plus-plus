@@ -26,7 +26,7 @@ PR body:
 
 ```markdown
 Symphony-WorkPackage: SYMPP-P6-001
-Symphony-Kind: standard_pr
+Symphony-Kind: mcp
 ```
 
 Never put the raw grant secret in the PR.

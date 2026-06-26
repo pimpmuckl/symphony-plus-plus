@@ -1240,7 +1240,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
            }
   end
 
-  test "dashboard WorkRequest detail hides skipped scratch slices unless explicitly included", %{repo: repo} do
+  test "dashboard WorkRequest detail keeps skipped planned slices visible", %{repo: repo} do
     assert {:ok, anchor} =
              WorkPackageRepository.create(
                repo,
@@ -1311,27 +1311,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     secret = create_architect_grant_secret(repo, anchor.id)
     default_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-requests/#{work_request.id}"), 200)
 
-    assert Enum.map(default_payload["planned_slices"], & &1["id"]) == [visible_slice.id, delivered_slice.id]
+    assert Enum.map(default_payload["planned_slices"], & &1["id"]) == [visible_slice.id, scratch_slice.id, delivered_slice.id]
     assert default_payload["summary"]["planned_slice_count"] == 1
-    assert default_payload["summary"]["skipped_slice_count"] == 1
+    assert default_payload["summary"]["skipped_slice_count"] == 2
     assert default_payload["work_request"]["comment_count"] == 1
     assert default_payload["summary"]["comment_count"] == 1
 
-    include_payload =
-      json_response(
-        get(auth_conn(secret), "/api/v1/sympp/work-requests/#{work_request.id}?include_planning_scratch=true"),
-        200
-      )
-
-    assert Enum.map(include_payload["planned_slices"], & &1["id"]) == [visible_slice.id, scratch_slice.id, delivered_slice.id]
-
-    included_by_id = Map.new(include_payload["planned_slices"], &{&1["id"], &1})
-    assert get_in(included_by_id, [scratch_slice.id, "planning_classification"]) == "planning_scratch"
+    included_by_id = Map.new(default_payload["planned_slices"], &{&1["id"], &1})
     assert get_in(included_by_id, [scratch_slice.id, "comment_count"]) == 1
     assert [%{"id" => scratch_comment_id}] = get_in(included_by_id, [scratch_slice.id, "comments"])
     assert scratch_comment_id == scratch_comment.id
-    refute Map.has_key?(Map.fetch!(included_by_id, delivered_slice.id), "planning_classification")
-    assert include_payload["summary"]["skipped_slice_count"] == 2
   end
 
   test "dashboard WorkRequest detail includes redacted comments and aggregate counts", %{repo: repo} do
@@ -3701,7 +3690,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                repo,
                WorkPackageFactory.attrs(
                  id: "SYMPP-RUNTIME-UNKNOWN-POLICY",
-                 kind: "dashboard",
+                 kind: "delegation",
                  status: "ready_for_human_merge"
                )
              )
@@ -7076,7 +7065,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                repo,
                WorkPackageFactory.attrs(
                  id: id,
-                 kind: "dashboard",
+                 kind: "mcp",
                  status: status,
                  title: "Dashboard API raw-secret-value",
                  branch_pattern: "agent/#{id}",

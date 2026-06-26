@@ -4,7 +4,7 @@ defmodule SymphonyElixir.WorkPackageFactory do
   @spec attrs(keyword()) :: map()
   def attrs(overrides \\ []) do
     defaults = %{
-      kind: "standard_pr",
+      kind: "mcp",
       title: "Implement package",
       repo: "nextide/example",
       base_branch: "main",
