@@ -23,6 +23,16 @@ describe("workstream progress", () => {
     expect(requestProgress(detail, new Map<string, WorkPackageCard>())).toBe(25);
   });
 
+  it("counts ready-to-finish slices as partial progress", () => {
+    const detail = workRequestDetail([
+      plannedSlice("slice-ready-finish", "ready_to_finish"),
+      plannedSlice("slice-planned", "planned"),
+    ]);
+
+    expect(sliceProgressPercent(detail.planned_slices![0])).toBe(50);
+    expect(requestProgress(detail, new Map<string, WorkPackageCard>())).toBe(25);
+  });
+
   it("keeps ready-for-worker slices at zero progress", () => {
     const slice = plannedSlice("slice-ready", "ready_for_worker", "pkg-ready");
     const pkg: WorkPackageCard = { id: "pkg-ready", status: "ready_for_worker", plan: { completed_count: 1, total_count: 2 } };

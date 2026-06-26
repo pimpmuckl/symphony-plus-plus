@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { Dialog } from "@/components/ui/dialog";
-import { BlockerDetailContent, blockerDetailWorkPackageId, scopedBlockerDetailPayload } from "./package-detail";
+import { BlockerDetailContent, blockerDetailWorkPackageId, linkedPackageStateActions, scopedBlockerDetailPayload } from "./package-detail";
 import type { CardDetailSelection } from "./runtime";
 import type { WorkPackageDetailPayload } from "@/types/dashboard";
 
@@ -76,5 +76,79 @@ describe("package detail blocker modal", () => {
 
     expect(readOnlyMarkup).not.toContain(">Clear<");
     expect(operatorMarkup).toContain(">Clear<");
+  });
+});
+
+describe("package detail state actions", () => {
+  it("shows closeout only for ready linked packages without merge requirements", () => {
+    expect(
+      linkedPackageStateActions(
+        { id: "pkg-ready-finish", status: "ready_for_human_merge", merge_required: false, pr_required: false },
+        { key: "ready_to_finish", raw_status: "ready_for_human_merge", tone: "success", merge_required: false, pr_required: false },
+        true,
+        true,
+      ),
+    ).toEqual([{ value: "completed_no_pr", label: "Close With Evidence" }]);
+  });
+
+  it("does not expose closeout when ready-to-finish evidence is incomplete", () => {
+    expect(
+      linkedPackageStateActions(
+        { id: "pkg-ready-finish-warning", status: "ready_for_human_merge", merge_required: false, pr_required: false },
+        { key: "ready_to_finish", raw_status: "ready_for_human_merge", tone: "warning", merge_required: false, pr_required: false },
+        true,
+        true,
+      ),
+    ).toEqual([]);
+  });
+
+  it("keeps merge actions for ready linked packages that require merge", () => {
+    expect(
+      linkedPackageStateActions(
+        { id: "pkg-ready-merge", status: "ready_for_human_merge", merge_required: true, pr_required: true },
+        { key: "merge_ready", raw_status: "ready_for_human_merge", merge_required: true, pr_required: true },
+        true,
+        true,
+      ),
+    ).toEqual([
+      { value: "merged", label: "Mark Merged" },
+    ]);
+  });
+
+  it("keeps merge actions for architect-merge packages that do not require a human PR", () => {
+    expect(
+      linkedPackageStateActions(
+        { id: "pkg-architect-merge", status: "ready_for_architect_merge", merge_required: true, pr_required: false },
+        { key: "merge_ready", raw_status: "ready_for_architect_merge", merge_required: true, pr_required: false },
+        true,
+        true,
+      ),
+    ).toEqual([
+      { value: "merged", label: "Mark Merged" },
+    ]);
+  });
+
+  it("keeps merge actions for architect-merge fallback cards without operational state", () => {
+    expect(
+      linkedPackageStateActions(
+        { id: "pkg-architect-merge-fallback", status: "ready_for_architect_merge", merge_required: true, pr_required: false },
+        null,
+        true,
+        true,
+      ),
+    ).toEqual([
+      { value: "merged", label: "Mark Merged" },
+    ]);
+  });
+
+  it("does not expose closeout for non-merge packages before terminal readiness", () => {
+    expect(
+      linkedPackageStateActions(
+        { id: "pkg-worker", status: "ready_for_worker", merge_required: false, pr_required: false },
+        { key: "ready_for_worker", raw_status: "ready_for_worker", merge_required: false, pr_required: false },
+        true,
+        true,
+      ),
+    ).toEqual([]);
   });
 });

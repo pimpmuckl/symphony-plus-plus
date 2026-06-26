@@ -318,6 +318,7 @@ const SLICE_PARTIAL_PROGRESS_STATES = new Set([
   "implementing",
   "in_progress",
   "merge_ready",
+  "ready_to_finish",
   "merging",
   "merging_into_phase",
   "needs_closeout",

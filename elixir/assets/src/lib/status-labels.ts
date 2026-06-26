@@ -5,6 +5,7 @@ export function formatStatus(status?: string | null) {
 export function statusLabel(status?: string | null) {
   if (status === "active") return "Active";
   if (status === "merge_ready") return "Ready For Merge";
+  if (status === "ready_to_finish") return "Ready To Finish";
   if (status === "in_progress") return "Active";
   if (status === "needs_attention") return "Needs Attention";
   if (status === "started_paused") return "Started / Paused";

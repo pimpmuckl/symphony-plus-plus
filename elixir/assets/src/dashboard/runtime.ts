@@ -309,7 +309,11 @@ async function readDashboardJson(response: Response): Promise<DashboardApiRespon
 
 function dashboardErrorMessage(payload: DashboardApiResponse) {
   if (!isRecord(payload) || !isRecord(payload.error)) return null;
-  return typeof payload.error.message === "string" ? payload.error.message : null;
+  const message = typeof payload.error.message === "string" ? payload.error.message : "";
+  if (message && message !== "Dashboard API unavailable") return message;
+
+  const code = typeof payload.error.code === "string" ? payload.error.code : "";
+  return code ? code.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : null;
 }
 
 function dashboardResponseError(response: Response, payload: DashboardApiResponse, fallbackMessage: string) {

@@ -65,6 +65,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     "reviewing",
     "ci_waiting",
     "merge_ready",
+    "ready_to_finish",
     "merging",
     "needs_closeout",
     "prepared",
@@ -1067,6 +1068,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
              title: redacted_text(work_package.title),
              kind: work_package.kind,
              status: work_package.status,
+             merge_required: merge_required?(work_package),
+             pr_required: pr_required?(work_package),
              repo: work_package.repo,
              base_branch: work_package.base_branch,
              parent_id: work_package.parent_id,
@@ -3093,15 +3096,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
     work_package
     |> base_work_package_operational_state(blockers, metadata, missing_readiness, activity)
+    |> Map.merge(%{merge_required: merge_required?(work_package), pr_required: pr_required?(work_package)})
     |> Map.merge(operational_activity_fields(activity))
     |> Map.put(:attention_items, attention_items)
   end
 
-  defp base_work_package_operational_state(%WorkPackage{status: status}, blockers, metadata, missing_readiness, activity) do
+  defp base_work_package_operational_state(%WorkPackage{status: status} = work_package, blockers, metadata, missing_readiness, activity) do
     active_blocker_count = blockers |> active_blockers() |> length()
 
     blocking_or_terminal_operational_state(status, active_blocker_count, metadata) ||
-      delivery_operational_state(status, metadata, missing_readiness, activity)
+      delivery_operational_state(work_package, metadata, missing_readiness, activity)
   end
 
   defp blocking_or_terminal_operational_state(status, active_blocker_count, metadata) do
@@ -3126,20 +3130,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
-  defp delivery_operational_state(status, metadata, missing_readiness, activity) do
-    validation_operational_state(status, metadata, missing_readiness) ||
+  defp delivery_operational_state(%WorkPackage{status: status} = work_package, metadata, missing_readiness, activity) do
+    validation_operational_state(work_package, metadata, missing_readiness) ||
       pickup_operational_state(status, activity)
   end
 
-  defp validation_operational_state(status, metadata, missing_readiness) do
+  defp validation_operational_state(%WorkPackage{status: status} = work_package, metadata, missing_readiness) do
     cond do
       status == "merging_into_phase" ->
         operational_state("merging", "Merging", "info", "Package is being merged into its phase.", status)
 
       status in @ready_statuses ->
-        tone = if missing_readiness == [], do: "success", else: "warning"
-        reason = if missing_readiness == [], do: "Package is marked ready with required evidence present.", else: "Package is marked ready but evidence is incomplete."
-        operational_state("merge_ready", "Ready For Merge", tone, reason, status)
+        ready_operational_state(work_package, missing_readiness)
 
       status == "ci_waiting" ->
         operational_state("ci_waiting", "CI Waiting", "info", "Package is waiting on validation or CI evidence.", status)
@@ -3149,6 +3151,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
       true ->
         nil
+    end
+  end
+
+  defp ready_operational_state(%WorkPackage{status: status} = work_package, missing_readiness) do
+    tone = if missing_readiness == [], do: "success", else: "warning"
+
+    if merge_required?(work_package) do
+      reason = if missing_readiness == [], do: "Package is marked ready with required evidence present.", else: "Package is marked ready but evidence is incomplete."
+      operational_state("merge_ready", "Ready For Merge", tone, reason, status)
+    else
+      reason = if missing_readiness == [], do: "Package is ready to finish with closeout evidence.", else: "Package is ready to finish but evidence is incomplete."
+      operational_state("ready_to_finish", "Ready To Finish", tone, reason, status)
     end
   end
 
@@ -3359,6 +3373,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       "reviewing",
       "ci_waiting",
       "merge_ready",
+      "ready_to_finish",
       "merging",
       "merged",
       "closed",
@@ -3987,7 +4002,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
-  defp pr_required?(%WorkPackage{}), do: true
+  defp pr_required?(%WorkPackage{} = work_package) do
+    case policy_for(work_package) do
+      {:ok, policy} -> "human_merge" in Map.get(policy, :required_gates, [])
+      {:error, _reason} -> work_package.kind in @runtime_merge_required_kinds
+    end
+  end
 
   defp acceptance_recorded?(context) do
     progress_events = progress_events_for_review_payload(context)
