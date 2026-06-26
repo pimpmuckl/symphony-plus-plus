@@ -18,6 +18,13 @@ identity.
 4. Call `read_work_request`, `read_work_request_product_tree`, and
 `read_work_request_delivery_board` before slicing or dispatch.
 
+The claim may recover stale handoff scope when the local ledger still proves
+one matching WorkRequest, repo, base branch, anchor package, phase id, and
+architect grant. Remaining `phase_scope_not_available` errors include
+`missing_evidence` and an operator repair action. Archived or manually
+completed WorkRequests return `work_request_terminal`; restore them through the
+local operator or start a new WorkRequest.
+
 ## Product Tree Shape
 
 Do not create a plan node solely to wrap one slice. Leave simple slices direct

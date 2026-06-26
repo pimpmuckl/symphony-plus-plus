@@ -3,6 +3,297 @@ Code.require_file("../../../support/symphony_plus_plus/mcp_case.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools03Test do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
+  test "claim_local_architect_assignment reclaims with full handoff scope arguments", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-FULL-RECLAIM",
+        status: "ready_for_clarification"
+      )
+
+    handoff = create_architect_handoff!(repo, work_request)
+    old_args = %{"work_request_id" => work_request.id, "claimed_by" => "architect-old"}
+
+    {old_response, _old_server} = claim_local_architect(repo, old_args, "local-architect-full-reclaim-old")
+    assert get_in(old_response, ["result", "structuredContent", "assignment", "grant_id"]) == handoff.grant.id
+    assert {:ok, old_lease} = ClaimLeaseService.current_for_work_package(repo, handoff.anchor_package.id)
+    assert {:ok, _released} = ClaimLeaseService.release(repo, old_lease.id, reason: "test_reclaim")
+
+    full_args = %{
+      "work_request_id" => work_request.id,
+      "claimed_by" => "architect-new",
+      "architect_anchor_work_package_id" => handoff.anchor_package.id,
+      "repo" => work_request.repo,
+      "base_branch" => work_request.base_branch,
+      "phase_id" => handoff.phase.id
+    }
+
+    {response, claimed_server} = claim_local_architect(repo, full_args, "local-architect-full-reclaim-new")
+
+    assert get_in(response, ["result", "structuredContent", "assignment", "grant_id"]) == handoff.grant.id
+    assert get_in(response, ["result", "structuredContent", "assignment", "claimed_by"]) == "architect-new"
+    assert Scope.work_request(work_request.id) in claimed_server.session.assignment.scopes
+  end
+
+  test "claim_local_architect_assignment recovers bare WorkRequest id claim when grant scope rows are stale", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-BARE-STALE-SCOPE",
+        status: "ready_for_clarification"
+      )
+
+    handoff = create_architect_handoff!(repo, work_request)
+    assert {:ok, [grant]} = AccessGrantRepository.list_for_work_package(repo, handoff.anchor_package.id)
+
+    repo.delete_all(
+      from(scope in GrantScope,
+        where: scope.access_grant_id == ^grant.id,
+        where: scope.scope_type == "work_request"
+      )
+    )
+
+    {response, claimed_server} =
+      claim_local_architect(
+        repo,
+        %{"work_request_id" => work_request.id, "claimed_by" => "architect-bare"},
+        "local-architect-bare-stale-scope"
+      )
+
+    assert get_in(response, ["result", "structuredContent", "assignment", "grant_id"]) == grant.id
+    assert Scope.work_request(work_request.id) in claimed_server.session.assignment.scopes
+  end
+
+  test "claim_local_architect_assignment recovers when a singleton grant scope row is stale", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-STALE-SINGLETON-SCOPE",
+        status: "ready_for_clarification"
+      )
+
+    sibling =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-STALE-SINGLETON-SIBLING",
+        status: "ready_for_clarification"
+      )
+
+    handoff = create_architect_handoff!(repo, work_request)
+    assert {:ok, [grant]} = AccessGrantRepository.list_for_work_package(repo, handoff.anchor_package.id)
+
+    repo.update_all(
+      from(scope in GrantScope,
+        where: scope.access_grant_id == ^grant.id,
+        where: scope.scope_type == "work_request"
+      ),
+      set: [scope_id: sibling.id]
+    )
+
+    {response, claimed_server} =
+      claim_local_architect(
+        repo,
+        %{"work_request_id" => work_request.id, "claimed_by" => "architect-stale-singleton"},
+        "local-architect-stale-singleton-scope"
+      )
+
+    assert get_in(response, ["result", "structuredContent", "assignment", "grant_id"]) == grant.id
+    assert Scope.work_request(work_request.id) in claimed_server.session.assignment.scopes
+
+    assert {:ok, scopes} = AccessGrantRepository.list_scopes(repo, grant.id)
+
+    assert scopes
+           |> Enum.filter(&(&1.scope_type == "work_request"))
+           |> Enum.map(& &1.scope_id) == [work_request.id]
+  end
+
+  test "claim_local_architect_assignment prunes stale additive grant scope rows", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-STALE-ADDITIVE-SCOPE",
+        status: "ready_for_clarification"
+      )
+
+    sibling =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-STALE-ADDITIVE-SIBLING",
+        status: "ready_for_clarification"
+      )
+
+    handoff = create_architect_handoff!(repo, work_request)
+    assert {:ok, [grant]} = AccessGrantRepository.list_for_work_package(repo, handoff.anchor_package.id)
+
+    assert {:ok, _scope} =
+             GrantScope.create_changeset(%{
+               access_grant_id: grant.id,
+               scope_type: "work_request",
+               scope_id: sibling.id
+             })
+             |> repo.insert()
+
+    {response, claimed_server} =
+      claim_local_architect(
+        repo,
+        %{"work_request_id" => work_request.id, "claimed_by" => "architect-stale-additive"},
+        "local-architect-stale-additive-scope"
+      )
+
+    assert get_in(response, ["result", "structuredContent", "assignment", "grant_id"]) == grant.id
+    assert Scope.work_request(work_request.id) in claimed_server.session.assignment.scopes
+    refute Scope.work_request(sibling.id) in claimed_server.session.assignment.scopes
+
+    assert {:ok, scopes} = AccessGrantRepository.list_scopes(repo, grant.id)
+
+    assert scopes
+           |> Enum.filter(&(&1.scope_type == "work_request"))
+           |> Enum.map(& &1.scope_id) == [work_request.id]
+  end
+
+  test "claim_local_architect_assignment does not repair stale rows when file scope drifts", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-STALE-FILE-SCOPE",
+        status: "ready_for_clarification",
+        constraints: %{"allowed_paths" => ["elixir/lib"]}
+      )
+
+    sibling =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-STALE-FILE-SCOPE-SIBLING",
+        status: "ready_for_clarification"
+      )
+
+    handoff = create_architect_handoff!(repo, work_request)
+    assert {:ok, [grant]} = AccessGrantRepository.list_for_work_package(repo, handoff.anchor_package.id)
+
+    assert {:ok, _scope} =
+             GrantScope.create_changeset(%{
+               access_grant_id: grant.id,
+               scope_type: "work_request",
+               scope_id: sibling.id
+             })
+             |> repo.insert()
+
+    work_request
+    |> Ecto.Changeset.change(constraints: %{"allowed_paths" => ["docs"]})
+    |> repo.update!()
+
+    {response, _server} =
+      claim_local_architect(
+        repo,
+        %{"work_request_id" => work_request.id, "claimed_by" => "architect-stale-file-scope"},
+        "local-architect-stale-file-scope"
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "ambiguous_phase_scope"
+
+    assert {:ok, scopes} = AccessGrantRepository.list_scopes(repo, grant.id)
+
+    assert scopes
+           |> Enum.filter(&(&1.scope_type == "work_request"))
+           |> Enum.map(& &1.scope_id)
+           |> Enum.sort() == Enum.sort([work_request.id, sibling.id])
+  end
+
+  test "claim_local_architect_assignment fails closed for cross-branch scope", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-UNSAFE-SCOPE",
+        status: "ready_for_clarification"
+      )
+
+    _handoff = create_architect_handoff!(repo, work_request)
+
+    {branch_response, _branch_server} =
+      claim_local_architect(
+        repo,
+        %{"work_request_id" => work_request.id, "base_branch" => "other-branch"},
+        "local-architect-cross-branch"
+      )
+
+    assert get_in(branch_response, ["error", "data", "reason"]) == "base_branch_scope_mismatch"
+  end
+
+  test "claim_local_architect_assignment returns actionable phase-scope repair evidence", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-ACTIONABLE-SCOPE",
+        status: "ready_for_clarification"
+      )
+
+    _handoff = create_architect_handoff!(repo, work_request)
+    assert {:ok, _draft} = WorkRequestRepository.update_status(repo, work_request.id, "ready_for_clarification", "draft")
+
+    {response, _server} =
+      claim_local_architect(
+        repo,
+        %{"work_request_id" => work_request.id, "claimed_by" => "architect-actionable"},
+        "local-architect-actionable-scope"
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "phase_scope_not_available"
+    assert get_in(response, ["error", "data", "action"]) == "repair_local_architect_handoff_scope"
+    assert get_in(response, ["error", "data", "missing_evidence"]) == ["work_request_status"]
+    assert get_in(response, ["error", "data", "hint"]) =~ "replay architect handoff"
+  end
+
+  test "claim_local_architect_assignment reports archived WorkRequests as terminal", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-ARCHIVED",
+        status: "ready_for_clarification"
+      )
+
+    _handoff = create_architect_handoff!(repo, work_request)
+    archived_at = DateTime.utc_now(:microsecond)
+
+    work_request
+    |> Ecto.Changeset.change(
+      completed_at: archived_at,
+      completion_source: "operator",
+      archived_at: archived_at,
+      archive_reason: "manual"
+    )
+    |> repo.update!()
+
+    {response, _server} =
+      claim_local_architect(
+        repo,
+        %{"work_request_id" => work_request.id, "claimed_by" => "architect-archived"},
+        "local-architect-archived"
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "work_request_terminal"
+    assert get_in(response, ["error", "data", "terminal_state"]) == "archived"
+    assert get_in(response, ["error", "data", "action"]) == "restore_work_request_or_start_new_work_request"
+  end
+
+  test "existing handoff architect sessions fail closed after WorkRequest archive", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-LOCAL-ARCHITECT-ARCHIVED-SESSION",
+        status: "ready_for_clarification"
+      )
+
+    {_anchor, session, _grant} =
+      create_work_request_handoff_architect_session(repo, work_request, [
+        "read:work_request",
+        "write:work_request"
+      ])
+
+    archived_at = DateTime.utc_now(:microsecond)
+
+    work_request
+    |> Ecto.Changeset.change(
+      completed_at: archived_at,
+      completion_source: "operator",
+      archived_at: archived_at,
+      archive_reason: "manual"
+    )
+    |> repo.update!()
+
+    response = mcp_tool(repo, session, "list_work_requests", %{"status" => "ready_for_clarification"})
+
+    assert get_in(response, ["error", "code"]) == -32_003
+    assert get_in(response, ["error", "data", "reason"]) == "outside_session_scope"
+  end
+
   test "mark WorkRequest sliced MCP tool preserves approved-slice requirement", %{repo: repo} do
     {anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-GUARD", [
@@ -528,5 +819,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools03Test do
     assert {:ok, [persisted_sibling_slice]} = WorkRequestRepository.list_planned_slices(repo, sibling.id)
     assert persisted_sibling_slice.status == "planned"
     assert persisted_sibling_slice.work_package_id == nil
+  end
+
+  defp create_architect_handoff!(repo, work_request) do
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               handoff_opts: local_architect_handoff_opts(repo)
+             )
+
+    handoff
+  end
+
+  defp local_architect_handoff_opts(repo) do
+    [claimed_by: ArchitectHandoff.claimed_by(), database: repo.database_path(), local_architect_claim?: true]
+  end
+
+  defp claim_local_architect(repo, arguments, id) do
+    Server.handle_state(
+      %{
+        "jsonrpc" => "2.0",
+        "id" => id,
+        "method" => "tools/call",
+        "params" => %{"name" => "claim_local_architect_assignment", "arguments" => arguments}
+      },
+      local_mcp_server(local_mcp_config(repo), "#{id}-state")
+    )
   end
 end

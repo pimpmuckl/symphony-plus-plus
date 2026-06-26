@@ -195,6 +195,11 @@ state, local daemon trust, and handler-specific checks.
 
 Stale or revoked sessions recover by replaying the relevant local claim tool on
 the same id or by starting a new session and claiming the same id.
+`claim_local_architect_assignment` can recover stale handoff scope only when
+the ledger proves exactly one matching WorkRequest, repo, base branch, anchor,
+phase, and architect grant. Remaining `phase_scope_not_available` responses include
+`missing_evidence` plus an operator repair action; archived or manually
+completed WorkRequests return `work_request_terminal`.
 `release_current_assignment` is safe to call repeatedly; absent, stale, or
 mismatched bindings return a compact ok-style cleanup result. Normal visible
 claim/release text omits claim lease ids, grant ids, caller ids, and raw

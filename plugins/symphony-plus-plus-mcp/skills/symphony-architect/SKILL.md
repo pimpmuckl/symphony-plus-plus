@@ -16,7 +16,12 @@ packages yourself.
    another binding denial, use the assignment's configured bootstrap. Normal
    local WorkRequest architect bootstrap is `claim_local_architect_assignment`
    with the WorkRequest id and optional non-secret `claimed_by`. Use
-   `caller_id` only for the current runtime/thread identity.
+   `caller_id` only for the current runtime/thread identity. The claim can
+   recover stale handoff scope when the local ledger still proves one matching
+   WorkRequest, repo, base branch, anchor, and grant. If it returns
+   `phase_scope_not_available`, follow the returned `missing_evidence` and
+   `action`; if it returns `work_request_terminal`, ask the local operator to
+   restore the WorkRequest or start a new one.
 2. For WorkRequest lanes, read `read_work_request(work_request_id)`,
    `read_work_request_product_tree(work_request_id, view?)`, and
    `list_guidance_requests(work_request_id?)` before slicing or rearranging

@@ -2097,6 +2097,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- require_local_architect_assignment_claim_mode(server),
          :ok <- prepare_mcp_repository(config.repo),
          {:ok, work_request} <- WorkRequestRepository.get(config.repo, claim.work_request_id),
+         :ok <- require_local_architect_assignment_work_request_claimable(work_request),
          claim <- hydrate_local_architect_assignment_claim(work_request, claim),
          :ok <- require_local_architect_assignment_rebind_allowed(config.repo, session, claim),
          {:ok, anchor} <- require_local_architect_handoff_anchor(config, work_request, claim),
@@ -2152,6 +2153,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         phase_id: claim.phase_id || ArchitectHandoff.phase_id_for_work_request(work_request)
     }
   end
+
+  defp require_local_architect_assignment_work_request_claimable(%WorkRequest{archived_at: %DateTime{}}),
+    do: {:error, {:work_request_terminal, :archived}}
+
+  defp require_local_architect_assignment_work_request_claimable(%WorkRequest{
+         completed_at: %DateTime{},
+         completion_source: "operator"
+       }),
+       do: {:error, {:work_request_terminal, :completed}}
+
+  defp require_local_architect_assignment_work_request_claimable(%WorkRequest{}), do: :ok
 
   defp require_local_architect_assignment_claim_mode(%__MODULE__{config: config} = server) do
     with :ok <- require_local_assignment_claim_mode(server) do
@@ -2551,8 +2563,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
      )}
   end
 
+  defp local_architect_assignment_claim_error({:phase_scope_not_available, missing_evidence}) do
+    {:error, -32_001, "Unauthorized", local_architect_phase_scope_not_available_data(missing_evidence)}
+  end
+
+  defp local_architect_assignment_claim_error(:phase_scope_not_available) do
+    {:error, -32_001, "Unauthorized", local_architect_phase_scope_not_available_data([:architect_handoff_scope])}
+  end
+
+  defp local_architect_assignment_claim_error(:ambiguous_phase_scope) do
+    {:error, -32_001, "Unauthorized",
+     %{
+       "tool" => @local_architect_assignment_claim_tool,
+       "reason" => "ambiguous_phase_scope",
+       "action" => "repair_local_architect_handoff_scope",
+       "missing_evidence" => ["single_work_request_scope"],
+       "hint" => "Keep exactly one WorkRequest scope on the architect handoff grant, or replay architect handoff from the local operator for the intended WorkRequest."
+     }}
+  end
+
+  defp local_architect_assignment_claim_error({:work_request_terminal, terminal_state}) do
+    {:error, -32_001, "Unauthorized",
+     %{
+       "tool" => @local_architect_assignment_claim_tool,
+       "reason" => "work_request_terminal",
+       "terminal_state" => reason_text(terminal_state),
+       "action" => "restore_work_request_or_start_new_work_request",
+       "hint" => "Restore the WorkRequest from the local operator if this lane should continue, or start a new WorkRequest for follow-up work."
+     }}
+  end
+
   defp local_architect_assignment_claim_error(reason) do
     {:error, -32_001, "Unauthorized", %{"tool" => @local_architect_assignment_claim_tool, "reason" => reason_text(reason)}}
+  end
+
+  defp local_architect_phase_scope_not_available_data(missing_evidence) do
+    %{
+      "tool" => @local_architect_assignment_claim_tool,
+      "reason" => "phase_scope_not_available",
+      "action" => "repair_local_architect_handoff_scope",
+      "missing_evidence" => Enum.map(List.wrap(missing_evidence), &reason_text/1),
+      "hint" =>
+        "Use the local operator to restore the WorkRequest if it was archived, or replay architect handoff so the anchor package, grant, repo, base branch, phase id, and WorkRequest scope agree."
+    }
   end
 
   defp claim_lease_active_for_other_actor_data(tool, hint) do
@@ -12110,6 +12163,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_error({:authorization_policy_denied, %Decision{} = decision}, resource), do: MCPError.from_decision(decision, resource)
   defp architect_error({:authorization_policy_denied, code, message, data}, _resource), do: {:error, code, message, data}
   defp architect_error(:phase_scope_not_available, resource), do: auth_error(:forbidden, resource)
+  defp architect_error({:phase_scope_not_available, _missing_evidence}, resource), do: auth_error(:forbidden, resource)
+  defp architect_error(:ambiguous_phase_scope, resource), do: auth_error(:forbidden, resource)
+  defp architect_error({:work_request_terminal, _terminal_state}, resource), do: auth_error(:forbidden, resource)
   defp architect_error(:forbidden, resource), do: auth_error(:forbidden, resource)
   defp architect_error({:service_unavailable, _reason} = reason, resource), do: auth_error(reason, resource)
   defp architect_error(:database_busy, tool), do: service_error(:database_busy, tool)
