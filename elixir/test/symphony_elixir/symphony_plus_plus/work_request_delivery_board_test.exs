@@ -132,7 +132,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
       linked_slice!(repo, work_request,
         id: "WRS-BOARD-NEEDS-CLOSEOUT",
         work_package_id: "WP-BOARD-NEEDS-CLOSEOUT",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     assert {:ok, _attached} =
@@ -171,7 +171,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
       linked_slice!(repo, work_request,
         id: "WRS-BOARD-STALE-PR",
         work_package_id: "WP-BOARD-STALE-PR",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     assert {:ok, _attached} =
@@ -203,6 +203,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
     assert slice.attention_reason_codes == []
   end
 
+  test "legacy stored merge-ready status projects with current visible label", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-BOARD-LEGACY-READY")
+
+    {_planned_slice, linked_package} =
+      linked_slice!(repo, work_request,
+        id: "WRS-BOARD-LEGACY-READY",
+        work_package_id: "WP-BOARD-LEGACY-READY",
+        status: "ready_for_merge"
+      )
+
+    repo.query!("UPDATE sympp_work_packages SET status = ? WHERE id = ?", ["ready_for_human_merge", linked_package.id])
+
+    assert {:ok, %{slices: [slice]}} = DeliveryBoard.project(repo, work_request.id)
+    assert slice.work_package.raw_status == "ready_for_human_merge"
+    assert slice.operational_state.key == "merge_ready"
+    assert slice.operational_state.label == "Ready"
+  end
+
   test "newer PR attachments replace older merged sync metadata", %{repo: repo} do
     work_request = create_work_request!(repo, id: "WR-BOARD-REATTACHED-PR")
 
@@ -210,7 +228,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
       linked_slice!(repo, work_request,
         id: "WRS-BOARD-REATTACHED-PR",
         work_package_id: "WP-BOARD-REATTACHED-PR",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     assert {:ok, _old_sync} =
@@ -421,7 +439,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
       linked_slice!(repo, work_request,
         id: "WRS-BOARD-EMPTY-METADATA",
         work_package_id: "WP-BOARD-EMPTY-METADATA",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     assert {:ok, _pr} =
@@ -458,7 +476,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
       linked_slice!(repo, work_request,
         id: "WRS-BOARD-HIDDEN-PACKAGE",
         work_package_id: "WP-BOARD-HIDDEN-PACKAGE",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     assert {:ok, %{slices: [slice]}} = DeliveryBoard.project(repo, work_request.id, visible_work_package_ids: [])

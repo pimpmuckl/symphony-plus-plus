@@ -42,6 +42,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
     "analysis"
   ]
   @persisted_kinds @kinds ++ @legacy_kinds
+  @legacy_ready_status "ready_for_human_merge"
+  @ready_status "ready_for_merge"
 
   @statuses [
     "created",
@@ -51,7 +53,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
     "implementing",
     "reviewing",
     "ci_waiting",
-    "ready_for_human_merge",
+    @ready_status,
     "ready_for_architect_merge",
     "merging_into_phase",
     "merged_into_phase",
@@ -60,6 +62,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
     "blocked",
     "abandoned"
   ]
+  @persisted_statuses @statuses ++ [@legacy_ready_status]
 
   @type t :: %__MODULE__{
           id: String.t() | nil,
@@ -116,6 +119,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
   @spec statuses() :: [String.t()]
   def statuses, do: @statuses
 
+  @spec persisted_statuses() :: [String.t()]
+  def persisted_statuses, do: @persisted_statuses
+
   @spec create_changeset(map()) :: Ecto.Changeset.t()
   def create_changeset(attrs) do
     attrs =
@@ -143,8 +149,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
   end
 
   defp changeset(%__MODULE__{} = work_package, attrs, valid_kinds) do
+    attrs = attrs |> normalize_keys() |> normalize_status()
+
     work_package
-    |> cast(normalize_keys(attrs), [
+    |> cast(attrs, [
       :id,
       :kind,
       :title,
@@ -165,7 +173,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
     ])
     |> validate_required([:id, :kind, :title, :repo, :base_branch, :acceptance_criteria, :status])
     |> validate_inclusion(:kind, valid_kinds)
-    |> validate_inclusion(:status, @statuses)
+    |> validate_inclusion(:status, valid_statuses(work_package))
     |> validate_branch_pattern()
     |> validate_policy_template()
   end
@@ -207,6 +215,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
   end
 
   defp canonical_policy_template?(kind, policy_template), do: Templates.compatible_kind?(kind, policy_template)
+
+  defp valid_statuses(%__MODULE__{status: @legacy_ready_status}), do: @persisted_statuses
+  defp valid_statuses(%__MODULE__{}), do: @statuses
+
+  defp normalize_status(attrs) do
+    case Map.fetch(attrs, "status") do
+      {:ok, @legacy_ready_status} -> Map.put(attrs, "status", @ready_status)
+      _status -> attrs
+    end
+  end
 
   defp normalize_keys(attrs) when is_map(attrs) do
     Map.new(attrs, fn {key, value} -> {normalize_key(key), value} end)

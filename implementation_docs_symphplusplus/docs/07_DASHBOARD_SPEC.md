@@ -123,7 +123,7 @@ planning
 implementing
 reviewing
 ci_waiting
-ready_for_human_merge
+ready_for_merge
 ready_for_architect_merge
 merged
 blocked

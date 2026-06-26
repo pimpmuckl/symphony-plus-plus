@@ -51,7 +51,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   import Ecto.Query, only: [from: 2]
 
   @stale_heartbeat_after_seconds 300
-  @ready_statuses ["ready_for_human_merge", "ready_for_architect_merge"]
+  @ready_statuses ["ready_for_merge", "ready_for_human_merge", "ready_for_architect_merge"]
   @complete_plan_statuses ["done", "completed", "skipped"]
   @merge_required_gates ["human_merge", "architect_merge"]
   @runtime_merge_required_kinds ["hotfix", "adapter", "mcp", "skill", "hooks", "phase_child"]
@@ -66,6 +66,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     "ci_waiting",
     "merge_ready",
     "ready_to_finish",
+    "ready_for_merge",
+    "ready_for_human_merge",
     "merging",
     "needs_closeout",
     "prepared",
@@ -1170,12 +1172,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
          {:ok, repo_identity_catalog} <- repo_identity_catalog_from_repo(repo, opts, Enum.map(visible_work_packages, & &1.repo)),
          {:ok, contexts} <- card_contexts_for_packages(repo, visible_work_packages, repo_identity_catalog) do
       cards = Enum.map(contexts, & &1.card)
+      groups = group_cards(cards)
 
       board = %{
-        groups: group_cards(cards),
+        groups: groups,
         package_limits: package_limits(source_work_packages, visible_work_packages, opts),
         visible_count: length(cards),
-        statuses: WorkPackage.statuses(),
+        statuses: group_statuses(groups),
         total_count: length(source_work_packages)
       }
 
@@ -1319,11 +1322,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
          scoped_work_packages = filter_phase_work_packages(work_packages, filters),
          repo_identity_catalog = build_repo_identity_catalog(Enum.map(summary_work_packages, & &1.repo)),
          {:ok, cards} <- cards_for_packages(repo, scoped_work_packages, repo_identity_catalog) do
+      groups = group_cards(cards)
+
       {:ok,
        %{
          phase: phase(phase),
-         groups: group_cards(cards),
-         statuses: WorkPackage.statuses(),
+         groups: groups,
+         statuses: group_statuses(groups),
          total_count: length(cards),
          summary: phase_progress_summary(summary_work_packages)
        }}
@@ -1688,11 +1693,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp group_cards(cards) do
     by_status = Enum.group_by(cards, & &1.status)
+    statuses = Enum.uniq(WorkPackage.statuses() ++ Map.keys(by_status))
 
-    Map.new(WorkPackage.statuses(), fn status ->
+    Map.new(statuses, fn status ->
       {status, Map.get(by_status, status, [])}
     end)
   end
+
+  defp group_statuses(groups) when is_map(groups), do: Enum.uniq(WorkPackage.statuses() ++ Map.keys(groups))
 
   defp summary(%State{} = state, grants, agent_runs, blockers, guidance_requests, comment_context) do
     runtime = runtime_summary(agent_runs)

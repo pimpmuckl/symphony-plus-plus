@@ -190,7 +190,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     {work_request, planned_slice, work_package} =
       linked_delivery_slice!(repo,
         id_suffix: "PRESERVE",
-        package_status: "ready_for_human_merge"
+        package_status: "ready_for_merge"
       )
 
     {_anchor, session, _grant} =

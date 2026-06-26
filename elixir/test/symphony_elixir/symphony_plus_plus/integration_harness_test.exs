@@ -80,11 +80,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
     response = mcp_tool(repo, session, "mark_ready", %{})
 
     assert get_in(response, ["result", "structuredContent", "ready"]) == true
-    assert get_in(response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
+    assert get_in(response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_merge"
 
     assert {:ok, persisted} = WorkPackageRepository.get(repo, creation.work_package.id)
     assert persisted.parent_id == nil
-    assert persisted.status == "ready_for_human_merge"
+    assert persisted.status == "ready_for_merge"
   end
 
   test "fake GitHub and review-suite gates drive a CI-friendly MCP package to ready", %{repo: repo} do
@@ -115,7 +115,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
     response = mcp_tool(repo, session, "mark_ready", %{})
 
     assert get_in(response, ["result", "structuredContent", "ready"]) == true
-    assert get_in(response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
+    assert get_in(response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_merge"
 
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
     assert Enum.any?(artifacts, &(&1.kind == "github_pr" and &1.path == "github-pr.json"))

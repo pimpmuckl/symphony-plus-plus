@@ -7,6 +7,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
   @worker_capability "worker:lifecycle.transition"
   @architect_capability "architect:lifecycle.transition"
   @phase_child_kind "phase_child"
+  @legacy_ready_status "ready_for_human_merge"
+  @ready_status "ready_for_merge"
 
   @worker_package_transitions %{
     "created" => ["ready_for_worker", "blocked", "abandoned"],
@@ -15,8 +17,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
     "planning" => ["implementing", "blocked", "abandoned"],
     "implementing" => ["reviewing", "blocked", "abandoned"],
     "reviewing" => ["ci_waiting", "implementing", "blocked", "abandoned"],
-    "ci_waiting" => ["ready_for_human_merge", "reviewing", "blocked", "abandoned"],
-    "ready_for_human_merge" => ["merged", "closed"],
+    "ci_waiting" => [@ready_status, "reviewing", "blocked", "abandoned"],
+    @ready_status => ["merged", "closed"],
+    @legacy_ready_status => ["merged", "closed"],
     "blocked" => ["planning", "implementing", "abandoned"],
     "abandoned" => [],
     "closed" => [],
@@ -72,7 +75,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
 
   @spec terminal_readiness_status(WorkPackage.t()) :: String.t()
   def terminal_readiness_status(%WorkPackage{kind: @phase_child_kind}), do: "ready_for_architect_merge"
-  def terminal_readiness_status(%WorkPackage{}), do: "ready_for_human_merge"
+  def terminal_readiness_status(%WorkPackage{}), do: @ready_status
 
   @spec supported_kind?(term()) :: boolean()
   def supported_kind?(@phase_child_kind), do: true
@@ -84,7 +87,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
   defp validate_lifecycle_shape(%WorkPackage{} = work_package, next_status) do
     cond do
       not lifecycle_kind?(work_package.kind) -> {:error, :unsupported_work_package_kind}
-      work_package.status not in WorkPackage.statuses() -> {:error, :unknown_lifecycle_status}
+      work_package.status not in WorkPackage.persisted_statuses() -> {:error, :unknown_lifecycle_status}
       next_status not in WorkPackage.statuses() -> {:error, :unknown_lifecycle_status}
       not current_status_supported?(work_package) -> {:error, :unknown_lifecycle_status}
       true -> :ok

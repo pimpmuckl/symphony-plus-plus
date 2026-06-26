@@ -503,7 +503,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerToolsReadyGateTest do
       )
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
-    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
+    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_merge"
+  end
+
+  test "legacy stored merge-ready status can still transition to merged", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-READY-LEGACY-STATUS", kind: "mcp", status: "ready_for_merge")
+             )
+
+    repo.update_all(from(work_package in WorkPackage, where: work_package.id == ^package.id), set: [status: "ready_for_human_merge"])
+
+    assert {:ok, updated} = WorkPackageRepository.update_status(repo, package.id, "ready_for_human_merge", "merged")
+    assert updated.status == "merged"
   end
 
   defp drop_planned_slice_work_package_unique_index!(repo) do

@@ -83,8 +83,8 @@ describe("package detail state actions", () => {
   it("shows closeout only for ready linked packages without merge requirements", () => {
     expect(
       linkedPackageStateActions(
-        { id: "pkg-ready-finish", status: "ready_for_human_merge", merge_required: false, pr_required: false },
-        { key: "ready_to_finish", raw_status: "ready_for_human_merge", tone: "success", merge_required: false, pr_required: false },
+        { id: "pkg-ready-finish", status: "ready_for_merge", merge_required: false, pr_required: false },
+        { key: "ready_to_finish", raw_status: "ready_for_merge", tone: "success", merge_required: false, pr_required: false },
         true,
         true,
       ),
@@ -94,8 +94,8 @@ describe("package detail state actions", () => {
   it("does not expose closeout when ready-to-finish evidence is incomplete", () => {
     expect(
       linkedPackageStateActions(
-        { id: "pkg-ready-finish-warning", status: "ready_for_human_merge", merge_required: false, pr_required: false },
-        { key: "ready_to_finish", raw_status: "ready_for_human_merge", tone: "warning", merge_required: false, pr_required: false },
+        { id: "pkg-ready-finish-warning", status: "ready_for_merge", merge_required: false, pr_required: false },
+        { key: "ready_to_finish", raw_status: "ready_for_merge", tone: "warning", merge_required: false, pr_required: false },
         true,
         true,
       ),
@@ -105,8 +105,8 @@ describe("package detail state actions", () => {
   it("keeps merge actions for ready linked packages that require merge", () => {
     expect(
       linkedPackageStateActions(
-        { id: "pkg-ready-merge", status: "ready_for_human_merge", merge_required: true, pr_required: true },
-        { key: "merge_ready", raw_status: "ready_for_human_merge", merge_required: true, pr_required: true },
+        { id: "pkg-ready-merge", status: "ready_for_merge", merge_required: true, pr_required: true },
+        { key: "merge_ready", raw_status: "ready_for_merge", merge_required: true, pr_required: true },
         true,
         true,
       ),

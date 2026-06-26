@@ -84,7 +84,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
   end
 
   test "merged PR fetch transitions ready standalone package to merged", %{repo: repo} do
-    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-MERGED", status: "ready_for_human_merge")
+    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-MERGED", status: "ready_for_merge")
     append_pr_evidence(repo, package, 1, "head-a")
     FakeGitHubClient.put_response("nextide/repo", 1, GitHubPullRequestFixtures.metadata(1, "head-a", merged?: true))
 
@@ -112,7 +112,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
   end
 
   test "non-merged PR syncs metadata without transitioning", %{repo: repo} do
-    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-OPEN", status: "ready_for_human_merge")
+    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-OPEN", status: "ready_for_merge")
     append_pr_evidence(repo, package, 2, "head-a")
     FakeGitHubClient.put_response("nextide/repo", 2, GitHubPullRequestFixtures.metadata(2, "head-a", merged?: false))
 
@@ -121,11 +121,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
     assert result.merged_count == 0
     assert [%{status: "synced", reason: "pr_not_merged"}] = result.results
     assert {:ok, updated} = WorkPackageRepository.get(repo, package.id)
-    assert updated.status == "ready_for_human_merge"
+    assert updated.status == "ready_for_merge"
   end
 
   test "merged PR with mismatched head syncs but does not transition", %{repo: repo} do
-    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-STALE", status: "ready_for_human_merge")
+    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-STALE", status: "ready_for_merge")
     append_pr_evidence(repo, package, 3, "expected-head")
     FakeGitHubClient.put_response("nextide/repo", 3, GitHubPullRequestFixtures.metadata(3, "other-head", merged?: true))
 
@@ -134,11 +134,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
     assert result.merged_count == 0
     assert [%{status: "skipped", reason: "head_mismatch", expected_head_sha: "expected-head"}] = result.results
     assert {:ok, updated} = WorkPackageRepository.get(repo, package.id)
-    assert updated.status == "ready_for_human_merge"
+    assert updated.status == "ready_for_merge"
   end
 
   test "attached PR head wins over older branch head evidence", %{repo: repo} do
-    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-REATTACHED", status: "ready_for_human_merge")
+    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-REATTACHED", status: "ready_for_merge")
     append_branch_evidence(repo, package, "old-head")
     append_attached_pr_evidence(repo, package, 5, "new-head")
     FakeGitHubClient.put_response("nextide/repo", 5, GitHubPullRequestFixtures.metadata(5, "new-head", merged?: true))
@@ -152,7 +152,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
   end
 
   test "newer branch head evidence wins over older attached PR head", %{repo: repo} do
-    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-BRANCH-NEWER", status: "ready_for_human_merge")
+    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-BRANCH-NEWER", status: "ready_for_merge")
     append_attached_pr_evidence(repo, package, 6, "old-head")
     append_branch_evidence(repo, package, "new-head")
     FakeGitHubClient.put_response("nextide/repo", 6, GitHubPullRequestFixtures.metadata(6, "new-head", merged?: true))
@@ -166,7 +166,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
   end
 
   test "synced PR head evidence does not satisfy stale head guard", %{repo: repo} do
-    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-SYNC-NEWER", status: "ready_for_human_merge")
+    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-SYNC-NEWER", status: "ready_for_merge")
     append_attached_pr_evidence(repo, package, 7, "old-head")
     FakeGitHubClient.put_response("nextide/repo", 7, GitHubPullRequestFixtures.metadata(7, "new-head", merged?: true))
 
@@ -175,18 +175,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
     assert first_result.merged_count == 0
     assert [%{status: "skipped", reason: "head_mismatch", expected_head_sha: "old-head"}] = first_result.results
     assert {:ok, ready_package} = WorkPackageRepository.get(repo, package.id)
-    assert ready_package.status == "ready_for_human_merge"
+    assert ready_package.status == "ready_for_merge"
 
     assert {:ok, second_result} = MergeReconciler.reconcile(repo, client: FakeGitHubClient)
 
     assert second_result.merged_count == 0
     assert [%{status: "skipped", reason: "head_mismatch", expected_head_sha: "old-head"}] = second_result.results
     assert {:ok, updated} = WorkPackageRepository.get(repo, package.id)
-    assert updated.status == "ready_for_human_merge"
+    assert updated.status == "ready_for_merge"
   end
 
   test "merged PR targeting a different base branch syncs but does not transition", %{repo: repo} do
-    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-WRONG-BASE", status: "ready_for_human_merge")
+    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-WRONG-BASE", status: "ready_for_merge")
     append_pr_evidence(repo, package, 8, "head-a")
     FakeGitHubClient.put_response("nextide/repo", 8, GitHubPullRequestFixtures.metadata(8, "head-a", merged?: true, base_branch: "release"))
 
@@ -204,11 +204,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
            ] = result.results
 
     assert {:ok, updated} = WorkPackageRepository.get(repo, package.id)
-    assert updated.status == "ready_for_human_merge"
+    assert updated.status == "ready_for_merge"
   end
 
   test "merged PR from a different repository is rejected before transition", %{repo: repo} do
-    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-WRONG-REPO", status: "ready_for_human_merge")
+    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-WRONG-REPO", status: "ready_for_merge")
     append_pr_evidence(repo, package, 10, "head-a")
 
     metadata =
@@ -223,11 +223,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
     assert result.merged_count == 0
     assert [%{status: "error", reason: "pr_reference_mismatch"}] = result.results
     assert {:ok, updated} = WorkPackageRepository.get(repo, package.id)
-    assert updated.status == "ready_for_human_merge"
+    assert updated.status == "ready_for_merge"
   end
 
   test "merge transition rolls back when merge evidence cannot be recorded", %{repo: repo} do
-    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-EVIDENCE-FAIL", status: "ready_for_human_merge")
+    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-EVIDENCE-FAIL", status: "ready_for_merge")
     append_pr_evidence(repo, package, 9, "head-a")
 
     assert {:ok, _existing_event} =
@@ -246,7 +246,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
     assert result.error_count == 1
     assert [%{status: "error", reason: "merge_evidence_conflict"}] = result.results
     assert {:ok, updated} = WorkPackageRepository.get(repo, package.id)
-    assert updated.status == "ready_for_human_merge"
+    assert updated.status == "ready_for_merge"
 
     assert {:ok, events} = PlanningRepository.list_progress_events(repo, package.id)
     refute Enum.any?(events, &match?(%ProgressEvent{status: "github_pr_merged"}, &1))
@@ -278,7 +278,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
   test "periodic default sync prefers gh CLI and does not require token env", %{repo: repo} do
     with_github_client_env(nil, fn ->
       GitHubTestSupport.with_github_token_env(nil, fn ->
-        assert {:ok, package} = create_package(repo, id: "SYMPP-GH-CLI-AUTO", status: "ready_for_human_merge")
+        assert {:ok, package} = create_package(repo, id: "SYMPP-GH-CLI-AUTO", status: "ready_for_merge")
         append_pr_evidence(repo, package, 22, "head-a")
         FakeGhCli.authenticate(:ok)
         FakeGhCli.put_response("nextide/repo", 22, GitHubPullRequestFixtures.gh_view(22, "head-a", merged?: true))
@@ -325,7 +325,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
   end
 
   test "default local client falls back to token client when gh cannot see the PR", %{repo: repo} do
-    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-CLI-FALLBACK", status: "ready_for_human_merge")
+    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-CLI-FALLBACK", status: "ready_for_merge")
     append_pr_evidence(repo, package, 24, "head-a")
 
     FakeGhCli.authenticate(:ok)
@@ -345,7 +345,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
   end
 
   test "default local client auth guard honors configured fallback client", %{repo: repo} do
-    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-CLI-FALLBACK-AUTH", status: "ready_for_human_merge")
+    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-CLI-FALLBACK-AUTH", status: "ready_for_merge")
     append_pr_evidence(repo, package, 25, "head-a")
 
     FakeGhCli.authenticate(:unavailable)
@@ -383,7 +383,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
   end
 
   test "worker grant still cannot mark a package merged", %{repo: repo} do
-    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-WORKER-DENIED", status: "ready_for_human_merge")
+    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-WORKER-DENIED", status: "ready_for_merge")
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
 

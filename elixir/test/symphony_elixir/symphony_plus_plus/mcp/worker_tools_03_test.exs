@@ -28,7 +28,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
           "jsonrpc" => "2.0",
           "id" => "ready-bypass",
           "method" => "tools/call",
-          "params" => %{"name" => "set_status", "arguments" => %{"status" => "ready_for_human_merge", "expected_status" => "ci_waiting"}}
+          "params" => %{"name" => "set_status", "arguments" => %{"status" => "ready_for_merge", "expected_status" => "ci_waiting"}}
         },
         repo: repo,
         session: session
@@ -606,7 +606,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
       )
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
-    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
+    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_merge"
 
     post_ready_branch_response =
       MCPHarness.request(
@@ -744,7 +744,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
     assert get_in(post_ready_scope_response, ["error", "data", "reason"]) == "already_ready"
     assert get_in(post_ready_plan_response, ["error", "data", "reason"]) == "already_ready"
     assert {:ok, ready_package} = WorkPackageRepository.get(repo, package.id)
-    assert ready_package.status == "ready_for_human_merge"
+    assert ready_package.status == "ready_for_merge"
   end
 
   test "mark_ready does not require ci_waiting when package policy omits CI", %{repo: repo} do
@@ -779,7 +779,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
       )
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
-    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
+    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_merge"
   end
 
   test "Review Suite round aliases infer evidence and satisfy planned-slice readiness", %{repo: repo} do
@@ -1023,7 +1023,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
       )
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
-    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
+    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_merge"
   end
 
   test "state machine blocks ready transitions from reviewing when package policy requires CI", %{repo: repo} do
@@ -1036,10 +1036,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
     actor = %{grant_role: "worker", capabilities: ["worker:lifecycle.transition"], work_package_id: package.id}
 
     assert {:error, :invalid_transition} =
-             StateMachine.validate_ready_transition(package, "ready_for_human_merge", actor)
+             StateMachine.validate_ready_transition(package, "ready_for_merge", actor)
 
     ci_waiting_package = %{package | status: "ci_waiting"}
-    assert :ok = StateMachine.validate_ready_transition(ci_waiting_package, "ready_for_human_merge", actor)
+    assert :ok = StateMachine.validate_ready_transition(ci_waiting_package, "ready_for_merge", actor)
   end
 
   defp put_review_suite_state!(public_id, cycle_key, head_sha, profile, opts) do

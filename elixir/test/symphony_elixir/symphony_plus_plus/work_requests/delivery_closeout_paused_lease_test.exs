@@ -54,7 +54,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseoutPausedLea
   test "service delivery closeout rejects a paused current claim lease", %{repo: repo} do
     {work_request, planned_slice, linked_package} = linked_slice!(repo, work_request_id: "WR-DELIVERY-PAUSED-LEASE")
     claim_lease = pause_claim_lease!(repo, linked_package)
-    assert {:ok, _closed} = WorkPackageRepository.update_status(repo, linked_package.id, "ready_for_human_merge", "closed")
+    assert {:ok, _closed} = WorkPackageRepository.update_status(repo, linked_package.id, "ready_for_merge", "closed")
 
     attrs =
       no_pr_attrs(%{
@@ -75,7 +75,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseoutPausedLea
     {work_request, planned_slice, linked_package} = linked_slice!(repo, work_request_id: "WR-MCP-DELIVERY-PAUSED-LEASE")
     session = create_work_request_architect_session(repo, work_request)
     claim_lease = pause_claim_lease!(repo, linked_package)
-    assert {:ok, _closed} = WorkPackageRepository.update_status(repo, linked_package.id, "ready_for_human_merge", "closed")
+    assert {:ok, _closed} = WorkPackageRepository.update_status(repo, linked_package.id, "ready_for_merge", "closed")
 
     args =
       no_pr_args(
@@ -123,7 +123,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseoutPausedLea
     work_request = create_work_request!(repo, id: request_id, status: "ready_for_slicing")
     planned_slice = create_planned_slice!(repo, work_request, id: "WRS-#{request_id}")
     assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
-    work_package = create_matching_work_package!(repo, work_request, approved_slice, id: "WP-#{request_id}", status: "ready_for_human_merge")
+    work_package = create_matching_work_package!(repo, work_request, approved_slice, id: "WP-#{request_id}", status: "ready_for_merge")
     assert {:ok, dispatched_slice} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", work_package.id)
 
     {work_request, dispatched_slice, work_package}

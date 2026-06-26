@@ -104,7 +104,7 @@ defmodule Mix.Tasks.Sympp.DemoLedgerTest do
           "SYMPP-DEMO-WP-PLANNING" => "planning",
           "SYMPP-DEMO-WP-REVIEW" => "reviewing",
           "SYMPP-DEMO-WP-CI" => "ci_waiting",
-          "SYMPP-DEMO-WP-READY" => "ready_for_human_merge",
+          "SYMPP-DEMO-WP-READY" => "ready_for_merge",
           "SYMPP-DEMO-WP-ARCH-READY" => "ready_for_architect_merge",
           "SYMPP-DEMO-WP-BLOCKED" => "blocked",
           "SYMPP-DEMO-WP-MERGED" => "merged",

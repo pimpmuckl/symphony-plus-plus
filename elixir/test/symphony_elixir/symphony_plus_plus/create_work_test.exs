@@ -832,10 +832,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
       )
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
-    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
+    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_merge"
 
     assert {:ok, persisted} = WorkPackageRepository.get(repo, creation.work_package.id)
-    assert persisted.status == "ready_for_human_merge"
+    assert persisted.status == "ready_for_merge"
     assert persisted.parent_id == nil
   end
 

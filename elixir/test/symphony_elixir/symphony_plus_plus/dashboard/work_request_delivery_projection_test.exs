@@ -7,7 +7,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.WorkRequestDeliveryProjectio
     work_request = create_work_request!(repo, id: "WR-DASH-DELIVERY-BOARD")
 
     closeout_slice = add_approved_slice!(repo, work_request, id: "WRS-DASH-NEEDS-CLOSEOUT")
-    closeout_package = create_matching_work_package!(repo, work_request, closeout_slice, id: "SYMPP-DASH-NEEDS-CLOSEOUT", status: "ready_for_human_merge")
+    closeout_package = create_matching_work_package!(repo, work_request, closeout_slice, id: "SYMPP-DASH-NEEDS-CLOSEOUT", status: "ready_for_merge")
 
     assert {:ok, _dispatched_closeout} =
              WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, closeout_slice.id, "approved", closeout_package.id)
@@ -46,7 +46,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.WorkRequestDeliveryProjectio
         id: "SYMPP-DASH-READY-MERGE",
         kind: "adapter",
         policy_template: "adapter",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     assert {:ok, _dispatched_ready_merge} =
@@ -59,7 +59,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.WorkRequestDeliveryProjectio
         id: "SYMPP-DASH-READY-FINISH",
         kind: "investigation",
         policy_template: "investigation",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     assert {:ok, _dispatched_ready_finish} =
@@ -239,7 +239,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.WorkRequestDeliveryProjectio
         id: "SYMPP-DASH-ONLY-READY-FINISH",
         kind: "docs",
         policy_template: "docs",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     assert {:ok, _dispatched_ready_finish} =

@@ -267,7 +267,7 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
       work_package_attrs("SYMPP-DEMO-WP-PLANNING", "Plan API bridge smoke coverage", "planning", work_package_kind("SYMPP-DEMO-WP-PLANNING")),
       work_package_attrs("SYMPP-DEMO-WP-REVIEW", "Review local operator handoff copy", "reviewing", work_package_kind("SYMPP-DEMO-WP-REVIEW")),
       work_package_attrs("SYMPP-DEMO-WP-CI", "Wait for cockpit CI package", "ci_waiting", work_package_kind("SYMPP-DEMO-WP-CI")),
-      work_package_attrs("SYMPP-DEMO-WP-READY", "Ready merge evidence package", "ready_for_human_merge", work_package_kind("SYMPP-DEMO-WP-READY")),
+      work_package_attrs("SYMPP-DEMO-WP-READY", "Ready merge evidence package", "ready_for_merge", work_package_kind("SYMPP-DEMO-WP-READY")),
       work_package_attrs("SYMPP-DEMO-WP-ARCH-READY", "Architect merge approval package", "ready_for_architect_merge", work_package_kind("SYMPP-DEMO-WP-ARCH-READY")),
       work_package_attrs("SYMPP-DEMO-WP-BLOCKED", "Blocked product decision package", "blocked", work_package_kind("SYMPP-DEMO-WP-BLOCKED")),
       work_package_attrs("SYMPP-DEMO-WP-MERGED", "Merged demo cleanup package", "merged", work_package_kind("SYMPP-DEMO-WP-MERGED")),
