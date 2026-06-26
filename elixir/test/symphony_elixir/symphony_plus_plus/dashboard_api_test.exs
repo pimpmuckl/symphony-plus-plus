@@ -15,6 +15,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service, as: ClaimLeaseService
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
@@ -204,6 +206,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   setup %{repo: repo} do
     repo.delete_all(OperatorAudit)
     repo.delete_all(AgentRun)
+    repo.delete_all(ClaimLease)
     repo.delete_all(Artifact)
     repo.delete_all(ProgressEvent)
     repo.delete_all(Finding)
@@ -6025,6 +6028,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
       detail = work_request_detail(dashboard_payload, work_request.id)
       assert get_in(detail, ["planned_slices", Access.at(0), "delivery", "outcome"]) == "completed_no_pr"
+    end)
+  end
+
+  test "local operator no-PR closeout reports active runtime errors specifically", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      work_request = create_work_request!(repo, id: "WR-LOCAL-NO-PR-ACTIVE-RUNTIME", status: "ready_for_slicing")
+
+      assert {:ok, slice} =
+               WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-LOCAL-NO-PR-ACTIVE-RUNTIME"))
+
+      assert {:ok, approved} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, slice.id, "planned")
+
+      work_package =
+        create_matching_work_package!(repo, work_request, approved,
+          id: "WP-LOCAL-NO-PR-ACTIVE-RUNTIME",
+          status: "ready_for_human_merge"
+        )
+
+      assert {:ok, _dispatched} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", work_package.id)
+
+      assert {:ok, _claim_lease} =
+               ClaimLeaseService.claim(
+                 repo,
+                 work_package.id,
+                 %{"actor_kind" => "agent", "actor_id" => "local:active-runtime", "actor_display_name" => "active-worker"},
+                 stale_after_ms: 60_000
+               )
+
+      error =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-packages/#{work_package.id}/state", %{
+          "status" => "completed_no_pr",
+          "no_pr_evidence" => "Operator tried to close while worker runtime is active."
+        })
+        |> json_response(412)
+
+      assert error["error"]["code"] == "active_runtime"
+      refute error["error"]["message"] == "Dashboard API unavailable"
+      assert [] = repo.all(PlannedSliceDelivery)
     end)
   end
 
