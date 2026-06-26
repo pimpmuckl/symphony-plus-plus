@@ -4,6 +4,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewProfiles do
   @passing_statuses ["passed", "pass", "green", "success"]
   @passing_verdicts ["green", "clean", "passed", "pass", "success", "approved"]
   @profile_order ["brief", "normal", "deep"]
+  @profile_aliases %{
+    "github" => "github",
+    "github review" => "github",
+    "github_review" => "github",
+    "github pr review" => "github",
+    "github_pr_review" => "github",
+    "review_github" => "github",
+    "review_brief" => "brief",
+    "review_deep" => "deep",
+    "review_emergency" => "emergency",
+    "review_normal" => "normal",
+    "review_suite_brief" => "brief",
+    "review_suite_deep" => "deep",
+    "review_suite_emergency" => "emergency",
+    "review_suite_normal" => "normal",
+    "review_suite_t1" => "brief",
+    "review_suite_t2" => "normal",
+    "review_t1" => "brief",
+    "review_t2" => "normal",
+    "t1" => "brief",
+    "t2" => "normal"
+  }
 
   @spec passing_statuses() :: [String.t()]
   def passing_statuses, do: @passing_statuses
@@ -33,15 +55,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ReviewProfiles do
   def normalize_profile(profile) when is_binary(profile) do
     profile = profile |> String.trim() |> String.downcase() |> String.replace("-", "_")
 
-    case profile do
-      profile when profile in ["review_t1", "review_suite_t1", "t1"] -> "brief"
-      profile when profile in ["review_t2", "review_suite_t2", "t2"] -> "normal"
-      profile when profile in ["review_brief", "review_suite_brief"] -> "brief"
-      profile when profile in ["review_normal", "review_suite_normal"] -> "normal"
-      profile when profile in ["review_deep", "review_suite_deep"] -> "deep"
-      profile when profile in ["review_emergency", "review_suite_emergency"] -> "emergency"
-      profile -> review_suite_profile_alias(profile) || profile
-    end
+    Map.get(@profile_aliases, profile) || review_suite_profile_alias(profile) || profile
   end
 
   def normalize_profile(_profile), do: nil

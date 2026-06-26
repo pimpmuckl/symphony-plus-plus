@@ -99,6 +99,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "read_work_request_delivery_board"
   ]
   @blocker_closeout_decisions ToolCatalog.blocker_closeout_decisions()
+  @complete_plan_statuses ["done", "completed", "skipped"]
   @terminal_product_tree_completion_marks ["done", "deferred"]
   @terminal_work_package_statuses ["merged", "merged_into_phase", "closed", "abandoned"]
   @local_assignment_claim_tool ToolCatalog.local_assignment_claim_tool()
@@ -8862,6 +8863,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp pr_metadata_payload(repo, %Session{} = session, arguments, source_tool) do
     case legacy_attach_pr_payload(arguments, source_tool) do
       {:ok, payload} -> {:ok, payload}
+      {:tool_error, reason} -> {:tool_error, reason}
       :error -> github_pr_metadata_payload(repo, session, arguments, source_tool)
     end
   end
@@ -8896,18 +8898,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with url when is_binary(url) <- Map.get(arguments, "url"),
          trimmed_url = String.trim(url),
          true <- trimmed_url != "",
-         true <- non_github_url?(trimmed_url) do
+         true <- non_github_url?(trimmed_url),
+         {:ok, metadata} <- legacy_pr_metadata(arguments) do
       payload =
-        %{"type" => "pr", "source_tool" => "attach_pr", "url" => trimmed_url}
+        metadata
+        |> Map.merge(%{"type" => "pr", "source_tool" => "attach_pr", "url" => trimmed_url})
         |> maybe_put_filled_string("head_sha", Map.get(arguments, "head_sha"))
 
       {:ok, payload}
     else
+      {:tool_error, _reason} = error -> error
       _value -> :error
     end
   end
 
   defp legacy_attach_pr_payload(_arguments, _source_tool), do: :error
+
+  defp legacy_pr_metadata(%{"metadata" => metadata}) when is_map(metadata), do: {:ok, metadata}
+  defp legacy_pr_metadata(%{"metadata" => nil}), do: {:ok, %{}}
+  defp legacy_pr_metadata(%{"metadata" => _metadata}), do: {:tool_error, "invalid_metadata"}
+  defp legacy_pr_metadata(_arguments), do: {:ok, %{}}
 
   defp non_github_url?(url) do
     case URI.parse(url) do
@@ -8970,31 +8980,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp latest_attached_pr_ref(progress_events) do
-    case latest_attached_pr_ref_with_sequence(progress_events) do
-      {:ok, ref, _sequence} -> {:ok, ref}
+    case latest_attached_pr_ref_with_ledger_boundary(progress_events) do
+      {:ok, ref, _boundary} -> {:ok, ref}
       {:tool_error, reason} -> {:tool_error, reason}
     end
   end
 
-  defp latest_attached_pr_ref_with_sequence(progress_events) do
+  defp latest_attached_pr_ref_with_ledger_boundary(progress_events) do
+    # Attach selection follows event time so replay/backfill can record older PR
+    # attachments later. The returned boundary preserves that selected event.
     progress_events
     |> chronological_progress_events()
     |> Enum.reverse()
-    |> Enum.find_value(&attached_pr_ref_with_sequence/1)
+    |> Enum.find_value(&attached_pr_ref_with_boundary/1)
     |> case do
       nil -> {:tool_error, "missing_attached_pr"}
-      {ref, sequence} -> {:ok, ref, sequence}
-    end
-  end
-
-  defp latest_attached_pr_ref_with_ledger_sequence(progress_events) do
-    progress_events
-    |> Enum.sort_by(&progress_event_sequence_order/1)
-    |> Enum.reverse()
-    |> Enum.find_value(&attached_pr_ref_with_sequence/1)
-    |> case do
-      nil -> {:tool_error, "missing_attached_pr"}
-      {ref, sequence} -> {:ok, ref, sequence}
+      {ref, boundary} -> {:ok, ref, boundary}
     end
   end
 
@@ -9009,11 +9010,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp timestamp_sort_value(%DateTime{} = datetime), do: DateTime.to_unix(datetime, :microsecond)
   defp timestamp_sort_value(nil), do: -1
 
-  defp attached_pr_ref_with_sequence(%ProgressEvent{payload: payload, sequence: sequence} = event) when is_map(payload) do
-    if payload_type?(event, "pr", "attach_pr"), do: pr_payload_ref_with_sequence(payload, sequence)
+  defp attach_boundary(%ProgressEvent{sequence: sequence} = event) when is_integer(sequence) do
+    {:sequence, progress_event_sequence_order(event)}
   end
 
-  defp attached_pr_ref_with_sequence(_event), do: nil
+  defp attach_boundary(%ProgressEvent{} = event) do
+    {:chronological, progress_event_chronological_order(event)}
+  end
+
+  defp chronological_progress_events(progress_events) do
+    Enum.sort_by(progress_events, &progress_event_chronological_order/1)
+  end
+
+  defp progress_event_chronological_order(%ProgressEvent{created_at: created_at, sequence: sequence, id: id}) do
+    {timestamp_sort_value(created_at), sequence || 0, id || ""}
+  end
+
+  defp attached_pr_ref_with_boundary(%ProgressEvent{payload: payload} = event) when is_map(payload) do
+    if payload_type?(event, "pr", "attach_pr"), do: pr_payload_ref_with_sequence(payload, attach_boundary(event))
+  end
+
+  defp attached_pr_ref_with_boundary(_event), do: nil
 
   defp pr_payload_ref_with_sequence(payload, sequence) do
     case pr_payload_ref(payload) do
@@ -9046,12 +9063,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   rescue
     _error in URI.Error -> {:url, url}
-  end
-
-  defp chronological_progress_events(progress_events) do
-    Enum.sort_by(progress_events, fn %ProgressEvent{created_at: created_at, sequence: sequence, id: id} ->
-      {timestamp_sort_value(created_at), sequence || 0, id || ""}
-    end)
   end
 
   defp pr_metadata_input(arguments, "attach_pr") do
@@ -11481,7 +11492,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp readiness_failure_message("status_ci_waiting"), do: "Package must be waiting on validation."
   defp readiness_failure_message("status_reviewing"), do: "Package must be in review or validation."
   defp readiness_failure_message("no_active_blockers"), do: "Active blockers must be resolved."
-  defp readiness_failure_message("plan_complete"), do: "Required package plan nodes must be complete."
+  defp readiness_failure_message("plan_complete"), do: "Package plan is missing or still has pending items."
   defp readiness_failure_message("acceptance_criteria_met"), do: "Acceptance criteria evidence is missing."
   defp readiness_failure_message("tests_passed"), do: "Focused test evidence is missing."
   defp readiness_failure_message("branch_attached"), do: "Current branch metadata is missing."
@@ -11855,8 +11866,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp incomplete_plan?(state) do
-    plan_required?(state.work_package) and (state.plan_nodes == [] or Enum.any?(state.plan_nodes, &(&1.status == "pending")))
+    plan_required?(state.work_package) and
+      (Enum.any?(state.plan_nodes, &(&1.status not in @complete_plan_statuses)) or missing_meaningful_plan?(state))
   end
+
+  defp missing_meaningful_plan?(%{plan_nodes: []}), do: true
+  defp missing_meaningful_plan?(_state), do: false
 
   defp readiness_status_missing?(%WorkPackage{} = work_package) do
     if ci_waiting_required?(work_package) do
@@ -12021,11 +12036,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
 
   defp current_pr_state_present?(progress_events, head_sha) when is_binary(head_sha) do
-    case latest_attached_pr_ref_with_ledger_sequence(progress_events) do
-      {:ok, attached_ref, attach_sequence} ->
+    case latest_attached_pr_ref_with_ledger_boundary(progress_events) do
+      {:ok, attached_ref, attach_boundary} ->
         Enum.any?(progress_events, fn
           %ProgressEvent{payload: payload} = event when is_map(payload) ->
-            payload_type?(event, "pr", "sync_pr") and progress_after_pr_attach_boundary?(event, attach_sequence) and
+            current_pr_state_event?(event, attach_boundary) and
               head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
               pr_payload_ref(payload) == attached_ref and current_pr_state_payload?(payload)
 
@@ -12040,18 +12055,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp current_pr_state_present?(_progress_events, _head_sha), do: false
 
-  defp progress_after_pr_attach_boundary?(%ProgressEvent{}, nil), do: true
-  defp progress_after_pr_attach_boundary?(%ProgressEvent{sequence: sequence}, attach_sequence) when is_integer(sequence), do: sequence > attach_sequence
-  defp progress_after_pr_attach_boundary?(%ProgressEvent{}, _attach_sequence), do: false
+  defp current_pr_state_event?(%ProgressEvent{} = event, attach_boundary) do
+    (payload_type?(event, "pr", "attach_pr") and attach_boundary(event) == attach_boundary) or
+      (payload_type?(event, "pr", "sync_pr") and progress_after_pr_attach_boundary?(event, attach_boundary))
+  end
 
-  defp current_pr_state_payload?(%{"source_tool" => "sync_pr"} = payload) do
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{} = event, {:sequence, attach_boundary}) do
+    progress_event_sequence_order(event) > attach_boundary
+  end
+
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{} = event, {:chronological, attach_boundary}) do
+    progress_event_chronological_order(event) > attach_boundary
+  end
+
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{}, _attach_boundary), do: false
+
+  defp current_pr_state_payload?(payload) when is_map(payload) do
     semantic_pr_state?(payload, "check_summary", ["conclusion", "state", "status"]) or
       semantic_pr_state?(payload, "review_state", ["decision", "state", "status"]) or
       semantic_pr_state?(payload, "merge_state", ["mergeable_state", "state", "status"]) or
       semantic_pr_boolean?(payload, "merge_state", ["mergeable", "merged"])
   end
-
-  defp current_pr_state_payload?(_payload), do: false
 
   defp semantic_pr_state?(payload, key, semantic_keys) do
     case Map.get(payload, key) do

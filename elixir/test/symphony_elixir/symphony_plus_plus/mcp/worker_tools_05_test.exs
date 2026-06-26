@@ -61,6 +61,55 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools05Test do
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
   end
 
+  test "legacy attach_pr metadata satisfies current PR state", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-PR-LEGACY-STATE-READY",
+                 kind: "mcp",
+                 status: "ci_waiting",
+                 policy_template: "mcp_current_pr_state"
+               )
+             )
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+    head_sha = "legacy-state-head"
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/#{package.id}", "head_sha" => head_sha})
+
+    attach_tool(repo, session, "attach_pr", %{
+      "url" => "https://git.example.com/org/repo/pulls/8",
+      "head_sha" => head_sha,
+      "metadata" => %{
+        "check_summary" => %{"conclusion" => "success"},
+        "review_state" => %{"state" => "approved"},
+        "merge_state" => %{"state" => "clean"}
+      }
+    })
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready review",
+      "tests" => ["mix test"],
+      "artifacts" => ["review.txt"],
+      "head_sha" => head_sha,
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
+    })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-legacy-pr-state", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+  end
+
   test "current PR state policy fails missing, invalid, and stale sync state", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(
@@ -143,7 +192,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools05Test do
     sync_pr_state(repo, session, "https://github.com/example/repo/pull/790", "head-b")
 
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/790", "head_sha" => "head-b"})
-    move_latest_attach_pr_created_at_before_prior_sync(repo, package.id)
 
     reattach_after_sync_response =
       MCPHarness.request(
@@ -277,7 +325,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools05Test do
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
   end
 
-  test "attach_pr with full current state does not satisfy synced PR readiness", %{repo: repo} do
+  test "attach_pr with full current state satisfies current PR readiness", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(
                repo,
@@ -315,14 +363,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools05Test do
       "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
-    missing_sync_response =
+    ready_response =
       MCPHarness.request(
         %{"jsonrpc" => "2.0", "id" => "ready-attach-state", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
         repo: repo,
         session: session
       )
 
-    assert "current_pr_state" in get_in(missing_sync_response, ["error", "data", "missing"])
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
   end
 
   test "abbreviated branch head satisfies full PR head readiness", %{repo: repo} do
@@ -515,6 +563,72 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools05Test do
       )
 
     assert get_in(post_ready_response, ["error", "data", "reason"]) == "already_ready"
+  end
+
+  test "scope guard accepts attach_pr metadata for current changed files", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-SCOPE-GUARD-ATTACH-READY",
+                 kind: "mcp",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta",
+                 status: "ci_waiting",
+                 policy_template: "mcp_changed_file_scope_guard",
+                 allowed_file_globs: ["elixir/lib/**"]
+               )
+             )
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+    head_sha = "scope-attach-head"
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/#{package.id}/worker", "head_sha" => head_sha})
+
+    attach_tool(repo, session, "attach_pr", %{
+      "url" => "https://github.com/nextide/symphony-plus-plus/pull/904",
+      "metadata" => %{
+        "head_sha" => head_sha,
+        "base_branch" => "symphony-plus-plus/beta",
+        "changed_files" => [
+          %{"filename" => "elixir/lib/symphony_elixir/symphony_plus_plus/readiness/scope_guard.ex", "status" => "modified"}
+        ],
+        "check_summary" => %{"conclusion" => "success"},
+        "review_state" => %{"state" => "approved"},
+        "merge_state" => %{"state" => "clean"}
+      }
+    })
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready review package",
+      "tests" => ["mix test"],
+      "artifacts" => ["review.txt"],
+      "head_sha" => head_sha,
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
+    })
+
+    attach_tool(repo, session, "attach_review_suite_result", %{
+      "work_package_id" => package.id,
+      "head_sha" => head_sha,
+      "suite" => "review-suite",
+      "anchor" => "phase_gate-scope-attach-head",
+      "summary" => "normal is green",
+      "status" => "passed",
+      "verdict" => "green"
+    })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-scope-attach", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
   end
 
   test "scope guard blocks out-of-scope PR files until architect approval expands allowed globs", %{repo: repo} do

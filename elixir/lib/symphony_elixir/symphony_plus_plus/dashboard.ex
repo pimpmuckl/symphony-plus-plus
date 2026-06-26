@@ -3855,7 +3855,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp readiness_failure_message("no_active_blockers"), do: "Active blockers must be resolved before readiness."
-  defp readiness_failure_message("plan_complete"), do: "Required package plan nodes must be complete."
+  defp readiness_failure_message("plan_complete"), do: "Package plan is missing or still has pending items."
   defp readiness_failure_message("acceptance_criteria_met"), do: "Acceptance criteria evidence is missing."
   defp readiness_failure_message("tests_passed"), do: "Focused test evidence is missing."
   defp readiness_failure_message("branch_attached"), do: "Current branch metadata is missing."
@@ -3933,8 +3933,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp incomplete_plan?(context) do
     plan_required?(context.work_package) and
-      (context.plan_nodes == [] or Enum.any?(context.plan_nodes, &(&1.status not in @complete_plan_statuses)))
+      (Enum.any?(context.plan_nodes, &(&1.status not in @complete_plan_statuses)) or missing_meaningful_plan?(context))
   end
+
+  defp missing_meaningful_plan?(%{plan_nodes: []}), do: true
+  defp missing_meaningful_plan?(_context), do: false
 
   defp acceptance_missing?(context) do
     required_gate?(context.work_package, "package_acceptance") and not acceptance_recorded?(context)

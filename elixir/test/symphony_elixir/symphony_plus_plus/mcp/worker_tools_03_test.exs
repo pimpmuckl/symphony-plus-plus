@@ -10,6 +10,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+    append_done_plan(repo, package.id)
 
     missing_response =
       MCPHarness.request(
@@ -20,7 +21,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
 
     assert get_in(missing_response, ["error", "data", "reason"]) == "readiness_failed"
     assert "pr_attached" in get_in(missing_response, ["error", "data", "missing"])
-    assert Enum.any?(get_in(missing_response, ["error", "data", "reasons"]), &(&1["gate"] == "plan_complete"))
+    refute Enum.any?(get_in(missing_response, ["error", "data", "reasons"]), &(&1["gate"] == "plan_complete"))
 
     bypass_response =
       MCPHarness.request(
@@ -188,7 +189,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
     refute "review_lanes_complete" in incremental_missing
     assert "acceptance_criteria_met" in incremental_missing
     refute "review_artifacts_attached" in incremental_missing
-    assert "plan_complete" in incremental_missing
+    refute "plan_complete" in incremental_missing
 
     malformed_review_response =
       MCPHarness.request(
@@ -464,7 +465,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
 
     latest_missing_lane_missing = get_in(latest_missing_lane_response, ["error", "data", "missing"])
     assert "review_lanes_complete" in latest_missing_lane_missing
-    assert "plan_complete" in latest_missing_lane_missing
+    refute "plan_complete" in latest_missing_lane_missing
 
     review_lane_reason =
       latest_missing_lane_response
@@ -573,15 +574,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
       "reviews" => [%{"lane" => " review_t2 ", "verdict" => " green "}]
     })
 
-    empty_plan_response =
+    assert {:ok, pending_plan_node} =
+             PlanningRepository.append_plan_node(repo, %{
+               "work_package_id" => package.id,
+               "title" => "Complete implementation",
+               "status" => "pending"
+             })
+
+    pending_plan_response =
       MCPHarness.request(
-        %{"jsonrpc" => "2.0", "id" => "ready-empty-plan", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        %{"jsonrpc" => "2.0", "id" => "ready-pending-plan", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
         repo: repo,
         session: session
       )
 
-    assert "plan_complete" in get_in(empty_plan_response, ["error", "data", "missing"])
-    append_done_plan(repo, package.id)
+    assert "plan_complete" in get_in(pending_plan_response, ["error", "data", "missing"])
+    assert {:ok, _plan_node} = PlanningRepository.update_plan_node_status(repo, pending_plan_node.id, "done")
 
     pre_ready_finding_response =
       MCPHarness.request(
@@ -752,6 +760,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+    append_done_plan(repo, package.id)
 
     missing_response =
       MCPHarness.request(
@@ -762,7 +771,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
 
     missing = get_in(missing_response, ["error", "data", "missing"])
     refute "status_ci_waiting" in missing
-    assert "plan_complete" in missing
+    refute "plan_complete" in missing
     assert "acceptance_criteria_met" in missing
     assert "tests_passed" in missing
     assert "pr_attached" in missing
@@ -942,6 +951,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools03Test do
   test "Review Suite alias normalization keeps custom whitespace lanes distinct" do
     assert ReviewProfiles.normalize_profile("review_suite normal") == "normal"
     assert ReviewProfiles.normalize_profile("review-suite normal") == "normal"
+    assert ReviewProfiles.normalize_profile("github review") == "github"
+    assert ReviewProfiles.normalize_profile("review_github") == "github"
+    assert ReviewProfiles.profile_satisfies?("github", "github review")
+    assert ReviewProfiles.profile_satisfies?("github", "review_github")
+    assert ReviewProfiles.profile_verdicts_pass?("github review", %{"github" => "green"})
+    assert ReviewProfiles.profile_verdicts_pass?("review_github", %{"github" => "green"})
     assert ReviewProfiles.normalize_profile("security review") == "security review"
     assert ReviewProfiles.normalize_profile("security_review") == "security_review"
   end

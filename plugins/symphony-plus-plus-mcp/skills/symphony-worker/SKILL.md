@@ -52,6 +52,10 @@ PR-sized assignment.
 - Record validation and review evidence in the active Symphony++ state. For
   WorkPackages, that state is the ledger-backed claim opened by the
   WorkPackage skill.
+- For WorkPackages, use the shortest valid ready path from the WorkPackage
+  skill. Package-depth policies still need terminal package plan evidence; do
+  not add lifecycle calls only to restate existing plan, PR, branch, or review
+  evidence.
 
 ## Delivery
 

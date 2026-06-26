@@ -21,6 +21,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard.BlockerProjection
+  alias SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository, as: GuidanceRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.OperatorAudit
@@ -2405,6 +2406,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert "review_package_submitted" in missing["missing"]
   end
 
+  test "ready phase-child packages without a plan are flagged in API", %{repo: repo} do
+    phase_id = "phase-dashboard-ready-plan"
+    assert {:ok, _phase} = PhaseRepository.create(repo, %{id: phase_id, title: "Ready plan phase"})
+
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-PHASE-ANCHOR",
+                 kind: "mcp",
+                 phase_id: phase_id,
+                 status: "planning"
+               )
+             )
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-PHASE-EMPTY-PLAN",
+                 kind: "phase_child",
+                 policy_template: "phase_child",
+                 phase_id: phase_id,
+                 parent_id: anchor.id,
+                 repo: anchor.repo,
+                 base_branch: anchor.base_branch,
+                 status: "ready_for_architect_merge"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert missing["active"] == true
+    assert "plan_complete" in missing["missing"]
+  end
+
   test "ready package detail follows linked planned-slice review lanes", %{repo: repo} do
     work_request = create_work_request!(repo, id: "WR-DASH-BRIEF-READY", status: "ready_for_slicing")
 
@@ -3151,6 +3191,121 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert "current_pr_state" in stale_missing["missing"]
   end
 
+  test "dashboard current PR state accepts semantic attach_pr metadata", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-ATTACH-PR-STATE",
+                 kind: "mcp",
+                 status: "ready_for_merge",
+                 policy_template: "mcp_current_pr_state"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    timestamp = ~U[2026-05-05 00:00:00Z]
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "head-a"},
+               created_at: DateTime.add(timestamp, 1, :second)
+             })
+
+    assert {:ok, _pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR attached with state",
+               status: "pr_attached",
+               payload: %{
+                 type: "pr",
+                 source_tool: "attach_pr",
+                 url: "https://github.com/example/repo/pull/10",
+                 repository: "example/repo",
+                 number: 10,
+                 head_sha: "head-a",
+                 check_summary: %{conclusion: "success"},
+                 review_state: %{state: "approved"},
+                 merge_state: %{state: "clean"}
+               },
+               created_at: DateTime.add(timestamp, 2, :second)
+             })
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    refute "pr_attached" in missing["missing"]
+    refute "current_pr_state" in missing["missing"]
+    assert payload["metadata"]["pr"]["source_tool"] == "attach_pr"
+    assert payload["metadata"]["pr"]["check_summary"]["conclusion"] == "success"
+  end
+
+  test "metadata projection does not reuse sequence-less attach state after bare reattach" do
+    timestamp = ~U[2026-05-05 00:00:00Z]
+
+    branch =
+      progress_event("branch", nil, DateTime.add(timestamp, 1, :second), %{
+        "type" => "branch",
+        "source_tool" => "attach_branch",
+        "branch" => "agent/SYMPP-SEQUENCELESS",
+        "head_sha" => "head-a"
+      })
+
+    semantic_attach =
+      progress_event("attach-state", nil, DateTime.add(timestamp, 2, :second), %{
+        "type" => "pr",
+        "source_tool" => "attach_pr",
+        "url" => "https://github.com/example/repo/pull/10",
+        "repository" => "example/repo",
+        "number" => 10,
+        "head_sha" => "head-a",
+        "check_summary" => %{"conclusion" => "success"},
+        "review_state" => %{"state" => "approved"},
+        "merge_state" => %{"state" => "clean"}
+      })
+
+    semantic_events = [branch, semantic_attach]
+
+    assert MetadataProjection.current_pr_state_present?(semantic_events, "head-a")
+
+    bare_reattach =
+      progress_event("attach-bare", nil, DateTime.add(timestamp, 3, :second), %{
+        "type" => "pr",
+        "source_tool" => "attach_pr",
+        "url" => "https://github.com/example/repo/pull/10",
+        "repository" => "example/repo",
+        "number" => 10,
+        "head_sha" => "head-a"
+      })
+
+    stale_events = semantic_events ++ [bare_reattach]
+
+    refute MetadataProjection.current_pr_state_present?(stale_events, "head-a")
+    assert MetadataProjection.metadata(stale_events, [], "SYMPP-SEQUENCELESS").pr["source_tool"] == "attach_pr"
+    refute Map.has_key?(MetadataProjection.metadata(stale_events, [], "SYMPP-SEQUENCELESS").pr, "check_summary")
+
+    fresh_sync =
+      progress_event("sync-state", nil, DateTime.add(timestamp, 4, :second), %{
+        "type" => "pr",
+        "source_tool" => "sync_pr",
+        "url" => "https://github.com/example/repo/pull/10",
+        "repository" => "example/repo",
+        "number" => 10,
+        "head_sha" => "head-a",
+        "check_summary" => %{"conclusion" => "success"},
+        "review_state" => %{"state" => "approved"},
+        "merge_state" => %{"state" => "clean"}
+      })
+
+    fresh_events = stale_events ++ [fresh_sync]
+
+    assert MetadataProjection.current_pr_state_present?(fresh_events, "head-a")
+    assert MetadataProjection.metadata(fresh_events, [], "SYMPP-SEQUENCELESS").pr["source_tool"] == "sync_pr"
+  end
+
   test "dashboard exposes structured scope guard readiness reasons without synced secrets", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
@@ -3688,7 +3843,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert rich_payload["metadata"]["pr"]["check_summary"]["total_count"] == 7
   end
 
-  test "unknown policy lookup does not invent merge or review evidence requirements", %{repo: repo} do
+  test "unknown policy lookup fails closed without inventing merge or review evidence requirements", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
                repo,
@@ -7298,6 +7453,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   defp review_suite_artifact_id(work_package_id, head_sha) do
     material = [work_package_id, head_sha, "review-suite-result.json"] |> Enum.join(":")
     "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  end
+
+  defp progress_event(id, sequence, created_at, payload) do
+    %ProgressEvent{
+      id: id,
+      work_package_id: "SYMPP-SEQUENCELESS",
+      summary: id,
+      status: "recorded",
+      sequence: sequence,
+      created_at: created_at,
+      payload: payload
+    }
   end
 
   defp create_architect_grant_secret(repo, work_package_id) do

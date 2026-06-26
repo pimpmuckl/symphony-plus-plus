@@ -256,9 +256,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
   defp current_pr_metadata(_progress_events, nil), do: {:error, "missing_current_head"}
 
   defp current_pr_metadata(progress_events, current_head_sha) do
-    with {:ok, attached_ref, attach_sequence} <- latest_attached_pr_ref_with_sequence(progress_events),
+    with {:ok, attached_ref, attach_boundary} <- latest_attached_pr_ref_with_boundary(progress_events),
          %ProgressEvent{payload: payload} <-
-           latest_current_pr_metadata_event(progress_events, current_head_sha, attached_ref, attach_sequence) do
+           latest_current_pr_metadata_event(progress_events, current_head_sha, attached_ref, attach_boundary) do
       {:ok, payload}
     else
       {:error, :not_found} -> {:error, "missing_attached_pr"}
@@ -266,18 +266,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
     end
   end
 
-  defp latest_current_pr_metadata_event(progress_events, current_head_sha, attached_ref, attach_sequence) do
+  defp latest_current_pr_metadata_event(progress_events, current_head_sha, attached_ref, attach_boundary) do
     progress_events
+    |> chronological_progress_events()
     |> Enum.reverse()
     |> Enum.filter(fn
       %ProgressEvent{payload: payload} = event when is_map(payload) ->
-        payload_type?(event, "pr", "sync_pr") and progress_after_pr_attach_boundary?(event, attach_sequence) and
+        current_pr_metadata_event?(event, attach_boundary) and
           PullRequest.head_sha_matches?(Map.get(payload, "head_sha"), current_head_sha) and pr_payload_ref(payload) == attached_ref
 
       %ProgressEvent{} ->
         false
     end)
     |> select_scope_guard_pr_metadata_event()
+  end
+
+  defp current_pr_metadata_event?(%ProgressEvent{} = event, attach_boundary) do
+    (payload_type?(event, "pr", "attach_pr") and attach_boundary(event) == attach_boundary) or
+      (payload_type?(event, "pr", "sync_pr") and progress_after_pr_attach_boundary?(event, attach_boundary))
   end
 
   defp select_scope_guard_pr_metadata_event([]), do: nil
@@ -345,6 +351,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
 
   defp latest_current_head_sha(progress_events) do
     progress_events
+    |> authoritative_progress_events()
     |> Enum.filter(&payload_type?(&1, "branch", "attach_branch"))
     |> Enum.reverse()
     |> Enum.find_value(fn
@@ -353,26 +360,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
     end)
   end
 
-  defp latest_attached_pr_ref_with_sequence(progress_events) do
+  defp latest_attached_pr_ref_with_boundary(progress_events) do
+    # Attach selection follows event time so replay/backfill can record older PR
+    # attachments later. The returned boundary preserves that selected event.
     progress_events
+    |> chronological_progress_events()
     |> Enum.reverse()
-    |> Enum.find_value(&attached_pr_ref_with_sequence/1)
+    |> Enum.find_value(&attached_pr_ref_with_boundary/1)
     |> case do
       nil -> {:error, :not_found}
-      {ref, sequence} -> {:ok, ref, sequence}
+      {ref, boundary} -> {:ok, ref, boundary}
     end
   end
 
-  defp attached_pr_ref_with_sequence(%ProgressEvent{payload: payload, sequence: sequence}) when is_map(payload) do
-    if payload_type?(%ProgressEvent{payload: payload}, "pr", "attach_pr") do
+  defp attached_pr_ref_with_boundary(%ProgressEvent{payload: payload} = event) when is_map(payload) do
+    if payload_type?(event, "pr", "attach_pr") do
       case pr_payload_ref(payload) do
         nil -> nil
-        ref -> {ref, sequence}
+        ref -> {ref, attach_boundary(event)}
       end
     end
   end
 
-  defp attached_pr_ref_with_sequence(%ProgressEvent{}), do: nil
+  defp attached_pr_ref_with_boundary(%ProgressEvent{}), do: nil
 
   defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_integer(number) do
     {String.downcase(repository), number}
@@ -399,9 +409,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
     _error in URI.Error -> {:url, url}
   end
 
-  defp progress_after_pr_attach_boundary?(%ProgressEvent{}, nil), do: true
-  defp progress_after_pr_attach_boundary?(%ProgressEvent{sequence: sequence}, attach_sequence) when is_integer(sequence), do: sequence > attach_sequence
-  defp progress_after_pr_attach_boundary?(%ProgressEvent{}, _attach_sequence), do: false
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{} = event, {:sequence, attach_boundary}) do
+    progress_event_order_key(event) > attach_boundary
+  end
+
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{} = event, {:chronological, attach_boundary}) do
+    progress_event_chronological_key(event) > attach_boundary
+  end
+
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{}, _attach_boundary), do: false
 
   defp payload_type?(%ProgressEvent{payload: payload}, type, source_tool) when is_map(payload) do
     Map.get(payload, "type") == type and Map.get(payload, "source_tool") == source_tool
@@ -410,6 +426,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
   defp payload_type?(%ProgressEvent{}, _type, _source_tool), do: false
 
   defp chronological_progress_events(progress_events) do
+    Enum.sort_by(progress_events, &progress_event_chronological_key/1)
+  end
+
+  defp progress_event_chronological_key(%ProgressEvent{created_at: created_at, sequence: sequence, id: id}) do
+    {progress_event_timestamp_sort_value(created_at), sequence || 0, id || ""}
+  end
+
+  defp attach_boundary(%ProgressEvent{sequence: sequence} = event) when is_integer(sequence) do
+    {:sequence, progress_event_order_key(event)}
+  end
+
+  defp attach_boundary(%ProgressEvent{} = event) do
+    {:chronological, progress_event_chronological_key(event)}
+  end
+
+  defp authoritative_progress_events(progress_events) do
     Enum.sort_by(progress_events, &progress_event_order_key/1)
   end
 
