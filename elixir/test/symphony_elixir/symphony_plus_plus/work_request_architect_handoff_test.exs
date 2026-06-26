@@ -226,6 +226,60 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
     assert displayed.grant.id == created.grant.id
   end
 
+  test "reports archived handoff WorkRequests as terminal after durable scope recovery", %{
+    repo: repo,
+    database_path: database_path
+  } do
+    work_request = create_work_request!(repo, id: "WR-ARCH-HANDOFF-ARCHIVED-SCOPE")
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               handoff_opts: handoff_opts(database_path)
+             )
+
+    assert {:ok, [grant]} = AccessGrantRepository.list_for_work_package(repo, handoff.anchor_package.id)
+
+    archived_at = DateTime.utc_now(:microsecond)
+
+    work_request
+    |> Ecto.Changeset.change(
+      completed_at: archived_at,
+      completion_source: "operator",
+      archived_at: archived_at,
+      archive_reason: "manual"
+    )
+    |> repo.update!()
+
+    assert {:error, {:work_request_terminal, :archived}} = ArchitectHandoff.handoff_phase_grant?(repo, grant)
+  end
+
+  test "fails closed when handoff WorkRequest scope rows are ambiguous", %{
+    repo: repo,
+    database_path: database_path
+  } do
+    work_request = create_work_request!(repo, id: "WR-ARCH-HANDOFF-AMBIGUOUS-SCOPE")
+    sibling = create_work_request!(repo, id: "WR-ARCH-HANDOFF-AMBIGUOUS-SIBLING")
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               handoff_opts: handoff_opts(database_path)
+             )
+
+    assert {:ok, [grant]} = AccessGrantRepository.list_for_work_package(repo, handoff.anchor_package.id)
+
+    assert {:ok, _scope} =
+             GrantScope.create_changeset(%{
+               access_grant_id: grant.id,
+               scope_type: "work_request",
+               scope_id: sibling.id
+             })
+             |> repo.insert()
+
+    assert {:error, :ambiguous_phase_scope} = ArchitectHandoff.handoff_phase_grant?(repo, grant)
+  end
+
   test "does not mint an architect grant without local file-backed claim opt in", %{repo: repo, database_path: database_path} do
     work_request = create_work_request!(repo, id: "WR-ARCH-HANDOFF-NO-LOCAL-CLAIM")
 
@@ -273,6 +327,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
              )
 
     grant = struct(AccessGrant, created.grant)
+    repo.delete_all(GrantScope)
 
     assert {:error, {:storage_failed, "scope lookup failed"}} =
              ArchitectHandoff.handoff_phase_grant?(WorkRequestLookupFailingRepo, grant)

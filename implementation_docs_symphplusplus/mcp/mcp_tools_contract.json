@@ -199,7 +199,7 @@
       "optional_arguments": ["claimed_by", "architect_anchor_work_package_id", "repo", "base_branch", "phase_id", "caller_id"],
       "normal_call": {"work_request_id": "<WR id>"}
     },
-    "reclaim_policy": "Replaying the same id heartbeats the current lease. Stale leases may be reclaimed with audit evidence; paused leases and another active owner are rejected.",
+    "reclaim_policy": "Replaying the same id heartbeats the current lease. Stale leases may be reclaimed with audit evidence; paused leases and another active owner are rejected. claim_local_architect_assignment may recover stale handoff scope only when the ledger proves exactly one matching WorkRequest, repo, base branch, anchor, phase, and architect grant; remaining phase_scope_not_available errors include missing_evidence plus an operator repair action, and archived or manually completed WorkRequests return work_request_terminal.",
     "secret_policy": "Agent-facing tools, prompts, launch payloads, and docs do not require raw grant secrets, private handoff metadata, secret stores, work keys, or helper scripts."
   },
   "resources": [

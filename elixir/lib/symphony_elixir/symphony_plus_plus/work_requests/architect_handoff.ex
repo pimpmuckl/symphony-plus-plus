@@ -188,40 +188,157 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   defp handoff_anchor_id?(_anchor_id), do: false
 
   defp verified_handoff_phase_grant?(repo, %AccessGrant{} = grant) do
-    with {:ok, anchor} <- WorkPackageRepository.get(repo, grant.work_package_id),
-         true <- handoff_anchor_matches_grant?(anchor, grant),
-         {:ok, work_requests} <- WorkRequestRepository.list(repo, %{"base_branch" => anchor.base_branch}) do
-      if Enum.any?(work_requests, &work_request_matches_handoff_anchor?(&1, anchor)) do
-        {:ok, true}
-      else
-        {:error, :phase_scope_not_available}
-      end
+    with {:ok, anchor} <- handoff_anchor_work_package(repo, grant),
+         [] <- handoff_anchor_scope_missing_evidence(anchor, grant),
+         {:ok, work_request} <- handoff_grant_work_request(repo, grant, anchor) do
+      handoff_work_request_grant_state(work_request, anchor)
     else
-      false -> {:error, :phase_scope_not_available}
-      {:error, :not_found} -> {:error, :phase_scope_not_available}
+      missing when is_list(missing) -> {:error, phase_scope_not_available(missing)}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp handoff_anchor_matches_grant?(%WorkPackage{} = anchor, %AccessGrant{} = grant) do
-    anchor.id == grant.work_package_id and
-      anchor.phase_id == grant.phase_id and
-      anchor.kind == @anchor_kind and
-      present_string?(anchor.repo) and
-      present_string?(anchor.base_branch)
+  defp handoff_anchor_work_package(repo, %AccessGrant{} = grant) do
+    case WorkPackageRepository.get(repo, grant.work_package_id) do
+      {:ok, %WorkPackage{} = anchor} -> {:ok, anchor}
+      {:error, :not_found} -> {:error, phase_scope_not_available([:architect_anchor_work_package])}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
-  defp work_request_matches_handoff_anchor?(%WorkRequest{} = work_request, %WorkPackage{} = anchor) do
-    with true <- eligible_status?(work_request.status),
-         true <- phase_id(work_request) == anchor.phase_id,
-         true <- anchor_id(work_request) == anchor.id,
-         true <- repo_scope_match?(work_request.repo, anchor.repo),
-         true <- work_request.base_branch == anchor.base_branch,
-         {:ok, allowed_file_globs} <- work_request_allowed_file_globs(work_request) do
-      normalized_strings(anchor.allowed_file_globs || []) == allowed_file_globs
-    else
-      _reason -> false
+  defp handoff_anchor_scope_missing_evidence(%WorkPackage{} = anchor, %AccessGrant{} = grant) do
+    [
+      if(anchor.id != grant.work_package_id, do: :architect_anchor_work_package_id),
+      if(anchor.phase_id != grant.phase_id, do: :phase_id),
+      if(anchor.kind != @anchor_kind, do: :architect_anchor_kind),
+      if(not present_string?(anchor.repo), do: :architect_anchor_repo),
+      if(not present_string?(anchor.base_branch), do: :architect_anchor_base_branch)
+    ]
+    |> Kernel.++(handoff_grant_repo_scope_missing_evidence(anchor, grant))
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp handoff_grant_repo_scope_missing_evidence(%WorkPackage{} = anchor, %AccessGrant{} = grant) do
+    repo_scope? = present_string?(grant.scope_repo)
+    base_branch_scope? = present_string?(grant.scope_base_branch)
+
+    cond do
+      repo_scope? and base_branch_scope? ->
+        [
+          if(not repo_scope_match?(anchor.repo, grant.scope_repo), do: :grant_scope_repo),
+          if(anchor.base_branch != grant.scope_base_branch, do: :grant_scope_base_branch)
+        ]
+
+      repo_scope? ->
+        [:grant_scope_base_branch]
+
+      base_branch_scope? ->
+        [:grant_scope_repo]
+
+      true ->
+        []
     end
+  end
+
+  defp handoff_grant_work_request(repo, %AccessGrant{} = grant, %WorkPackage{} = anchor) do
+    with {:ok, work_request_ids} <- work_request_scope_ids(repo, grant) do
+      case Enum.uniq(work_request_ids) do
+        [work_request_id] ->
+          handoff_scoped_work_request(repo, work_request_id, anchor)
+
+        [] ->
+          single_handoff_anchor_work_request(repo, anchor)
+
+        _work_request_ids ->
+          {:error, :ambiguous_phase_scope}
+      end
+    end
+  end
+
+  defp handoff_scoped_work_request(repo, work_request_id, %WorkPackage{} = anchor) do
+    case WorkRequestRepository.get(repo, work_request_id) do
+      {:ok, %WorkRequest{} = work_request} ->
+        if work_request_scope_matches_handoff_anchor?(work_request, anchor) do
+          {:ok, work_request}
+        else
+          single_handoff_anchor_work_request(repo, anchor)
+        end
+
+      {:error, :not_found} ->
+        single_handoff_anchor_work_request(repo, anchor)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp handoff_work_request_grant_state(%WorkRequest{} = work_request, %WorkPackage{} = anchor) do
+    case handoff_work_request_terminal_state(work_request) do
+      nil ->
+        case handoff_work_request_missing_evidence(work_request, anchor) do
+          [] -> {:ok, true}
+          missing_evidence -> {:error, phase_scope_not_available(missing_evidence)}
+        end
+
+      terminal_state ->
+        {:error, {:work_request_terminal, terminal_state}}
+    end
+  end
+
+  defp handoff_work_request_terminal_state(%WorkRequest{archived_at: %DateTime{}}), do: :archived
+
+  defp handoff_work_request_terminal_state(%WorkRequest{
+         completed_at: %DateTime{},
+         completion_source: "operator"
+       }),
+       do: :completed
+
+  defp handoff_work_request_terminal_state(%WorkRequest{}), do: nil
+
+  defp handoff_work_request_missing_evidence(%WorkRequest{} = work_request, %WorkPackage{} = anchor) do
+    status_evidence =
+      if handoff_work_request_status_available?(work_request), do: nil, else: :work_request_status
+
+    [status_evidence | handoff_work_request_scope_missing_evidence(work_request, anchor)]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp handoff_work_request_status_available?(%WorkRequest{} = work_request), do: eligible_status?(work_request.status)
+
+  defp handoff_work_request_scope_missing_evidence(%WorkRequest{} = work_request, %WorkPackage{} = anchor) do
+    [
+      if(phase_id(work_request) != anchor.phase_id, do: :phase_id),
+      if(anchor_id(work_request) != anchor.id, do: :architect_anchor_work_package_id),
+      if(not repo_scope_match?(work_request.repo, anchor.repo), do: :work_request_repo),
+      if(work_request.base_branch != anchor.base_branch, do: :work_request_base_branch),
+      if(not handoff_work_request_file_scope_matches?(work_request, anchor), do: :work_request_allowed_file_globs)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp handoff_work_request_file_scope_matches?(%WorkRequest{} = work_request, %WorkPackage{} = anchor) do
+    case work_request_allowed_file_globs(work_request) do
+      {:ok, allowed_file_globs} -> normalized_strings(anchor.allowed_file_globs || []) == allowed_file_globs
+      {:error, _reason} -> false
+    end
+  end
+
+  defp work_request_scope_matches_handoff_anchor?(%WorkRequest{} = work_request, %WorkPackage{} = anchor) do
+    handoff_work_request_scope_missing_evidence(work_request, anchor) == []
+  end
+
+  defp single_handoff_anchor_work_request(repo, %WorkPackage{} = anchor) do
+    with {:ok, work_requests} <- WorkRequestRepository.list(repo, %{"base_branch" => anchor.base_branch, "include_archived" => true}) do
+      case Enum.filter(work_requests, &work_request_scope_matches_handoff_anchor?(&1, anchor)) do
+        [work_request] -> {:ok, work_request}
+        [] -> {:error, phase_scope_not_available([:work_request_scope])}
+        _work_requests -> {:error, :ambiguous_phase_scope}
+      end
+    end
+  end
+
+  defp phase_scope_not_available(missing_evidence) do
+    {:phase_scope_not_available, missing_evidence |> List.wrap() |> Enum.uniq()}
   end
 
   defp with_handoff_lock(repo, work_request_id, fun) when is_function(fun, 0) do
