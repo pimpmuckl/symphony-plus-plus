@@ -73,12 +73,13 @@ S++ explicitly gives scoped context.
 - `attach_branch(head_sha)` once implementation branch exists. Pass `branch`
   only when the package branch pattern is templated or absent.
 - `attach_pr(url, head_sha)` after PR creation.
-- `sync_pr(url_or_number, metadata)` only for the attached PR.
+- Use `sync_pr(metadata, url|number)` only to refresh the attached PR. Provide
+  the current PR/check metadata snapshot explicitly until runtime redesign.
 - `submit_review_package(summary, tests, artifacts)` after branch metadata is
   current; include required review verdicts when Review Suite evidence will not
   supply them.
-- `attach_review_suite_result` for passing Review Suite evidence; current
-  results can satisfy the matching review proof.
+- `attach_review_suite_result(round_id)` for passing local Review Suite
+  evidence; verbose fields remain fallback when no local round can be resolved.
 
 Run the required Review Suite profile. If unavailable, use the package-approved
 provider and record review progress. After material changes, rerun the same
@@ -93,6 +94,8 @@ Before `mark_ready()`:
   accurately reported as absent/blocked.
 - Task plan, findings, progress, branch, PR, and review evidence are current.
 - No active blocker remains.
+  If a finish transition must address active blockers, pass
+  `blocker_closeout` to `set_status` or `mark_ready`.
 
 After `mark_ready()` succeeds, evidence is frozen except idempotent replay of
 already-recorded writes.

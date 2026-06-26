@@ -51,11 +51,11 @@ process aids when the operator explicitly asks for them.
   blockers.
 - Use `resolve_blocker(blocker_id, resolution, summary, idempotency_key)` once
   the blocker is cleared.
-- Use `add_comment(target_kind, target_id, body)`,
-  `list_comments(target_kind, target_id)`, and
+- Use `add_comment(body)`, `list_comments()`, and
   `resolve_comment(comment_id, resolution_note?)` for package-scoped
-  implementation comments that need to stay visible in the cockpit.
-- Use `set_status(status, reason, expected_status)` for allowed non-ready
+  implementation comments that need to stay visible in the cockpit. Pass
+  `target_kind` and `target_id` only for another authorized target.
+- Use `set_status(expected_status, status, reason?)` for allowed non-ready
   lifecycle transitions.
 - Use `request_scope_expansion(summary, idempotency_key, payload)` when the
   needed work exceeds the assignment. This records a request; it does not
@@ -69,14 +69,17 @@ other compact labels plain.
 
 ## Branch, PR, And Review Evidence
 
-- Attach the implementation branch with `attach_branch(branch, head_sha)`.
+- Attach the implementation branch with `attach_branch(head_sha)` when the
+  package branch pattern is literal. Pass `branch` only when the pattern is
+  templated or absent.
 - Attach the PR with `attach_pr(url, head_sha)` after it exists.
-- Refresh the attached PR metadata with `sync_pr(url_or_number, metadata)` when
-  current PR state is required; `sync_pr` must target the already attached PR.
+- Refresh current state only for the attached PR with
+  `sync_pr(metadata, url|number)`; provide the current PR/check metadata
+  snapshot explicitly until runtime redesign.
 - Submit review evidence with `submit_review_package(summary, tests, artifacts)`
   after branch metadata is current.
-- Attach passing Review Suite result evidence with `attach_review_suite_result`
-  when required.
+- Attach passing local Review Suite evidence with
+  `attach_review_suite_result(round_id)`.
 - If Review Suite is installed, run the current orchestrator with the required
   profile: `review.py --mode brief|normal|deep|emergency`.
 - If Review Suite is not installed, use the package-approved review provider
@@ -97,6 +100,8 @@ Before calling `mark_ready()`:
 - Virtual task plan, findings, and progress are current.
 - Branch, PR, and review artifacts are attached when the policy requires them.
 - No active blocker remains.
+  If a finish transition must address active blockers, pass
+  `blocker_closeout` to `set_status` or `mark_ready`.
 
 After `mark_ready()` succeeds, evidence is frozen. Do not append new progress,
 findings, blockers, branch/PR metadata, scope requests, or review packages

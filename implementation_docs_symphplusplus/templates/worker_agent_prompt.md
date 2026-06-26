@@ -55,18 +55,21 @@ plain.
 
 Before ready:
 1. Run relevant validation.
-2. Attach branch metadata with `attach_branch(branch, head_sha)` when the policy
-   requires branch metadata.
+2. Attach branch metadata with `attach_branch(head_sha)` when the package
+   branch pattern is literal; pass `branch` only when the pattern is templated
+   or absent.
 3. Open the PR and attach it with `attach_pr(url, head_sha)` when the policy
    requires PR metadata.
-4. Refresh current PR metadata with `sync_pr(url_or_number, metadata)` when the
-   policy requires current PR state; `sync_pr` must target the attached PR.
+4. Refresh current state only for the attached PR with
+   `sync_pr(metadata, url|number)` when policy requires it; provide the current
+   PR/check metadata snapshot explicitly until runtime redesign.
 5. Submit review evidence when available with
    `submit_review_package(summary, tests, artifacts)` after branch metadata is
    current.
 6. Call `mark_ready()` only after acceptance criteria, tests, required review
    profile evidence, progress, findings, branch/PR evidence, and blockers are
-   settled.
+   settled. If active blockers must be resolved or kept active during the
+   finish transition, pass `blocker_closeout`.
 
 Final output:
 - PR URL and final head SHA.

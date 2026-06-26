@@ -76,8 +76,8 @@ Compact worker calls should omit values the bound WorkPackage already carries:
 - `attach_branch(head_sha)` uses the WorkPackage `branch_pattern` when it is a
   literal branch. Pass `branch` when the pattern is templated or absent.
 
-For Review Suite evidence, call `attach_review_suite_result` with `round_id`
-when local Review Suite state is available. The server infers suite, profile,
+For Review Suite evidence, call `attach_review_suite_result(round_id)` when
+local Review Suite state is available. The server infers suite, profile,
 lane, head SHA, status, verdict, summary, and anchor for a passing round.
 Verbose fields remain a fallback when the round cannot be resolved; `suite`
 must still identify Review Suite. Omit `round_id` when using verbose fallback
@@ -93,8 +93,15 @@ Follow-up scope deliberately left out of this pass:
   `approve_scope_expansion`, `prepare_work_package_worktree`, and
   `cleanup_work_package_worktree` still require WorkPackage ids because
   architect sessions may see more than one package.
-- `sync_pr` still requires caller-supplied metadata because live PR/check
-  fetching is an external integration boundary, not current ledger state.
+- `sync_pr(metadata, url|number)` is only a refresh path for the already
+  attached PR. Until the runtime redesign lands, callers must provide the
+  current PR/check metadata snapshot and identify the attached PR explicitly.
+
+Completion mutations that can encounter active package blockers expose
+`blocker_closeout`. Use `decision=resolved` with a resolution when active
+blockers are no longer true, or `decision=still_active` when they must remain
+active after the attempted transition. This applies to worker `set_status` and
+`mark_ready`.
 
 ## Health, Solo, And Local Operator Tools
 

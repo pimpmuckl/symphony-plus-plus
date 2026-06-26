@@ -94,6 +94,65 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  test "MCP contract and packaged skills document compact worker calls" do
+    contract = @contract_path |> File.read!() |> Jason.decode!()
+    readable_contract = @contract_path |> Path.dirname() |> Path.join("MCP_TOOLS_CONTRACT.md") |> File.read!() |> normalize_newlines()
+    skill_contract = @mcp_skill_contract_path |> File.read!() |> normalize_newlines()
+    worker_skill = @mcp_plugin_skill_path |> File.read!() |> normalize_newlines()
+    template_skill = @template_skill_path |> File.read!() |> normalize_newlines()
+
+    prompts = [
+      File.read!(@template_prompt_path),
+      File.read!(Path.join(@repo_root, "implementation_docs_symphplusplus/templates/worker_agent_prompt.md")),
+      File.read!(Path.join(@template_references_dir, "worker_prompt.md")),
+      File.read!(@mcp_plugin_prompt_path)
+    ]
+
+    tool_schemas = Map.new(contract["tool_schemas"], &{&1["name"], &1})
+
+    assert "blocker_closeout" in get_in(tool_schemas, ["set_status", "optional_arguments"])
+    assert get_in(tool_schemas, ["mark_ready", "optional_arguments"]) == ["blocker_closeout"]
+    assert get_in(tool_schemas, ["attach_review_suite_result", "happy_path_arguments"]) == ["round_id"]
+
+    assert get_in(tool_schemas, ["attach_branch", "worker_required_arguments_by_branch_pattern", "literal"]) == ["head_sha"]
+    assert get_in(tool_schemas, ["attach_branch", "worker_required_arguments_by_branch_pattern", "templated_or_absent"]) == ["branch", "head_sha"]
+
+    assert get_in(tool_schemas, ["add_comment", "worker_compact_policy"]) =~ "body-only"
+    assert get_in(tool_schemas, ["list_comments", "worker_compact_policy"]) =~ "empty argument object"
+    assert get_in(tool_schemas, ["sync_pr", "attached_pr_policy"]) =~ "already attached PR"
+    assert get_in(tool_schemas, ["sync_pr", "required_argument_sets"]) == [["url"], ["number"]]
+
+    assert get_in(contract, ["discovery_policy", "trusted_local_http_extra_tools"]) == [
+             "create_work_request",
+             "add_work_request_comment",
+             "list_comments",
+             "record_work_request_operator_decision"
+           ]
+
+    for content <- [readable_contract, skill_contract, worker_skill, template_skill] do
+      assert content =~ "add_comment(body)"
+      assert content =~ "list_comments()"
+      assert content =~ "attach_branch(head_sha)"
+      assert content =~ "attach_review_suite_result(round_id)"
+      assert content =~ "sync_pr(metadata, url|number)"
+      assert content =~ "blocker_closeout"
+      assert content =~ "attached PR"
+      refute content =~ "sync_pr(url_or_number, metadata)"
+      refute content =~ "add_comment(target_kind, target_id, body"
+      refute content =~ "list_comments(target_kind, target_id"
+    end
+
+    for prompt <- prompts do
+      assert prompt =~ "attached PR"
+      assert prompt =~ "attach_branch(head_sha)"
+      assert prompt =~ "sync_pr(metadata, url|number)"
+      assert prompt =~ "blocker_closeout"
+      refute prompt =~ "sync_pr(url_or_number, metadata)"
+    end
+
+    assert readable_contract =~ "create_work_request\nadd_work_request_comment\nlist_comments\nrecord_work_request_operator_decision"
+  end
+
   test "worker prompt is paste-ready and MCP-backed" do
     prompt = File.read!(@prompt_path)
     plugin_prompt = File.read!(@mcp_plugin_prompt_path)

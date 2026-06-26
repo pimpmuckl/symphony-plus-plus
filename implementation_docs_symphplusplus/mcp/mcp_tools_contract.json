@@ -96,6 +96,7 @@
     "trusted_local_http_extra_tools": [
       "create_work_request",
       "add_work_request_comment",
+      "list_comments",
       "record_work_request_operator_decision"
     ],
     "shared_worker_architect_tools": [
@@ -233,7 +234,7 @@
     "follow_ups": [
       "record_planned_slice_delivery and cleanup_work_request_planned_slice_runtime still require WorkRequest and planned-slice ids because they mutate WorkRequest delivery truth and runtime authority across linked records.",
       "Architect package tools such as read_child_status, approve_scope_expansion, prepare_work_package_worktree, and cleanup_work_package_worktree still require WorkPackage ids because architect sessions may see more than one package.",
-      "sync_pr still requires caller-supplied metadata because live PR/check fetching is an external integration boundary, not current ledger state."
+      "sync_pr(metadata, url|number) is only a refresh path for the already attached PR. Until the runtime redesign lands, callers must provide the current PR/check metadata snapshot and identify the attached PR explicitly."
     ]
   },
   "tool_schemas": [
@@ -264,7 +265,7 @@
     {"name": "update_task_plan", "required_arguments": ["expected_version"], "optional_arguments": ["body", "id", "patch", "status", "title", "work_package_id"]},
     {"name": "append_finding", "required_arguments": ["body", "idempotency_key", "title"], "optional_arguments": ["id", "severity", "work_package_id"]},
     {"name": "append_progress", "required_arguments": ["idempotency_key", "summary"], "optional_arguments": ["body", "payload", "status", "work_package_id"]},
-    {"name": "set_status", "required_arguments": ["expected_status", "status"], "optional_arguments": ["reason", "work_package_id"]},
+    {"name": "set_status", "required_arguments": ["expected_status", "status"], "optional_arguments": ["blocker_closeout", "reason", "work_package_id"], "blocker_closeout_policy": "When active blockers exist, provide blocker_closeout with decision=resolved plus a resolution, or decision=still_active to keep blockers active after the transition attempt."},
     {"name": "report_blocker", "required_arguments": ["idempotency_key", "summary"], "optional_arguments": ["blocker_id", "body", "payload", "status", "work_package_id"]},
     {"name": "resolve_blocker", "required_arguments": ["blocker_id", "idempotency_key", "resolution", "summary"], "optional_arguments": ["body", "payload", "status", "work_package_id"]},
     {"name": "add_comment", "required_arguments": ["body", "target_id", "target_kind"], "optional_arguments": ["work_package_id"], "worker_compact_policy": "Bound worker tools/list accepts body-only to comment on the current WorkPackage. Architects still pass target_kind and target_id."},
@@ -275,10 +276,10 @@
     {"name": "request_scope_expansion", "required_arguments": ["idempotency_key", "summary"], "optional_arguments": ["body", "payload", "status", "work_package_id"]},
     {"name": "attach_branch", "required_arguments": ["branch", "head_sha"], "optional_arguments": ["body", "idempotency_key", "payload", "status", "summary", "work_package_id"], "worker_required_arguments_by_branch_pattern": {"literal": ["head_sha"], "templated_or_absent": ["branch", "head_sha"]}, "worker_compact_policy": "Bound worker tools/list requires head_sha only when the current WorkPackage has a literal branch_pattern; pass branch for templated or absent branch patterns."},
     {"name": "attach_pr", "required_arguments": [], "optional_arguments": ["body", "head_sha", "idempotency_key", "metadata", "number", "payload", "repository", "status", "summary", "url", "work_package_id"]},
-    {"name": "sync_pr", "required_arguments": ["metadata"], "optional_arguments": ["body", "head_sha", "idempotency_key", "number", "payload", "repository", "status", "summary", "url", "work_package_id"]},
+    {"name": "sync_pr", "required_arguments": ["metadata"], "required_argument_sets": [["url"], ["number"]], "optional_arguments": ["body", "head_sha", "idempotency_key", "number", "payload", "repository", "status", "summary", "url", "work_package_id"], "attached_pr_policy": "Refreshes only the already attached PR. url or number must identify that attached PR; metadata remains a caller-supplied current PR/check snapshot until runtime redesign."},
     {"name": "submit_review_package", "required_arguments": ["artifacts", "summary", "tests"], "optional_arguments": ["acceptance_criteria_met", "body", "head_sha", "idempotency_key", "payload", "reviews", "status", "work_package_id"]},
     {"name": "attach_review_suite_result", "required_arguments": [], "happy_path_arguments": ["round_id"], "optional_arguments": ["round_id", "anchor", "head_sha", "idempotency_key", "lane", "profile", "reviewer", "status", "suite", "summary", "verdict", "work_package_id"], "fallback_policy": "If round_id resolves to passing local Review Suite state, suite/profile/lane/head/status/verdict/summary/anchor are inferred. Omit round_id when using verbose fallback fields; suite must identify Review Suite."},
-    {"name": "mark_ready", "required_arguments": [], "optional_arguments": []},
+    {"name": "mark_ready", "required_arguments": [], "optional_arguments": ["blocker_closeout"], "blocker_closeout_policy": "When active blockers exist, provide blocker_closeout with decision=resolved plus a resolution, or decision=still_active to leave blockers active and keep readiness blocked."},
     {"name": "create_child_work_package", "required_arguments": ["package"], "optional_arguments": []},
     {"name": "mint_child_worker_key", "required_arguments": ["work_package_id"], "optional_arguments": ["template"], "template_policy": "Optional template may set capabilities, expires_at, and claimed_by only."},
     {"name": "revoke_child_worker_key", "required_arguments": ["grant_id", "reason"], "optional_arguments": []},
