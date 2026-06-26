@@ -51,6 +51,15 @@ claimed_by?)` returns a `worker_bootstrap` payload for
 `claim_local_assignment`. Workers should not need repository root, helper
 script, private file, or raw secret metadata.
 
+## Compact Worker Calls
+
+Bound workers should omit values the current WorkPackage already supplies.
+`add_comment(body)` and `list_comments()` default to the current WorkPackage.
+`attach_branch(head_sha)` infers a literal WorkPackage branch pattern; pass
+`branch` only for templated or absent patterns. Review Suite evidence should use
+`attach_review_suite_result(round_id)` when local Review Suite state is
+available.
+
 ## Delivery Closeout
 
 Architect delivery closeout uses:

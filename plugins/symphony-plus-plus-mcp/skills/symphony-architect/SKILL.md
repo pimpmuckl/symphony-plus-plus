@@ -101,8 +101,10 @@ Worker prompts must include:
   `symphony-work-package`.
 - WorkPackage id, branch/base, scope, acceptance, validation, review profile,
   line/PR-size budget, and stop conditions.
-- The ledger claim payload or clear recovery/legacy bootstrap label; never raw
-  secrets.
+- The ledger claim payload or clear recovery/legacy bootstrap label. The normal
+  worker claim is WorkPackage-id-only; do not add repo, base, branch, or
+  worktree fields unless they are needed as validation context. Never include
+  raw secrets.
 - Relevant decisions/dependencies.
 - Instruction to ask the architect about product, architecture, dependency,
   slice-boundary, or reviewer-driven scope ambiguity.

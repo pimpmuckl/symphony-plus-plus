@@ -172,6 +172,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     assert get_in(trusted_local_tools_by_name, ["create_work_request", "inputSchema", "properties", "human_description", "description"]) =~ "Markdown"
     assert get_in(unbound_tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
     assert get_in(unbound_tools_by_name, ["append_progress", "inputSchema", "required"]) == ["summary", "idempotency_key"]
+    assert get_in(unbound_tools_by_name, ["add_comment", "inputSchema", "required"]) == ["target_kind", "target_id", "body"]
+    assert get_in(unbound_tools_by_name, ["list_comments", "inputSchema", "required"]) == ["target_kind", "target_id"]
 
     assert get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node", "inputSchema", "required"]) == [
              "work_request_id",
@@ -264,7 +266,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     refute claim_text =~ "caller_id"
     refute claim_text =~ ~s("assignment")
 
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-TOOLS-LIST", kind: "mcp"))
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-TOOLS-LIST", kind: "mcp", branch_pattern: nil))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, worker_assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     worker_session = MCPHarness.session(worker_assignment, proof_hash: minted.grant.secret_hash)
@@ -301,11 +303,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     assert get_in(tools_by_name, ["set_status", "inputSchema", "required"]) == ["status", "expected_status"]
     assert get_in(tools_by_name, ["report_blocker", "inputSchema", "properties", "blocker_id", "type"]) == "string"
     assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
-    assert get_in(tools_by_name, ["add_comment", "inputSchema", "required"]) == ["target_kind", "target_id", "body"]
+    assert get_in(tools_by_name, ["add_comment", "inputSchema", "required"]) == ["body"]
     assert get_in(tools_by_name, ["add_comment", "inputSchema", "properties", "target_kind", "enum"]) == ["work_request", "planned_slice", "work_package"]
     assert get_in(tools_by_name, ["add_comment", "inputSchema", "properties", "body", "maxLength"]) == Comment.max_body_length()
     assert get_in(tools_by_name, ["add_comment", "inputSchema", "properties", "body", "description"]) =~ "Markdown"
-    assert get_in(tools_by_name, ["list_comments", "inputSchema", "required"]) == ["target_kind", "target_id"]
+    assert get_in(tools_by_name, ["list_comments", "inputSchema", "required"]) == []
+
+    explicit_non_package_target = %{"required" => ["target_kind"], "properties" => %{"target_kind" => %{"enum" => ["work_request", "planned_slice"]}}}
+
+    assert get_in(tools_by_name, ["add_comment", "inputSchema", "if"]) == explicit_non_package_target
+    assert get_in(tools_by_name, ["add_comment", "inputSchema", "then"]) == %{"required" => ["target_id"]}
+    assert get_in(tools_by_name, ["list_comments", "inputSchema", "if"]) == explicit_non_package_target
+    assert get_in(tools_by_name, ["list_comments", "inputSchema", "then"]) == %{"required" => ["target_id"]}
+
     assert get_in(tools_by_name, ["resolve_comment", "inputSchema", "required"]) == ["comment_id"]
     assert get_in(tools_by_name, ["resolve_comment", "inputSchema", "properties", "resolution_note", "maxLength"]) == Comment.max_resolution_note_length()
     assert get_in(tools_by_name, ["resolve_comment", "inputSchema", "properties", "resolution_note", "description"]) =~ "Markdown"

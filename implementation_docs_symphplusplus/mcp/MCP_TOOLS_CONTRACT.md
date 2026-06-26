@@ -67,12 +67,34 @@ mark_ready
 Workers are scoped to exactly one WorkPackage. Worker tools never mint grants,
 approve scope, merge PRs, advance phases, or close WorkRequest delivery.
 
+Compact worker calls should omit values the bound WorkPackage already carries:
+
+- `add_comment(body)` comments on the current WorkPackage. Pass
+  `target_kind` and `target_id` only for a WorkRequest or planned-slice comment.
+- `list_comments()` lists comments on the current WorkPackage. Pass
+  `target_kind` and `target_id` only for another authorized target.
+- `attach_branch(head_sha)` uses the WorkPackage `branch_pattern` when it is a
+  literal branch. Pass `branch` when the pattern is templated or absent.
+
 For Review Suite evidence, call `attach_review_suite_result` with `round_id`
 when local Review Suite state is available. The server infers suite, profile,
 lane, head SHA, status, verdict, summary, and anchor for a passing round.
 Verbose fields remain a fallback when the round cannot be resolved; `suite`
 must still identify Review Suite. Omit `round_id` when using verbose fallback
 fields because a present `round_id` selects the local-round resolution path.
+
+Follow-up scope deliberately left out of this pass:
+
+- `record_planned_slice_delivery` and
+  `cleanup_work_request_planned_slice_runtime` still require WorkRequest and
+  planned-slice ids because they mutate WorkRequest delivery truth and runtime
+  authority across linked records.
+- Architect package tools such as `read_child_status`,
+  `approve_scope_expansion`, `prepare_work_package_worktree`, and
+  `cleanup_work_package_worktree` still require WorkPackage ids because
+  architect sessions may see more than one package.
+- `sync_pr` still requires caller-supplied metadata because live PR/check
+  fetching is an external integration boundary, not current ledger state.
 
 ## Health, Solo, And Local Operator Tools
 

@@ -105,8 +105,10 @@
       "resolve_blocker",
       "read_guidance_request"
     ],
-    "shared_tool_scope_policy": "Shared tool names are intentionally exposed in both worker and architect sessions. The live handler applies role-specific authorization and target scope; these entries are not worker-only authority.",
+    "shared_tool_scope_policy": "Shared tool names are intentionally exposed in both worker and architect sessions. The live handler applies role-specific authorization and target scope; shared tool_schemas rows use the strict cross-role shape while live tools/list remains authoritative for role-specific compact worker schemas.",
     "shared_tool_scope": {
+      "add_comment": "Workers may omit target_kind and target_id to comment on their current WorkPackage. Architects must pass explicit target_kind and target_id because architect sessions can span multiple targets.",
+      "list_comments": "Workers may omit target_kind and target_id to list comments on their current WorkPackage. Architects must pass explicit target_kind and target_id because architect sessions can span multiple targets.",
       "resolve_blocker": "Workers may resolve blockers in their current WorkPackage scope. Architects may resolve blockers for policy-scoped descendant WorkPackages visible from their claimed WorkRequest/phase scope."
     },
     "bound_worker_tools": [
@@ -209,6 +211,31 @@
     "sympp://work-packages/{id}/review_suite.md",
     "sympp://work-packages/{id}/handoff.md"
   ],
+  "argument_diet_audit": {
+    "simplified_tools": [
+      {
+        "name": "add_comment",
+        "compact_call": {"body": "<Markdown note>"},
+        "inferred": ["target_kind=work_package", "target_id=current WorkPackage"]
+      },
+      {
+        "name": "list_comments",
+        "compact_call": {},
+        "inferred": ["target_kind=work_package", "target_id=current WorkPackage"]
+      },
+      {
+        "name": "attach_branch",
+        "compact_call": {"head_sha": "<head sha>"},
+        "inferred": ["branch from literal WorkPackage branch_pattern"],
+        "fallback": "Pass branch explicitly when the branch pattern is templated or absent."
+      }
+    ],
+    "follow_ups": [
+      "record_planned_slice_delivery and cleanup_work_request_planned_slice_runtime still require WorkRequest and planned-slice ids because they mutate WorkRequest delivery truth and runtime authority across linked records.",
+      "Architect package tools such as read_child_status, approve_scope_expansion, prepare_work_package_worktree, and cleanup_work_package_worktree still require WorkPackage ids because architect sessions may see more than one package.",
+      "sync_pr still requires caller-supplied metadata because live PR/check fetching is an external integration boundary, not current ledger state."
+    ]
+  },
   "tool_schemas": [
     {"name": "sympp.health", "required_arguments": [], "optional_arguments": []},
     {"name": "release_current_assignment", "required_arguments": [], "optional_arguments": ["reason"]},
@@ -240,13 +267,13 @@
     {"name": "set_status", "required_arguments": ["expected_status", "status"], "optional_arguments": ["reason", "work_package_id"]},
     {"name": "report_blocker", "required_arguments": ["idempotency_key", "summary"], "optional_arguments": ["blocker_id", "body", "payload", "status", "work_package_id"]},
     {"name": "resolve_blocker", "required_arguments": ["blocker_id", "idempotency_key", "resolution", "summary"], "optional_arguments": ["body", "payload", "status", "work_package_id"]},
-    {"name": "add_comment", "required_arguments": ["body", "target_id", "target_kind"], "optional_arguments": ["work_package_id"]},
-    {"name": "list_comments", "required_arguments": ["target_id", "target_kind"], "optional_arguments": ["work_package_id"]},
+    {"name": "add_comment", "required_arguments": ["body", "target_id", "target_kind"], "optional_arguments": ["work_package_id"], "worker_compact_policy": "Bound worker tools/list accepts body-only to comment on the current WorkPackage. Architects still pass target_kind and target_id."},
+    {"name": "list_comments", "required_arguments": ["target_id", "target_kind"], "optional_arguments": ["work_package_id"], "worker_compact_policy": "Bound worker tools/list accepts an empty argument object to list comments on the current WorkPackage. Architects still pass target_kind and target_id."},
     {"name": "resolve_comment", "required_arguments": ["comment_id"], "optional_arguments": ["resolution_note", "work_package_id"]},
     {"name": "create_guidance_request", "required_arguments": ["context", "idempotency_key", "question", "summary"], "optional_arguments": ["work_package_id"]},
     {"name": "read_guidance_request", "required_arguments": ["guidance_request_id"], "optional_arguments": ["work_package_id"]},
     {"name": "request_scope_expansion", "required_arguments": ["idempotency_key", "summary"], "optional_arguments": ["body", "payload", "status", "work_package_id"]},
-    {"name": "attach_branch", "required_arguments": ["branch", "head_sha"], "optional_arguments": ["body", "idempotency_key", "payload", "status", "summary", "work_package_id"]},
+    {"name": "attach_branch", "required_arguments": ["branch", "head_sha"], "optional_arguments": ["body", "idempotency_key", "payload", "status", "summary", "work_package_id"], "worker_required_arguments_by_branch_pattern": {"literal": ["head_sha"], "templated_or_absent": ["branch", "head_sha"]}, "worker_compact_policy": "Bound worker tools/list requires head_sha only when the current WorkPackage has a literal branch_pattern; pass branch for templated or absent branch patterns."},
     {"name": "attach_pr", "required_arguments": [], "optional_arguments": ["body", "head_sha", "idempotency_key", "metadata", "number", "payload", "repository", "status", "summary", "url", "work_package_id"]},
     {"name": "sync_pr", "required_arguments": ["metadata"], "optional_arguments": ["body", "head_sha", "idempotency_key", "number", "payload", "repository", "status", "summary", "url", "work_package_id"]},
     {"name": "submit_review_package", "required_arguments": ["artifacts", "summary", "tests"], "optional_arguments": ["acceptance_criteria_met", "body", "head_sha", "idempotency_key", "payload", "reviews", "status", "work_package_id"]},

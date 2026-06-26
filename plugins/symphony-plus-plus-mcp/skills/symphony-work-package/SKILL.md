@@ -49,8 +49,9 @@ Keep S++ current as the work changes:
 - `append_finding(finding, idempotency_key)`.
 - `append_progress(event, idempotency_key)`.
 - `report_blocker` / `resolve_blocker`.
-- `add_comment(target_kind, target_id, body)`, `list_comments`, and
-  `resolve_comment(comment_id, resolution_note?)` for scoped notes.
+- `add_comment(body)`, `list_comments()`, and
+  `resolve_comment(comment_id, resolution_note?)` for scoped package notes.
+  Pass `target_kind` and `target_id` only for another authorized target.
 - `set_status` for allowed lifecycle transitions.
 - `request_scope_expansion` when the assignment must grow.
 - `create_guidance_request` when product, architecture, dependency, or
@@ -69,7 +70,8 @@ S++ explicitly gives scoped context.
 
 ## Branch, PR, Review
 
-- `attach_branch(branch, head_sha)` once implementation branch exists.
+- `attach_branch(head_sha)` once implementation branch exists. Pass `branch`
+  only when the package branch pattern is templated or absent.
 - `attach_pr(url, head_sha)` after PR creation.
 - `sync_pr(url_or_number, metadata)` only for the attached PR.
 - `submit_review_package(summary, tests, artifacts)` after branch metadata is
