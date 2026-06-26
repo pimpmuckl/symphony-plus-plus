@@ -607,8 +607,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
         "target_id" => string_schema(),
         "body" => markdown_string_schema("Human-facing Markdown comment body.") |> Map.put("maxLength", Comment.max_body_length())
       }),
-      ["target_kind", "target_id", "body"]
+      ["body"]
     )
+    |> require_comment_target_id_for_explicit_non_package_target()
   end
 
   def worker_tool_input_schema("list_comments") do
@@ -617,8 +618,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
         "target_kind" => string_enum_schema(Comment.target_kinds()),
         "target_id" => string_schema()
       }),
-      ["target_kind", "target_id"]
+      []
     )
+    |> require_comment_target_id_for_explicit_non_package_target()
   end
 
   def worker_tool_input_schema("resolve_comment") do
@@ -766,7 +768,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
     )
   end
 
-  def architect_tool_input_schema("list_comments"), do: worker_tool_input_schema("list_comments")
+  def architect_tool_input_schema("list_comments") do
+    schema(
+      scoped_properties(%{
+        "target_kind" => string_enum_schema(Comment.target_kinds()),
+        "target_id" => string_schema()
+      }),
+      ["target_kind", "target_id"]
+    )
+  end
 
   def architect_tool_input_schema("read_work_request_delivery_board") do
     schema(
@@ -824,7 +834,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   end
 
   def architect_tool_input_schema("add_comment") do
-    worker_tool_input_schema("add_comment")
+    schema(
+      scoped_properties(%{
+        "target_kind" => string_enum_schema(Comment.target_kinds()),
+        "target_id" => string_schema(),
+        "body" => markdown_string_schema("Human-facing Markdown comment body.") |> Map.put("maxLength", Comment.max_body_length())
+      }),
+      ["target_kind", "target_id", "body"]
+    )
   end
 
   def architect_tool_input_schema("resolve_comment") do
@@ -1193,6 +1210,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
       Enum.map(@shared_worker_architect_tools, &shared_worker_architect_tool_spec/1)
   end
 
+  defp shared_worker_architect_tool_spec(name) when name in ["add_comment", "list_comments"], do: architect_tool_spec(name)
   defp shared_worker_architect_tool_spec(name), do: worker_tool_spec(name)
   @spec local_operator_tool_specs() :: [tool_spec()]
   def local_operator_tool_specs, do: Enum.map(@local_operator_tools, &local_operator_tool_spec/1)
@@ -1214,6 +1232,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
           ]
         }
       ]
+    })
+  end
+
+  defp require_comment_target_id_for_explicit_non_package_target(schema) do
+    Map.merge(schema, %{
+      "if" => %{
+        "required" => ["target_kind"],
+        "properties" => %{"target_kind" => %{"enum" => ["work_request", "planned_slice"]}}
+      },
+      "then" => %{"required" => ["target_id"]}
     })
   end
 

@@ -1612,8 +1612,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:ok, architect_session_tool_specs()}
   end
 
-  defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "worker"}}}, %Config{}),
-    do: {:ok, worker_session_tool_specs()}
+  defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "worker"}} = session}, %Config{repo: repo}),
+    do: {:ok, worker_session_tool_specs(repo, session)}
 
   defp tool_specs_for_session_result({:ok, %Session{}}, %Config{}), do: {:error, {:unauthorized, :unsupported_grant_role}}
 
@@ -1628,6 +1628,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp unbound_tool_specs_for_config(%Config{} = config), do: ToolCatalog.unbound_tool_specs_for_config(config)
   defp architect_session_tool_specs, do: ToolCatalog.architect_session_tool_specs()
   defp worker_session_tool_specs, do: ToolCatalog.worker_session_tool_specs()
+
+  defp worker_session_tool_specs(repo, %Session{} = session) do
+    ToolCatalog.worker_session_tool_specs()
+    |> maybe_advertise_compact_attach_branch(repo, session)
+  end
+
+  defp maybe_advertise_compact_attach_branch(specs, repo, %Session{} = session) do
+    if compact_attach_branch_available?(repo, session) do
+      map_tool_spec(specs, "attach_branch", &put_in(&1, ["inputSchema", "required"], ["head_sha"]))
+    else
+      specs
+    end
+  end
+
+  defp compact_attach_branch_available?(repo, %Session{} = session) do
+    with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, Session.work_package_id(session)),
+         branch when is_binary(branch) <- normalize_optional_value(work_package.branch_pattern) do
+      not local_branch_template_pattern?(branch)
+    else
+      _missing_or_template -> false
+    end
+  end
+
+  defp map_tool_spec(specs, name, fun) do
+    Enum.map(specs, fn
+      %{"name" => ^name} = spec -> fun.(spec)
+      spec -> spec
+    end)
+  end
 
   defp tool_specs_for_server(%__MODULE__{session_refresh_required: true, config: config} = server) do
     {:ok, dedupe_tool_specs(claimable_tool_specs(config) ++ local_trusted_tool_specs(server))}
@@ -8897,7 +8926,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_tool("attach_branch", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
          :ok <- authorize_current_package_policy(config.repo, session, :work_package_update, :work_package, "attach_branch"),
-         {:ok, branch} <- required_argument(arguments, "branch"),
+         {:ok, branch} <- attach_branch_argument(config.repo, session, arguments),
          {:ok, head_sha} <- required_argument(arguments, "head_sha") do
       append_metadata_event(config.repo, session, arguments, "attach_branch", "branch_attached", %{"type" => "branch", "branch" => branch, "head_sha" => head_sha})
     else
@@ -9004,6 +9033,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, reason} ->
         worker_error(reason, "mark_ready")
     end
+  end
+
+  defp attach_branch_argument(repo, %Session{} = session, arguments) do
+    case optional_string_argument(arguments, "branch") do
+      {:ok, nil} -> inferred_attach_branch(repo, session)
+      result -> result
+    end
+  end
+
+  defp inferred_attach_branch(repo, %Session{} = session) do
+    with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, Session.work_package_id(session)) do
+      case normalize_optional_value(work_package.branch_pattern) do
+        nil -> {:tool_error, "missing_branch"}
+        branch when is_binary(branch) -> inferred_literal_branch(branch)
+      end
+    end
+  end
+
+  defp inferred_literal_branch(branch) do
+    if local_branch_template_pattern?(branch), do: {:tool_error, "missing_branch"}, else: {:ok, branch}
   end
 
   defp read_guidance_request_tool(arguments, %__MODULE__{config: config, session: session}) do
@@ -12696,9 +12745,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp comment_tool_result("add_comment", repo, %Session{} = session, arguments, source_type, author_name) do
-    with {:ok, target_kind} <- required_argument(arguments, "target_kind"),
-         :ok <- require_comment_target_kind(target_kind),
-         {:ok, target_id} <- required_argument(arguments, "target_id"),
+    with {:ok, target_kind, target_id} <- comment_target_arguments(arguments, session, source_type),
          {:ok, body} <- required_argument(arguments, "body"),
          {:ok, comment} <-
            CommentService.create_for_assignment(
@@ -12717,10 +12764,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp comment_tool_result("list_comments", repo, %Session{} = session, arguments, _source_type, _author_name) do
-    with {:ok, target_kind} <- required_argument(arguments, "target_kind"),
-         :ok <- require_comment_target_kind(target_kind),
-         {:ok, target_id} <- required_argument(arguments, "target_id"),
+  defp comment_tool_result("list_comments", repo, %Session{} = session, arguments, source_type, _author_name) do
+    with {:ok, target_kind, target_id} <- comment_target_arguments(arguments, session, source_type),
          {:ok, comments} <- CommentService.list_for_assignment(repo, session.assignment, target_kind, target_id) do
       {:ok,
        tool_result(%{
@@ -12741,6 +12786,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, tool_result(%{"comment" => comment_payload(resolved)})}
     end
   end
+
+  defp comment_target_arguments(arguments, %Session{} = session, :worker) do
+    with {:ok, target_kind} <- optional_string_argument(arguments, "target_kind", "work_package"),
+         :ok <- require_comment_target_kind(target_kind),
+         {:ok, target_id} <- comment_target_id_argument(arguments, session, target_kind) do
+      {:ok, target_kind, target_id}
+    end
+  end
+
+  defp comment_target_arguments(arguments, %Session{}, _source_type) do
+    with {:ok, target_kind} <- required_argument(arguments, "target_kind"),
+         :ok <- require_comment_target_kind(target_kind),
+         {:ok, target_id} <- required_argument(arguments, "target_id") do
+      {:ok, target_kind, target_id}
+    end
+  end
+
+  defp comment_target_id_argument(arguments, %Session{} = session, "work_package") do
+    case optional_string_argument(arguments, "target_id", Session.work_package_id(session)) do
+      {:ok, nil} -> {:tool_error, "missing_target_id"}
+      result -> result
+    end
+  end
+
+  defp comment_target_id_argument(arguments, %Session{}, _target_kind), do: required_argument(arguments, "target_id")
 
   defp comment_create_opts(:architect, target_kind), do: [action: architect_comment_add_action(target_kind)]
   defp comment_create_opts(_source_type, _target_kind), do: []
