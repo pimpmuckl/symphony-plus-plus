@@ -188,7 +188,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   def prepare_for_planned_slices(repo, id) when is_atom(repo) and is_binary(id) do
     case get(repo, id) do
       {:ok, %WorkRequest{status: status} = work_request} when status in ["ready_for_slicing", "sliced"] ->
-        {:ok, work_request}
+        case ensure_no_open_questions(repo, work_request.id) do
+          :ok -> {:ok, work_request}
+          {:error, reason} -> {:error, reason}
+        end
 
       {:ok, %WorkRequest{status: status} = work_request} when status in ["ready_for_clarification", "clarifying", "human_info_needed"] ->
         advance_ready_for_slicing(repo, work_request)
@@ -473,8 +476,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
 
   defp prepare_for_planned_slices_in_transaction(repo, work_request_id) do
     case get(repo, work_request_id) do
-      {:ok, %WorkRequest{status: status}} when status in ["ready_for_slicing", "sliced"] ->
-        :ok
+      {:ok, %WorkRequest{status: status} = work_request} when status in ["ready_for_slicing", "sliced"] ->
+        ensure_no_open_questions(repo, work_request.id)
 
       {:ok, %WorkRequest{status: status} = work_request} when status in ["ready_for_clarification", "clarifying", "human_info_needed"] ->
         advance_ready_for_slicing_in_transaction(repo, work_request)
@@ -522,6 +525,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
       work_request_ready_for_slicing?(repo, work_request.id) -> :ok
       stale_work_request_status?(repo, work_request) -> {:error, :stale_status}
       true -> {:error, :not_found}
+    end
+  end
+
+  defp ensure_no_open_questions(repo, work_request_id) do
+    if open_questions?(repo, work_request_id) do
+      {:error, :open_questions}
+    else
+      :ok
     end
   end
 

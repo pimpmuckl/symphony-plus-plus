@@ -175,6 +175,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
     assert {:ok, unchanged} = Repository.get(repo, blocked.id)
     assert unchanged.status == "clarifying"
 
+    for status <- ["ready_for_slicing", "sliced"] do
+      ready_blocked = create_work_request!(repo, id: "WR-SLICE-PREP-READY-BLOCKED-#{status}", status: status)
+
+      assert {:ok, _question} =
+               Repository.ask_question(
+                 repo,
+                 ready_blocked.id,
+                 question_attrs(id: "WRQ-SLICE-PREP-READY-BLOCKED-#{status}")
+               )
+
+      assert {:error, :open_questions} = Service.prepare_for_planned_slices(repo, ready_blocked.id)
+
+      assert {:error, :open_questions} =
+               Service.add_planned_slice_for_authoring(
+                 repo,
+                 ready_blocked.id,
+                 planned_slice_attrs(id: "WRS-SLICE-PREP-READY-BLOCKED-#{status}")
+               )
+
+      assert {:ok, unchanged} = Repository.get(repo, ready_blocked.id)
+      assert unchanged.status == status
+      assert {:ok, []} = Repository.list_planned_slices(repo, ready_blocked.id)
+    end
+
     invalid = create_work_request!(repo, id: "WR-SLICE-PREP-INVALID", status: "clarifying")
     assert {:ok, invalid_question} = Repository.ask_question(repo, invalid.id, question_attrs(id: "WRQ-SLICE-PREP-INVALID"))
 
