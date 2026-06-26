@@ -15,6 +15,12 @@ architect claim:
 
 ## Planned Slice Dispatch
 
+After all open clarification questions are answered or closed, there is no
+separate clarification-complete step. `add_work_request_planned_slice` can
+advance a `ready_for_clarification`, `clarifying`, or `human_info_needed`
+WorkRequest with zero open questions to `ready_for_slicing` before it inserts
+the slice. Open questions still block slicing.
+
 Approved planned slices are dispatched with `work_request_id` and
 `planned_slice_id`. Dispatch creates a linked WorkPackage and returns worker
 bootstrap metadata for `claim_local_assignment`.

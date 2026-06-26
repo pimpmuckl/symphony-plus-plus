@@ -456,6 +456,72 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
            } == counts_before
   end
 
+  test "planned slice add advances answered clarification WorkRequest after MCP read", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-CLARIFIED-SLICE", [
+        "read:work_request",
+        "write:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-CLARIFIED-SLICE",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "clarifying"
+      )
+
+    assert {:ok, question} =
+             WorkRequestRepository.ask_question(repo, work_request.id, work_request_question_attrs(id: "WRQ-MCP-WR-CLARIFIED-SLICE"))
+
+    assert {:ok, _answered} =
+             WorkRequestRepository.answer_question(repo, question.id, "open", %{
+               answer: "Implement the shared WorkRequest service path.",
+               answered_by: "operator-1"
+             })
+
+    read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => work_request.id})
+    assert get_in(read_response, ["result", "structuredContent", "work_request", "status"]) == "clarifying"
+    assert get_in(read_response, ["result", "structuredContent", "summary", "open_question_count"]) == 0
+
+    add_args = %{
+      "work_request_id" => work_request.id,
+      "title" => "Unlock clarified slicing",
+      "goal" => "Let architects add slices after questions are answered.",
+      "work_package_kind" => "mcp",
+      "target_base_branch" => anchor.base_branch,
+      "owned_file_globs" => ["elixir/lib/symphony_elixir/symphony_plus_plus/work_requests/service.ex"],
+      "forbidden_file_globs" => [],
+      "acceptance_criteria" => ["Answered clarification questions no longer require manual status ceremony."],
+      "validation_steps" => ["mix test test/symphony_elixir/symphony_plus_plus/mcp/work_request_tools_01_test.exs"],
+      "review_lanes" => ["normal"],
+      "stop_conditions" => ["Do not bypass open questions."]
+    }
+
+    add_response = mcp_tool(repo, session, "add_work_request_planned_slice", add_args)
+    add_payload = get_in(add_response, ["result", "structuredContent"])
+
+    assert add_payload["work_request"]["status"] == "ready_for_slicing"
+    assert get_in(add_payload, ["planned_slice", "status"]) == "planned"
+    assert add_payload["status"] == %{"work_request_status" => "ready_for_slicing", "planned_slice_status" => "planned"}
+
+    blocked =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-OPEN-QUESTION-SLICE",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "clarifying"
+      )
+
+    assert {:ok, _open_question} =
+             WorkRequestRepository.ask_question(repo, blocked.id, work_request_question_attrs(id: "WRQ-MCP-WR-OPEN-QUESTION-SLICE"))
+
+    blocked_response = mcp_tool(repo, session, "add_work_request_planned_slice", Map.put(add_args, "work_request_id", blocked.id))
+
+    assert get_in(blocked_response, ["error", "data", "reason"]) == "open_questions"
+    assert get_in(blocked_response, ["error", "data", "message"]) =~ "Answer or close all open clarification questions"
+  end
+
   test "architect-facing MCP reads emit TOON text without changing structured WorkRequest truth", %{repo: repo} do
     {anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-TOON", [

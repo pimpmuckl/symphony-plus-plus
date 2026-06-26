@@ -769,7 +769,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
               Read-only architecture plan. Approval and slice authoring stay in the architect workflow; approved slices can be dispatched here.
             </p>
             <.form
-              :if={show_architect_work_request_controls?(@operator_mode?, @board_grant) && can_author_planned_slice?(@page.work_request)}
+              :if={show_architect_work_request_controls?(@operator_mode?, @board_grant) && can_author_planned_slice?(@page)}
               :let={f}
               for={@page.planned_slice_form}
               as={:planned_slice}
@@ -1351,6 +1351,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp planned_slice_form_error_message(:database_busy), do: "The Symphony++ ledger is busy. Try again shortly."
   defp planned_slice_form_error_message(:not_found), do: action_error_message(:not_found)
   defp planned_slice_form_error_message(:invalid_status), do: action_error_message(:invalid_status)
+  defp planned_slice_form_error_message(:open_questions), do: action_error_message(:open_questions)
 
   defp planned_slice_form_error_message({:storage_failed, _reason}),
     do: "The Symphony++ ledger could not store the planned slice."
@@ -1701,9 +1702,8 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp add_planned_slice_in_repo(repo, actor, work_request_id, attrs) do
-    with {:ok, work_request} <- scoped_work_request(repo, actor, work_request_id),
-         :ok <- require_planned_slice_authoring_status(work_request.status) do
-      WorkRequestService.add_planned_slice(repo, work_request.id, attrs)
+    with {:ok, work_request} <- scoped_work_request(repo, actor, work_request_id) do
+      WorkRequestService.add_planned_slice_for_authoring(repo, work_request.id, attrs)
     end
   end
 
@@ -2493,6 +2493,12 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp can_mark_ready_for_slicing?(work_request) do
     value(work_request, :status) in ["ready_for_clarification", "clarifying", "human_info_needed"]
+  end
+
+  defp can_author_planned_slice?(%{work_request: work_request} = page) do
+    can_author_planned_slice?(work_request) or
+      (value(work_request, :status) in ["ready_for_clarification", "clarifying", "human_info_needed"] and
+         detail_open_question_count(page) == 0)
   end
 
   defp can_author_planned_slice?(work_request),

@@ -3888,7 +3888,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- require_supported_branch_pattern(branch_pattern),
          {:ok, work_request, filters, scope} <-
            authorized_work_request_scope(config.repo, session, work_request_id, :planned_slice_create, "add_work_request_planned_slice"),
-         :ok <- require_planned_slice_authoring_status(work_request.status),
          :ok <- validate_planned_slice_scope_for_tool(work_request, work_package_kind, owned_file_globs),
          attrs =
            optional_put(
@@ -4435,7 +4434,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp add_planned_slice_and_reload_work_request(repo, work_request_id, attrs, filters) do
-    with {:ok, planned_slice} <- WorkRequestService.add_planned_slice(repo, work_request_id, attrs),
+    with {:ok, planned_slice} <- WorkRequestService.add_planned_slice_for_authoring(repo, work_request_id, attrs),
          {:ok, updated_work_request} <- scoped_work_request(repo, work_request_id, filters) do
       {:ok, {planned_slice, updated_work_request}}
     end
@@ -12389,6 +12388,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_error({:planned_slice_scope_violation, errors}, tool) do
     invalid_params_error(tool, {:planned_slice_scope_violation, errors})
+  end
+
+  defp architect_error(:open_questions, tool) do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "open_questions",
+       "message" => "Answer or close all open clarification questions before adding planned slices."
+     }}
   end
 
   defp architect_error(reason, tool) when reason in [:invalid_repo_root, :missing_repo_root] do

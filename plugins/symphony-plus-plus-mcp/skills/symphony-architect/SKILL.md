@@ -44,6 +44,10 @@ that as presentation only: tool arguments remain JSON/schema-native, and
   `source_type`: `human`, `architect`, `operator`, `ask_pro_advisory`.
 - Escalate to `human_info_needed` when the human must decide. Do not choose
   product behavior just to keep work moving.
+- Once open questions are answered or closed, continue straight to
+  `read_work_request` and `add_work_request_planned_slice`; no separate
+  clarification-complete status tool is required. Open questions still block
+  slicing.
 
 ## Slice
 
