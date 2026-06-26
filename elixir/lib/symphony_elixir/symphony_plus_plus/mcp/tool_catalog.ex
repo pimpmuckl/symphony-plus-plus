@@ -275,57 +275,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
     }
   end
 
-  defp architect_tool_description("read_child_status") do
-    "Read the architect grant's scoped child work-package status without Phase 7 delegation."
-  end
-
-  defp architect_tool_description("create_child_work_package") do
-    "Create a phase-child work package inside the architect grant's current phase."
-  end
-
-  defp architect_tool_description("mint_child_worker_key") do
-    "Mint a narrower worker grant for a phase-child work package in the architect grant's current phase."
-  end
-
-  defp architect_tool_description("revoke_child_worker_key") do
-    "Revoke one live child-worker grant for a same-phase child package in the architect grant's current phase."
-  end
-
-  defp architect_tool_description("list_work_requests") do
-    "List WorkRequests scoped to the architect grant's repo and base branch."
-  end
-
-  defp architect_tool_description("read_work_request") do
-    "Read a scoped WorkRequest with clarification questions, decisions, visible planned slices, and status summaries."
-  end
-
-  defp architect_tool_description("read_work_request_product_tree") do
-    "Read the scoped WorkRequest V3 product-tree projection, with optional slice refs or full visible slice payloads."
-  end
-
-  defp architect_tool_description("add_comment") do
-    "Add a policy-scoped comment to a claimed WorkRequest descendant package surface, or a narrow external comment to a visible WorkRequest."
-  end
-
-  defp architect_tool_description("list_comments") do
-    "List comments attached to a scoped WorkRequest, planned slice, or linked WorkPackage."
-  end
-
-  defp architect_tool_description("resolve_comment") do
-    "Resolve a policy-scoped comment attached to a claimed WorkRequest descendant package surface."
-  end
-
-  defp architect_tool_description("resolve_blocker") do
-    "Resolve a blocker event for a policy-scoped descendant WorkPackage."
-  end
-
-  defp architect_tool_description("read_work_request_delivery_board") do
-    "Read the scoped WorkRequest delivery-board projection for visible planned-slice closeout without broad package visibility."
-  end
-
-  defp architect_tool_description("reconcile_work_request") do
-    "Dry-run or apply deterministic WorkRequest delivery closeout repairs from structured PR/GitHub evidence."
-  end
+  defp architect_tool_description("read_child_status"), do: "Read the architect grant's scoped child work-package status without Phase 7 delegation."
+  defp architect_tool_description("create_child_work_package"), do: "Create a phase-child work package inside the architect grant's current phase."
+  defp architect_tool_description("mint_child_worker_key"), do: "Mint a narrower worker grant for a phase-child work package in the architect grant's current phase."
+  defp architect_tool_description("revoke_child_worker_key"), do: "Revoke one live child-worker grant for a same-phase child package in the architect grant's current phase."
+  defp architect_tool_description("list_work_requests"), do: "List WorkRequests scoped to the architect grant's repo and base branch."
+  defp architect_tool_description("read_work_request"), do: "Read a scoped WorkRequest with clarification questions, decisions, visible planned slices, and status summaries."
+  defp architect_tool_description("read_work_request_product_tree"), do: "Read the scoped WorkRequest V3 product-tree projection, with optional slice refs or full visible slice payloads."
+  defp architect_tool_description("add_comment"), do: "Add a policy-scoped comment to a claimed WorkRequest descendant package surface, or a narrow external comment to a visible WorkRequest."
+  defp architect_tool_description("list_comments"), do: "List comments attached to a scoped WorkRequest, planned slice, or linked WorkPackage."
+  defp architect_tool_description("resolve_comment"), do: "Resolve a policy-scoped comment attached to a claimed WorkRequest descendant package surface."
+  defp architect_tool_description("resolve_blocker"), do: "Resolve a blocker event for a policy-scoped descendant WorkPackage."
+  defp architect_tool_description("read_work_request_delivery_board"), do: "Read the scoped WorkRequest delivery-board projection for visible planned-slice closeout without broad package visibility."
+  defp architect_tool_description("reconcile_work_request"), do: "Dry-run or apply deterministic WorkRequest delivery closeout repairs from structured PR/GitHub evidence."
 
   defp architect_tool_description("record_planned_slice_delivery") do
     "Record an idempotent planned-slice delivery closeout. Required evidence depends on outcome: pr_merged needs PR evidence, completed_no_pr needs direct evidence, superseded needs successor and reason, and abandoned needs rationale. Use abandoned for cleaned no-code failed dispatches that never reached implementation. If the linked WorkPackage has active blockers, answer blocker_closeout to say whether those blockers are resolved or intentionally still active."
@@ -334,49 +296,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   defp architect_tool_description(tool) when tool in ["cleanup_work_request_planned_slice_runtime", "revoke_planned_slice_worker_key"],
     do: delivery_runtime_tool_description(tool)
 
-  defp architect_tool_description("list_guidance_requests") do
-    "List package-scoped guidance requests visible to the architect grant's phase, repo, and base branch."
-  end
+  defp architect_tool_description("list_guidance_requests"), do: "List package-scoped guidance requests visible to the architect grant's phase, repo, and base branch."
+  defp architect_tool_description("read_guidance_request"), do: "Read one package-scoped guidance request visible to the architect grant."
+  defp architect_tool_description("answer_guidance_request"), do: "Answer an open package-scoped guidance request."
+  defp architect_tool_description("escalate_guidance_request"), do: "Escalate an open guidance request to human_info_needed and project it as an active package blocker."
+  defp architect_tool_description("set_work_request_status"), do: "Move a scoped WorkRequest between valid statuses with optimistic current-status checking."
+  defp architect_tool_description("ask_work_request_question"), do: "Add a clarification question to a scoped WorkRequest."
+  defp architect_tool_description("answer_work_request_question"), do: "Answer an open clarification question that belongs to a scoped WorkRequest."
+  defp architect_tool_description("answer_work_request_question_and_record_decision"), do: "Answer an open clarification question and atomically record the resulting WorkRequest decision."
+  defp architect_tool_description("close_work_request_question"), do: "Close an open clarification question that belongs to a scoped WorkRequest without recording an answer."
 
-  defp architect_tool_description("read_guidance_request") do
-    "Read one package-scoped guidance request visible to the architect grant."
-  end
+  defp architect_tool_description("record_work_request_decision"),
+    do: "Record a durable decision log entry on a scoped WorkRequest. source_type must be one of: #{Enum.join(DecisionLogEntry.source_types(), ", ")}."
 
-  defp architect_tool_description("answer_guidance_request") do
-    "Answer an open package-scoped guidance request."
-  end
-
-  defp architect_tool_description("escalate_guidance_request") do
-    "Escalate an open guidance request to human_info_needed and project it as an active package blocker."
-  end
-
-  defp architect_tool_description("set_work_request_status") do
-    "Move a scoped WorkRequest between valid statuses with optimistic current-status checking."
-  end
-
-  defp architect_tool_description("ask_work_request_question") do
-    "Add a clarification question to a scoped WorkRequest."
-  end
-
-  defp architect_tool_description("answer_work_request_question") do
-    "Answer an open clarification question that belongs to a scoped WorkRequest."
-  end
-
-  defp architect_tool_description("answer_work_request_question_and_record_decision") do
-    "Answer an open clarification question and atomically record the resulting WorkRequest decision."
-  end
-
-  defp architect_tool_description("close_work_request_question") do
-    "Close an open clarification question that belongs to a scoped WorkRequest without recording an answer."
-  end
-
-  defp architect_tool_description("record_work_request_decision") do
-    "Record a durable decision log entry on a scoped WorkRequest. source_type must be one of: #{Enum.join(DecisionLogEntry.source_types(), ", ")}."
-  end
-
-  defp architect_tool_description("add_work_request_planned_slice") do
-    "Add a planned slice to a scoped WorkRequest."
-  end
+  defp architect_tool_description("add_work_request_planned_slice"), do: "Add a planned slice to a scoped WorkRequest."
 
   defp architect_tool_description("upsert_work_request_product_plan_node") do
     "Create, update, or reparent a V3 product plan node inside a scoped WorkRequest. Do not create a plan node solely to wrap one slice. Leave simple slices direct unless the node groups multiple units or records a real product boundary. If setting completion_mark to done or deferred and descendant blockers are active, answer blocker_closeout before completing the node."
@@ -410,21 +343,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
     "Clean up a scoped WorkPackage git worktree after validating the recorded path and dirty state."
   end
 
-  defp architect_tool_description("approve_scope_expansion") do
-    "Approve additional allowed file globs for this scoped work package."
-  end
-
-  defp architect_tool_description("read_phase_board") do
-    "Read the architect grant's scoped phase board."
-  end
-
-  defp architect_tool_description("approve_child_ready_state") do
-    "Approve a ready phase-child package for merge into the architect's phase."
-  end
-
-  defp architect_tool_description("merge_child_into_phase") do
-    "Record a local phase merge artifact and mark a phase child merged into the architect's phase."
-  end
+  defp architect_tool_description("approve_scope_expansion"), do: "Approve additional allowed file globs for this scoped work package."
+  defp architect_tool_description("read_phase_board"), do: "Read the architect grant's scoped phase board."
+  defp architect_tool_description("approve_child_ready_state"), do: "Approve a ready phase-child package for merge into the architect's phase."
+  defp architect_tool_description("merge_child_into_phase"), do: "Record a local phase merge artifact and mark a phase child merged into the architect's phase."
 
   defp architect_tool_description(name) when name in @phase7_stub_architect_tools do
     "Phase 7 architect tool #{name}; authorization is enforced, but behavior is not implemented yet."
@@ -658,30 +580,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   end
 
   def worker_tool_input_schema("attach_pr") do
-    schema(
-      metadata_properties(%{
-        "url" => string_schema(),
-        "number" => pr_number_schema(),
-        "repository" => string_schema(),
-        "head_sha" => string_schema(),
-        "metadata" => object_schema()
-      }),
-      []
-    )
+    schema(metadata_properties(pr_metadata_properties()), [])
     |> require_pr_identity_and_head()
   end
 
   def worker_tool_input_schema("sync_pr") do
-    schema(
-      metadata_properties(%{
-        "url" => string_schema(),
-        "number" => pr_number_schema(),
-        "repository" => string_schema(),
-        "head_sha" => string_schema(),
-        "metadata" => object_schema()
-      }),
-      ["metadata"]
-    )
+    schema(metadata_properties(pr_metadata_properties()), ["metadata"])
     |> require_pr_identity_and_head()
   end
 
@@ -746,14 +650,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
 
   def architect_tool_input_schema("list_work_requests"), do: schema(%{"status" => string_schema()}, [])
 
-  def architect_tool_input_schema("read_work_request") do
-    schema(
-      %{
-        "work_request_id" => string_schema()
-      },
-      ["work_request_id"]
-    )
-  end
+  def architect_tool_input_schema("read_work_request"), do: schema(%{"work_request_id" => string_schema()}, ["work_request_id"])
 
   def architect_tool_input_schema("read_work_request_product_tree") do
     schema(
@@ -1269,6 +1166,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
     |> scoped_properties()
   end
 
+  defp pr_metadata_properties do
+    %{
+      "url" => string_schema(),
+      "number" => pr_number_schema(),
+      "repository" => string_schema(),
+      "head_sha" => string_schema(),
+      "metadata" => object_schema()
+    }
+  end
+
   defp string_schema, do: %{"type" => "string"}
   defp described_string_schema(description), do: Map.put(string_schema(), "description", description)
   defp markdown_string_schema(description), do: described_string_schema(description)
@@ -1416,11 +1323,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
     }
   end
 
-  defp delivery_runtime_tool_description("cleanup_work_request_planned_slice_runtime") do
-    "Recycle stale or superseded runtime authority for the WorkPackage linked to a scoped WorkRequest planned slice after superseded or abandoned delivery evidence is supplied. Revokes linked worker grants, releases non-paused local claim leases, clears recoverable worker MCP session bindings, and records audit evidence before delivery closeout."
-  end
+  defp delivery_runtime_tool_description("cleanup_work_request_planned_slice_runtime"),
+    do:
+      "Recycle stale or superseded runtime authority for the WorkPackage linked to a scoped WorkRequest planned slice after superseded or abandoned delivery evidence is supplied. Revokes linked worker grants, releases non-paused local claim leases, clears recoverable worker MCP session bindings, and records audit evidence before delivery closeout."
 
-  defp delivery_runtime_tool_description("revoke_planned_slice_worker_key") do
-    "Revoke one live worker grant for the WorkPackage linked to a scoped WorkRequest planned slice during in-progress recycle or delivery closeout cleanup."
-  end
+  defp delivery_runtime_tool_description("revoke_planned_slice_worker_key"),
+    do: "Revoke one live worker grant for the WorkPackage linked to a scoped WorkRequest planned slice during in-progress recycle or delivery closeout cleanup."
 end
