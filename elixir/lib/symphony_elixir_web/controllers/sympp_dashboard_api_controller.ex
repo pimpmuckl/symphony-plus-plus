@@ -2360,6 +2360,12 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp error_response(conn, :linked_work_package), do: error_response(conn, 422, "linked_work_package", "WorkPackage is linked to a WorkRequest")
   defp error_response(conn, :linked_work_package_required), do: error_response(conn, 422, "linked_work_package_required", "WorkPackage is not linked to a WorkRequest")
   defp error_response(conn, :missing_no_pr_evidence), do: error_response(conn, 422, "missing_no_pr_evidence", "No-PR evidence is required")
+  defp error_response(conn, :active_blocker), do: error_response(conn, 412, "active_blocker", "Closeout is blocked by active blockers")
+  defp error_response(conn, :active_runtime), do: error_response(conn, 412, "active_runtime", "Closeout is blocked by active worker state")
+  defp error_response(conn, :claim_not_current), do: error_response(conn, 412, "runtime_lease_conflict", "Closeout runtime state changed; retry the action")
+  defp error_response(conn, :stale_status), do: error_response(conn, 409, "stale_status", "WorkPackage status changed; refresh and retry")
+  defp error_response(conn, :work_package_mismatch), do: error_response(conn, 409, "work_package_mismatch", "WorkPackage no longer matches its planned slice")
+  defp error_response(conn, :work_package_not_abandonable), do: error_response(conn, 412, "work_package_not_abandonable", "WorkPackage cannot be abandoned from its current history")
 
   defp error_response(conn, :missing_custom_redirect_note) do
     error_response(conn, 422, "missing_custom_redirect_note", "A note is required for the custom answer")
