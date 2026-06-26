@@ -106,6 +106,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     assert "must be an exact branch or a {{placeholder}} template; '*' wildcards are not supported" in errors_on(branch_pattern_changeset).branch_pattern
   end
 
+  test "updates metadata on persisted legacy kind rows", %{repo: repo} do
+    legacy_package =
+      WorkPackageFactory.attrs(
+        id: "SYMPP-LEGACY-KIND-UPDATE",
+        kind: "standard_pr",
+        status: "ready_for_worker"
+      )
+      |> then(&struct!(WorkPackage, &1))
+      |> repo.insert!()
+
+    assert {:ok, updated} =
+             Repository.update(repo, legacy_package.id, %{
+               title: "Updated legacy title",
+               worktree_path: "C:/tmp/legacy-worktree"
+             })
+
+    assert updated.kind == "standard_pr"
+    assert updated.title == "Updated legacy title"
+    assert updated.worktree_path == "C:/tmp/legacy-worktree"
+  end
+
+  test "rejects updates that convert current packages to legacy kinds", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-LEGACY-KIND-CHANGE", kind: "hotfix"))
+
+    assert {:error, %Ecto.Changeset{} = changeset} = Repository.update(repo, package.id, %{kind: "standard_pr"})
+
+    assert "is invalid" in errors_on(changeset).kind
+  end
+
   test "rejects noncanonical policy templates", %{repo: repo} do
     assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "mcp", policy_template: "mcp"))
     assert package.policy_template == "mcp"

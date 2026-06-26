@@ -220,16 +220,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp truthy_config?(value), do: value in [true, :enabled, "enabled", "true", "1", 1]
 
-  defp include_planning_scratch_opts(params) do
-    if truthy_param?(Map.get(params, "include_planning_scratch")) do
-      [include_planning_scratch?: true]
-    else
-      []
-    end
-  end
-
-  defp truthy_param?(value), do: value in [true, "true", "1", 1, "yes", "on"]
-
   defp loopback_request?({127, _second, _third, _fourth}), do: true
   defp loopback_request?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
   defp loopback_request?(_remote_ip), do: false
@@ -601,13 +591,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   @spec work_request_detail(Conn.t(), map()) :: Conn.t()
-  def work_request_detail(conn, %{"work_request_id" => work_request_id} = params) do
+  def work_request_detail(conn, %{"work_request_id" => work_request_id}) do
     send_repo_response(conn, fn repo, secret ->
-      opts = include_planning_scratch_opts(params)
-
       with {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- auth_context(conn, repo, secret),
            :ok <- require_work_request_board(repo, auth_context),
-           {:ok, payload} <- Dashboard.work_request_detail_for_grant(repo, work_request_id, grant, opts) do
+           {:ok, payload} <- Dashboard.work_request_detail_for_grant(repo, work_request_id, grant) do
         json(conn, payload)
       end
     end)
@@ -685,15 +673,20 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   @spec operator_work_request_detail(Conn.t(), map()) :: Conn.t()
-  def operator_work_request_detail(conn, %{"work_request_id" => work_request_id} = params) do
-    send_local_operator_response(conn, :dashboard_read, Target.new(:dashboard), :operator_work_request_detail, fn repo ->
-      opts = include_planning_scratch_opts(params)
-
-      with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo),
-           {:ok, payload} <- Dashboard.work_request_detail(repo, work_request_id, Keyword.put(opts, :repo_identity_catalog, repo_identity_catalog)) do
-        json(conn, payload)
+  def operator_work_request_detail(conn, %{"work_request_id" => work_request_id}) do
+    send_local_operator_response(
+      conn,
+      :dashboard_read,
+      Target.new(:dashboard),
+      :operator_work_request_detail,
+      fn repo ->
+        with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo),
+             detail_opts = [repo_identity_catalog: repo_identity_catalog],
+             {:ok, payload} <- Dashboard.work_request_detail(repo, work_request_id, detail_opts) do
+          json(conn, payload)
+        end
       end
-    end)
+    )
   end
 
   @spec operator_sync_github_prs(Conn.t(), map()) :: Conn.t()

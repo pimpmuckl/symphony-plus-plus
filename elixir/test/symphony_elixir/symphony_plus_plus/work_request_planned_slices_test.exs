@@ -619,7 +619,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
     assert {:ok, []} = Repository.list_planned_slices(repo, work_request.id)
   end
 
-  test "dispatch orchestration creates and links standalone docs planned slices", %{repo: repo, database_path: database_path} do
+  test "dispatch orchestration creates and links docs planned slices", %{repo: repo, database_path: database_path} do
     work_request =
       create_work_request!(
         repo,
@@ -696,18 +696,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
     assert {:ok, invalid_create_approved} =
              Repository.approve_planned_slice(repo, invalid_create_request.id, invalid_create_planned.id, "planned")
 
-    unsupported_request = create_work_request!(repo, id: "WR-DISPATCH-KIND-REJECT", status: "ready_for_slicing")
-
-    assert {:ok, unsupported_planned} =
-             Repository.add_planned_slice(
-               repo,
-               unsupported_request.id,
-               planned_slice_attrs(id: "WRS-DISPATCH-KIND-REJECT", work_package_kind: "standard_pr")
-             )
-
-    assert {:ok, unsupported_approved} =
-             Repository.approve_planned_slice(repo, unsupported_request.id, unsupported_planned.id, "planned")
-
     invalid_docs_request = create_work_request!(repo, id: "WR-DISPATCH-DOCS-SCOPE-REJECT", status: "ready_for_slicing")
 
     assert {:ok, invalid_docs_planned} =
@@ -740,14 +728,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
     assert {:error, :missing_acceptance_criteria} =
              PlannedSliceDispatch.dispatch(repo, invalid_create_request.id, invalid_create_approved.id, handoff_opts)
 
-    assert {:error, {:unsupported_standalone_kind, "standard_pr"}} =
-             PlannedSliceDispatch.dispatch(repo, unsupported_request.id, unsupported_approved.id, handoff_opts)
-
     assert {:error, {:planned_slice_scope_violation, [{:non_documentation_owned_glob, "elixir/lib/**"}]}} =
              PlannedSliceDispatch.dispatch(repo, invalid_docs_request.id, invalid_docs_approved.id, handoff_opts)
 
     assert repo.aggregate(WorkPackage, :count, :id) == 0
     assert repo.aggregate(AccessGrant, :count, :id) == 0
+  end
+
+  test "planned slices reject non-executable WorkPackage kinds", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-PLANNED-SLICE-KIND-REJECT", status: "ready_for_slicing")
+
+    assert {:error, changeset} =
+             Repository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-PLANNED-SLICE-KIND-REJECT", work_package_kind: "standard_pr")
+             )
+
+    assert {"is invalid", _} = changeset.errors[:work_package_kind]
   end
 
   test "dispatch orchestration cleans up created work when linkage fails", %{repo: repo, database_path: database_path} do

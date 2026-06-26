@@ -13,30 +13,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
   @primary_key {:id, :string, autogenerate: false}
   @foreign_key_type :string
 
-  @kinds [
+  @executable_kinds [
     "quick_fix",
     "hotfix",
-    "standard_pr",
-    "phase_child",
+    "docs",
     "investigation",
-    "review_only",
-    "setup",
-    "core",
     "adapter",
     "mcp",
     "skill",
-    "hooks",
+    "hooks"
+  ]
+  @phase_child_kind "phase_child"
+  @planned_slice_kinds @executable_kinds
+  @anchor_kinds ["delegation"]
+  @kinds @executable_kinds ++ [@phase_child_kind] ++ @anchor_kinds
+  @legacy_kinds [
+    "standard_pr",
+    "review_only",
+    "setup",
+    "core",
     "product",
     "dashboard",
     "integration",
     "security",
-    "delegation",
     "hardening",
     "pilot",
-    "docs",
     "e2e",
     "analysis"
   ]
+  @persisted_kinds @kinds ++ @legacy_kinds
 
   @statuses [
     "created",
@@ -102,6 +107,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
   @spec kinds() :: [String.t()]
   def kinds, do: @kinds
 
+  @spec executable_kinds() :: [String.t()]
+  def executable_kinds, do: @executable_kinds
+
+  @spec planned_slice_kinds() :: [String.t()]
+  def planned_slice_kinds, do: @planned_slice_kinds
+
   @spec statuses() :: [String.t()]
   def statuses, do: @statuses
 
@@ -120,12 +131,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
 
   @spec update_changeset(t(), map()) :: Ecto.Changeset.t()
   def update_changeset(%__MODULE__{} = work_package, attrs) do
+    attrs = Map.drop(normalize_keys(attrs), ["id", "inserted_at", "updated_at", "created_at"])
+
     work_package
-    |> changeset(Map.drop(normalize_keys(attrs), ["id", "inserted_at", "updated_at", "created_at"]))
+    |> changeset(attrs, update_valid_kinds(work_package, attrs))
   end
 
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(%__MODULE__{} = work_package, attrs) do
+    changeset(work_package, attrs, @kinds)
+  end
+
+  defp changeset(%__MODULE__{} = work_package, attrs, valid_kinds) do
     work_package
     |> cast(normalize_keys(attrs), [
       :id,
@@ -147,10 +164,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
       :owner_id
     ])
     |> validate_required([:id, :kind, :title, :repo, :base_branch, :acceptance_criteria, :status])
-    |> validate_inclusion(:kind, @kinds)
+    |> validate_inclusion(:kind, valid_kinds)
     |> validate_inclusion(:status, @statuses)
     |> validate_branch_pattern()
     |> validate_policy_template()
+  end
+
+  defp update_valid_kinds(%__MODULE__{} = work_package, attrs) do
+    case Map.get(attrs, "kind") do
+      nil -> @persisted_kinds
+      kind when kind == work_package.kind -> @persisted_kinds
+      _kind -> @kinds
+    end
   end
 
   defp validate_branch_pattern(changeset) do

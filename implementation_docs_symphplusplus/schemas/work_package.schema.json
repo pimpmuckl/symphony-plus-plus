@@ -18,26 +18,14 @@
       "enum": [
         "quick_fix",
         "hotfix",
-        "standard_pr",
         "phase_child",
         "investigation",
-        "review_only",
-        "setup",
-        "core",
         "adapter",
         "mcp",
         "skill",
         "hooks",
-        "product",
-        "dashboard",
-        "integration",
-        "security",
         "delegation",
-        "hardening",
-        "pilot",
-        "docs",
-        "e2e",
-        "analysis"
+        "docs"
       ]
     },
     "title": {

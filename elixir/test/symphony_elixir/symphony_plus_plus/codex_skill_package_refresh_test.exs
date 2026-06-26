@@ -3,6 +3,8 @@ Code.require_file("codex_skill_package_case_test.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageRefreshTest do
   use SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageCase, async: true
 
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+
   @tag :ci_slow
   test "refresh script installs the repo-local plugin into the requested Codex home" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
@@ -771,6 +773,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageRefreshTest do
              DecisionLogEntry.source_types()
 
     assert get_in(tool_schemas, ["add_work_request_planned_slice", "argument_constraints", "work_package_kind"]) ==
-             StateMachine.standalone_kinds()
+             WorkPackage.planned_slice_kinds()
   end
 end

@@ -1601,8 +1601,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
   end
 
   defp create_planned_slice!(repo, work_request, overrides) do
-    assert {:ok, planned_slice} = Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(overrides))
-    planned_slice
+    attrs = planned_slice_attrs(overrides)
+
+    if attrs.work_package_kind == "phase_child" do
+      insert_phase_child_fixture!(repo, work_request, attrs)
+    else
+      assert {:ok, planned_slice} = Repository.add_planned_slice(repo, work_request.id, attrs)
+      planned_slice
+    end
+  end
+
+  defp insert_phase_child_fixture!(repo, work_request, attrs) do
+    attrs =
+      Map.merge(attrs, %{
+        work_request_id: work_request.id,
+        sequence: 1,
+        status: "planned"
+      })
+
+    repo.insert!(struct!(PlannedSlice, attrs))
   end
 
   defp create_matching_work_package!(repo, work_request, planned_slice, overrides) do

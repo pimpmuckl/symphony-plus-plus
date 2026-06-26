@@ -23,8 +23,8 @@ bootstrap metadata for `claim_local_assignment`.
 
 Closeout is recorded with `record_planned_slice_delivery` using PR evidence,
 direct no-PR evidence, supersession evidence, or an abandoned rationale.
-Skipped scratch planning slices remain hidden from normal delivery projection
-unless explicitly requested.
+Skipped planned slices remain visible in normal delivery projection; there is no
+separate scratch-planning projection.
 
 All WorkRequest payloads must redact tokens, grant verifiers, secret hashes, and
 secret-like prose.

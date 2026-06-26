@@ -1232,17 +1232,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     read_refs_node = read_refs_nodes_by_id[product_tree_node_id]
 
     assert read_refs_payload["view"] == "nodes_with_slice_refs"
-    assert read_refs_node["slice_ids"] == [planned_slice.id]
+    assert Enum.sort(read_refs_node["slice_ids"]) == Enum.sort([planned_slice.id, scratch_slice.id])
     assert read_refs_node["computed_completion_mark"] == "partial"
     assert {read_refs_node["attention_count"], read_refs_node["guidance_count"], read_refs_node["blocker_count"]} == {1, 0, 1}
     assert Map.has_key?(read_refs_nodes_by_id, child_node_id)
-    assert get_in(read_refs_tree, ["slice_refs", Access.at(0), "id"]) == planned_slice.id
-    assert get_in(read_refs_tree, ["slice_refs", Access.at(0), "work_package_id"]) == work_package_id
-    assert get_in(read_refs_tree, ["slice_refs", Access.at(0), "operational_state", "key"]) == "blocked"
-    assert get_in(read_refs_tree, ["slice_refs", Access.at(0), "has_full_payload"]) == false
+    read_refs_by_id = Map.new(read_refs_tree["slice_refs"], &{&1["id"], &1})
+    assert get_in(read_refs_by_id, [planned_slice.id, "work_package_id"]) == work_package_id
+    assert get_in(read_refs_by_id, [planned_slice.id, "operational_state", "key"]) == "blocked"
+    assert get_in(read_refs_by_id, [planned_slice.id, "has_full_payload"]) == false
+    assert get_in(read_refs_by_id, [scratch_slice.id, "has_full_payload"]) == false
     summary = read_refs_tree["summary"]
     assert {summary["attention_count"], summary["guidance_count"], summary["blocker_count"]} == {1, 0, 1}
-    refute scratch_slice.id in Enum.map(read_refs_tree["slice_refs"], & &1["id"])
     refute Map.has_key?(read_refs_tree, "slices")
 
     read_nodes_response =
@@ -1259,20 +1259,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     refute Enum.any?(["slice_ids", "attention_count", "guidance_count"], &Map.has_key?(read_nodes_by_id[product_tree_node_id], &1))
     assert read_nodes_by_id[product_tree_node_id]["computed_completion_mark"] == "partial"
     assert read_nodes_tree["root_slice_ids"] == []
-    assert read_nodes_tree["omitted_slice_count"] == 1
-
-    read_scratch_response =
-      mcp_tool(repo, session, "read_work_request_product_tree", %{
-        "work_request_id" => work_request.id,
-        "include_planning_scratch" => true
-      })
-
-    read_scratch_tree = get_in(read_scratch_response, ["result", "structuredContent", "product_tree"])
-    read_scratch_nodes_by_id = Map.new(read_scratch_tree["nodes"], &{&1["id"], &1})
-
-    assert Enum.sort(read_scratch_nodes_by_id[product_tree_node_id]["slice_ids"]) == Enum.sort([planned_slice.id, scratch_slice.id])
-    assert Map.has_key?(read_scratch_nodes_by_id, child_node_id)
-    assert scratch_slice.id in Enum.map(read_scratch_tree["slice_refs"], & &1["id"])
+    assert read_nodes_tree["omitted_slice_count"] == 2
 
     read_full_response =
       mcp_tool(repo, session, "read_work_request_product_tree", %{
@@ -1283,9 +1270,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     read_full_tree = get_in(read_full_response, ["result", "structuredContent", "product_tree"])
     read_full_text = get_in(read_full_response, ["result", "content", Access.at(0), "text"])
 
-    assert get_in(read_full_tree, ["slices", Access.at(0), "id"]) == planned_slice.id
-    assert get_in(read_full_tree, ["slices", Access.at(0), "goal"]) == "Expose scoped read-only WorkRequest MCP payloads."
-    assert get_in(read_full_tree, ["slices", Access.at(0), "operational_state", "key"]) == "blocked"
+    read_full_by_id = Map.new(read_full_tree["slices"], &{&1["id"], &1})
+    assert get_in(read_full_by_id, [planned_slice.id, "goal"]) == "Expose scoped read-only WorkRequest MCP payloads."
+    assert get_in(read_full_by_id, [planned_slice.id, "operational_state", "key"]) == "blocked"
+    assert Map.has_key?(read_full_by_id, scratch_slice.id)
     assert read_full_text =~ "agent_context: work_request_product_tree"
     assert read_full_text =~ "nodes_with_slices"
 

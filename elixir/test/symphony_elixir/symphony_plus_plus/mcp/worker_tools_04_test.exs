@@ -455,7 +455,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert {:ok, package} =
              WorkPackageRepository.create(
                repo,
-               WorkPackageFactory.attrs(id: "SYMPP-PR-LEGACY-REPLAY", kind: "standard_pr", repo: "nextide/symphony-plus-plus", status: "ci_waiting")
+               WorkPackageFactory.attrs(id: "SYMPP-PR-LEGACY-REPLAY", kind: "mcp", repo: "nextide/symphony-plus-plus", status: "ci_waiting")
              )
 
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -494,7 +494,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert {:ok, package} =
              WorkPackageRepository.create(
                repo,
-               WorkPackageFactory.attrs(id: "SYMPP-PR-METADATA-ERROR", kind: "standard_pr", repo: "nextide/symphony-plus-plus", status: "ci_waiting")
+               WorkPackageFactory.attrs(id: "SYMPP-PR-METADATA-ERROR", kind: "mcp", repo: "nextide/symphony-plus-plus", status: "ci_waiting")
              )
 
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -557,7 +557,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert {:ok, package} =
              WorkPackageRepository.create(
                repo,
-               WorkPackageFactory.attrs(id: "SYMPP-PR-SYNC-BOUNDARY", kind: "standard_pr", repo: "nextide/symphony-plus-plus", status: "ci_waiting")
+               WorkPackageFactory.attrs(id: "SYMPP-PR-SYNC-BOUNDARY", kind: "mcp", repo: "nextide/symphony-plus-plus", status: "ci_waiting")
              )
 
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -633,7 +633,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools04Test do
     assert {:ok, package} =
              WorkPackageRepository.create(
                repo,
-               WorkPackageFactory.attrs(id: "SYMPP-PR-SYNC-CHRONOLOGY", kind: "standard_pr", repo: "nextide/symphony-plus-plus", status: "ci_waiting")
+               WorkPackageFactory.attrs(id: "SYMPP-PR-SYNC-CHRONOLOGY", kind: "mcp", repo: "nextide/symphony-plus-plus", status: "ci_waiting")
              )
 
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)

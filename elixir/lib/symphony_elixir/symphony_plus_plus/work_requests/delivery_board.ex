@@ -43,8 +43,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   @type repo :: module()
   @type error :: Repository.error() | :database_busy | {:storage_failed, String.t()} | term()
   @type planned_slice_visibility :: %{
-          visible_planned_slices: [PlannedSlice.t()],
-          planning_scratch_slice_ids: MapSet.t(String.t())
+          visible_planned_slices: [PlannedSlice.t()]
         }
 
   @spec project(repo(), String.t()) :: {:ok, map()} | {:error, error()}
@@ -53,7 +52,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
     with {:ok, _work_request} <- work_request(repo, work_request_id, opts),
          {:ok, planned_slices} <- planned_slices(repo, work_request_id, opts),
          {:ok, deliveries_by_slice_id} <- planned_slice_deliveries_by_id(repo, work_request_id, planned_slices),
-         visible_planned_slices = filter_visible_planned_slices(planned_slices, deliveries_by_slice_id, opts),
+         visible_planned_slices = planned_slices,
          {:ok, context} <- projection_context(repo, visible_planned_slices, deliveries_by_slice_id, opts) do
       slices_by_scope = planned_slices_by_scope(visible_planned_slices)
 
@@ -62,13 +61,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
           project_slice(planned_slice, deliveries_by_slice_id, slices_by_scope, context, opts)
         end)
 
-      {:ok,
-       board_payload(
-         work_request_id,
-         slices,
-         planning_scratch_count(planned_slices, deliveries_by_slice_id),
-         opts
-       )}
+      {:ok, board_payload(work_request_id, slices)}
     end
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
@@ -89,15 +82,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
           {:ok, planned_slice_visibility()} | {:error, error()}
   @spec planned_slice_visibility(repo(), String.t(), [PlannedSlice.t()], keyword()) ::
           {:ok, planned_slice_visibility()} | {:error, error()}
-  def planned_slice_visibility(repo, work_request_id, planned_slices, opts \\ [])
-      when is_atom(repo) and is_binary(work_request_id) and is_list(planned_slices) and is_list(opts) do
-    with {:ok, deliveries_by_slice_id} <- planned_slice_deliveries_by_id(repo, work_request_id, planned_slices) do
-      {:ok,
-       %{
-         visible_planned_slices: filter_visible_planned_slices(planned_slices, deliveries_by_slice_id, opts),
-         planning_scratch_slice_ids: planning_scratch_slice_ids(planned_slices, deliveries_by_slice_id)
-       }}
-    end
+  def planned_slice_visibility(_repo, _work_request_id, planned_slices, _opts \\ [])
+      when is_list(planned_slices) do
+    {:ok, %{visible_planned_slices: planned_slices}}
   end
 
   @spec project_many(repo(), [WorkRequest.t()], %{optional(String.t()) => [PlannedSlice.t()]}) ::
@@ -109,8 +96,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
     with :ok <- validate_planned_slices_by_request(work_requests, planned_slices_by_request),
          planned_slices = all_planned_slices(work_requests, planned_slices_by_request),
          {:ok, deliveries_by_slice_id} <- planned_slice_deliveries_by_id(repo, planned_slices),
-         visible_planned_slices_by_request =
-           visible_planned_slices_by_request(work_requests, planned_slices_by_request, deliveries_by_slice_id, opts),
+         visible_planned_slices_by_request = planned_slices_by_request,
          visible_planned_slices = all_planned_slices(work_requests, visible_planned_slices_by_request),
          {:ok, context} <- projection_context(repo, visible_planned_slices, deliveries_by_slice_id, opts) do
       {:ok,
@@ -132,18 +118,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
 
   defp project_request_board(
          %WorkRequest{} = work_request,
-         planned_slices_by_request,
+         _planned_slices_by_request,
          visible_planned_slices_by_request,
          deliveries_by_slice_id,
          context,
          opts
        ) do
-    all_request_planned_slices = Map.get(planned_slices_by_request, work_request.id, [])
     visible_request_planned_slices = Map.get(visible_planned_slices_by_request, work_request.id, [])
     slices_by_scope = planned_slices_by_scope(visible_request_planned_slices)
     slices = Enum.map(visible_request_planned_slices, &project_slice(&1, deliveries_by_slice_id, slices_by_scope, context, opts))
 
-    {work_request.id, board_payload(work_request.id, slices, planning_scratch_count(all_request_planned_slices, deliveries_by_slice_id), opts)}
+    {work_request.id, board_payload(work_request.id, slices)}
   end
 
   defp work_request(repo, work_request_id, opts) do
@@ -239,47 +224,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
     Enum.flat_map(work_requests, &Map.get(planned_slices_by_request, &1.id, []))
   end
 
-  defp visible_planned_slices_by_request(work_requests, planned_slices_by_request, deliveries_by_slice_id, opts) do
-    Map.new(work_requests, fn %WorkRequest{} = work_request ->
-      planned_slices = Map.get(planned_slices_by_request, work_request.id, [])
-      {work_request.id, filter_visible_planned_slices(planned_slices, deliveries_by_slice_id, opts)}
-    end)
-  end
-
-  defp filter_visible_planned_slices(planned_slices, deliveries_by_slice_id, opts) do
-    if include_planning_scratch?(opts) do
-      planned_slices
-    else
-      Enum.reject(planned_slices, &planning_scratch?(&1, deliveries_by_slice_id))
-    end
-  end
-
-  defp planning_scratch_count(planned_slices, deliveries_by_slice_id) do
-    Enum.count(planned_slices, &planning_scratch?(&1, deliveries_by_slice_id))
-  end
-
-  defp planning_scratch_slice_ids(planned_slices, deliveries_by_slice_id) do
-    planned_slices
-    |> Enum.filter(&planning_scratch?(&1, deliveries_by_slice_id))
-    |> MapSet.new(& &1.id)
-  end
-
-  defp planning_scratch?(%PlannedSlice{} = planned_slice, deliveries_by_slice_id) do
-    PlannedSlice.skipped_scratch?(planned_slice, delivery_for_slice(deliveries_by_slice_id, planned_slice))
-  end
-
-  defp include_planning_scratch?(opts), do: Keyword.get(opts, :include_planning_scratch?, false) == true
-
-  defp board_payload(work_request_id, slices, planning_scratch_count, opts) do
-    include_planning_scratch? = include_planning_scratch?(opts)
-
+  defp board_payload(work_request_id, slices) do
     %{
       work_request_id: work_request_id,
       slice_count: length(slices),
       counts: state_counts(slices),
-      planning_scratch_slice_count: planning_scratch_count,
-      hidden_planning_scratch_slice_count: if(include_planning_scratch?, do: 0, else: planning_scratch_count),
-      include_planning_scratch: include_planning_scratch?,
       slices: slices
     }
   end
@@ -491,7 +440,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
       operational_state: operational_state,
       attention_reason_codes: Map.fetch!(operational_state, :attention_reason_codes)
     }
-    |> maybe_put_planning_classification(planned_slice, delivery)
   end
 
   defp full_slice(%PlannedSlice{} = planned_slice, delivery, context, work_package, successor, operational_state) do
@@ -509,15 +457,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
       operational_state: operational_state,
       attention_reason_codes: Map.fetch!(operational_state, :attention_reason_codes)
     }
-    |> maybe_put_planning_classification(planned_slice, delivery)
-  end
-
-  defp maybe_put_planning_classification(payload, %PlannedSlice{} = planned_slice, delivery) do
-    if PlannedSlice.skipped_scratch?(planned_slice, delivery) do
-      Map.put(payload, :planning_classification, "planning_scratch")
-    else
-      payload
-    end
   end
 
   defp slice_work_package_summary(work_package_id, context, opts) do

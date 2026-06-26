@@ -34,8 +34,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
         }
 
   @type error ::
-          :empty_request_file
-          | :invalid_acceptance_criteria
+          :invalid_acceptance_criteria
           | :invalid_allowed_file_globs
           | :invalid_kind
           | :invalid_policy_template
@@ -47,12 +46,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
           | :overbroad_allowed_file_globs
           | :parent_not_supported
           | :policy_template_mismatch
-          | :standalone_kind_not_supported
+          | :kind_not_dispatchable
           | :unknown_policy_template
-          | {:invalid_json, term()}
-          | {:invalid_yaml, term()}
           | {:missing_required_field, String.t()}
-          | {:read_failed, Path.t(), File.posix()}
           | Changeset.t()
           | WorkPackageRepository.error()
           | PlanningRepository.error()
@@ -63,7 +59,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   def parse_request(raw_request) when is_map(raw_request) do
     attrs = normalize_keys(raw_request)
 
-    with {:ok, attrs} <- require_standalone(attrs),
+    with {:ok, attrs} <- require_dispatchable(attrs),
          {:ok, attrs} <- normalize_required_fields(attrs),
          {:ok, attrs} <- normalize_optional_id(attrs),
          {:ok, policy_templates} <- explicit_policy_templates(attrs),
@@ -98,28 +94,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
 
   def parse_request(_raw_request), do: {:error, :invalid_request}
 
-  @spec parse_file(Path.t()) :: {:ok, request()} | {:error, error()}
-  def parse_file(path) when is_binary(path) do
-    case File.read(path) do
-      {:ok, content} -> parse_content(content, path)
-      {:error, reason} -> {:error, {:read_failed, path, reason}}
-    end
-  end
-
-  @spec parse_content(String.t(), Path.t() | nil) :: {:ok, request()} | {:error, error()}
-  def parse_content(content, path \\ nil) when is_binary(content) do
-    if String.trim(content) == "" do
-      {:error, :empty_request_file}
-    else
-      content
-      |> decode_content(path)
-      |> case do
-        {:ok, decoded} -> parse_request(decoded)
-        {:error, reason} -> {:error, reason}
-      end
-    end
-  end
-
   @spec create(module(), map()) :: {:ok, creation()} | {:error, error()}
   def create(repo, request) when is_atom(repo) and is_map(request) do
     with {:ok, request} <- parse_request(request) do
@@ -142,30 +116,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
 
   @spec error_message(term()) :: String.t()
   def error_message({:missing_required_field, field}), do: "Missing required create-work field: #{field}"
-  def error_message(:empty_request_file), do: "Create-work request file is empty"
   def error_message(:invalid_acceptance_criteria), do: "acceptance_criteria must be a list of nonblank strings"
   def error_message(:invalid_allowed_file_globs), do: "allowed_file_globs must be a list of nonblank strings"
   def error_message(:invalid_kind), do: "kind must be a nonblank string when provided"
   def error_message(:invalid_policy_template), do: "policy_template/review_suite_template must be nonblank strings when provided"
-  def error_message(:invalid_request), do: "Create-work request must be a JSON/YAML object"
+  def error_message(:invalid_request), do: "Create-work request must be an object"
   def error_message(:invalid_work_package_id), do: "id must be a nonblank string when provided"
   def error_message(:missing_acceptance_criteria), do: "acceptance_criteria is required for this work kind"
   def error_message(:missing_allowed_file_globs), do: "allowed_file_globs is required for docs and scope-guard policy templates"
   def error_message(:non_documentation_allowed_file_globs), do: "docs work allowed_file_globs must be documentation-only"
   def error_message(:overbroad_allowed_file_globs), do: "allowed_file_globs cannot contain repo-wide catch-all globs"
-  def error_message(:parent_not_supported), do: "Standalone create-work does not accept parent_id"
+  def error_message(:parent_not_supported), do: "Create-work does not accept parent_id"
   def error_message(:policy_template_mismatch), do: "policy_template/review_suite_template must select the same policy"
 
-  def error_message(:standalone_kind_not_supported),
-    do: "Standalone create-work supports quick_fix, hotfix, docs, investigation, adapter, mcp, skill, and hooks work only"
+  def error_message(:kind_not_dispatchable),
+    do: "Create-work supports quick_fix, hotfix, docs, investigation, adapter, mcp, skill, and hooks work only"
 
   def error_message(:unknown_policy_template), do: "No policy template exists for requested kind"
-  def error_message({:invalid_json, reason}), do: "Invalid JSON create-work request: #{inspect(reason)}"
-  def error_message({:invalid_yaml, reason}), do: "Invalid YAML create-work request: #{inspect(reason)}"
-  def error_message({:read_failed, path, reason}), do: "Failed to read create-work request #{path}: #{reason}"
-
   def error_message(%Changeset{} = changeset), do: "Invalid create-work request: #{inspect(changeset.errors)}"
-  def error_message(reason), do: "Failed to create standalone work: #{inspect(reason)}"
+  def error_message(reason), do: "Failed to create work: #{inspect(reason)}"
 
   defp create_parsed_request(repo, request) do
     repo.transaction(fn ->
@@ -351,31 +320,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     }
   end
 
-  defp decode_content(content, path) do
-    if json_path?(path) do
-      decode_json(content)
-    else
-      decode_yaml(content)
-    end
-  end
-
-  defp decode_json(content) do
-    case Jason.decode(content) do
-      {:ok, decoded} -> {:ok, decoded}
-      {:error, reason} -> {:error, {:invalid_json, reason}}
-    end
-  end
-
-  defp decode_yaml(content) do
-    case YamlElixir.read_from_string(content) do
-      {:ok, decoded} -> {:ok, decoded}
-      {:error, reason} -> {:error, {:invalid_yaml, reason}}
-    end
-  end
-
-  defp json_path?(path) when is_binary(path), do: path |> Path.extname() |> String.downcase() == ".json"
-  defp json_path?(_path), do: false
-
   defp normalize_keys(attrs) do
     Map.new(attrs, fn {key, value} -> {normalize_key(key), value} end)
   end
@@ -383,7 +327,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)
   defp normalize_key(key), do: to_string(key)
 
-  defp require_standalone(attrs) do
+  defp require_dispatchable(attrs) do
     if present?(Map.get(attrs, "parent_id")) do
       {:error, :parent_not_supported}
     else
@@ -420,18 +364,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
 
       {:ok, kind} ->
         case normalize_nonblank_string(kind) do
-          {:ok, "phase_child"} -> {:error, :standalone_kind_not_supported}
-          {:ok, kind} -> ensure_standalone_kind(kind)
+          {:ok, "phase_child"} -> {:error, :kind_not_dispatchable}
+          {:ok, kind} -> ensure_dispatchable_kind(kind)
           {:error, :blank} -> {:error, :invalid_kind}
         end
     end
   end
 
-  defp ensure_standalone_kind(kind) do
+  defp ensure_dispatchable_kind(kind) do
     if StateMachine.supported_kind?(kind) do
       {:ok, kind}
     else
-      {:error, :standalone_kind_not_supported}
+      {:error, :kind_not_dispatchable}
     end
   end
 
@@ -556,7 +500,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     end
   end
 
-  defp reject_phase_child_policy(%{template: "phase_child"}), do: {:error, :standalone_kind_not_supported}
+  defp reject_phase_child_policy(%{template: "phase_child"}), do: {:error, :kind_not_dispatchable}
   defp reject_phase_child_policy(_policy), do: :ok
 
   defp explicit_policy_templates(attrs) do

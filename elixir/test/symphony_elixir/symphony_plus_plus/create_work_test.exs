@@ -33,20 +33,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     :ok
   end
 
-  test "parses valid YAML create-work requests" do
-    yaml = """
-    kind: hotfix
-    repo: kraken
-    base_branch: beta
-    title: Fix allocator outage
-    product_description: Allocator workers are stuck.
-    engineering_scope: Restore allocator claims.
-    acceptance_criteria:
-      - Allocator claims recover.
-    policy_template: hotfix
-    """
+  test "parses valid create-work requests" do
+    assert {:ok, request} =
+             CreateWork.parse_request(%{
+               kind: "hotfix",
+               repo: "kraken",
+               base_branch: "beta",
+               title: "Fix allocator outage",
+               product_description: "Allocator workers are stuck.",
+               engineering_scope: "Restore allocator claims.",
+               acceptance_criteria: ["Allocator claims recover."],
+               policy_template: "hotfix"
+             })
 
-    assert {:ok, request} = CreateWork.parse_content(yaml, "request.yaml")
     assert request["kind"] == "hotfix"
     assert request["repo"] == "kraken"
     assert request["base_branch"] == "beta"
@@ -367,7 +366,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                parent_id: "phase_123"
              })
 
-    assert {:error, :standalone_kind_not_supported} =
+    assert {:error, :kind_not_dispatchable} =
              CreateWork.parse_request(%{
                kind: "phase_child",
                repo: "kraken",
@@ -392,7 +391,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
              })
   end
 
-  test "creates a standalone quick fix with default policy, one grant, and initial virtual files", %{repo: repo} do
+  test "creates quick fix work with default policy, one grant, and initial virtual files", %{repo: repo} do
     assert {:ok, creation} =
              CreateWork.create(repo, %{
                repo: "kraken",
@@ -492,8 +491,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert acceptance_md =~ "No acceptance criteria recorded."
   end
 
-  test "rejects lifecycle-unsupported standalone kinds" do
-    assert {:error, :standalone_kind_not_supported} =
+  test "rejects non-dispatchable kinds" do
+    assert {:error, :kind_not_dispatchable} =
              CreateWork.parse_request(%{
                kind: "product",
                repo: "kraken",
@@ -538,7 +537,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
              })
 
     config = local_mcp_config(repo)
-    server = local_mcp_server(config, "standalone-hotfix-worker-state")
+    server = local_mcp_server(config, "hotfix-worker-state")
 
     {claim_response, claimed_server} =
       Server.handle_state(
@@ -584,13 +583,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     refute text =~ creation.worker_grant.id
   end
 
-  test "drives standalone hotfix from create-work through worker MCP readiness", %{repo: repo} do
+  test "drives hotfix package from create-work through worker MCP readiness", %{repo: repo} do
     assert {:ok, creation} =
              CreateWork.create(repo, %{
                kind: "hotfix",
                repo: "kraken",
                base_branch: "main",
-               title: "Fix standalone hotfix incident",
+               title: "Fix hotfix incident",
                product_description: "A production endpoint is returning stale results.",
                engineering_scope: "Refresh the endpoint cache invalidation path only.",
                acceptance_criteria: ["Endpoint returns fresh results.", "Hotfix evidence is attached."],
@@ -613,7 +612,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert creation.policy.review_suite.required == ["emergency"]
 
     config = local_mcp_config(repo)
-    server = local_mcp_server(config, "standalone-hotfix-worker-state")
+    server = local_mcp_server(config, "hotfix-worker-state")
 
     {claim_response, claimed_server} =
       Server.handle_state(
@@ -643,7 +642,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
             "arguments" => %{"work_package_id" => creation.work_package.id, "claimed_by" => "worker-hotfix-1"}
           }
         },
-        local_mcp_server(config, "standalone-hotfix-worker-state")
+        local_mcp_server(config, "hotfix-worker-state")
       )
 
     assert get_in(reconnect_response, ["result", "structuredContent", "assignment", "work_package_id"]) == creation.work_package.id
@@ -677,7 +676,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
       )
 
     context_text = get_in(context_response, ["result", "contents", Access.at(0), "text"])
-    assert context_text =~ "Fix standalone hotfix incident"
+    assert context_text =~ "Fix hotfix incident"
     assert context_text =~ "- Parent: source: `Not recorded.`"
 
     read_plan_response =
@@ -700,7 +699,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
             "arguments" => %{
               "expected_version" => get_in(read_plan_response, ["result", "structuredContent", "version"]),
               "id" => "hotfix-worker-note",
-              "title" => "Record standalone hotfix proof",
+              "title" => "Record hotfix proof",
               "body" => "Worker updated the virtual plan through MCP.",
               "status" => "done"
             }
@@ -726,7 +725,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
             "arguments" => %{
               "title" => "Root cause isolated",
               "body" => "Cache invalidation missed the hot path.",
-              "idempotency_key" => "standalone-hotfix-finding"
+              "idempotency_key" => "hotfix-finding"
             }
           }
         },
@@ -748,7 +747,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
               "summary" => "Focused hotfix test passed",
               "status" => "tests_passed",
               "body" => "Regression script exercised the stale-result path.",
-              "idempotency_key" => "standalone-hotfix-tests"
+              "idempotency_key" => "hotfix-tests"
             }
           }
         },
@@ -805,10 +804,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert "pr_attached" in missing
     assert "review_lanes_complete" in missing
 
-    head_sha = "standalone-hotfix-head"
+    head_sha = "hotfix-head"
 
     attach_tool(repo, session, "attach_branch", %{
-      "branch" => "agent/SYMPP-P4-003/standalone-hotfix-e2e",
+      "branch" => "agent/SYMPP-P4-003/hotfix-e2e",
       "head_sha" => head_sha
     })
 

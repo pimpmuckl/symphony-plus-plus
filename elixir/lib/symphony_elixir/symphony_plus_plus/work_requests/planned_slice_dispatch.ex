@@ -29,7 +29,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
           | {:invalid_work_request_status, String.t() | nil}
           | {:planned_slice_scope_violation, [ScopeConstraints.error()]}
           | {:unsupported_branch_pattern, String.t(), atom()}
-          | {:unsupported_standalone_kind, String.t() | nil}
+          | {:kind_not_dispatchable, String.t() | nil}
           | {:dispatch_link_failed, term(), map()}
 
   @spec dispatch(module(), String.t(), String.t(), keyword()) :: {:ok, dispatch_result()} | {:error, error()}
@@ -82,8 +82,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     "Planned slice branch_pattern #{inspect(branch_pattern)} is unsupported: #{BranchPattern.error_message(reason)}"
   end
 
-  def error_message({:unsupported_standalone_kind, kind}) do
-    "Planned slice kind #{inspect(kind)} is not supported by standalone create-work"
+  def error_message({:kind_not_dispatchable, kind}) do
+    "Planned slice kind #{inspect(kind)} is not dispatchable"
   end
 
   def error_message({:dispatch_link_failed, reason, recovery}) do
@@ -156,8 +156,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
       {:ok, _request} ->
         :ok
 
-      {:error, :standalone_kind_not_supported} ->
-        {:error, {:unsupported_standalone_kind, planned_slice.work_package_kind}}
+      {:error, :kind_not_dispatchable} ->
+        {:error, {:kind_not_dispatchable, planned_slice.work_package_kind}}
 
       {:error, reason} ->
         {:error, reason}

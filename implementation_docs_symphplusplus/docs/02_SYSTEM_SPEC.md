@@ -57,10 +57,9 @@ WorkRequest. Approved slices can dispatch into WorkPackages.
 
 ### WorkPackage
 
-The scoped execution/audit unit for agent work. A WorkPackage can represent a
-phase PR, hotfix PR, quick issue, investigation, review-only task, or
-architect-created child package. It is not the product-facing logical unit in
-the V3 cockpit.
+The scoped execution/audit unit for agent work. A WorkPackage represents a
+dispatched WorkRequest slice, phase child package, or architect handoff anchor.
+It is not the product-facing logical unit in the V3 cockpit.
 
 Important fields:
 
@@ -160,7 +159,7 @@ sympp://work-packages/{id}/acceptance.md
 
 ## State machines
 
-### Standalone quick/hotfix package
+### Single-slice WorkRequest package
 
 ```text
 created
@@ -209,7 +208,7 @@ Examples:
 - A worker grant cannot mint grants.
 - A phase architect grant can mint worker grants inside the same phase.
 - A phase architect grant cannot mint grants against `main` unless explicitly allowed.
-- A standalone hotfix worker grant cannot read sibling packages.
+- A worker grant cannot read sibling packages.
 
 ## Read model
 

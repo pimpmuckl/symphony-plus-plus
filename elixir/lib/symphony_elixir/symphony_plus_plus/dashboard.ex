@@ -786,21 +786,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     }
   end
 
-  defp delivery_board_opts(%WorkRequest{} = work_request, planned_slices, work_package_contexts, opts) do
+  defp delivery_board_opts(%WorkRequest{} = work_request, planned_slices, work_package_contexts, _opts) do
     [
       work_request: work_request,
       planned_slices: planned_slices,
       visible_work_package_ids: Map.keys(work_package_contexts),
-      work_package_contexts: work_package_contexts,
-      include_planning_scratch?: include_planning_scratch?(opts)
+      work_package_contexts: work_package_contexts
     ]
   end
 
-  defp delivery_board_many_opts(work_package_contexts, opts) do
+  defp delivery_board_many_opts(work_package_contexts, _opts) do
     [
       visible_work_package_ids: Map.keys(work_package_contexts),
-      work_package_contexts: work_package_contexts,
-      include_planning_scratch?: include_planning_scratch?(opts)
+      work_package_contexts: work_package_contexts
     ]
   end
 
@@ -1843,8 +1841,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     [
       slice_projection: :operational_state,
       visible_work_package_ids: Map.keys(work_package_contexts),
-      work_package_contexts: work_package_contexts,
-      include_planning_scratch?: false
+      work_package_contexts: work_package_contexts
     ]
   end
 
@@ -1925,8 +1922,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp completion_delivery_outcome(_delivery_slice), do: nil
-
-  defp include_planning_scratch?(opts), do: Keyword.get(opts, :include_planning_scratch?, false) == true
 
   defp work_request_question_context(repo, work_request_ids) do
     rows =
@@ -2649,11 +2644,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp maybe_put_dispatch_linkage(payload, %PlannedSlice{} = planned_slice, work_package_contexts, opts) do
     delivery_slice = Keyword.get(opts, :delivery_slice)
     include_dispatch_linkage? = Keyword.get(opts, :include_dispatch_linkage?, false)
+    delivery_opts = [include_delivery_data?: include_dispatch_linkage?]
 
-    payload =
-      payload
-      |> DeliverySliceProjection.put_delivery_slice(delivery_slice, include_delivery_data?: include_dispatch_linkage?)
-      |> DeliverySliceProjection.put_planning_classification(delivery_slice)
+    payload = DeliverySliceProjection.put_delivery_slice(payload, delivery_slice, delivery_opts)
 
     if include_dispatch_linkage? do
       work_package_context = Map.get(work_package_contexts, planned_slice.work_package_id)

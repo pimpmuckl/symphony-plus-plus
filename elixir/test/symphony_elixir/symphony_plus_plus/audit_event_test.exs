@@ -725,7 +725,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AuditEventTest do
 
   defp create_work_package(repo, overrides \\ []) do
     attrs =
-      Keyword.merge([id: "SYMPP-P1-005", kind: "standard_pr"], overrides)
+      Keyword.merge([id: "SYMPP-P1-005", kind: "mcp"], overrides)
       |> WorkPackageFactory.attrs()
 
     WorkPackageRepository.create(repo, attrs)
