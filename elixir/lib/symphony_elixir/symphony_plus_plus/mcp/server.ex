@@ -11203,6 +11203,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, work_package_id} <- optional_string_argument(arguments, "work_package_id", Session.work_package_id(session)),
          {:ok, requested_head_sha} <- required_argument(arguments, "head_sha"),
          {:ok, suite} <- required_argument(arguments, "suite"),
+         {:ok, suite} <- review_suite_argument(suite),
          {:ok, anchor} <- required_argument(arguments, "anchor"),
          {:ok, summary} <- required_argument(arguments, "summary"),
          {:ok, status} <- required_argument(arguments, "status"),
@@ -11373,6 +11374,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> maybe_put_review_suite_field(arguments, "round_id")
   end
 
+  defp review_suite_argument(suite) do
+    case ReviewProfiles.normalize_suite(suite) do
+      "review-suite" -> {:ok, "review-suite"}
+      _suite -> {:tool_error, "invalid_review_suite"}
+    end
+  end
+
+  defp maybe_put_review_suite_field(payload, arguments, key) when key in ["lane", "profile"] do
+    value = review_suite_profile_argument(Map.get(arguments, key))
+
+    cond do
+      not is_binary(value) -> payload
+      Map.has_key?(payload, key) -> payload
+      true -> Map.put(payload, key, value)
+    end
+  end
+
   defp maybe_put_review_suite_field(payload, arguments, key) do
     case Map.get(arguments, key) do
       value when is_binary(value) ->
@@ -11383,6 +11401,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         payload
     end
   end
+
+  defp review_suite_profile_argument(value) when is_binary(value) do
+    case ReviewProfiles.normalize_profile(value) do
+      "" -> nil
+      value -> value
+    end
+  end
+
+  defp review_suite_profile_argument(_value), do: nil
 
   defp require_review_suite_round_identity(%{} = payload, %WorkPackage{} = work_package, progress_events) do
     with :ok <- require_review_suite_identity_match(payload, "repo", work_package.repo),

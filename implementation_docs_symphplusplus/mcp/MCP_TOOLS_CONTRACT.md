@@ -67,6 +67,13 @@ mark_ready
 Workers are scoped to exactly one WorkPackage. Worker tools never mint grants,
 approve scope, merge PRs, advance phases, or close WorkRequest delivery.
 
+For Review Suite evidence, call `attach_review_suite_result` with `round_id`
+when local Review Suite state is available. The server infers suite, profile,
+lane, head SHA, status, verdict, summary, and anchor for a passing round.
+Verbose fields remain a fallback when the round cannot be resolved; `suite`
+must still identify Review Suite. Omit `round_id` when using verbose fallback
+fields because a present `round_id` selects the local-round resolution path.
+
 ## Health, Solo, And Local Operator Tools
 
 Unbound sessions expose `sympp.health`, `release_current_assignment`, Solo
