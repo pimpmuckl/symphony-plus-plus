@@ -29,6 +29,10 @@ defmodule Mix.Tasks.CodeQuality.Guard do
 
   @production_limits %{max_complexity: 20, max_function_lines: 120, max_lines: 600}
   @test_limits %{max_complexity: 30, max_function_lines: 180, max_lines: 900}
+  @mcp_dispatcher_ratchets %{
+    "lib/symphony_elixir/symphony_plus_plus/mcp/server.ex" => %{max_lines: 14_006},
+    "lib/symphony_elixir/symphony_plus_plus/mcp/tool_catalog.ex" => %{max_lines: 1332}
+  }
 
   @legacy_ratchets %{
     "assets/src/App.tsx" => %{max_lines: 7263},
@@ -201,7 +205,13 @@ defmodule Mix.Tasks.CodeQuality.Guard do
     relative_path = relative_path(path)
     source = File.read!(path)
     limits = limits_for(relative_path)
-    ratchet = Map.get(@legacy_ratchets, relative_path, %{})
+
+    ratchet =
+      Map.merge(
+        Map.get(@legacy_ratchets, relative_path, %{}),
+        Map.get(@mcp_dispatcher_ratchets, relative_path, %{})
+      )
+
     file_limits = Map.merge(limits, Map.take(ratchet, [:max_lines]))
 
     line_findings = line_findings(relative_path, source, file_limits)
@@ -215,10 +225,18 @@ defmodule Mix.Tasks.CodeQuality.Guard do
     limit = limits.max_lines
 
     if actual > limit do
-      [finding(path, 1, :file_lines, "file", actual, limit)]
+      [finding(path, 1, file_line_check(path), file_line_subject(path), actual, limit)]
     else
       []
     end
+  end
+
+  defp file_line_check(path) do
+    if Map.has_key?(@mcp_dispatcher_ratchets, path), do: :mcp_dispatcher_file_lines, else: :file_lines
+  end
+
+  defp file_line_subject(path) do
+    if Map.has_key?(@mcp_dispatcher_ratchets, path), do: "MCP dispatcher file", else: "file"
   end
 
   defp function_findings(path, source, limits, ratchet) do
@@ -482,6 +500,10 @@ defmodule Mix.Tasks.CodeQuality.Guard do
 
   defp finding(path, line, check, subject, actual, limit) do
     %{actual: actual, check: check, limit: limit, line: line, path: path, subject: subject}
+  end
+
+  defp format_finding(%{path: path, line: line, subject: subject, check: :mcp_dispatcher_file_lines, actual: actual, limit: limit}) do
+    "#{path}:#{line} #{subject} file_lines #{actual} exceeds MCP dispatcher no-growth ratchet #{limit}; move behavior into focused helper/service modules instead of raising the threshold"
   end
 
   defp format_finding(%{path: path, line: line, subject: subject, check: check, actual: actual, limit: limit}) do

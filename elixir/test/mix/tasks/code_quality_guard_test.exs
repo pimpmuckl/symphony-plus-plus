@@ -109,6 +109,42 @@ defmodule Mix.Tasks.CodeQuality.GuardTest do
     end)
   end
 
+  test "fails named MCP dispatchers with extraction guidance" do
+    in_temp_project(fn ->
+      dispatcher_path = "lib/symphony_elixir/symphony_plus_plus/mcp/tool_catalog.ex"
+
+      write_source!(dispatcher_path, elixir_module_with_comment_lines(1331))
+
+      error_output =
+        capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/code_quality.guard failed with 1 ratchet violation/, fn ->
+            Guard.run(["--paths", dispatcher_path])
+          end
+        end)
+
+      assert error_output =~ "#{dispatcher_path}:1 MCP dispatcher file file_lines 1333 exceeds MCP dispatcher no-growth ratchet 1332"
+      assert error_output =~ "move behavior into focused helper/service modules instead of raising the threshold"
+    end)
+  end
+
+  test "keeps ordinary legacy ratchets out of the MCP dispatcher policy" do
+    in_temp_project(fn ->
+      legacy_path = "lib/symphony_elixir/symphony_plus_plus/work_packages/worktree_lifecycle.ex"
+
+      write_source!(legacy_path, elixir_module_with_comment_lines(737))
+
+      error_output =
+        capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/code_quality.guard failed with 1 ratchet violation/, fn ->
+            Guard.run(["--paths", legacy_path])
+          end
+        end)
+
+      assert error_output =~ "#{legacy_path}:1 file file_lines 739 exceeds ratchet 738"
+      refute error_output =~ "MCP dispatcher no-growth"
+    end)
+  end
+
   test "fails oversized functions in production files" do
     in_temp_project(fn ->
       write_source!("lib/long_function.ex", """

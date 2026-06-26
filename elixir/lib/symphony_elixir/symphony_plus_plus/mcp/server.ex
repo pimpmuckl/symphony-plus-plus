@@ -3,7 +3,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   import Ecto.Query, only: [from: 2]
 
-  alias Ecto.Adapters.SQL
   alias SymphonyElixir.PathSafety
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
@@ -37,6 +36,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     Auth,
     ClaimToolText,
     Config,
+    HandleStateStore,
     LocalArchitectGrantClaim,
     LocalClaimLeases,
     LocalTrustedTools,
@@ -137,10 +137,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @version_resource "sympp://health/version"
   @assignment_resource "sympp://assignment/current"
   @finding_replay_retry_attempts 50
-  @handle_state_ttl_ms 86_400_000
-  @explicit_handle_state_ttl_ms 604_800_000
   @local_assignment_claim_stale_after_ms :timer.minutes(5)
-  @handle_state_agent Module.concat(__MODULE__, HandleState)
   @scope_guard_gate "scope_guard"
   @plan_append_argument_keys ["body", "expected_version", "id", "status", "title", "work_package_id"]
   @plan_patch_argument_keys ["expected_version", "patch", "work_package_id"]
@@ -221,10 +218,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @doc false
   @spec handle_response_state(term(), t()) :: {map() | [map()] | nil, t()}
   def handle_response_state(payload, %__MODULE__{} = server) do
-    cleanup_default_handle_states()
-    server = restore_handle_state(payload, server)
+    HandleStateStore.cleanup_default_handle_states()
+    server = HandleStateStore.restore(payload, server)
     {response, updated_server} = handle_state(payload, server)
-    updated_server = persist_handle_state(payload, response, server, updated_server)
+    updated_server = HandleStateStore.persist(payload, response, server, updated_server)
     {response, updated_server}
   end
 
@@ -298,309 +295,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp handle_tool_call_notification(params_result, %__MODULE__{} = server),
     do: {nil, dispatch_notification(params_result, "tools/call", server)}
-
-  defp restore_handle_state(payload, %__MODULE__{initialized: false, session: nil, state_key_explicit: true} = server) do
-    if initialize_request?(payload) do
-      server
-    else
-      restore_explicit_handle_state(server)
-    end
-  end
-
-  defp restore_handle_state(payload, %__MODULE__{state_key_explicit: true} = server) do
-    if initialize_request?(payload) do
-      if server.initialized do
-        # Duplicate initialize on a reused explicit MCP server must not silently
-        # downgrade a stale bound identity into generic unbound discovery. The
-        # recovery paths are an explicit re-claim on this session or a new MCP
-        # process/session that starts from the fresh unbound surface.
-        restore_explicit_handle_state(server)
-      else
-        %{server | initialized: false, session: nil}
-      end
-    else
-      restore_explicit_handle_state(server)
-    end
-  end
-
-  defp restore_handle_state(payload, %__MODULE__{state_key_explicit: false} = server) do
-    if initialize_request?(payload) do
-      case {server.initialized, lookup_handle_state(server)} do
-        {true, _stored} ->
-          server
-
-        {false, {%__MODULE__{}, _timestamp_ms, _explicit?}} ->
-          delete_handle_state(server)
-          %{server | initialized: false, session: nil}
-
-        _stored ->
-          server
-      end
-    else
-      restore_handle_state(server)
-    end
-  end
-
-  defp restore_handle_state(_payload, %__MODULE__{} = server), do: restore_handle_state(server)
-
-  defp restore_explicit_handle_state(%__MODULE__{} = server) do
-    case lookup_handle_state(server) do
-      {%__MODULE__{} = stored, timestamp_ms, _explicit?} ->
-        state_key_version = stored.state_key_version || timestamp_ms
-
-        session_refresh_required? =
-          stored.session_refresh_required or stale_explicit_session?(server, state_key_version)
-
-        session = if session_refresh_required?, do: nil, else: server.session
-
-        %{
-          server
-          | initialized: server.initialized or stored.initialized,
-            session: session,
-            state_key_version: state_key_version,
-            session_refresh_required: session_refresh_required?
-        }
-
-      _stored ->
-        server
-    end
-  end
-
-  defp restore_handle_state(%__MODULE__{} = server) do
-    case lookup_handle_state(server) do
-      {%__MODULE__{} = stored, _timestamp_ms, _explicit?} ->
-        %{server | initialized: server.initialized or stored.initialized, session: server.session || stored.session}
-
-      _stored ->
-        server
-    end
-  end
-
-  defp stale_explicit_session?(%__MODULE__{session_refresh_required: true, state_key_version: version}, timestamp_ms)
-       when version == timestamp_ms,
-       do: true
-
-  defp stale_explicit_session?(%__MODULE__{session: nil}, _timestamp_ms), do: false
-  defp stale_explicit_session?(%__MODULE__{session: %Session{}, state_key_version: nil}, _timestamp_ms), do: false
-  defp stale_explicit_session?(%__MODULE__{state_key_version: nil}, _timestamp_ms), do: true
-  defp stale_explicit_session?(%__MODULE__{state_key_version: state_key_version}, timestamp_ms), do: timestamp_ms > state_key_version
-
-  defp persist_handle_state(payload, response, %__MODULE__{state_key_explicit: true} = server, %__MODULE__{} = updated_server) do
-    if initialize_request?(payload) do
-      case response do
-        %{"result" => _result} ->
-          timestamp_ms = put_handle_state(updated_server)
-          %{updated_server | state_key_version: timestamp_ms}
-
-        %{"error" => %{"data" => %{"reason" => "already_initialized"}}} ->
-          updated_server
-
-        _response ->
-          invalidate_explicit_handle_state(server)
-          %{updated_server | state_key_version: nil}
-      end
-    else
-      persist_handle_state(server, updated_server)
-    end
-  end
-
-  defp persist_handle_state(_payload, _response, %__MODULE__{} = server, %__MODULE__{} = updated_server) do
-    persist_handle_state(server, updated_server)
-  end
-
-  defp persist_handle_state(%__MODULE__{} = server, %__MODULE__{} = updated_server) do
-    timestamp_ms =
-      cond do
-        updated_server.session_refresh_required ->
-          put_handle_state(updated_server)
-
-        server.session_refresh_required != updated_server.session_refresh_required ->
-          put_handle_state(updated_server)
-
-        server.initialized != updated_server.initialized or server.session != updated_server.session ->
-          put_handle_state(updated_server)
-
-        lookup_handle_state(updated_server) != nil ->
-          refresh_handle_state(updated_server)
-
-        true ->
-          nil
-      end
-
-    if is_integer(timestamp_ms), do: %{updated_server | state_key_version: timestamp_ms}, else: updated_server
-  end
-
-  defp put_handle_state(%__MODULE__{} = server) do
-    key = handle_state_store_key(server)
-    timestamp_ms = monotonic_ms()
-    state_key_version = monotonic_state_key_version()
-    stored_server = %{stored_handle_state_server(server) | state_key_version: state_key_version}
-    update_handle_state_store(&Map.put(&1, key, {stored_server, timestamp_ms, server.state_key_explicit}))
-    state_key_version
-  end
-
-  defp delete_handle_state(%__MODULE__{} = server) do
-    key = handle_state_store_key(server)
-    update_handle_state_store(&Map.delete(&1, key))
-    :ok
-  end
-
-  defp invalidate_explicit_handle_state(%__MODULE__{} = server) do
-    key = handle_state_store_key(server)
-    timestamp_ms = monotonic_ms()
-    state_key_version = monotonic_state_key_version()
-
-    tombstone = %{
-      stored_handle_state_server(server)
-      | initialized: false,
-        session: nil,
-        state_key_version: state_key_version
-    }
-
-    update_handle_state_store(&Map.put(&1, key, {tombstone, timestamp_ms, true}))
-    :ok
-  end
-
-  defp stored_handle_state_server(%__MODULE__{state_key_explicit: true} = server), do: %{server | session: nil}
-  defp stored_handle_state_server(%__MODULE__{} = server), do: server
-
-  defp lookup_handle_state(%__MODULE__{} = server) do
-    handle_state_store()
-    |> Map.get(handle_state_store_key(server))
-  end
-
-  defp refresh_handle_state(%__MODULE__{} = server) do
-    case lookup_handle_state(server) do
-      {%__MODULE__{} = stored_server, _timestamp_ms, _explicit?} -> put_handle_state(stored_server)
-      _state -> nil
-    end
-  end
-
-  defp cleanup_default_handle_states do
-    now = monotonic_ms()
-
-    update_handle_state_store(fn store ->
-      store
-      |> Map.reject(fn
-        {_state_key, {%__MODULE__{}, timestamp_ms, false}} ->
-          now - timestamp_ms > @handle_state_ttl_ms
-
-        {_state_key, {%__MODULE__{}, timestamp_ms, true}} ->
-          now - timestamp_ms > @explicit_handle_state_ttl_ms
-
-        _entry ->
-          false
-      end)
-    end)
-
-    :ok
-  end
-
-  defp monotonic_state_key_version, do: System.unique_integer([:monotonic, :positive])
-
-  defp update_handle_state_store(fun) do
-    ensure_handle_state_agent()
-    Agent.update(@handle_state_agent, fun)
-  end
-
-  defp handle_state_store do
-    ensure_handle_state_agent()
-    Agent.get(@handle_state_agent, & &1)
-  end
-
-  defp ensure_handle_state_agent do
-    case Process.whereis(@handle_state_agent) do
-      nil ->
-        case Agent.start_link(fn -> %{} end, name: @handle_state_agent) do
-          {:ok, _pid} -> :ok
-          {:error, {:already_started, _pid}} -> :ok
-        end
-
-      _pid ->
-        :ok
-    end
-  end
-
-  defp handle_state_store_key(%__MODULE__{} = server), do: {handle_state_namespace(server.config), server.state_key}
-  defp handle_state_namespace(%Config{} = config), do: {config.mode, ledger_namespace(config)}
-
-  defp ledger_namespace(%Config{repo: repo, database: database}) do
-    case current_ledger_identity(repo, database) do
-      {:ok, identity} -> identity
-      :error -> {:configured_database, repo_database_key(repo, database)}
-    end
-  end
-
-  defp current_ledger_identity(repo, database) do
-    case repo_query(repo, "PRAGMA database_list", [], log: false) do
-      {:ok, %{rows: rows}} ->
-        case Enum.find(rows, &main_database_row?/1) do
-          [_seq, "main", path] -> {:ok, main_database_identity(repo, path, database)}
-          _row -> :error
-        end
-
-      _result ->
-        :error
-    end
-  rescue
-    _error -> :error
-  catch
-    _kind, _reason -> :error
-  end
-
-  defp repo_query(repo, sql, params, opts) when is_atom(repo) do
-    if repo_module_query?(repo) do
-      repo.query(sql, params, opts)
-    else
-      case dynamic_repo_identity(repo) do
-        pid when is_pid(pid) -> SQL.query(pid, sql, params, opts)
-        dynamic_repo when is_atom(dynamic_repo) and dynamic_repo != repo -> SQL.query(dynamic_repo, sql, params, opts)
-        _repo -> SQL.query(repo, sql, params, opts)
-      end
-    end
-  end
-
-  defp repo_query(repo, sql, params, opts), do: SQL.query(repo, sql, params, opts)
-
-  defp repo_module_query?(repo) do
-    case Code.ensure_loaded(repo) do
-      {:module, _module} -> function_exported?(repo, :query, 3)
-      {:error, _reason} -> false
-    end
-  end
-
-  defp main_database_row?([_seq, "main", _path]), do: true
-  defp main_database_row?(_row), do: false
-
-  defp main_database_identity(repo, path, _database) when is_binary(path) and path != "" do
-    {:main_database, repo_database_key(repo, path)}
-  end
-
-  defp main_database_identity(repo, _path, nil), do: blank_database_identity(repo)
-  defp main_database_identity(repo, _path, database), do: {:configured_database, repo_database_key(repo, database)}
-
-  defp blank_database_identity(repo) when is_pid(repo), do: {:repo_process, repo}
-
-  defp blank_database_identity(repo) when is_atom(repo) do
-    case dynamic_repo_identity(repo) do
-      nil -> {:repo, repo}
-      dynamic_repo -> {:dynamic_repo, dynamic_repo}
-    end
-  end
-
-  defp blank_database_identity(repo), do: {:repo, repo}
-
-  defp dynamic_repo_identity(repo) when is_atom(repo) do
-    if function_exported?(repo, :get_dynamic_repo, 0), do: repo.get_dynamic_repo(), else: nil
-  end
-
-  defp repo_database_key(repo, database) when is_atom(repo) do
-    if function_exported?(repo, :database_key, 1), do: repo.database_key(database), else: database
-  end
-
-  defp repo_database_key(_repo, database), do: database
-
-  defp monotonic_ms, do: System.monotonic_time(:millisecond)
 
   defp do_handle([], %__MODULE__{}) do
     error_response(nil, -32_600, "Invalid Request", %{"reason" => "empty_batch"})
@@ -1210,7 +904,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     identity = repo_configured_ledger_identity(repo, "default")
 
     try do
-      case repo_query(repo, "SELECT 1", [], log: false) do
+      case HandleStateStore.repo_query(repo, "SELECT 1", [], log: false) do
         {:ok, _result} -> %{"reachable" => true, "identity" => identity}
         {:error, _reason} -> %{"reachable" => false, "error" => "ledger_unavailable", "identity" => identity}
       end
@@ -1254,7 +948,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp repo_reachable_ledger_health(repo, identity) do
-    case repo_query(repo, "SELECT 1", [], log: false) do
+    case HandleStateStore.repo_query(repo, "SELECT 1", [], log: false) do
       {:ok, _result} -> %{"reachable" => true, "identity" => identity}
       {:error, _reason} -> unavailable_ledger_health(identity)
     end
@@ -1328,9 +1022,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp live_main_database_path(repo) do
-    case repo_query(repo, "PRAGMA database_list", [], log: false) do
+    case HandleStateStore.repo_query(repo, "PRAGMA database_list", [], log: false) do
       {:ok, %{rows: rows}} ->
-        case Enum.find(rows, &main_database_row?/1) do
+        case Enum.find(rows, &match?([_seq, "main", _path], &1)) do
           [_seq, "main", path] when is_binary(path) and path != "" -> {:ok, path}
           [_seq, "main", ""] -> :memory
           _row -> :error
@@ -8805,31 +8499,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp worker_tool("append_finding", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- scoped_session(config.repo, session, arguments),
-         :ok <- authorize_current_package_policy(config.repo, session, :finding_append, :finding, "append_finding"),
-         {:ok, title} <- required_argument(arguments, "title"),
-         {:ok, body} <- required_argument(arguments, "body"),
-         {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
-         idempotency_key = String.trim(idempotency_key),
-         {:ok, finding_id} <- optional_finding_id(arguments, session, idempotency_key),
-         attrs = %{
-           "id" => finding_id,
-           "work_package_id" => Session.work_package_id(session),
-           "title" => title,
-           "body" => body,
-           "severity" => optional_argument(arguments, "severity", "info"),
-           "idempotency_key" => idempotency_key,
-           "access_grant_id" => session.assignment.grant_id,
-           "caller_supplied_id" => Map.has_key?(arguments, "id")
-         },
-         {:ok, finding} <- append_authenticated_idempotent_finding(config.repo, session, finding_id, attrs) do
-      {:ok, agent_tool_result(%{"finding" => %{"id" => finding.id, "title" => finding.title, "severity" => finding.severity}})}
-    else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "append_finding", "reason" => reason}}
-      {:error, reason} -> worker_error(reason, "append_finding")
-    end
-  end
+  defp worker_tool("append_finding", arguments, %__MODULE__{config: config, session: session}), do: append_finding_tool(config.repo, session, arguments)
 
   defp worker_tool("append_progress", arguments, %__MODULE__{config: config, session: session}) do
     append_scoped_progress(config.repo, session, arguments, "append_progress", %{})
@@ -9035,6 +8705,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp append_finding_tool(repo, %Session{} = session, arguments) do
+    with {:ok, session} <- scoped_session(repo, session, arguments),
+         :ok <- authorize_current_package_policy(repo, session, :finding_append, :finding, "append_finding"),
+         {:ok, title} <- required_argument(arguments, "title"),
+         {:ok, body} <- required_argument(arguments, "body"),
+         {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
+         idempotency_key = String.trim(idempotency_key),
+         {:ok, finding_id} <- optional_finding_id(arguments, session, idempotency_key),
+         attrs = %{
+           "id" => finding_id,
+           "work_package_id" => Session.work_package_id(session),
+           "title" => title,
+           "body" => body,
+           "severity" => optional_argument(arguments, "severity", "info"),
+           "idempotency_key" => idempotency_key,
+           "access_grant_id" => session.assignment.grant_id,
+           "caller_supplied_id" => Map.has_key?(arguments, "id")
+         },
+         {:ok, finding} <- append_authenticated_idempotent_finding(repo, session, finding_id, attrs) do
+      {:ok, agent_tool_result(%{"finding" => %{"id" => finding.id, "title" => finding.title, "severity" => finding.severity}})}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "append_finding", "reason" => reason}}
+      {:error, reason} -> worker_error(reason, "append_finding")
+    end
+  end
+
   defp attach_branch_argument(repo, %Session{} = session, arguments) do
     case optional_string_argument(arguments, "branch") do
       {:ok, nil} -> inferred_attach_branch(repo, session)
@@ -9051,9 +8747,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp inferred_literal_branch(branch) do
-    if local_branch_template_pattern?(branch), do: {:tool_error, "missing_branch"}, else: {:ok, branch}
-  end
+  defp inferred_literal_branch(branch), do: if(local_branch_template_pattern?(branch), do: {:tool_error, "missing_branch"}, else: {:ok, branch})
 
   defp read_guidance_request_tool(arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
