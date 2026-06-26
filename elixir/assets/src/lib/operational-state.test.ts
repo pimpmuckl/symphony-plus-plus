@@ -10,7 +10,7 @@ describe("operational state presentation", () => {
   });
 
   it("uses ready color for ready slices", () => {
-    for (const status of ["approved", "ready_for_worker", "sliced"]) {
+    for (const status of ["approved", "ready_for_worker", "ready_to_finish", "sliced"]) {
       const slice = plannedSlice(status);
 
       expect(sliceCardTone(slice, undefined, sliceLane(slice))).toBe("ready");

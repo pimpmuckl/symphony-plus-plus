@@ -309,12 +309,9 @@ export function PackageDetailContent({
   const canMarkMerged = canMutateOperatorActions && !isFinishedBoardStatus(operational?.key || pkg.status);
   const isLinkedPackage = linkedWorkPackageIds.has(pkg.id);
   const canArchiveUnlinked = canMutateOperatorActions && !isLinkedPackage && ["merged", "merged_into_phase", "closed"].includes(pkg.status || "");
-  const canCloseWithEvidence = Boolean(isLinkedPackage && canMarkMerged);
+  const canCloseWithEvidence = Boolean(isLinkedPackage && canMarkMerged && readyWithoutMerge(pkg, operational));
   const stateActions: Array<{ value: WorkPackageStateAction; label: string }> = isLinkedPackage
-    ? [
-        ...(canMarkMerged ? [{ value: "merged" as const, label: "Mark Merged" }] : []),
-        ...(canCloseWithEvidence ? [{ value: "completed_no_pr" as const, label: "Close With Evidence" }] : []),
-      ]
+    ? linkedPackageStateActions(pkg, operational, canMarkMerged, canCloseWithEvidence)
     : !isLinkedPackage && canMarkMerged
       ? [
           { value: "merged_and_archive", label: "Merged + Archive" },
@@ -453,4 +450,26 @@ function packageBlockerCount(
   operational: WorkPackageCard["operational_state"] | null,
 ) {
   return visibleBlockerCount || summary?.active_blocker_count || pkg.active_blocker_count || (operational?.key === "blocked" || pkg.status === "blocked" ? 1 : 0);
+}
+
+export function linkedPackageStateActions(
+  pkg: WorkPackageCard,
+  operational: WorkPackageCard["operational_state"] | null,
+  canMarkMerged: boolean,
+  canCloseWithEvidence: boolean,
+): Array<{ value: WorkPackageStateAction; label: string }> {
+  if (!canMarkMerged) return [];
+  if (readyWithoutMerge(pkg, operational)) return canCloseWithEvidence ? [{ value: "completed_no_pr", label: "Close With Evidence" }] : [];
+  if ((operational?.merge_required ?? pkg.merge_required) === false) return [];
+
+  return [
+    { value: "merged", label: "Mark Merged" },
+  ];
+}
+
+function readyWithoutMerge(pkg: WorkPackageCard, operational: WorkPackageCard["operational_state"] | null) {
+  const key = operational?.key || "";
+  if (key === "ready_to_finish") return operational?.tone !== "warning";
+  if (key === "merge_ready") return false;
+  return ["ready_for_human_merge", "ready_for_architect_merge"].includes(operational?.raw_status || pkg.status || "") && (operational?.merge_required ?? pkg.merge_required) === false;
 }

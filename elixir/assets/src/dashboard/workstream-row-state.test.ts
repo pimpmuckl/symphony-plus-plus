@@ -281,6 +281,23 @@ describe("workstream row state", () => {
     expect(state.tone).toBe("implementing");
   });
 
+  it("derives request row state from ready-to-finish child slices", () => {
+    const detail: WorkRequestDetail = {
+      work_request: {
+        id: "wr-ready-finish-child",
+        status: "sliced",
+        operational_state: { key: "sliced", label: "Sliced" },
+      },
+      planned_slices: [plannedSlice("slice-ready-finish-child", "pkg-ready-finish", "ready_to_finish", "Ready To Finish")],
+    };
+
+    const state = requestBoardState(detail, new Map(), { blockerCount: 0, guidanceCount: 0 }, 50);
+
+    expect(state.kind).toBe("ready");
+    expect(state.label).toBe("Ready");
+    expect(state.tone).toBe("ready");
+  });
+
   it("keeps active rows active at 100 percent plan progress until finished", () => {
     const detail: WorkRequestDetail = {
       work_request: {

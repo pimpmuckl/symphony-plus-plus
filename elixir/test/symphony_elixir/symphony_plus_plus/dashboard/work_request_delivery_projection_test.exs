@@ -39,6 +39,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.WorkRequestDeliveryProjectio
                }
              })
 
+    ready_merge_slice = add_approved_slice!(repo, work_request, id: "WRS-DASH-READY-MERGE", work_package_kind: "adapter")
+
+    ready_merge_package =
+      create_matching_work_package!(repo, work_request, ready_merge_slice,
+        id: "SYMPP-DASH-READY-MERGE",
+        kind: "adapter",
+        policy_template: "adapter",
+        status: "ready_for_human_merge"
+      )
+
+    assert {:ok, _dispatched_ready_merge} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, ready_merge_slice.id, "approved", ready_merge_package.id)
+
+    ready_finish_slice = add_approved_slice!(repo, work_request, id: "WRS-DASH-READY-FINISH", work_package_kind: "investigation")
+
+    ready_finish_package =
+      create_matching_work_package!(repo, work_request, ready_finish_slice,
+        id: "SYMPP-DASH-READY-FINISH",
+        kind: "investigation",
+        policy_template: "investigation",
+        status: "ready_for_human_merge"
+      )
+
+    assert {:ok, _dispatched_ready_finish} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, ready_finish_slice.id, "approved", ready_finish_package.id)
+
     no_pr_slice = add_approved_slice!(repo, work_request, id: "WRS-DASH-NO-PR")
     no_pr_package = create_matching_work_package!(repo, work_request, no_pr_slice, id: "SYMPP-DASH-NO-PR", status: "closed")
 
@@ -163,11 +189,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.WorkRequestDeliveryProjectio
 
     assert {:ok, payload} = Dashboard.work_request_detail(repo, work_request.id)
 
-    assert payload.delivery_board["slice_count"] == 6
+    assert payload.delivery_board["slice_count"] == 8
     slices_by_id = Map.new(payload.delivery_board["slices"], &{&1["id"], &1})
 
     assert get_in(slices_by_id, ["WRS-DASH-NEEDS-CLOSEOUT", "operational_state", "key"]) == "needs_closeout"
     assert get_in(slices_by_id, ["WRS-DASH-NEEDS-CLOSEOUT", "attention_reason_codes"]) == ["pr_merged_without_delivery_outcome"]
+    assert get_in(slices_by_id, ["WRS-DASH-READY-MERGE", "operational_state", "key"]) == "merge_ready"
+    assert get_in(slices_by_id, ["WRS-DASH-READY-MERGE", "operational_state", "merge_required"]) == true
+    assert get_in(slices_by_id, ["WRS-DASH-READY-FINISH", "operational_state", "key"]) == "ready_to_finish"
+    assert get_in(slices_by_id, ["WRS-DASH-READY-FINISH", "operational_state", "merge_required"]) == false
     assert get_in(slices_by_id, ["WRS-DASH-NO-PR", "delivery", "outcome"]) == "completed_no_pr"
     assert get_in(slices_by_id, ["WRS-DASH-NO-PR", "operational_state", "key"]) == "completed_no_pr"
     assert get_in(slices_by_id, ["WRS-DASH-RECORDED-MERGED", "delivery", "outcome"]) == "pr_merged"
@@ -179,6 +209,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.WorkRequestDeliveryProjectio
     planned_slices_by_id = Map.new(payload.planned_slices, &{&1.id, &1})
 
     assert Map.fetch!(planned_slices_by_id, "WRS-DASH-NEEDS-CLOSEOUT").operational_state.key == "needs_closeout"
+    assert Map.fetch!(planned_slices_by_id, "WRS-DASH-READY-MERGE").operational_state.label == "Ready For Merge"
+    assert Map.fetch!(planned_slices_by_id, "WRS-DASH-READY-FINISH").operational_state.label == "Ready To Finish"
     assert get_in(Map.fetch!(planned_slices_by_id, "WRS-DASH-NO-PR"), [:delivery, "outcome"]) == "completed_no_pr"
     assert Map.fetch!(planned_slices_by_id, "WRS-DASH-NO-PR").operational_state.label == "Completed Without PR"
     assert get_in(Map.fetch!(planned_slices_by_id, "WRS-DASH-RECORDED-MERGED"), [:delivery, "outcome"]) == "pr_merged"
@@ -196,6 +228,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.WorkRequestDeliveryProjectio
     assert Map.fetch!(planned_slices_by_id, "WRS-DASH-SUPERSEDED").operational_state.key == "superseded"
     assert get_in(Map.fetch!(planned_slices_by_id, "WRS-DASH-SUPERSEDED"), [:successor, "work_package", "id"]) == successor_package.id
     assert payload.work_request.completed_at == nil
+  end
+
+  test "WorkRequest detail promotes docs packages without human merge to ready-to-finish", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-DASH-READY-FINISH")
+    ready_finish_slice = add_approved_slice!(repo, work_request, id: "WRS-DASH-ONLY-READY-FINISH", work_package_kind: "docs")
+
+    ready_finish_package =
+      create_matching_work_package!(repo, work_request, ready_finish_slice,
+        id: "SYMPP-DASH-ONLY-READY-FINISH",
+        kind: "docs",
+        policy_template: "docs",
+        status: "ready_for_human_merge"
+      )
+
+    assert {:ok, _dispatched_ready_finish} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, ready_finish_slice.id, "approved", ready_finish_package.id)
+
+    assert {:ok, payload} = Dashboard.work_request_detail(repo, work_request.id)
+
+    assert payload.work_request.operational_state.key == "ready_to_finish"
+    assert payload.work_request.operational_state.label == "Ready To Finish"
+
+    delivery_slices_by_id = Map.new(payload.delivery_board["slices"], &{&1["id"], &1})
+    assert get_in(delivery_slices_by_id, ["WRS-DASH-ONLY-READY-FINISH", "operational_state", "pr_required"]) == false
   end
 
   defp add_approved_slice!(repo, work_request, overrides) do

@@ -4,6 +4,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   import Ecto.Query, only: [from: 2]
 
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequestProgress
+  alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
@@ -14,6 +15,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
 
   @ready_statuses ["ready_for_human_merge", "ready_for_architect_merge"]
   @terminal_package_statuses ["merged", "merged_into_phase", "closed", "abandoned"]
+  @runtime_merge_required_kinds ["hotfix", "adapter", "mcp", "skill", "hooks", "phase_child"]
   @delivery_lookup_chunk_size 400
   @context_lookup_chunk_size 400
   @review_package_artifact_limit 20
@@ -538,6 +540,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
 
         %{
           raw_status: work_package.status,
+          merge_required: merge_required?(work_package),
+          pr_required: pr_required?(work_package),
           pr: pr_summary(map_value(metadata, "pr")),
           blocker_state: Map.fetch!(activity, :blocker_state),
           runtime_state: Map.fetch!(activity, :runtime_state)
@@ -588,6 +592,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
           branch_pattern: work_package.branch_pattern,
           raw_status: work_package.status,
           status: work_package.status,
+          merge_required: merge_required?(work_package),
+          pr_required: pr_required?(work_package),
           branch: branch_summary(map_value(metadata, "branch")),
           pr: pr_summary(map_value(metadata, "pr")),
           review: review_summary(metadata),
@@ -878,8 +884,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
     end
   end
 
-  defp status_work_package_state(%{raw_status: raw_status}) when raw_status in @ready_statuses do
+  defp status_work_package_state(%{raw_status: raw_status, merge_required: true}) when raw_status in @ready_statuses do
     {"merge_ready", "Ready", "success", "Ready for merge.", []}
+  end
+
+  defp status_work_package_state(%{raw_status: raw_status}) when raw_status in @ready_statuses do
+    {"ready_to_finish", "Ready To Finish", "success", "Ready to finish with closeout evidence.", []}
   end
 
   defp status_work_package_state(%{raw_status: "reviewing"}) do
@@ -925,6 +935,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
       raw_status: raw_status,
       delivery_outcome: delivery_outcome,
       work_package_status: work_package && work_package.raw_status,
+      merge_required: work_package && Map.get(work_package, :merge_required),
+      pr_required: work_package && Map.get(work_package, :pr_required),
       attention_reason_codes: attention_reason_codes,
       attention_items: Enum.map(attention_reason_codes, &attention_item/1)
     }
@@ -948,6 +960,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   defp active_runtime?(_work_package), do: false
 
   defp terminal_package_status?(status), do: status in @terminal_package_statuses
+
+  defp merge_required?(%WorkPackage{} = work_package) do
+    case LifecycleService.policy_for(work_package) do
+      {:ok, policy} ->
+        required_gates = Map.get(policy, :required_gates, [])
+        "human_merge" in required_gates or "architect_merge" in required_gates
+
+      {:error, _reason} ->
+        work_package.kind in @runtime_merge_required_kinds
+    end
+  end
+
+  defp pr_required?(%WorkPackage{} = work_package) do
+    case LifecycleService.policy_for(work_package) do
+      {:ok, policy} -> "human_merge" in Map.get(policy, :required_gates, [])
+      {:error, _reason} -> work_package.kind in @runtime_merge_required_kinds
+    end
+  end
 
   defp latest_pr_payload(events) do
     latest_payload(events, "pr", ["attach_pr", "sync_pr"])

@@ -66,6 +66,8 @@ export type PackageOperationalState = {
   raw_status?: string | null;
   delivery_outcome?: string | null;
   work_package_status?: string | null;
+  merge_required?: boolean | null;
+  pr_required?: boolean | null;
   attention_reason_codes?: string[];
   has_started?: boolean;
   has_active_worker?: boolean;
@@ -138,6 +140,8 @@ export type WorkPackageCard = RepoIdentityFields & {
   title?: string | null;
   kind?: string | null;
   status?: string | null;
+  merge_required?: boolean | null;
+  pr_required?: boolean | null;
   base_branch?: string | null;
   parent_id?: string | null;
   phase_id?: string | null;

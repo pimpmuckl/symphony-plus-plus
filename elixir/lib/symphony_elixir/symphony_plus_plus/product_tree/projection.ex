@@ -21,6 +21,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTree.Projection do
     "needs_attention",
     "needs_closeout",
     "planning",
+    "ready_to_finish",
     "ready_for_architect_merge",
     "ready_for_human_merge",
     "reviewing",

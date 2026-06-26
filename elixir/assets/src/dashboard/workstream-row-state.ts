@@ -376,7 +376,7 @@ const ACTIVE_WORK_STATUSES = new Set([
   "reviewing",
 ]);
 
-const READY_STATUSES = new Set(["approved", "ready_for_slicing", "ready_for_worker", "sliced"]);
+const READY_STATUSES = new Set(["approved", "ready_for_slicing", "ready_for_worker", "ready_to_finish", "sliced"]);
 const PLANNED_STATUSES = new Set(["planned"]);
 const NOT_STARTED_STATUSES = new Set(["created", "not_done"]);
 const DEFERRED_STATUSES = new Set(["abandoned", "deferred", "skipped", "superseded"]);

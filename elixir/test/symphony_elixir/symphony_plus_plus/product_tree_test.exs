@@ -150,6 +150,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ProductTreeTest do
     assert Map.new(projected.nodes, &{&1.id, &1})[node.id].computed_completion_mark == "partial"
   end
 
+  test "counts ready-to-finish slices as partial product progress", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-V3-READY-FINISH-PROGRESS", title: "Ready finish progress")
+    node = create_node!(repo, work_request, id: "ptn_ready_finish", title: "No-PR closeout")
+    slice = add_slice!(repo, work_request, id: "wrs_ready_finish", title: "Ready finish slice")
+
+    assert {:ok, _link} =
+             ProductTree.create_slice_link(repo, %{
+               work_request_id: work_request.id,
+               product_tree_node_id: node.id,
+               planned_slice_id: slice.id,
+               position: 1
+             })
+
+    projected = ProductTree.project(repo, work_request.id, [%{"id" => slice.id, "operational_state" => %{"key" => "ready_to_finish"}}])
+
+    assert Map.new(projected.nodes, &{&1.id, &1})[node.id].computed_completion_mark == "partial"
+  end
+
   test "visible-only projection keeps scoped slice paths without leaking hidden tree records", %{repo: repo} do
     work_request = create_work_request!(repo, id: "WR-V3-SCOPED-PROJECTION", title: "Scoped projection")
     root = create_node!(repo, work_request, id: "ptn_scoped_root", title: "Backend")

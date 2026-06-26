@@ -37,6 +37,7 @@ const CARD_TONES: Record<string, StateCardTone> = {
   ready_for_human_merge: "merge",
   ready_for_slicing: "ready",
   ready_for_worker: "ready",
+  ready_to_finish: "ready",
   reviewing: "review",
   skipped: "muted",
   sliced: "ready",
@@ -74,6 +75,7 @@ const BADGE_TONES: Record<string, BadgeTone> = {
   ready_for_clarification: "guidance",
   ready_for_slicing: "ready",
   ready_for_worker: "ready",
+  ready_to_finish: "ready",
   reviewing: "info",
   skipped: "secondary",
   sliced: "ready",
@@ -105,6 +107,7 @@ const BOARD_LANES: Record<string, BoardLane> = {
   ready_for_architect_merge: "implementing",
   ready_for_human_merge: "implementing",
   ready_for_worker: "implementing",
+  ready_to_finish: "implementing",
   reviewing: "implementing",
   skipped: "finished",
   started_paused: "implementing",
@@ -136,6 +139,7 @@ const REQUEST_LANES: Record<string, RequestLane> = {
   ready_for_human_merge: "slices",
   ready_for_slicing: "slices",
   ready_for_worker: "slices",
+  ready_to_finish: "slices",
   reviewing: "slices",
   skipped: "finished",
   sliced: "slices",
@@ -225,6 +229,7 @@ function operationalBadgeRule(key: string, tone?: string | null, fallbackStatus?
   if (key === "completed_no_pr" || key === "superseded") return "secondary";
   if (key === "needs_closeout") return "warning";
   if (key === "merge_ready") return tone === "warning" ? "warning" : "ready";
+  if (key === "ready_to_finish") return tone === "warning" ? "warning" : "ready";
   if (key === "blocked") return "danger";
   if (["merged", "merged_into_phase", "closed", "completed"].includes(key) || tone === "success") return "success";
   if (["abandoned", "skipped"].includes(key)) return "secondary";
