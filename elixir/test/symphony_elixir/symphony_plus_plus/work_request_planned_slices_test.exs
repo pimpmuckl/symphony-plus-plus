@@ -66,6 +66,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
     end
   end
 
+  defmodule PromotionRaceRepo do
+    import Ecto.Query, only: [from: 2]
+
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+    alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
+
+    @race_key :sympp_planned_slice_promotion_race_id
+
+    def arm(work_request_id), do: Process.put(@race_key, work_request_id)
+
+    def transaction(fun), do: Repo.transaction(fun)
+    def rollback(reason), do: Repo.rollback(reason)
+    def get(schema, id), do: Repo.get(schema, id)
+    def get!(schema, id), do: Repo.get!(schema, id)
+    def one(query), do: Repo.one(query)
+    def exists?(query), do: Repo.exists?(query)
+    def insert(changeset), do: Repo.insert(changeset)
+
+    def update_all(query, updates) do
+      case Process.get(@race_key) do
+        work_request_id when is_binary(work_request_id) ->
+          Process.delete(@race_key)
+
+          Repo.update_all(
+            from(work_request in WorkRequest, where: work_request.id == ^work_request_id),
+            set: [status: "ready_for_slicing", updated_at: DateTime.utc_now(:microsecond)]
+          )
+
+          {0, []}
+
+        _race ->
+          Repo.update_all(query, updates)
+      end
+    end
+  end
+
   setup_all do
     database_path = database_path()
 
@@ -115,6 +151,95 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
 
     assert second.sequence == 2
     assert {:ok, [^first, ^second]} = Service.list_planned_slices(repo, work_request.id)
+  end
+
+  test "prepares answered clarification WorkRequests for planned slices", %{repo: repo} do
+    for status <- ["ready_for_clarification", "clarifying", "human_info_needed"] do
+      work_request = create_work_request!(repo, id: "WR-SLICE-PREP-#{status}", status: status)
+      assert {:ok, question} = Repository.ask_question(repo, work_request.id, question_attrs(id: "WRQ-SLICE-PREP-#{status}"))
+
+      assert {:ok, _answered} =
+               Repository.answer_question(repo, question.id, "open", %{
+                 answer: "Slice the shared service path.",
+                 answered_by: "operator-1"
+               })
+
+      assert {:ok, ready} = Service.prepare_for_planned_slices(repo, work_request.id)
+      assert ready.status == "ready_for_slicing"
+    end
+
+    blocked = create_work_request!(repo, id: "WR-SLICE-PREP-BLOCKED", status: "clarifying")
+    assert {:ok, _question} = Repository.ask_question(repo, blocked.id, question_attrs(id: "WRQ-SLICE-PREP-BLOCKED"))
+
+    assert {:error, :open_questions} = Service.prepare_for_planned_slices(repo, blocked.id)
+    assert {:ok, unchanged} = Repository.get(repo, blocked.id)
+    assert unchanged.status == "clarifying"
+
+    for status <- ["ready_for_slicing", "sliced"] do
+      ready_blocked = create_work_request!(repo, id: "WR-SLICE-PREP-READY-BLOCKED-#{status}", status: status)
+
+      assert {:ok, _question} =
+               Repository.ask_question(
+                 repo,
+                 ready_blocked.id,
+                 question_attrs(id: "WRQ-SLICE-PREP-READY-BLOCKED-#{status}")
+               )
+
+      assert {:error, :open_questions} = Service.prepare_for_planned_slices(repo, ready_blocked.id)
+
+      assert {:error, :open_questions} =
+               Service.add_planned_slice_for_authoring(
+                 repo,
+                 ready_blocked.id,
+                 planned_slice_attrs(id: "WRS-SLICE-PREP-READY-BLOCKED-#{status}")
+               )
+
+      assert {:ok, unchanged} = Repository.get(repo, ready_blocked.id)
+      assert unchanged.status == status
+      assert {:ok, []} = Repository.list_planned_slices(repo, ready_blocked.id)
+    end
+
+    invalid = create_work_request!(repo, id: "WR-SLICE-PREP-INVALID", status: "clarifying")
+    assert {:ok, invalid_question} = Repository.ask_question(repo, invalid.id, question_attrs(id: "WRQ-SLICE-PREP-INVALID"))
+
+    assert {:ok, _answered} =
+             Repository.answer_question(repo, invalid_question.id, "open", %{
+               answer: "Slice it.",
+               answered_by: "operator-1"
+             })
+
+    assert {:error, %Ecto.Changeset{}} =
+             Service.add_planned_slice_for_authoring(
+               repo,
+               invalid.id,
+               planned_slice_attrs(id: "WRS-SLICE-PREP-INVALID", work_package_kind: "side_quest")
+             )
+
+    assert {:ok, still_clarifying} = Repository.get(repo, invalid.id)
+    assert still_clarifying.status == "clarifying"
+    assert {:ok, []} = Repository.list_planned_slices(repo, invalid.id)
+
+    raced = create_work_request!(repo, id: "WR-SLICE-PREP-RACE", status: "clarifying")
+    assert {:ok, raced_question} = Repository.ask_question(repo, raced.id, question_attrs(id: "WRQ-SLICE-PREP-RACE"))
+
+    assert {:ok, _answered} =
+             Repository.answer_question(repo, raced_question.id, "open", %{
+               answer: "Slice it.",
+               answered_by: "operator-1"
+             })
+
+    PromotionRaceRepo.arm(raced.id)
+
+    assert {:ok, planned} =
+             Repository.add_planned_slice_for_authoring(
+               PromotionRaceRepo,
+               raced.id,
+               planned_slice_attrs(id: "WRS-SLICE-PREP-RACE")
+             )
+
+    assert planned.status == "planned"
+    assert {:ok, raced_ready} = Repository.get(repo, raced.id)
+    assert raced_ready.status == "ready_for_slicing"
   end
 
   test "gets planned slices by WorkRequest scope without leaking siblings", %{repo: repo} do
@@ -1002,6 +1127,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
       human_description: "Record the human's desired outcome before slicing.",
       constraints: %{"allowed_paths" => ["elixir/lib"], "forbidden_paths" => [], "requires_secret" => false},
       desired_dispatch_shape: "single_package"
+    }
+
+    Enum.into(overrides, defaults)
+  end
+
+  defp question_attrs(overrides) do
+    defaults = %{
+      category: "scope",
+      question: "What should the planned slice cover?",
+      why_needed: "The architect needs the boundary before slicing."
     }
 
     Enum.into(overrides, defaults)

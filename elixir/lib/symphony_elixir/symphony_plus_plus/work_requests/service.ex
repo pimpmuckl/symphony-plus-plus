@@ -29,6 +29,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service do
           {:ok, WorkRequest.t()} | {:error, error()}
   def update_status(repo, id, current_status, next_status), do: Repository.update_status(repo, id, current_status, next_status)
 
+  @spec prepare_for_planned_slices(Repository.repo(), String.t()) :: {:ok, WorkRequest.t()} | {:error, error()}
+  def prepare_for_planned_slices(repo, id), do: Repository.prepare_for_planned_slices(repo, id)
+
   @spec ask_question(Repository.repo(), String.t(), map()) :: {:ok, ClarificationQuestion.t()} | {:error, error()}
   def ask_question(repo, work_request_id, attrs), do: Repository.ask_question(repo, work_request_id, attrs)
 
@@ -47,6 +50,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service do
 
   @spec add_planned_slice(Repository.repo(), String.t(), map()) :: {:ok, PlannedSlice.t()} | {:error, error()}
   def add_planned_slice(repo, work_request_id, attrs), do: Repository.add_planned_slice(repo, work_request_id, attrs)
+
+  @spec add_planned_slice_for_authoring(Repository.repo(), String.t(), map()) :: {:ok, PlannedSlice.t()} | {:error, error()}
+  def add_planned_slice_for_authoring(repo, work_request_id, attrs),
+    do: Repository.add_planned_slice_for_authoring(repo, work_request_id, attrs)
 
   @spec list_planned_slices(Repository.repo(), String.t()) :: {:ok, [PlannedSlice.t()]} | {:error, error()}
   def list_planned_slices(repo, work_request_id), do: Repository.list_planned_slices(repo, work_request_id)

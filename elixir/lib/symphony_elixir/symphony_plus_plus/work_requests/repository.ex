@@ -62,6 +62,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
           | :delivery_outcome_conflict
           | :last_approved_slice
           | :no_approved_slices
+          | :open_questions
           | :not_found
           | :invalid_work_package_id
           | :work_package_already_linked
@@ -183,6 +184,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     end
   end
 
+  @spec prepare_for_planned_slices(repo(), String.t()) :: {:ok, WorkRequest.t()} | {:error, error()}
+  def prepare_for_planned_slices(repo, id) when is_atom(repo) and is_binary(id) do
+    case get(repo, id) do
+      {:ok, %WorkRequest{status: status} = work_request} when status in ["ready_for_slicing", "sliced"] ->
+        case ensure_no_open_questions(repo, work_request.id) do
+          :ok -> {:ok, work_request}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, %WorkRequest{status: status} = work_request} when status in ["ready_for_clarification", "clarifying", "human_info_needed"] ->
+        advance_ready_for_slicing(repo, work_request)
+
+      {:ok, %WorkRequest{}} ->
+        {:error, :invalid_status}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   @spec ask_question(repo(), String.t(), map()) :: {:ok, ClarificationQuestion.t()} | {:error, error()}
   def ask_question(repo, work_request_id, attrs)
       when is_atom(repo) and is_binary(work_request_id) and is_map(attrs) do
@@ -244,6 +265,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   @spec add_planned_slice(repo(), String.t(), map()) :: {:ok, PlannedSlice.t()} | {:error, error()}
   def add_planned_slice(repo, work_request_id, attrs)
       when is_atom(repo) and is_binary(work_request_id) and is_map(attrs) do
+    add_planned_slice(repo, work_request_id, attrs, [])
+  end
+
+  @spec add_planned_slice_for_authoring(repo(), String.t(), map()) :: {:ok, PlannedSlice.t()} | {:error, error()}
+  def add_planned_slice_for_authoring(repo, work_request_id, attrs)
+      when is_atom(repo) and is_binary(work_request_id) and is_map(attrs) do
+    add_planned_slice(repo, work_request_id, attrs, prepare_for_planned_slices?: true)
+  end
+
+  defp add_planned_slice(repo, work_request_id, attrs, opts) do
     attrs =
       attrs
       |> normalize_keys()
@@ -253,7 +284,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     changeset_fun = &PlannedSlice.create_changeset/1
 
     with {:ok, attrs} <- PlannedSliceDeliveryScope.normalize_explicit(repo, work_request_id, attrs) do
-      insert_with_sequence(repo, attrs, &next_planned_slice_sequence/2, changeset_fun, clear_completion?: true)
+      insert_with_sequence(repo, attrs, &next_planned_slice_sequence/2, changeset_fun, Keyword.put(opts, :clear_completion?, true))
     end
   end
 
@@ -431,6 +462,80 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
+  defp advance_ready_for_slicing(repo, %WorkRequest{} = work_request) do
+    repo.transaction(fn ->
+      case advance_ready_for_slicing_in_transaction(repo, work_request) do
+        :ok -> repo.get!(WorkRequest, work_request.id)
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+    |> normalize_transaction_result()
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp prepare_for_planned_slices_in_transaction(repo, work_request_id) do
+    case get(repo, work_request_id) do
+      {:ok, %WorkRequest{status: status} = work_request} when status in ["ready_for_slicing", "sliced"] ->
+        ensure_no_open_questions(repo, work_request.id)
+
+      {:ok, %WorkRequest{status: status} = work_request} when status in ["ready_for_clarification", "clarifying", "human_info_needed"] ->
+        advance_ready_for_slicing_in_transaction(repo, work_request)
+
+      {:ok, %WorkRequest{}} ->
+        {:error, :invalid_status}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp advance_ready_for_slicing_in_transaction(repo, %WorkRequest{} = work_request) do
+    now = DateTime.utc_now(:microsecond)
+
+    work_request.id
+    |> ready_for_slicing_update_query(work_request.status)
+    |> repo.update_all(set: [status: "ready_for_slicing", updated_at: now])
+    |> case do
+      {1, _rows} -> :ok
+      {0, _rows} -> ready_for_slicing_result(repo, work_request)
+    end
+  end
+
+  defp ready_for_slicing_update_query(work_request_id, current_status) do
+    from(work_request in WorkRequest,
+      where: work_request.id == ^work_request_id and work_request.status == ^current_status,
+      where:
+        fragment(
+          """
+          NOT EXISTS (
+            SELECT 1
+            FROM sympp_work_request_clarification_questions AS question
+            WHERE question.work_request_id = ? AND question.status = 'open'
+          )
+          """,
+          work_request.id
+        )
+    )
+  end
+
+  defp ready_for_slicing_result(repo, work_request) do
+    cond do
+      open_questions?(repo, work_request.id) -> {:error, :open_questions}
+      work_request_ready_for_slicing?(repo, work_request.id) -> :ok
+      stale_work_request_status?(repo, work_request) -> {:error, :stale_status}
+      true -> {:error, :not_found}
+    end
+  end
+
+  defp ensure_no_open_questions(repo, work_request_id) do
+    if open_questions?(repo, work_request_id) do
+      {:error, :open_questions}
+    else
+      :ok
+    end
+  end
+
   defp status_update_values(next_status, now) when next_status in @completion_blocking_statuses do
     [
       status: next_status,
@@ -484,6 +589,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     end
   end
 
+  defp open_questions?(repo, work_request_id) do
+    repo.exists?(
+      from(question in ClarificationQuestion,
+        where: question.work_request_id == ^work_request_id and question.status == "open"
+      )
+    )
+  end
+
+  defp work_request_ready_for_slicing?(repo, work_request_id) do
+    case repo.get(WorkRequest, work_request_id) do
+      %WorkRequest{status: status} when status in ["ready_for_slicing", "sliced"] -> true
+      _work_request -> false
+    end
+  end
+
+  defp stale_work_request_status?(repo, work_request) do
+    case repo.get(WorkRequest, work_request.id) do
+      %WorkRequest{status: status} -> status != work_request.status
+      nil -> false
+    end
+  end
+
   defp status_update_query(id, current_status) do
     from(work_request in WorkRequest,
       where: work_request.id == ^id and work_request.status == ^current_status
@@ -502,13 +629,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
 
   defp insert_sequence_transaction(repo, attrs, next_sequence, changeset_fun, opts) do
     repo.transaction(fn ->
-      attrs = Map.put(attrs, "sequence", next_sequence.(repo, Map.fetch!(attrs, "work_request_id")))
+      case maybe_prepare_for_planned_slices(repo, attrs, opts) do
+        :ok ->
+          attrs = Map.put(attrs, "sequence", next_sequence.(repo, Map.fetch!(attrs, "work_request_id")))
 
-      attrs
-      |> changeset_fun.()
-      |> repo.insert()
-      |> normalize_insert_result()
-      |> return_inserted_record_or_rollback(repo, attrs, opts)
+          attrs
+          |> changeset_fun.()
+          |> repo.insert()
+          |> normalize_insert_result()
+          |> return_inserted_record_or_rollback(repo, attrs, opts)
+
+        {:error, reason} ->
+          repo.rollback(reason)
+      end
     end)
     |> normalize_transaction_result()
   rescue
@@ -577,6 +710,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   end
 
   defp maybe_clear_completion_state(_repo, _attrs, _opts), do: :ok
+
+  defp maybe_prepare_for_planned_slices(repo, %{"work_request_id" => work_request_id}, opts) do
+    if Keyword.get(opts, :prepare_for_planned_slices?, false) do
+      prepare_for_planned_slices_in_transaction(repo, work_request_id)
+    else
+      :ok
+    end
+  end
+
+  defp maybe_prepare_for_planned_slices(_repo, _attrs, _opts), do: :ok
 
   defp retry_delay_ms(attempts_left, total_attempts) do
     used_attempts = max(total_attempts - attempts_left, 0)

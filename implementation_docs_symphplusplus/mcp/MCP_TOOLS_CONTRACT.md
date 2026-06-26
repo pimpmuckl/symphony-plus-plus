@@ -126,6 +126,13 @@ Some names are shared across worker and architect sessions. For example,
 for architects; the live handler applies the role-specific authorization and
 target-scope checks.
 
+Clarification has no extra completion ceremony. After open clarification
+questions are answered or closed, architects may read the WorkRequest and call
+`add_work_request_planned_slice`; the tool safely advances
+`ready_for_clarification`, `clarifying`, or `human_info_needed` WorkRequests to
+`ready_for_slicing` before inserting the slice. Open clarification questions
+still block the call with `open_questions`.
+
 `dispatch_work_request_planned_slice` requires only `work_request_id` and
 `planned_slice_id`; `claimed_by` is optional. It creates the linked WorkPackage,
 mints a worker grant, and returns the same simple `claim_local_assignment`
