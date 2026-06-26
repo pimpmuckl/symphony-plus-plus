@@ -2,9 +2,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   @moduledoc false
 
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
-  alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, SoloTools}
   alias SymphonyElixir.SymphonyPlusPlus.ProductTree.{Node, SliceLink}
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
@@ -747,10 +747,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   def architect_tool_input_schema("read_work_request") do
     schema(
       %{
-        "work_request_id" => string_schema(),
-        "include_planning_scratch" =>
-          boolean_schema()
-          |> Map.put("description", "When true, include skipped never-dispatched planned slices that are hidden by default as planning scratch.")
+        "work_request_id" => string_schema()
       },
       ["work_request_id"]
     )
@@ -763,10 +760,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
         "view" =>
           @work_request_product_tree_views
           |> string_enum_schema()
-          |> Map.put("description", "Projection size. Defaults to nodes_with_slice_refs."),
-        "include_planning_scratch" =>
-          boolean_schema()
-          |> Map.put("description", "When true, include skipped never-dispatched planned slices that are hidden by default as planning scratch.")
+          |> Map.put("description", "Projection size. Defaults to nodes_with_slice_refs.")
       },
       ["work_request_id"]
     )
@@ -777,10 +771,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   def architect_tool_input_schema("read_work_request_delivery_board") do
     schema(
       %{
-        "work_request_id" => described_string_schema("Scoped WorkRequest id to project."),
-        "include_planning_scratch" =>
-          boolean_schema()
-          |> Map.put("description", "When true, include skipped never-dispatched planned slices that are hidden by default as planning scratch.")
+        "work_request_id" => described_string_schema("Scoped WorkRequest id to project.")
       },
       ["work_request_id"]
     )
@@ -974,7 +965,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
         "work_request_id" => string_schema(),
         "title" => string_schema(),
         "goal" => string_schema(),
-        "work_package_kind" => string_enum_schema(StateMachine.standalone_kinds()),
+        "work_package_kind" => string_enum_schema(WorkPackage.planned_slice_kinds()),
         "delivery_repo" => described_string_schema("Optional delivery repo for this planned slice. Defaults to the parent WorkRequest primary repo and must be listed in the WorkRequest repo scopes."),
         "target_base_branch" =>
           described_string_schema(

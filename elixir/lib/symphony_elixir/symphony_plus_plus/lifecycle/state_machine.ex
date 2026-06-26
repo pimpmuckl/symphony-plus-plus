@@ -7,9 +7,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
   @worker_capability "worker:lifecycle.transition"
   @architect_capability "architect:lifecycle.transition"
   @phase_child_kind "phase_child"
-  @standalone_kinds ["quick_fix", "hotfix", "docs", "investigation", "adapter", "mcp", "skill", "hooks"]
 
-  @standalone_transitions %{
+  @worker_package_transitions %{
     "created" => ["ready_for_worker", "blocked", "abandoned"],
     "ready_for_worker" => ["claimed", "blocked", "abandoned"],
     "claimed" => ["planning", "blocked", "abandoned"],
@@ -77,10 +76,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
 
   @spec supported_kind?(term()) :: boolean()
   def supported_kind?(@phase_child_kind), do: true
-  def supported_kind?(kind), do: kind in @standalone_kinds
+  def supported_kind?(kind), do: kind in WorkPackage.executable_kinds()
 
-  @spec standalone_kinds() :: [String.t()]
-  def standalone_kinds, do: @standalone_kinds
+  @spec dispatchable_kinds() :: [String.t()]
+  def dispatchable_kinds, do: WorkPackage.executable_kinds()
 
   defp validate_lifecycle_shape(%WorkPackage{} = work_package, next_status) do
     cond do
@@ -174,7 +173,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
   defp lifecycle_kind?(kind), do: supported_kind?(kind)
 
   defp transitions(%WorkPackage{kind: @phase_child_kind}), do: @phase_child_transitions
-  defp transitions(%WorkPackage{}), do: @standalone_transitions
+  defp transitions(%WorkPackage{}), do: @worker_package_transitions
 
   defp require_capability(actor, capability) do
     if capability in capabilities(actor) do

@@ -763,7 +763,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
   defp create_work_package(repo, overrides \\ []) do
     attrs =
-      Keyword.merge([id: "SYMPP-P1-004", kind: "standard_pr"], overrides)
+      Keyword.merge([id: "SYMPP-P1-004", kind: "mcp"], overrides)
       |> WorkPackageFactory.attrs()
 
     WorkPackageRepository.create(repo, attrs)

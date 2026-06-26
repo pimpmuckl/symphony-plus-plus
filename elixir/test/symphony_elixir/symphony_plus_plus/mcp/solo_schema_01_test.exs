@@ -836,7 +836,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     assert get_in(tools_by_name, ["list_work_requests", "inputSchema", "properties", "status", "type"]) == "string"
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "properties", "work_request_id", "type"]) == "string"
-    assert get_in(tools_by_name, ["read_work_request", "inputSchema", "properties", "include_planning_scratch", "type"]) == "boolean"
+    refute Map.has_key?(get_in(tools_by_name, ["read_work_request", "inputSchema", "properties"]), "include_planning_scratch")
     assert get_in(tools_by_name, ["read_work_request_product_tree", "inputSchema", "required"]) == ["work_request_id"]
 
     assert get_in(tools_by_name, ["read_work_request_product_tree", "inputSchema", "properties", "view", "enum"]) == [
@@ -845,13 +845,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
              "nodes_with_slices"
            ]
 
-    assert get_in(tools_by_name, ["read_work_request_product_tree", "inputSchema", "properties", "include_planning_scratch", "type"]) == "boolean"
+    refute Map.has_key?(get_in(tools_by_name, ["read_work_request_product_tree", "inputSchema", "properties"]), "include_planning_scratch")
     assert get_in(tools_by_name, ["add_comment", "inputSchema", "required"]) == ["target_kind", "target_id", "body"]
     assert get_in(tools_by_name, ["list_comments", "inputSchema", "required"]) == ["target_kind", "target_id"]
     assert get_in(tools_by_name, ["resolve_comment", "inputSchema", "required"]) == ["comment_id"]
     assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
     assert get_in(tools_by_name, ["read_work_request_delivery_board", "inputSchema", "required"]) == ["work_request_id"]
-    assert get_in(tools_by_name, ["read_work_request_delivery_board", "inputSchema", "properties", "include_planning_scratch", "type"]) == "boolean"
+    refute Map.has_key?(get_in(tools_by_name, ["read_work_request_delivery_board", "inputSchema", "properties"]), "include_planning_scratch")
     assert get_in(tools_by_name, ["reconcile_work_request", "inputSchema", "required"]) == ["work_request_id"]
     assert get_in(tools_by_name, ["reconcile_work_request", "inputSchema", "properties", "apply", "type"]) == "boolean"
 
@@ -928,7 +928,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
              "`**` must be a complete path segment"
 
     planned_slice_kinds = get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "work_package_kind", "enum"])
-    assert planned_slice_kinds == StateMachine.standalone_kinds()
+    assert planned_slice_kinds == WorkPackage.planned_slice_kinds()
     assert "docs" in planned_slice_kinds
 
     refute Map.has_key?(get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "forbidden_file_globs"]), "minItems")

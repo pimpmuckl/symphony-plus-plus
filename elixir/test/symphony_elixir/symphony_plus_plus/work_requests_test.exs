@@ -281,6 +281,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
 
     assert "is invalid" in errors_on(dispatch_shape_changeset).desired_dispatch_shape
 
+    assert {:error, %Ecto.Changeset{} = review_only_changeset} =
+             Repository.create(repo, attrs(desired_dispatch_shape: "review_only"))
+
+    assert "is invalid" in errors_on(review_only_changeset).desired_dispatch_shape
+
     assert {:error, %Ecto.Changeset{} = constraints_changeset} =
              Repository.create(repo, attrs(constraints: %{secret_name: :not_json_safe}))
 

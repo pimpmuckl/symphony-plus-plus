@@ -30,7 +30,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     :ok
   end
 
-  test "allowed standalone transitions pass for quick work templates", %{repo: repo} do
+  test "allowed worker package transitions pass for quick work templates", %{repo: repo} do
     for kind <- ["quick_fix", "hotfix", "docs", "investigation"] do
       assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: kind))
 
@@ -49,7 +49,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     end
   end
 
-  test "invalid standalone transitions fail for quick work templates", %{repo: repo} do
+  test "invalid worker package transitions fail for quick work templates", %{repo: repo} do
     for kind <- ["quick_fix", "hotfix", "docs", "investigation"] do
       assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: kind))
 
@@ -139,7 +139,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert policy.constraints.terminal_readiness_status == "ready_for_architect_merge"
   end
 
-  test "standalone hotfix and phase child have different terminal readiness states" do
+  test "hotfix and phase child have different terminal readiness states" do
     assert {:ok, hotfix_policy} = Templates.expand("hotfix")
     assert {:ok, phase_child_policy} = Templates.expand("phase_child")
 
@@ -219,13 +219,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert {:error, :invalid_transition} = Service.transition(repo, package.id, "merged", architect_actor!(repo, package))
   end
 
-  test "standalone merged remains a known terminal lifecycle status", %{repo: repo} do
+  test "worker package merged remains a known terminal lifecycle status", %{repo: repo} do
     assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix", status: "merged"))
 
     assert {:error, :invalid_transition} = Service.transition(repo, package.id, "closed", architect_actor!(repo, package))
   end
 
-  test "transition rejects phase child corrupted to standalone merged status", %{repo: repo} do
+  test "transition rejects phase child corrupted to worker package merged status", %{repo: repo} do
     package = insert_raw_package!(repo, kind: "phase_child", status: "merged", parent_id: "phase-1")
 
     assert {:error, :unknown_lifecycle_status} = Service.transition(repo, package.id, "closed", architect_actor!(repo, package))
@@ -325,7 +325,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
              })
   end
 
-  test "transition supports declared standalone lifecycle kinds", %{repo: repo} do
+  test "transition supports declared dispatchable lifecycle kinds", %{repo: repo} do
     package = insert_raw_package!(repo, kind: "mcp", status: "created")
 
     assert {:ok, updated} = Service.transition(repo, package.id, "ready_for_worker", worker_actor!(repo, package))
@@ -431,6 +431,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     Map.from_struct(assignment)
   end
 
-  defp expiry_label(%{constraints: %{expiry_seconds: nil}}), do: "none"
-  defp expiry_label(%{constraints: %{expiry_seconds: expiry_seconds}}), do: Integer.to_string(expiry_seconds)
+  defp expiry_label(%{constraints: %{expiry_seconds: expiry_seconds}}) do
+    case expiry_seconds do
+      nil -> "none"
+      seconds -> Integer.to_string(seconds)
+    end
+  end
 end

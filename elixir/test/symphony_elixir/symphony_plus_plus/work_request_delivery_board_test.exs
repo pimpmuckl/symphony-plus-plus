@@ -468,7 +468,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
     assert slice.attention_reason_codes == []
   end
 
-  test "hides only skipped scratch planned slices by default", %{repo: repo} do
+  test "keeps skipped planned slices visible on the delivery board", %{repo: repo} do
     work_request = create_work_request!(repo, id: "WR-BOARD-SKIPPED-SCRATCH")
     visible_slice = create_planned_slice!(repo, work_request, id: "WRS-BOARD-VISIBLE-PLANNED")
 
@@ -488,7 +488,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
         skipped
       end)
 
-    assert {:ok, delivery} =
+    assert {:ok, _delivery} =
              Repository.record_planned_slice_delivery(
                repo,
                work_request.id,
@@ -524,25 +524,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
         )
       )
 
-    assert PlannedSlice.skipped_scratch?(scratch_slice, nil)
-    refute PlannedSlice.skipped_scratch?(delivered_slice, delivery)
-    refute PlannedSlice.skipped_scratch?(linked_skipped_slice, nil)
-
     assert {:ok, board} = DeliveryBoard.project(repo, work_request.id)
-    assert board.planning_scratch_slice_count == 1
-    assert board.hidden_planning_scratch_slice_count == 1
-    assert board.include_planning_scratch == false
-    assert Enum.map(board.slices, & &1.id) == [visible_slice.id, delivered_slice.id, linked_skipped_slice.id]
+    assert Enum.map(board.slices, & &1.id) == [visible_slice.id, scratch_slice.id, delivered_slice.id, linked_skipped_slice.id]
 
-    assert {:ok, included_board} = DeliveryBoard.project(repo, work_request.id, include_planning_scratch?: true)
-    assert included_board.hidden_planning_scratch_slice_count == 0
-    assert included_board.include_planning_scratch == true
-    assert Enum.map(included_board.slices, & &1.id) == [visible_slice.id, scratch_slice.id, delivered_slice.id, linked_skipped_slice.id]
-
-    included_by_id = Map.new(included_board.slices, &{&1.id, &1})
-    assert get_in(included_by_id, [scratch_slice.id, :planning_classification]) == "planning_scratch"
-    refute Map.has_key?(Map.fetch!(included_by_id, delivered_slice.id), :planning_classification)
-    refute Map.has_key?(Map.fetch!(included_by_id, linked_skipped_slice.id), :planning_classification)
+    by_id = Map.new(board.slices, &{&1.id, &1})
+    assert by_id[scratch_slice.id].raw_status == "skipped"
+    assert by_id[delivered_slice.id].raw_status == "skipped"
+    assert by_id[linked_skipped_slice.id].raw_status == "skipped"
   end
 
   test "preloaded blocked raw state does not imply active blocker evidence", %{repo: repo} do

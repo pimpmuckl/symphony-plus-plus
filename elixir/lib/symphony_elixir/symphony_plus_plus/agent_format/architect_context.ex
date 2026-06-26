@@ -61,7 +61,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.ArchitectContext do
       "work_request" => payload |> map_value("work_request") |> compact_work_request(),
       "scope" => payload |> map_value("scope") |> primitive_map(),
       "view" => text_value(map_value(payload, "view")),
-      "include_planning_scratch" => map_value(payload, "include_planning_scratch"),
       "mode" => text_value(map_value(product_tree, "mode")),
       "summary" => product_tree |> map_value("summary") |> primitive_map(),
       "root_node_ids" => product_tree |> map_value("root_node_ids") |> join_list(),
@@ -81,9 +80,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.ArchitectContext do
       "work_request" => payload |> map_value("work_request") |> compact_mutation_work_request(),
       "scope" => payload |> map_value("scope") |> primitive_map(),
       "counts" => board |> map_value("counts") |> primitive_map(),
-      "include_planning_scratch" => map_value(board, "include_planning_scratch"),
-      "hidden_planning_scratch_slice_count" => map_value(board, "hidden_planning_scratch_slice_count"),
-      "planning_scratch_slice_count" => map_value(board, "planning_scratch_slice_count"),
       "slices" => board |> map_value("slices") |> list_rows(&delivery_slice_row/1)
     }
   end
@@ -207,8 +203,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.ArchitectContext do
       "acceptance_criteria" => slice |> map_value("acceptance_criteria") |> detail_list(),
       "validation_count" => list_count(map_value(slice, "validation_steps")),
       "validation_steps" => slice |> map_value("validation_steps") |> detail_list(),
-      "review_lanes" => slice |> map_value("review_lanes") |> join_list(),
-      "planning_classification" => text_value(map_value(slice, "planning_classification"))
+      "review_lanes" => slice |> map_value("review_lanes") |> join_list()
     }
   end
 
@@ -267,8 +262,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentFormat.ArchitectContext do
       "sequence" => integer_value(map_value(slice, "sequence")),
       "title" => text_value(map_value(slice, "title")),
       "status" => text_value(map_value(slice, "status")),
-      "work_package_id" => text_value(map_value(slice, "work_package_id")),
-      "planning_classification" => text_value(map_value(slice, "planning_classification"))
+      "work_package_id" => text_value(map_value(slice, "work_package_id"))
     }
     |> reject_nil_values()
   end

@@ -3287,9 +3287,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool("read_work_request", arguments, %__MODULE__{config: config, session: nil} = server) do
     with :ok <- authorize_local_trusted_work_request_read_tool_call(server, "read_work_request"),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
-         {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false),
          {:ok, work_request, _filters} <- local_trusted_work_request_read_scope(config.repo, work_request_id),
-         {:ok, payload} <- work_request_detail_payload(config.repo, work_request, include_planning_scratch?: include_planning_scratch?) do
+         {:ok, payload} <- work_request_detail_payload(config.repo, work_request, []) do
       payload = Map.put(payload, "scope", redacted_work_request_scope(work_request))
       {:ok, architect_agent_tool_result(payload, :work_request_read)}
     else
@@ -3303,7 +3302,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool("read_work_request", arguments, %__MODULE__{config: config, session: %Session{} = session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
-         {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false),
          {:ok, work_request, _filters, scope} <-
            authorized_work_request_scope(
              config.repo,
@@ -3313,7 +3311,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              "read_work_request",
              work_request_repo_scope_opts(config)
            ),
-         {:ok, payload} <- work_request_detail_payload(config.repo, work_request, include_planning_scratch?: include_planning_scratch?) do
+         {:ok, payload} <- work_request_detail_payload(config.repo, work_request, []) do
       payload = Map.put(payload, "scope", scope)
       {:ok, architect_agent_tool_result(payload, :work_request_read)}
     else
@@ -3325,7 +3323,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_tool("read_work_request_product_tree", arguments, %__MODULE__{config: config, session: nil} = server) do
     with :ok <- authorize_local_trusted_work_request_read_tool_call(server, "read_work_request_product_tree"),
-         {:ok, work_request_id, view, include_planning_scratch?} <- read_work_request_product_tree_arguments(arguments),
+         {:ok, work_request_id, view} <- read_work_request_product_tree_arguments(arguments),
          {:ok, work_request, scope} <- local_trusted_work_request_read_scope(config.repo, work_request_id),
          {:ok, result} <-
            read_work_request_product_tree_result(
@@ -3333,8 +3331,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              work_request,
              scope,
              scope,
-             view,
-             include_planning_scratch?
+             view
            ) do
       {:ok, result}
     else
@@ -3349,7 +3346,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     repo_scope_opts = work_request_repo_scope_opts(config)
 
     with {:ok, session} <- Auth.require_session(session, config.repo),
-         {:ok, work_request_id, view, include_planning_scratch?} <- read_work_request_product_tree_arguments(arguments),
+         {:ok, work_request_id, view} <- read_work_request_product_tree_arguments(arguments),
          {:ok, work_request, filters, scope} <-
            authorized_work_request_scope(
              config.repo,
@@ -3359,7 +3356,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              "read_work_request_product_tree",
              repo_scope_opts
            ),
-         {:ok, result} <- read_work_request_product_tree_result(config.repo, work_request, filters, scope, view, include_planning_scratch?, repo_scope_opts) do
+         {:ok, result} <- read_work_request_product_tree_result(config.repo, work_request, filters, scope, view, repo_scope_opts) do
       {:ok, result}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_work_request_product_tree", "reason" => reason}}
@@ -3417,7 +3414,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
-         {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false),
          {:ok, work_request, filters, scope} <-
            authorized_work_request_scope(
              config.repo,
@@ -3428,8 +3424,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              repo_scope_opts
            ),
          {:ok, planned_slices} <- WorkRequestService.list_planned_slices(config.repo, work_request_id),
-         {:ok, delivery_board} <-
-           scoped_delivery_board(config.repo, work_request, planned_slices, filters, Keyword.put(repo_scope_opts, :include_planning_scratch?, include_planning_scratch?)) do
+         {:ok, delivery_board} <- scoped_delivery_board(config.repo, work_request, planned_slices, filters, repo_scope_opts) do
       payload = %{
         "work_request" => work_request_mutation_payload(work_request),
         "delivery_board" => delivery_board_payload(delivery_board),
@@ -3447,11 +3442,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool("read_work_request_delivery_board", arguments, %__MODULE__{config: config, session: nil} = server) do
     with :ok <- authorize_local_trusted_work_request_read_tool_call(server, "read_work_request_delivery_board"),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
-         {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false),
          {:ok, work_request, filters} <- local_trusted_work_request_read_scope(config.repo, work_request_id),
          {:ok, planned_slices} <- WorkRequestService.list_planned_slices(config.repo, work_request_id),
-         {:ok, delivery_board} <-
-           scoped_delivery_board(config.repo, work_request, planned_slices, filters, include_planning_scratch?: include_planning_scratch?) do
+         {:ok, delivery_board} <- scoped_delivery_board(config.repo, work_request, planned_slices, filters) do
       payload = %{
         "work_request" => work_request_mutation_payload(work_request),
         "delivery_board" => delivery_board_payload(delivery_board),
@@ -4403,9 +4396,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp read_work_request_product_tree_arguments(arguments) do
     with {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
-         {:ok, view} <- optional_product_tree_view(arguments),
-         {:ok, include_planning_scratch?} <- optional_boolean(arguments, "include_planning_scratch", false) do
-      {:ok, work_request_id, view, include_planning_scratch?}
+         {:ok, view} <- optional_product_tree_view(arguments) do
+      {:ok, work_request_id, view}
     end
   end
 
@@ -4415,7 +4407,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          filters,
          scope,
          view,
-         include_planning_scratch?,
          repo_scope_opts \\ []
        ) do
     with {:ok, payload} <-
@@ -4423,10 +4414,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              repo,
              work_request,
              filters,
-             Keyword.merge(repo_scope_opts,
-               view: view,
-               include_planning_scratch?: include_planning_scratch?
-             )
+             Keyword.merge(repo_scope_opts, view: view)
            ) do
       payload = Map.put(payload, "scope", scope)
       {:ok, architect_agent_tool_result(payload, :work_request_product_tree)}
@@ -4931,8 +4919,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     invalid_params_error("dispatch_work_request_planned_slice", {:branch_pattern, branch_pattern, reason})
   end
 
-  defp dispatch_work_request_planned_slice_error({:unsupported_standalone_kind, _kind}) do
-    {:error, -32_602, "Invalid params", %{"tool" => "dispatch_work_request_planned_slice", "reason" => "unsupported_standalone_kind"}}
+  defp dispatch_work_request_planned_slice_error({:kind_not_dispatchable, _kind}) do
+    {:error, -32_602, "Invalid params", %{"tool" => "dispatch_work_request_planned_slice", "reason" => "kind_not_dispatchable"}}
   end
 
   defp dispatch_work_request_planned_slice_error({:dispatch_link_failed, _reason, recovery}) do
@@ -6164,7 +6152,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         planned_slices: planned_slices,
         visible_work_package_ids: visible_work_package_ids,
         work_package_contexts: work_package_contexts,
-        include_planning_scratch?: Keyword.get(opts, :include_planning_scratch?, false),
         slice_projection: Keyword.get(opts, :slice_projection)
       ]
       |> Keyword.reject(fn {_key, value} -> is_nil(value) end)
@@ -13426,21 +13413,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
-  defp work_request_detail_payload(repo, %WorkRequest{} = work_request, opts) do
+  defp work_request_detail_payload(repo, %WorkRequest{} = work_request, _opts) do
     with {:ok, questions} <- WorkRequestService.list_questions(repo, work_request.id),
          {:ok, decisions} <- WorkRequestService.list_decisions(repo, work_request.id),
          {:ok, planned_slices} <- WorkRequestService.list_planned_slices(repo, work_request.id),
-         {:ok, slice_visibility} <-
-           DeliveryBoard.planned_slice_visibility(repo, work_request.id, planned_slices, include_planning_scratch?: Keyword.get(opts, :include_planning_scratch?, false)) do
+         {:ok, slice_visibility} <- DeliveryBoard.planned_slice_visibility(repo, work_request.id, planned_slices) do
       visible_planned_slices = Map.fetch!(slice_visibility, :visible_planned_slices)
-      planning_scratch_slice_ids = Map.fetch!(slice_visibility, :planning_scratch_slice_ids)
 
       {:ok,
        %{
          "work_request" => work_request_payload(work_request),
          "clarification_questions" => Enum.map(questions, &clarification_question_payload/1),
          "decision_log_entries" => Enum.map(decisions, &decision_log_entry_payload/1),
-         "planned_slices" => Enum.map(visible_planned_slices, &planned_slice_payload(&1, planning_scratch_slice_ids)),
+         "planned_slices" => Enum.map(visible_planned_slices, &planned_slice_payload/1),
          "summary" => work_request_summary_payload(questions, decisions, visible_planned_slices)
        }}
     end
@@ -13448,28 +13433,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp work_request_product_tree_payload(repo, %WorkRequest{} = work_request, filters, opts) do
     view = Keyword.fetch!(opts, :view)
-    include_planning_scratch? = Keyword.get(opts, :include_planning_scratch?, false)
 
     with {:ok, planned_slices} <- WorkRequestService.list_planned_slices(repo, work_request.id),
          {:ok, delivery_board} <-
-           scoped_delivery_board(repo, work_request, planned_slices, filters,
-             include_planning_scratch?: include_planning_scratch?,
-             slice_projection: :operational_state
-           ) do
+           scoped_delivery_board(repo, work_request, planned_slices, filters, slice_projection: :operational_state) do
       projection_slice_payloads = delivery_board |> Map.fetch!(:slices) |> json_safe_payload()
       visible_planned_slices = visible_planned_slices_from_projection(planned_slices, projection_slice_payloads)
-      planning_scratch_slice_ids = planning_scratch_slice_ids_from_projection(projection_slice_payloads)
-
-      slice_payloads =
-        product_tree_slice_payloads(
-          visible_planned_slices,
-          planning_scratch_slice_ids,
-          projection_slice_payloads
-        )
+      slice_payloads = product_tree_slice_payloads(visible_planned_slices, projection_slice_payloads)
 
       product_tree =
         repo
-        |> ProductTree.project(work_request.id, projection_slice_payloads, product_tree_projection_opts(include_planning_scratch?))
+        |> ProductTree.project(work_request.id, projection_slice_payloads, product_tree_projection_opts())
         |> json_safe_payload()
         |> product_tree_view_payload(slice_payloads, view)
 
@@ -13477,8 +13451,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        %{
          "work_request" => work_request_payload(work_request),
          "product_tree" => product_tree,
-         "view" => view,
-         "include_planning_scratch" => include_planning_scratch?
+         "view" => view
        }}
     end
   end
@@ -13491,12 +13464,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       |> MapSet.new()
 
     Enum.filter(planned_slices, &MapSet.member?(visible_slice_ids, &1.id))
-  end
-
-  defp planning_scratch_slice_ids_from_projection(projection_slice_payloads) do
-    projection_slice_payloads
-    |> Enum.filter(&(map_get(&1, :planning_classification) == "planning_scratch"))
-    |> MapSet.new(&map_get(&1, :id))
   end
 
   defp product_tree_view_payload(product_tree, _slice_payloads, "nodes_only") do
@@ -13516,18 +13483,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     Map.put(product_tree, "slice_refs", Enum.map(slice_payloads, &product_tree_slice_ref_payload/1))
   end
 
-  defp product_tree_slice_payloads(visible_planned_slices, planning_scratch_slice_ids, projection_slice_payloads) do
+  defp product_tree_slice_payloads(visible_planned_slices, projection_slice_payloads) do
     projection_slice_payloads_by_id = Map.new(projection_slice_payloads, &{map_get(&1, :id), &1})
 
     Enum.map(visible_planned_slices, fn %PlannedSlice{} = planned_slice ->
       planned_slice
-      |> planned_slice_payload(planning_scratch_slice_ids)
+      |> planned_slice_payload()
       |> Map.merge(product_tree_operational_slice_fields(Map.get(projection_slice_payloads_by_id, planned_slice.id, %{})))
     end)
   end
 
-  defp product_tree_projection_opts(true), do: [include_unlinked_nodes?: true]
-  defp product_tree_projection_opts(false), do: [visible_only?: true, include_unlinked_nodes?: true]
+  defp product_tree_projection_opts, do: [visible_only?: true, include_unlinked_nodes?: true]
 
   defp product_tree_operational_slice_fields(projection_slice_payload) when is_map(projection_slice_payload) do
     projection_slice_payload
@@ -13546,7 +13512,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp product_tree_slice_ref_payload(slice) when is_map(slice) do
     slice
-    |> Map.take(["id", "sequence", "title", "status", "work_package_id", "planning_classification"])
+    |> Map.take(["id", "sequence", "title", "status", "work_package_id"])
     |> Map.merge(product_tree_operational_slice_fields(slice))
     |> Map.put("has_full_payload", false)
   end
@@ -13652,12 +13618,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "inserted_at" => timestamp(planned_slice.inserted_at),
       "updated_at" => timestamp(planned_slice.updated_at)
     }
-  end
-
-  defp planned_slice_payload(%PlannedSlice{} = planned_slice, %MapSet{} = planning_scratch_slice_ids) do
-    planned_slice
-    |> planned_slice_payload()
-    |> maybe_put_planning_classification(planned_slice, planning_scratch_slice_ids)
   end
 
   defp product_tree_node_payload(%Node{} = node) do
@@ -13768,18 +13728,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp product_tree_revision_reason("approve_work_request_planned_slice"), do: "Planned slice approved in product tree through MCP."
   defp product_tree_revision_reason("skip_work_request_planned_slice"), do: "Planned slice skipped in product tree through MCP."
   defp product_tree_revision_reason("record_planned_slice_delivery"), do: "Planned slice delivery recorded in product tree through MCP."
-
-  defp maybe_put_planning_classification(
-         payload,
-         %PlannedSlice{} = planned_slice,
-         %MapSet{} = planning_scratch_slice_ids
-       ) do
-    if MapSet.member?(planning_scratch_slice_ids, planned_slice.id) do
-      Map.put(payload, "planning_classification", "planning_scratch")
-    else
-      payload
-    end
-  end
 
   defp planned_slice_delivery_payload(%PlannedSliceDelivery{} = delivery) do
     %{

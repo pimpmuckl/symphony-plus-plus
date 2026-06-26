@@ -1366,8 +1366,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert {:ok, _blocked} =
              Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BLOCKED", kind: "adapter", status: "blocked"))
 
-    assert {:ok, _standard_pr} =
-             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STANDARD", status: "ready_for_worker"))
+    assert {:ok, _anchor} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ANCHOR", kind: "delegation", status: "ready_for_worker"))
 
     assert {:ok, issues} = Tracker.fetch_candidate_issues()
     assert MapSet.new(Enum.map(issues, & &1.id)) == MapSet.new([ready.id, implementing.id])
@@ -1808,8 +1808,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert {:ok, _closed} =
              Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-CLOSED", kind: "adapter", status: "closed"))
 
-    assert {:ok, _standard_pr} =
-             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STANDARD-LOOKUP", status: "ready_for_worker"))
+    assert {:ok, _anchor} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ANCHOR-LOOKUP", kind: "delegation", status: "ready_for_worker"))
 
     assert {:ok, ready_issues} = Tracker.fetch_issues_by_states([" READY_FOR_WORKER "])
     assert MapSet.new(Enum.map(ready_issues, & &1.id)) == MapSet.new([ready.id, "SYMPP-RAW-TODO"])
@@ -1817,10 +1817,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert {:ok, issues} = Tracker.fetch_issue_states_by_ids([reviewing.id, "missing"])
     assert Enum.map(issues, & &1.id) == [reviewing.id]
 
-    assert {:ok, standard_pr_reviewing} =
-             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ID-STANDARD", status: "reviewing"))
+    assert {:ok, anchor_reviewing} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ID-ANCHOR", kind: "delegation", status: "reviewing"))
 
-    assert {:ok, []} = Tracker.fetch_issue_states_by_ids([standard_pr_reviewing.id])
+    assert {:ok, []} = Tracker.fetch_issue_states_by_ids([anchor_reviewing.id])
 
     assert {:ok, []} = Tracker.fetch_issues_by_states([])
     assert {:ok, []} = Tracker.fetch_issues_by_states([" ", nil])

@@ -307,7 +307,7 @@ export function NewRequestDialog({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {["architect_led_feature_branch", "single_package", "direct_main_fix", "investigation_first", "review_only"].map((value) => (
+                      {["architect_led_feature_branch", "single_package", "direct_main_fix", "investigation_first"].map((value) => (
                         <SelectItem key={value} value={value}>
                           {formatStatus(value)}
                         </SelectItem>

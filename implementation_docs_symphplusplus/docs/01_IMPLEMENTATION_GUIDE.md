@@ -45,12 +45,11 @@ human decisions should use the structured `decision_prompt` shape so the
 operator sees a TL;DR, details, concrete options with pros/cons, and the always
 available freeform redirect path.
 
-Use a standalone execution package only for one already-bounded quick fix,
-hotfix, investigation, or review-only task that does not need product-tree
-planning. Standalone packages do not need a phase branch or architect.
-Standalone `mix sympp.create_work` remains a legacy/recovery private-store
-bootstrap path; use planned-slice dispatch for normal ledger-backed local
-claims.
+Use a single-slice WorkRequest for one already-bounded quick fix, hotfix, or
+investigation that does not need product-tree planning.
+These requests do not need extra product plan nodes or a phase branch; the
+worker still starts from planned-slice dispatch and the normal ledger-backed
+local claim.
 
 Use an architect-led package when the work must be split across multiple child
 packages, dependency order matters, or one operator wants an architect agent to

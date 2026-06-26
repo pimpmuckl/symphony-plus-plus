@@ -33,8 +33,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest do
     "single_package",
     "architect_led_feature_branch",
     "direct_main_fix",
-    "investigation_first",
-    "review_only"
+    "investigation_first"
   ]
 
   @creator_kinds ["human", "agent", "operator", "system"]
