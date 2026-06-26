@@ -491,7 +491,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
     assert {:ok, updated_package} = WorkPackageRepository.get(repo, package.id)
     assert updated_package.allowed_file_globs == ["elixir/lib/**", "docs/**"]
 
-    assert {:ok, ready_package} = WorkPackageRepository.update(repo, package.id, %{status: "ready_for_human_merge"})
+    assert {:ok, ready_package} = WorkPackageRepository.update(repo, package.id, %{status: "ready_for_merge"})
 
     assert {:ok, renewed} =
              AccessGrantService.mint_architect_grant(repo, ArchitectHandoff.phase_id_for_work_request(work_request),

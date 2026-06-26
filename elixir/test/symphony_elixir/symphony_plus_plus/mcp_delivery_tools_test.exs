@@ -363,7 +363,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     {work_request, planned_slice, linked_package} =
       linked_slice!(repo,
         work_request_id: "WR-MCP-DELIVERY-RECONCILE-MERGED-STALE",
-        work_package_status: "ready_for_human_merge"
+        work_package_status: "ready_for_merge"
       )
 
     session =
@@ -430,7 +430,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     {work_request, planned_slice, linked_package} =
       linked_slice!(repo,
         work_request_id: "WR-MCP-DELIVERY-READONLY",
-        work_package_status: "ready_for_human_merge"
+        work_package_status: "ready_for_merge"
       )
 
     session = create_work_request_architect_session(repo, work_request, ["read:work_request"])
@@ -486,7 +486,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     {work_request, planned_slice, linked_package} =
       linked_slice!(repo,
         work_request_id: "WR-MCP-DELIVERY-LIVE-NARROWED",
-        work_package_status: "ready_for_human_merge"
+        work_package_status: "ready_for_merge"
       )
 
     session =
@@ -551,7 +551,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     {work_request, _planned_slice, linked_package} =
       linked_slice!(repo,
         work_request_id: "WR-MCP-DELIVERY-RECONCILE-WRITEONLY",
-        work_package_status: "ready_for_human_merge"
+        work_package_status: "ready_for_merge"
       )
 
     session = create_work_request_architect_session(repo, work_request, ["write:work_request"])
@@ -678,7 +678,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     linked_package =
       create_matching_work_package!(repo, work_request, approved_slice,
         id: "WP-MCP-DELIVERY-GRANT-CLOSEOUT",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     assert {:ok, planned_slice} =
@@ -743,7 +743,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     {work_request, planned_slice, linked_package} =
       linked_slice!(repo,
         work_request_id: "WR-MCP-DELIVERY-REVOKE-THEN-NO-PR",
-        work_package_status: "ready_for_human_merge"
+        work_package_status: "ready_for_merge"
       )
 
     session = create_work_request_architect_session(repo, work_request, ["write:work_request"])
@@ -854,7 +854,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     replacement_package =
       create_matching_work_package!(repo, work_request, approved_replacement,
         id: "WP-MCP-DELIVERY-REPLACEMENT",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     assert {:ok, dispatched_replacement} =

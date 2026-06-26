@@ -9075,7 +9075,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp reject_ready_status(status) when status in ["ready_for_human_merge", "ready_for_architect_merge"] do
+  defp reject_ready_status(status) when status in ["ready_for_merge", "ready_for_human_merge", "ready_for_architect_merge"] do
     {:tool_error, "use_mark_ready"}
   end
 
@@ -10486,7 +10486,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:tool_error, "child_under_architect_control"}
   end
 
-  defp reject_ready_work_package(%WorkPackage{status: status}) when status in ["ready_for_human_merge", "ready_for_architect_merge"],
+  defp reject_ready_work_package(%WorkPackage{status: status}) when status in ["ready_for_merge", "ready_for_human_merge", "ready_for_architect_merge"],
     do: {:tool_error, "already_ready"}
 
   defp reject_ready_work_package(%WorkPackage{}), do: :ok

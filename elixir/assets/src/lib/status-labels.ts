@@ -11,7 +11,7 @@ export function statusLabel(status?: string | null) {
   if (status === "started_paused") return "Started / Paused";
   if (status === "completed") return "Completed";
   if (status === "merging") return "Merging";
-  if (status === "ready_for_human_merge" || status === "ready_for_architect_merge") return "Merge Ready";
+  if (status === "ready_for_merge" || status === "ready_for_human_merge" || status === "ready_for_architect_merge") return "Merge Ready";
   if (status === "merging_into_phase") return "Merging";
   if (status === "ci_waiting") return "CI Waiting";
   return formatStatus(status);

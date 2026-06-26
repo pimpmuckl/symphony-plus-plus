@@ -10,7 +10,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.PlannedSliceWorkerRevoke do
 
   @block_on_revoke_statuses ["claimed", "implementing", "reviewing", "ci_waiting"]
   @recycle_statuses @block_on_revoke_statuses ++ ["blocked"]
-  @closeout_statuses ["ready_for_human_merge", "ready_for_architect_merge", "merged", "merged_into_phase", "closed", "abandoned"]
+  @closeout_statuses ["ready_for_merge", "ready_for_human_merge", "ready_for_architect_merge", "merged", "merged_into_phase", "closed", "abandoned"]
   @revoke_statuses @recycle_statuses ++ @closeout_statuses
 
   @spec require_revoke_status(WorkPackage.t()) :: :ok | {:tool_error, String.t()}

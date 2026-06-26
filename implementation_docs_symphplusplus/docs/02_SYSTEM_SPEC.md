@@ -169,7 +169,7 @@ planning
 implementing
 reviewing
 ci_waiting
-ready_for_human_merge
+ready_for_merge
 merged
 closed
 blocked

@@ -41,7 +41,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
             "implementing",
             "reviewing",
             "ci_waiting",
-            "ready_for_human_merge"
+            "ready_for_merge"
           ] do
         assert {:ok, package} = Service.transition(repo, package.id, status, worker_actor!(repo, package))
         assert package.status == status
@@ -65,19 +65,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert {:ok, quick_fix} = Templates.expand("quick_fix")
     assert quick_fix.constraints.expiry_seconds == nil
     assert quick_fix.constraints.planning_depth == "brief"
-    assert quick_fix.constraints.terminal_readiness_status == "ready_for_human_merge"
+    assert quick_fix.constraints.terminal_readiness_status == "ready_for_merge"
     assert "review_brief_green" in quick_fix.readiness_requirements
 
     assert {:ok, hotfix} = Templates.expand("hotfix")
     assert hotfix.constraints.expiry_seconds == nil
     assert hotfix.review_suite.required == ["emergency"]
-    assert hotfix.constraints.terminal_readiness_status == "ready_for_human_merge"
+    assert hotfix.constraints.terminal_readiness_status == "ready_for_merge"
 
     assert {:ok, docs} = Templates.expand("docs")
     assert docs.constraints.expiry_seconds == nil
     assert docs.constraints.planning_depth == "brief"
     assert docs.review_suite.required == ["brief"]
-    assert docs.constraints.terminal_readiness_status == "ready_for_human_merge"
+    assert docs.constraints.terminal_readiness_status == "ready_for_merge"
     assert docs.readiness_requirements == ["tests_passed", "review_brief_green"]
 
     assert {:ok, phase_child} = Templates.expand("phase_child")
@@ -96,7 +96,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
       assert {:ok, policy} = Templates.expand(kind)
       assert policy.template == "worker_package"
       assert policy.review_suite.required == ["normal"]
-      assert policy.constraints.terminal_readiness_status == "ready_for_human_merge"
+      assert policy.constraints.terminal_readiness_status == "ready_for_merge"
     end
 
     assert {:ok, current_pr_state_policy} = Templates.expand("mcp_current_pr_state")
@@ -143,14 +143,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert {:ok, hotfix_policy} = Templates.expand("hotfix")
     assert {:ok, phase_child_policy} = Templates.expand("phase_child")
 
-    assert hotfix_policy.constraints.terminal_readiness_status == "ready_for_human_merge"
+    assert hotfix_policy.constraints.terminal_readiness_status == "ready_for_merge"
     assert phase_child_policy.constraints.terminal_readiness_status == "ready_for_architect_merge"
   end
 
   test "worker capability cannot transition to merged", %{repo: repo} do
-    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix", status: "ready_for_human_merge"))
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix", status: "ready_for_merge"))
 
     assert {:error, :worker_cannot_mark_merged} = Service.transition(repo, package.id, "merged", worker_actor!(repo, package))
+  end
+
+  test "metadata-only updates preserve legacy stored merge-ready packages", %{repo: repo} do
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix", status: "ready_for_merge", title: "Ready package"))
+
+    repo.query!("UPDATE sympp_work_packages SET status = ? WHERE id = ?", ["ready_for_human_merge", package.id])
+
+    assert {:ok, updated} = Repository.update(repo, package.id, %{title: "Renamed ready package"})
+    assert updated.title == "Renamed ready package"
+    assert updated.status == "ready_for_human_merge"
+  end
+
+  test "direct changesets normalize atom-keyed legacy ready status" do
+    attrs =
+      WorkPackageFactory.attrs(id: "SYMPP-LEGACY-ATOM-KEYS", kind: "hotfix", status: "ready_for_human_merge", title: "Ready package")
+
+    changeset = WorkPackage.changeset(%WorkPackage{}, attrs)
+
+    assert changeset.valid?
+    assert Ecto.Changeset.get_field(changeset, :status) == "ready_for_merge"
   end
 
   test "hotfix happy path reaches ready for human merge", %{repo: repo} do
@@ -162,9 +183,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert {:ok, package} = Service.transition(repo, package.id, "implementing", worker_actor!(repo, package))
     assert {:ok, package} = Service.transition(repo, package.id, "reviewing", worker_actor!(repo, package))
     assert {:ok, package} = Service.transition(repo, package.id, "ci_waiting", worker_actor!(repo, package))
-    assert {:ok, package} = Service.transition(repo, package.id, "ready_for_human_merge", worker_actor!(repo, package))
+    assert {:ok, package} = Service.transition(repo, package.id, "ready_for_merge", worker_actor!(repo, package))
 
-    assert package.status == "ready_for_human_merge"
+    assert package.status == "ready_for_merge"
   end
 
   test "phase child happy path reaches ready for architect merge", %{repo: repo} do

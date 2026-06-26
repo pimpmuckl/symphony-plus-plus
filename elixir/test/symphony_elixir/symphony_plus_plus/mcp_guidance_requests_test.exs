@@ -32,7 +32,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
   @guidance_eligible_statuses ["ready_for_worker", "claimed", "planning", "implementing", "reviewing", "ci_waiting", "blocked"]
   @guidance_ineligible_statuses [
     "created",
-    "ready_for_human_merge",
+    "ready_for_merge",
     "ready_for_architect_merge",
     "merging_into_phase",
     "merged_into_phase",
@@ -584,7 +584,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
     assert get_in(create_response, ["result", "structuredContent", "guidance_request", "requested_by"]) == "worker-1"
     created = repo.get!(GuidanceRequest, request_id)
 
-    assert {:ok, _package} = WorkPackageRepository.update(repo, package.id, %{"status" => "ready_for_human_merge"})
+    assert {:ok, _package} = WorkPackageRepository.update(repo, package.id, %{"status" => "ready_for_merge"})
 
     replay_response = mcp_tool(repo, worker_session, "create_guidance_request", create_args)
 
@@ -630,7 +630,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
   test "new worker guidance creation rechecks lifecycle inside the insert transaction", %{repo: repo} do
     {package, worker_session} = create_worker_session(repo, "SYMPP-GUIDANCE-CREATE-LIFECYCLE-RACE", status: "ci_waiting")
 
-    GuidanceCreateLifecycleRaceRepo.arm(package.id, "ready_for_human_merge")
+    GuidanceCreateLifecycleRaceRepo.arm(package.id, "ready_for_merge")
 
     response =
       try do
@@ -647,7 +647,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
     assert get_in(response, ["error", "data", "reason"]) == "work_package_not_worker_active"
     assert repo.aggregate(GuidanceRequest, :count, :id) == 0
     assert {:ok, reloaded_package} = WorkPackageRepository.get(repo, package.id)
-    assert reloaded_package.status == "ready_for_human_merge"
+    assert reloaded_package.status == "ready_for_merge"
   end
 
   defp create_architect_session(repo, work_package_id) do

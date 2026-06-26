@@ -6,7 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
     constraints: %{
       expiry_seconds: nil,
       planning_depth: "package",
-      terminal_readiness_status: "ready_for_human_merge"
+      terminal_readiness_status: "ready_for_merge"
     },
     required_gates: ["package_acceptance", "focused_tests", "review_normal", "human_merge"],
     readiness_requirements: ["acceptance_criteria_met", "tests_passed", "review_normal_green"],
@@ -23,7 +23,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       constraints: %{
         expiry_seconds: nil,
         planning_depth: "brief",
-        terminal_readiness_status: "ready_for_human_merge"
+        terminal_readiness_status: "ready_for_merge"
       },
       required_gates: ["focused_tests", "review_brief"],
       readiness_requirements: ["implementation_complete", "tests_passed", "review_brief_green"],
@@ -34,7 +34,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       constraints: %{
         expiry_seconds: nil,
         planning_depth: "incident",
-        terminal_readiness_status: "ready_for_human_merge"
+        terminal_readiness_status: "ready_for_merge"
       },
       required_gates: ["focused_tests", "review_emergency", "human_merge"],
       readiness_requirements: ["implementation_complete", "tests_passed", "review_emergency_green"],
@@ -45,7 +45,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       constraints: %{
         expiry_seconds: nil,
         planning_depth: "brief",
-        terminal_readiness_status: "ready_for_human_merge"
+        terminal_readiness_status: "ready_for_merge"
       },
       required_gates: ["focused_tests", "review_brief"],
       readiness_requirements: ["tests_passed", "review_brief_green"],
@@ -56,7 +56,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       constraints: %{
         expiry_seconds: nil,
         planning_depth: "package",
-        terminal_readiness_status: "ready_for_human_merge"
+        terminal_readiness_status: "ready_for_merge"
       },
       required_gates: ["package_acceptance", "focused_tests", "review_normal", "human_merge"],
       readiness_requirements: ["acceptance_criteria_met", "tests_passed", "review_normal_green"],
@@ -70,7 +70,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       constraints: %{
         expiry_seconds: nil,
         planning_depth: "package",
-        terminal_readiness_status: "ready_for_human_merge"
+        terminal_readiness_status: "ready_for_merge"
       },
       required_gates: ["package_acceptance", "focused_tests", "review_normal", "human_merge", "current_pr_state"],
       readiness_requirements: [
@@ -87,7 +87,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       constraints: %{
         expiry_seconds: nil,
         planning_depth: "package",
-        terminal_readiness_status: "ready_for_human_merge"
+        terminal_readiness_status: "ready_for_merge"
       },
       required_gates: ["package_acceptance", "focused_tests", "review_normal", "human_merge", "review_suite_result"],
       readiness_requirements: [
@@ -104,7 +104,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       constraints: %{
         expiry_seconds: nil,
         planning_depth: "package",
-        terminal_readiness_status: "ready_for_human_merge"
+        terminal_readiness_status: "ready_for_merge"
       },
       required_gates: [
         "package_acceptance",
@@ -130,7 +130,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       constraints: %{
         expiry_seconds: nil,
         planning_depth: "package",
-        terminal_readiness_status: "ready_for_human_merge"
+        terminal_readiness_status: "ready_for_merge"
       },
       required_gates: ["package_acceptance", "focused_tests", "review_normal", "human_merge"],
       readiness_requirements: ["acceptance_criteria_met", "tests_passed", "review_normal_green"],
@@ -141,7 +141,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       constraints: %{
         expiry_seconds: nil,
         planning_depth: "package",
-        terminal_readiness_status: "ready_for_human_merge"
+        terminal_readiness_status: "ready_for_merge"
       },
       required_gates: ["package_acceptance", "focused_tests", "review_normal", "human_merge"],
       readiness_requirements: ["acceptance_criteria_met", "tests_passed", "review_normal_green"],
@@ -168,7 +168,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       constraints: %{
         expiry_seconds: nil,
         planning_depth: "findings",
-        terminal_readiness_status: "ready_for_human_merge"
+        terminal_readiness_status: "ready_for_merge"
       },
       required_gates: ["findings_documented", "recommendation_artifact_recorded"],
       readiness_requirements: ["findings_complete", "recommendation_artifact_recorded"],

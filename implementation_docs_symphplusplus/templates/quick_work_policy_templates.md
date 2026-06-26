@@ -6,10 +6,10 @@ roadmap.
 
 | Template | Planning depth | Default grant expiry | Readiness status | Required gates | Required review profiles | PR required |
 |---|---|---:|---|---|---|---|
-| `quick_fix` | `brief` | `none` | `ready_for_human_merge` | `focused_tests, review_brief` | `brief` | No |
-| `hotfix` | `incident` | `none` | `ready_for_human_merge` | `focused_tests, review_emergency, human_merge` | `emergency` | Yes |
-| `docs` | `brief` | `none` | `ready_for_human_merge` | `focused_tests, review_brief` | `brief` | No |
-| `investigation` | `findings` | `none` | `ready_for_human_merge` | `findings_documented, recommendation_artifact_recorded` | `` | No |
+| `quick_fix` | `brief` | `none` | `ready_for_merge` | `focused_tests, review_brief` | `brief` | No |
+| `hotfix` | `incident` | `none` | `ready_for_merge` | `focused_tests, review_emergency, human_merge` | `emergency` | Yes |
+| `docs` | `brief` | `none` | `ready_for_merge` | `focused_tests, review_brief` | `brief` | No |
+| `investigation` | `findings` | `none` | `ready_for_merge` | `findings_documented, recommendation_artifact_recorded` | `` | No |
 
 ## Behavior
 

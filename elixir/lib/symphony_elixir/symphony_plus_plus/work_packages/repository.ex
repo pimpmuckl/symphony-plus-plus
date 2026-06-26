@@ -11,6 +11,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
 
   @completion_terminal_statuses ["merged", "merged_into_phase", "closed", "abandoned"]
   @delivery_closeout_terminal_statuses ["merged", "closed", "abandoned"]
+  @legacy_ready_status "ready_for_human_merge"
+  @ready_status "ready_for_merge"
   @phase_child_kind "phase_child"
 
   import Ecto.Query, only: [from: 2]
@@ -104,7 +106,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
   @spec update_status(repo(), String.t(), String.t(), String.t()) :: {:ok, WorkPackage.t()} | {:error, error()}
   def update_status(repo, id, current_status, next_status)
       when is_atom(repo) and is_binary(id) and is_binary(current_status) and is_binary(next_status) do
-    with :ok <- validate_status(current_status),
+    with :ok <- validate_persisted_status(current_status),
          :ok <- validate_status(next_status) do
       update_valid_status(repo, id, current_status, next_status)
     end
@@ -185,6 +187,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
       {:error, :invalid_status}
     end
   end
+
+  defp validate_persisted_status(@legacy_ready_status), do: :ok
+  defp validate_persisted_status(status), do: validate_status(status)
 
   defp validate_delivery_closeout_status(status) do
     if status in @delivery_closeout_terminal_statuses do
@@ -285,6 +290,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
            work_package: work_package,
            previous_status: previous_status,
            next_status: next_status,
+           changed?: false
+         }}
+
+      {:ok, %WorkPackage{status: @ready_status} = work_package} when next_status == @legacy_ready_status ->
+        {:ok,
+         %{
+           work_package: work_package,
+           previous_status: previous_status,
+           next_status: @ready_status,
            changed?: false
          }}
 

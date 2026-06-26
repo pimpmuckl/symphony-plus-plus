@@ -231,6 +231,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   test "serializes package cards and groups the board by status", %{repo: repo} do
     %{work_package: first} = create_dashboard_fixture(repo, id: "SYMPP-DASH-1", status: "planning")
     assert {:ok, _second} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-DASH-2", status: "blocked"))
+    assert {:ok, legacy_ready} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-DASH-LEGACY-READY", status: "ready_for_merge"))
+    repo.query!("UPDATE sympp_work_packages SET status = ? WHERE id = ?", ["ready_for_human_merge", legacy_ready.id])
     architect_secret = create_architect_grant_secret(repo, first.id)
 
     assert {:ok, card} = Dashboard.card(repo, first)
@@ -246,9 +248,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     payload = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/board"), 200)
 
-    assert payload["total_count"] == 2
+    assert payload["total_count"] == 3
     assert [%{"id" => "SYMPP-DASH-1", "operational_state" => %{"key" => "blocked", "raw_status" => "planning"}}] = payload["groups"]["planning"]
     assert [%{"id" => "SYMPP-DASH-2"}] = payload["groups"]["blocked"]
+    assert [%{"id" => "SYMPP-DASH-LEGACY-READY"}] = payload["groups"]["ready_for_human_merge"]
+    assert "ready_for_human_merge" in payload["statuses"]
     assert payload["groups"]["created"] == []
 
     assert %{
@@ -453,7 +457,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                WorkPackageFactory.attrs(
                  id: "SYMPP-OP-MERGED-PR",
                  kind: "mcp",
-                 status: "ready_for_human_merge",
+                 status: "ready_for_merge",
                  policy_template: "mcp"
                )
              )
@@ -497,7 +501,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     assert {:ok, card} = Dashboard.card(repo, work_package)
     assert card.operational_state.key == "merged"
-    assert card.operational_state.raw_status == "ready_for_human_merge"
+    assert card.operational_state.raw_status == "ready_for_merge"
 
     attention_by_key = Map.new(card.operational_state.attention_items, &{&1.key, &1})
     refute Map.has_key?(attention_by_key, "pr_merged_raw_status_open")
@@ -2382,7 +2386,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                WorkPackageFactory.attrs(
                  id: "SYMPP-RUNTIME-MISSING",
                  kind: "mcp",
-                 status: "ready_for_human_merge",
+                 status: "ready_for_merge",
                  policy_template: "mcp"
                )
              )
@@ -2420,7 +2424,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     work_package =
       create_matching_work_package!(repo, work_request, approved,
         id: "SYMPP-DASH-BRIEF-READY",
-        status: "ready_for_human_merge",
+        status: "ready_for_merge",
         policy_template: "mcp"
       )
 
@@ -2468,7 +2472,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     work_package =
       create_matching_work_package!(repo, work_request, first_approved,
         id: "SYMPP-DASH-DUPLICATE-LINK-READY",
-        status: "ready_for_human_merge",
+        status: "ready_for_merge",
         policy_template: "mcp"
       )
 
@@ -2515,7 +2519,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                WorkPackageFactory.attrs(
                  id: "SYMPP-RUNTIME-IN-PROGRESS-PLAN",
                  kind: "mcp",
-                 status: "ready_for_human_merge",
+                 status: "ready_for_merge",
                  policy_template: "mcp"
                )
              )
@@ -2564,7 +2568,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                WorkPackageFactory.attrs(
                  id: "SYMPP-RUNTIME-NO-ARTIFACTS",
                  kind: "mcp",
-                 status: "ready_for_human_merge",
+                 status: "ready_for_merge",
                  policy_template: "mcp"
                )
              )
@@ -2601,7 +2605,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                WorkPackageFactory.attrs(
                  id: "SYMPP-DASH-REVIEW-SUITE",
                  kind: "mcp",
-                 status: "ready_for_human_merge",
+                 status: "ready_for_merge",
                  policy_template: "mcp_review_suite_artifact"
                )
              )
@@ -2680,7 +2684,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                WorkPackageFactory.attrs(
                  id: "SYMPP-RUNTIME-STALE-ARTIFACT",
                  kind: "mcp",
-                 status: "ready_for_human_merge",
+                 status: "ready_for_merge",
                  policy_template: "mcp"
                )
              )
@@ -2707,7 +2711,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                WorkPackageFactory.attrs(
                  id: "SYMPP-RUNTIME-MALFORMED-TESTS",
                  kind: "mcp",
-                 status: "ready_for_human_merge",
+                 status: "ready_for_merge",
                  policy_template: "mcp"
                )
              )
@@ -2753,7 +2757,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                WorkPackageFactory.attrs(
                  id: "SYMPP-RUNTIME-BRANCH-BOUND",
                  kind: "quick_fix",
-                 status: "ready_for_human_merge",
+                 status: "ready_for_merge",
                  policy_template: "quick_fix"
                )
              )
@@ -2803,7 +2807,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                WorkPackageFactory.attrs(
                  id: "SYMPP-RUNTIME-LATEST-REVIEW-PROFILE",
                  kind: "quick_fix",
-                 status: "ready_for_human_merge",
+                 status: "ready_for_merge",
                  policy_template: "quick_fix"
                )
              )
@@ -2862,7 +2866,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                WorkPackageFactory.attrs(
                  id: "SYMPP-RUNTIME-PR-HEAD",
                  kind: "mcp",
-                 status: "ready_for_human_merge",
+                 status: "ready_for_merge",
                  policy_template: "mcp"
                )
              )
@@ -2926,7 +2930,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                WorkPackageFactory.attrs(
                  id: "SYMPP-RUNTIME-SYNC-WITHOUT-ATTACH",
                  kind: "mcp",
-                 status: "ready_for_human_merge",
+                 status: "ready_for_merge",
                  policy_template: "mcp"
                )
              )
@@ -2972,7 +2976,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                WorkPackageFactory.attrs(
                  id: "SYMPP-RUNTIME-CURRENT-PR-STATE",
                  kind: "mcp",
-                 status: "ready_for_human_merge",
+                 status: "ready_for_merge",
                  policy_template: "mcp_current_pr_state"
                )
              )
@@ -3156,7 +3160,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  kind: "mcp",
                  repo: "nextide/symphony-plus-plus",
                  base_branch: "symphony-plus-plus/beta",
-                 status: "ready_for_human_merge",
+                 status: "ready_for_merge",
                  policy_template: "mcp_changed_file_scope_guard",
                  allowed_file_globs: ["elixir/lib/**"]
                )
@@ -3291,7 +3295,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  kind: "mcp",
                  repo: "nextide/symphony-plus-plus",
                  base_branch: "symphony-plus-plus/beta",
-                 status: "ready_for_human_merge",
+                 status: "ready_for_merge",
                  policy_template: "mcp_changed_file_scope_guard",
                  allowed_file_globs: ["elixir/lib/**"]
                )
@@ -3362,7 +3366,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                WorkPackageFactory.attrs(
                  id: "SYMPP-RUNTIME-STALE-PR",
                  kind: "mcp",
-                 status: "ready_for_human_merge",
+                 status: "ready_for_merge",
                  policy_template: "mcp"
                )
              )
@@ -3691,7 +3695,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                WorkPackageFactory.attrs(
                  id: "SYMPP-RUNTIME-UNKNOWN-POLICY",
                  kind: "delegation",
-                 status: "ready_for_human_merge"
+                 status: "ready_for_merge"
                )
              )
 
@@ -5080,7 +5084,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
             id: "SYMPP-LOCAL-OPERATOR-GH-SYNC",
             kind: "hotfix",
             repo: "nextide/repo",
-            status: "ready_for_human_merge"
+            status: "ready_for_merge"
           )
 
         assert {:ok, _branch} =
@@ -5126,7 +5130,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
               id: "SYMPP-LOCAL-OPERATOR-GH-CLI-AUTO",
               kind: "hotfix",
               repo: "nextide/repo",
-              status: "ready_for_human_merge"
+              status: "ready_for_merge"
             )
 
           assert {:ok, _branch} =
@@ -5179,7 +5183,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
               id: "SYMPP-LOCAL-OPERATOR-GH-CONFIGURED-AUTO",
               kind: "hotfix",
               repo: "nextide/repo",
-              status: "ready_for_human_merge"
+              status: "ready_for_merge"
             )
 
           assert {:ok, _branch} =
@@ -6032,7 +6036,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       work_package =
         create_matching_work_package!(repo, work_request, approved,
           id: "WP-LOCAL-NO-PR-ACTIVE-RUNTIME",
-          status: "ready_for_human_merge"
+          status: "ready_for_merge"
         )
 
       assert {:ok, _dispatched} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", work_package.id)

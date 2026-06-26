@@ -47,7 +47,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
   end
 
   test "PR merged closeout records delivery, merges the linked package, appends progress, and refreshes completion", %{repo: repo} do
-    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_human_merge")
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_merge")
 
     attrs =
       delivery_attrs(%{
@@ -71,7 +71,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert event.status == "merged"
     assert event.payload["source_tool"] == "record_planned_slice_delivery"
     assert event.payload["outcome"] == "pr_merged"
-    assert event.payload["previous_status"] == "ready_for_human_merge"
+    assert event.payload["previous_status"] == "ready_for_merge"
     assert event.payload["next_status"] == "merged"
 
     assert {:ok, _drifted_after_closeout} = WorkPackageRepository.update(repo, linked_package.id, %{title: "Drifted after closeout"})
@@ -181,7 +181,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
   end
 
   test "PR merged recovery closeout ignores stale agent runtime rows that are not operationally active", %{repo: repo} do
-    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_human_merge")
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_merge")
 
     assert {:ok, agent_run} =
              AgentRunRepository.start_run(repo, %{
@@ -606,7 +606,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
   end
 
   test "linked PR merged closeout rejects weak PR evidence and rolls back", %{repo: repo} do
-    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_human_merge")
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_merge")
 
     assert {:error, :missing_strong_pr_evidence} =
              Service.record_planned_slice_delivery(
@@ -624,11 +624,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
              )
 
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
-    assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_human_merge"
+    assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_merge"
   end
 
   test "linked PR merged closeout rejects malformed PR URL evidence and rolls back", %{repo: repo} do
-    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_human_merge")
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_merge")
 
     assert {:error, :malformed_pr_evidence} =
              Service.record_planned_slice_delivery(
@@ -647,7 +647,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
              )
 
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
-    assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_human_merge"
+    assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_merge"
   end
 
   test "standalone PR merged closeout rejects malformed PR URL evidence", %{repo: repo} do
@@ -673,7 +673,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
   end
 
   test "replayed closeout skips weak PR evidence only with matching audit and terminal state", %{repo: repo} do
-    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_human_merge")
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_merge")
 
     attrs =
       delivery_attrs(%{
@@ -686,7 +686,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
       })
 
     assert {:ok, delivery} = Repository.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
-    assert {:ok, _merged} = WorkPackageRepository.update_status(repo, linked_package.id, "ready_for_human_merge", "merged")
+    assert {:ok, _merged} = WorkPackageRepository.update_status(repo, linked_package.id, "ready_for_merge", "merged")
 
     assert {:ok, _event} =
              PlanningRepository.append_progress_event(repo, %{
@@ -701,7 +701,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
                  planned_slice_id: planned_slice.id,
                  delivery_id: delivery.id,
                  outcome: "pr_merged",
-                 previous_status: "ready_for_human_merge",
+                 previous_status: "ready_for_merge",
                  next_status: "merged",
                  status_changed: true
                }
@@ -713,7 +713,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
   end
 
   test "colliding closeout progress does not bypass validation or terminal mutation", %{repo: repo} do
-    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_human_merge")
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_merge")
     delivery_idempotency_key = "delivery-progress-collision"
 
     assert {:ok, _colliding_event} =
@@ -751,7 +751,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
 
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
     assert repo.aggregate(ProgressEvent, :count, :id) == 1
-    assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_human_merge"
+    assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_merge"
   end
 
   test "delivery transaction failures preserve linked worktrees", %{repo: repo} do
@@ -759,7 +759,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
       linked_slice!(
         repo,
         work_request_id: "WR-DELIVERY-MISMATCH-PRESERVES-WORKTREE",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-closeout-mismatch-worktree")
@@ -1277,7 +1277,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     for {status, request_id} <- [
           {"blocked", "WR-DELIVERY-ABANDONED-BLOCKED"},
           {"implementing", "WR-DELIVERY-ABANDONED-IMPLEMENTING"},
-          {"ready_for_human_merge", "WR-DELIVERY-ABANDONED-MERGE-READY"}
+          {"ready_for_merge", "WR-DELIVERY-ABANDONED-MERGE-READY"}
         ] do
       {work_request, planned_slice, linked_package} =
         linked_slice!(
@@ -1305,7 +1305,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
   end
 
   test "claimed worker grants are retired during no-PR closeout when no worker is live", %{repo: repo} do
-    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_human_merge")
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_merge")
 
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
     assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
@@ -1331,7 +1331,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     {work_request, planned_slice, linked_package} =
       linked_slice!(repo,
         work_request_id: "WR-DELIVERY-UNCLAIMED-WORKER-GRANT",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
@@ -1356,7 +1356,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     {work_request, planned_slice, linked_package} =
       linked_slice!(repo,
         work_request_id: "WR-DELIVERY-UNCLAIMED-WORKER-GRANT-RACE",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
@@ -1380,7 +1380,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
     assert __MODULE__.GrantClaimRaceRepo.claimed_race?()
     assert %AccessGrant{revoked_at: nil} = repo.get!(AccessGrant, minted.grant.id)
-    assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_human_merge"
+    assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_merge"
   end
 
   test "same-tick worker grant claims are treated as closeout conflicts" do
@@ -1398,7 +1398,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
         work_request_id: "WR-DELIVERY-INVESTIGATION-NO-PR",
         work_package_id: "wp_o3kgjdl7gausbmqi",
         work_package_kind: "investigation",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     assert {:ok, claim_lease} =
@@ -1435,7 +1435,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     {work_request, planned_slice, linked_package} =
       linked_slice!(repo,
         work_request_id: "WR-DELIVERY-CLAIM-LEASE-RACE",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     assert {:ok, claim_lease} =
@@ -1467,17 +1467,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
 
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
     assert __MODULE__.ClaimLeaseAcquireRaceRepo.claimed_race?()
-    assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_human_merge"
+    assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_merge"
   end
 
   test "no-PR closeout rejects a claim lease acquired after cleanup on a closed package", %{repo: repo} do
     {work_request, planned_slice, linked_package} =
       linked_slice!(repo,
         work_request_id: "WR-DELIVERY-TERMINAL-CLAIM-LEASE-RACE",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
-    assert {:ok, _closed} = WorkPackageRepository.update_status(repo, linked_package.id, "ready_for_human_merge", "closed")
+    assert {:ok, _closed} = WorkPackageRepository.update_status(repo, linked_package.id, "ready_for_merge", "closed")
 
     assert {:ok, claim_lease} =
              ClaimLeaseService.claim(
@@ -1515,7 +1515,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     {work_request, planned_slice, linked_package} =
       linked_slice!(repo,
         work_request_id: "WR-DELIVERY-ACTIVE-CLAIM-LEASE",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     assert {:ok, claim_lease} =
@@ -1546,7 +1546,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     {work_request, planned_slice, linked_package} =
       linked_slice!(repo,
         work_request_id: "WR-DELIVERY-STALE-AGENT-RUN",
-        status: "ready_for_human_merge"
+        status: "ready_for_merge"
       )
 
     assert {:ok, agent_run} =
@@ -1556,7 +1556,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
                last_seen_at: DateTime.add(DateTime.utc_now(:microsecond), -301, :second)
              })
 
-    assert {:ok, _closed} = WorkPackageRepository.update_status(repo, linked_package.id, "ready_for_human_merge", "closed")
+    assert {:ok, _closed} = WorkPackageRepository.update_status(repo, linked_package.id, "ready_for_merge", "closed")
 
     attrs =
       delivery_attrs(%{
