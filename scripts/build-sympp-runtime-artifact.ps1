@@ -150,14 +150,14 @@ function Get-DirectoryFingerprint([string]$Path) {
 }
 
 function Get-McpContractFingerprint([string]$RepoRoot) {
-  $launcherPath = Join-Path $RepoRoot "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1"
-  $text = Get-Content -LiteralPath $launcherPath -Raw
-  $match = [regex]::Match($text, '\$ExpectedMcpContractFingerprint\s*=\s*"([0-9a-fA-F]{64})"')
-  if (-not $match.Success) {
-    throw "Could not resolve MCP contract fingerprint from $launcherPath."
+  $contractPath = Join-Path $RepoRoot "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json"
+  $contract = Get-Content -LiteralPath $contractPath -Raw | ConvertFrom-Json
+  $fingerprint = [string]$contract.mcp_contract_fingerprint
+  if ($fingerprint -notmatch '^[0-9a-fA-F]{64}$') {
+    throw "Could not resolve MCP contract fingerprint from $contractPath."
   }
 
-  $match.Groups[1].Value.ToLowerInvariant()
+  $fingerprint.ToLowerInvariant()
 }
 
 $repoRoot = Resolve-RepoRoot
@@ -372,7 +372,6 @@ $payload = [ordered]@{
     manifest = "sympp-runtime-artifact"
     version = 1
     mcp_contract_fingerprint = $mcpContractFingerprint
-    contract_fingerprint = $mcpContractFingerprint
   }
 }
 

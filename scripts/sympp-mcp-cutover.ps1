@@ -899,15 +899,100 @@ function Normalize-McpContractFingerprint([string]$Fingerprint) {
   return $null
 }
 
-function Get-ExpectedMcpContractFingerprint([string]$InstalledPluginRoot) {
-  $script = Require-File (Join-Path $InstalledPluginRoot "scripts\start-sympp-mcp.ps1") "Installed MCP launcher script"
-  foreach ($line in @(Get-Content -LiteralPath $script)) {
-    if ($line -match '^\s*\$ExpectedMcpContractFingerprint\s*=\s*"([0-9a-fA-F]{64})"\s*$') {
-      return Normalize-McpContractFingerprint $Matches[1]
+function Get-CutoverJsonPathValue($Object, [string[]]$Path) {
+  $current = $Object
+  foreach ($part in $Path) {
+    if ($null -eq $current -or -not $current.PSObject.Properties[$part]) {
+      return $null
+    }
+    $current = $current.PSObject.Properties[$part].Value
+  }
+
+  return $current
+}
+
+function Get-CutoverJsonFirstPathValue($Object, [object[]]$Paths) {
+  foreach ($path in $Paths) {
+    $value = Get-CutoverJsonPathValue $Object ([string[]]$path)
+    if ($null -ne $value) {
+      return $value
     }
   }
 
   return $null
+}
+
+function Get-McpContractFingerprintFromContractFile([string]$ContractPath) {
+  if ([string]::IsNullOrWhiteSpace($ContractPath) -or -not (Test-Path -LiteralPath $ContractPath -PathType Leaf)) {
+    return $null
+  }
+
+  $contract = Get-Content -LiteralPath $ContractPath -Raw | ConvertFrom-Json
+  return Normalize-McpContractFingerprint ([string]$contract.mcp_contract_fingerprint)
+}
+
+function Get-McpContractFingerprintFromManifestObject($Manifest) {
+  $fingerprints = New-Object System.Collections.Generic.List[string]
+  $manifestFingerprint = Normalize-McpContractFingerprint ([string](Get-CutoverJsonFirstPathValue $Manifest @(
+        @("mcp_contract_fingerprint"),
+        @("launcher_contract", "mcp_contract_fingerprint"),
+        @("contract_fingerprint"),
+        @("launcher_contract", "contract_fingerprint")
+      )))
+  if ($manifestFingerprint) {
+    $fingerprints.Add($manifestFingerprint)
+  }
+
+  foreach ($artifact in @((Get-CutoverJsonFirstPathValue $Manifest @(@("artifacts"), @("runtime_artifacts"))))) {
+    $artifactFingerprint = Normalize-McpContractFingerprint ([string](Get-CutoverJsonFirstPathValue $artifact @(
+          @("mcp_contract_fingerprint"),
+          @("launcher_contract", "mcp_contract_fingerprint"),
+          @("runtime", "mcp_contract_fingerprint"),
+          @("contract_fingerprint"),
+          @("launcher_contract", "contract_fingerprint"),
+          @("runtime", "contract_fingerprint")
+        )))
+    if ($artifactFingerprint) {
+      $fingerprints.Add($artifactFingerprint)
+    }
+  }
+
+  $unique = @($fingerprints | Sort-Object -Unique)
+  if ($unique.Count -eq 1) {
+    return $unique[0]
+  }
+
+  return $null
+}
+
+function Get-McpContractFingerprintFromArtifactManifest([string]$InstalledPluginRoot) {
+  $manifestPath = @(
+    Join-Path $InstalledPluginRoot ".sympp-runtime-artifacts.json"
+    Join-Path $InstalledPluginRoot "assets\sympp-runtime-artifacts.json"
+  ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+
+  if (-not $manifestPath) {
+    return $null
+  }
+
+  $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+  $fingerprint = Get-McpContractFingerprintFromManifestObject $manifest
+  if ($fingerprint) {
+    return $fingerprint
+  }
+
+  return "0000000000000000000000000000000000000000000000000000000000000000"
+}
+
+function Resolve-CutoverMcpContractFingerprint([string]$InstalledPluginRoot, [string]$MarketplaceSourceRoot) {
+  if (-not [string]::IsNullOrWhiteSpace($MarketplaceSourceRoot)) {
+    $fingerprint = Get-McpContractFingerprintFromContractFile (Join-Path $MarketplaceSourceRoot "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json")
+    if ($fingerprint) {
+      return $fingerprint
+    }
+  }
+
+  return Get-McpContractFingerprintFromArtifactManifest $InstalledPluginRoot
 }
 
 function Get-RuntimeStateContractFingerprint($State, [string]$FallbackFingerprint) {
@@ -1224,7 +1309,7 @@ if (-not $Json) {
 
 Write-Section "Refresh Runtime State"
 $wrapperInit = Invoke-InstalledWrapperInitialize $installedPluginRoot $symppHomePath $runtimeFile
-$expectedContractFingerprint = Get-ExpectedMcpContractFingerprint $installedPluginRoot
+$expectedContractFingerprint = Resolve-CutoverMcpContractFingerprint $installedPluginRoot $marketplaceSourceRoot
 $runtimeState = Update-RuntimeStatePids $runtimeFile $backendPid $dashboardPid $sourceRevision $BackendPort $DashboardPort $expectedContractFingerprint
 if (-not $Json) {
   Write-Host "Runtime key: $($runtimeState.runtime_key)"

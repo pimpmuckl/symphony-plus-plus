@@ -207,15 +207,17 @@ def normalize_mcp_contract_fingerprint(value):
     return ""
 
 def resolve_mcp_contract_fingerprint(manifest):
-    for key in ("mcp_contract_fingerprint", "contract_fingerprint"):
-        fingerprint = normalize_mcp_contract_fingerprint(manifest.get(key))
-        if fingerprint:
-            return fingerprint
+    fingerprint = normalize_mcp_contract_fingerprint(manifest.get("mcp_contract_fingerprint"))
+    if fingerprint:
+        return fingerprint
     launcher_contract = manifest.get("launcher_contract") or {}
     for key in ("mcp_contract_fingerprint", "contract_fingerprint"):
         fingerprint = normalize_mcp_contract_fingerprint(launcher_contract.get(key))
         if fingerprint:
             return fingerprint
+    fingerprint = normalize_mcp_contract_fingerprint(manifest.get("contract_fingerprint"))
+    if fingerprint:
+        return fingerprint
     return ""
 
 def launcher_contract_with_fingerprint(manifest, fingerprint):

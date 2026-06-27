@@ -3,6 +3,40 @@ Code.require_file("../../../support/symphony_plus_plus/mcp_case.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog
+
+  @repo_root Path.expand("../../../../../", __DIR__)
+  @contract_path Path.join(@repo_root, "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json")
+
+  test "published MCP contract tool sets match ToolCatalog" do
+    contract = @contract_path |> File.read!() |> Jason.decode!()
+    discovery = Map.fetch!(contract, "discovery_policy")
+    schema_sets = Map.fetch!(discovery, "unbound_schema_sets")
+
+    assert Map.fetch!(contract, "mcp_contract_fingerprint") == Server.mcp_contract_identity()["fingerprint"]
+    assert Map.fetch!(discovery, "unbound_tools") == ToolCatalog.contract_unbound_tools()
+    assert Map.fetch!(discovery, "trusted_local_http_extra_tools") == ToolCatalog.contract_trusted_local_http_extra_tools()
+    assert Map.fetch!(schema_sets, "worker_tools") == ToolCatalog.worker_tools()
+    assert Map.fetch!(schema_sets, "architect_tools") == ToolCatalog.architect_tools()
+    assert Map.fetch!(discovery, "bound_worker_tools") == ToolCatalog.contract_bound_worker_tools()
+    assert Map.fetch!(discovery, "bound_architect_tools") == ToolCatalog.contract_bound_architect_tools()
+
+    schema_names =
+      contract
+      |> Map.fetch!("tool_schemas")
+      |> Enum.map(&Map.fetch!(&1, "name"))
+      |> MapSet.new()
+
+    catalog_names =
+      (ToolCatalog.contract_unbound_tools() ++
+         ToolCatalog.contract_trusted_local_http_extra_tools() ++
+         ToolCatalog.worker_tools() ++
+         ToolCatalog.architect_tools())
+      |> MapSet.new()
+
+    assert MapSet.subset?(catalog_names, schema_names)
+  end
+
   test "mix task reuses an already-started repo for the exact SQLite URI" do
     database = "file:sympp_mcp_#{System.unique_integer([:positive])}?mode=memory&cache=shared"
     original_repo = Repo.get_dynamic_repo()
@@ -140,11 +174,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
 
     assert Map.has_key?(trusted_local_tools_by_name, "create_work_request")
 
-    for tool <- @architect_tool_names do
+    for tool <- ToolCatalog.architect_tools() do
       assert Map.has_key?(unbound_tools_by_name, tool)
     end
 
-    for tool <- @worker_tool_names do
+    for tool <- ToolCatalog.worker_tools() do
       assert Map.has_key?(unbound_tools_by_name, tool)
     end
 

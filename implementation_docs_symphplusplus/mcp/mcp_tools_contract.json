@@ -1,6 +1,7 @@
 {
   "version": 3,
-  "schema_source": "Published compact contract for this repo version. The live runtime source is tools/list, and final cutover must smoke-check tools/list against this contract.",
+  "mcp_contract_fingerprint": "34dfdf8ed2ecdcbb463e69cbd0bcba93428eea7151f448fd19ebdc90ee12296a",
+  "schema_source": "ToolCatalog owns the live runtime tool surfaces. This JSON publishes those names plus the canonical MCP contract fingerprint for scripts, docs, and release artifacts.",
   "compatibility_policy": "Version 3 intentionally replaces the legacy verbose contract shape with discovery_policy, claim_policy, resources, and tool_schemas. Consumers should migrate by reading role tool names from discovery_policy and per-tool arguments from tool_schemas.",
   "human_text_policy": "Human-facing long text fields are Markdown unless a field is explicitly a compact label, status, identifier, branch, PR URL, or other machine-readable value. Dashboard renderers must not turn raw Markdown HTML into executable or trusted HTML.",
   "discovery_policy": {

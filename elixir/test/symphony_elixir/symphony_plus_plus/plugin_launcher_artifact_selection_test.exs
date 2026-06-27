@@ -5,7 +5,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
   @plugin_marketplace_name "symphony-plus-plus"
   @plugin_manifest_path Path.join(@repo_root, "plugins/symphony-plus-plus/.codex-plugin/plugin.json")
   @plugin_version @plugin_manifest_path |> File.read!() |> Jason.decode!() |> Map.fetch!("version")
+  @marketplace_revision String.duplicate("b", 40)
   @mcp_plugin_start_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1")
+  @contract_path Path.join(@repo_root, "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json")
 
   test "installed MCP launcher treats artifact release listeners as managed backends" do
     script = File.read!(@mcp_plugin_start_script_path)
@@ -36,6 +38,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
 
       try do
         write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        write_pinned_source_revision!(mcp_cache_root, @marketplace_revision)
         script_path = write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
 
         {output, status} =
@@ -67,6 +70,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
     end
   end
 
+  test "installed MCP launcher rejects dirty marketplace contract source" do
+    powershell = System.find_executable("pwsh")
+    git = System.find_executable("git")
+    temp_codex_home = unique_temp_path("sympp-plugin-dirty-marketplace-contract")
+
+    if powershell && git do
+      fake_mix = fake_mix_executable(temp_codex_home)
+      marketplace_root = write_minimal_marketplace_source(temp_codex_home)
+      revision = commit_marketplace_source!(marketplace_root, git)
+      contract_path = Path.join(marketplace_root, "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json")
+      mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
+
+      try do
+        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        write_pinned_source_revision!(mcp_cache_root, revision)
+        script_path = write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
+        File.write!(contract_path, File.read!(contract_path) <> "\n")
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            ["-NoProfile", "-File", script_path, "-ValidateOnly"],
+            cd: Path.dirname(Path.dirname(script_path)),
+            stderr_to_stdout: true,
+            env: [
+              {"SYMPP_LAUNCHER", "direct"},
+              {"SYMPP_MIX", fake_mix},
+              {"SYMPP_REPO_ROOT", ""},
+              {"SYMPP_HOME", Path.join(temp_codex_home, "sympp-home")},
+              {"SYMPP_SOURCE_FALLBACK", "1"}
+            ]
+          )
+
+        assert status != 0
+        assert normalize_prose(output) =~ "expected MCP contract fingerprint could not be resolved"
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
   test "installed MCP launcher validate-only fails when artifact and source fallback are unavailable" do
     powershell = System.find_executable("pwsh")
     temp_codex_home = unique_temp_path("sympp-plugin-artifact-blocked")
@@ -88,7 +132,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
           )
 
         assert status != 0
-        assert normalize_prose(output) =~ "no verified runtime artifact is launchable and source fallback is unavailable"
+        assert normalize_prose(output) =~ "expected MCP contract fingerprint could not be resolved"
         refute output =~ "Symphony++ MCP launcher validation passed."
       after
         File.rm_rf!(temp_codex_home)
@@ -217,7 +261,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
     end
   end
 
-  test "installed MCP launcher ignores stale source marker when marketplace payload matches" do
+  test "installed MCP launcher ignores stale source marker for self-contained artifacts" do
     powershell = System.find_executable("pwsh")
     temp_codex_home = unique_temp_path("sympp-plugin-artifact-stale-installed-marker")
 
@@ -252,7 +296,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
         assert status == 0, output
         assert output =~ "runtimeMode: artifact"
         assert output =~ "artifactStatus: artifact_selected"
-        assert normalize_path_fragment(output) =~ "reporoot: #{normalize_path_fragment(marketplace_root)}"
+        assert normalize_path_fragment(output) =~ "reporoot: artifact-only"
         assert normalize_path_fragment(output) =~ "/#{String.slice(current_revision, 0, 12)}/"
         refute normalize_path_fragment(output) =~ "/#{String.slice(stale_revision, 0, 12)}/"
       after
@@ -525,6 +569,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
         write_runtime_artifact!(mcp_cache_root,
           source_revision: String.duplicate("a", 40),
           mcp_contract_fingerprint: :omit,
+          manifest_contract_fingerprint: :omit,
           legacy_contract_manifest: true
         )
 
@@ -604,6 +649,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
 
       try do
         write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        write_pinned_source_revision!(mcp_cache_root, @marketplace_revision)
         script_path = write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
         File.write!(Path.join(mcp_cache_root, ".sympp-runtime-artifacts.json"), "{not-json")
 
@@ -628,6 +674,95 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
         assert status == 0, output
         assert output =~ "source_fallback_compiling"
         assert File.read!(fake_mix_log) =~ "sympp.mcp --mode stdio --repo-root"
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  test "explicit repo root contract wins over stale artifact manifest contract" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-artifact-explicit-repo-contract")
+
+    if powershell do
+      fake_mix = fake_mix_executable(temp_codex_home)
+      mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
+      sympp_home = Path.join(temp_codex_home, "sympp-home")
+      fake_mix_log = Path.join(temp_codex_home, "fake-mix.log")
+      revision = @marketplace_revision
+
+      try do
+        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        write_pinned_source_revision!(mcp_cache_root, revision)
+        script_path = write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
+
+        write_runtime_artifact!(mcp_cache_root,
+          source_revision: revision,
+          mcp_contract_fingerprint: String.duplicate("a", 64),
+          manifest_contract_fingerprint: String.duplicate("a", 64)
+        )
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            ["-NoProfile", "-File", script_path],
+            cd: Path.dirname(Path.dirname(script_path)),
+            stderr_to_stdout: true,
+            env: [
+              {"SYMPP_ELIXIR_SETUP_TIMEOUT_SEC", "5"},
+              {"SYMPP_FAKE_MIX_LOG", fake_mix_log},
+              {"SYMPP_HOME", sympp_home},
+              {"SYMPP_LAUNCHER", "direct"},
+              {"SYMPP_MCP_BRIDGE_MODE", "direct_stdio"},
+              {"SYMPP_MIX", fake_mix},
+              {"SYMPP_REPO_ROOT", @repo_root}
+            ]
+          )
+
+        assert status == 0, output
+        assert output =~ "source_fallback_compiling"
+
+        assert normalize_path_fragment(File.read!(fake_mix_log)) =~
+                 "--repo-root #{normalize_path_fragment(@repo_root)}"
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  test "explicit repo root without contract fails before artifact fallback" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = unique_temp_path("sympp-plugin-artifact-explicit-repo-missing-contract")
+
+    if powershell do
+      explicit_repo_root = Path.join(temp_codex_home, "explicit-repo")
+      mcp_cache_root = plugin_cache_path(temp_codex_home, ["1.0.0"], "symphony-plus-plus-mcp")
+      revision = @marketplace_revision
+
+      try do
+        File.mkdir_p!(Path.join(explicit_repo_root, "elixir"))
+        File.write!(Path.join(explicit_repo_root, "elixir/mix.exs"), "defmodule ExplicitRepo.MixProject do\nend\n")
+
+        write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
+        write_pinned_source_revision!(mcp_cache_root, revision)
+        script_path = write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
+        write_runtime_artifact!(mcp_cache_root, source_revision: revision)
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            ["-NoProfile", "-File", script_path, "-ValidateOnly"],
+            cd: Path.dirname(Path.dirname(script_path)),
+            stderr_to_stdout: true,
+            env: [
+              {"SYMPP_HOME", Path.join(temp_codex_home, "sympp-home")},
+              {"SYMPP_LAUNCHER", "direct"},
+              {"SYMPP_REPO_ROOT", explicit_repo_root}
+            ]
+          )
+
+        assert status != 0
+        assert normalize_prose(output) =~ "explicit SYMPP_REPO_ROOT contract JSON"
       after
         File.rm_rf!(temp_codex_home)
       end
@@ -699,7 +834,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
 
         write_runtime_artifact!(mcp_cache_root,
           source_revision: revision,
-          mcp_contract_fingerprint: :omit
+          mcp_contract_fingerprint: :omit,
+          manifest_contract_fingerprint: :omit
         )
 
         {output, status} =
@@ -778,7 +914,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
   defp write_minimal_marketplace_source(codex_home) do
     marketplace_root = Path.join([codex_home, ".tmp", "marketplaces", @plugin_marketplace_name])
     File.mkdir_p!(marketplace_root)
-    File.write!(Path.join(marketplace_root, ".codex-marketplace-install.json"), Jason.encode!(%{"revision" => String.duplicate("b", 40)}))
+    File.write!(Path.join(marketplace_root, ".codex-marketplace-install.json"), Jason.encode!(%{"revision" => @marketplace_revision}))
     File.mkdir_p!(Path.join(marketplace_root, "elixir"))
     File.write!(Path.join(marketplace_root, "elixir/mix.exs"), "defmodule SymphonyElixir.MixProject do\nend\n")
     File.mkdir_p!(Path.join(marketplace_root, "elixir/lib/mix/tasks"))
@@ -786,6 +922,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
     File.mkdir_p!(Path.join(marketplace_root, "scripts"))
     File.write!(Path.join(marketplace_root, "scripts/refresh-local-plugin.ps1"), "")
     File.write!(Path.join(marketplace_root, "scripts/smoke-sympp-mcp-http.ps1"), "")
+    File.mkdir_p!(Path.join(marketplace_root, "implementation_docs_symphplusplus/mcp"))
+    File.cp!(@contract_path, Path.join(marketplace_root, "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json"))
     File.mkdir_p!(Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts"))
 
     File.cp!(
@@ -807,13 +945,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
     marketplace_root
   end
 
+  defp commit_marketplace_source!(marketplace_root, git) do
+    install_manifest = Path.join(marketplace_root, ".codex-marketplace-install.json")
+    File.rm(install_manifest)
+    run_git!(git, marketplace_root, ["init", "-q"])
+    run_git!(git, marketplace_root, ["config", "user.email", "sympp-fixture@example.invalid"])
+    run_git!(git, marketplace_root, ["config", "user.name", "Sympp Fixture"])
+    run_git!(git, marketplace_root, ["add", "."])
+    run_git!(git, marketplace_root, ["commit", "-q", "-m", "fixture"])
+    revision = String.trim(run_git!(git, marketplace_root, ["rev-parse", "HEAD"]))
+    File.write!(install_manifest, Jason.encode!(%{"revision" => revision}))
+    revision
+  end
+
   defp write_runtime_artifact!(cache_root, opts) do
     artifact_build_root = Path.join(cache_root, "artifact-build")
     archive_path = Path.join(cache_root, "sympp-runtime.zip")
     entrypoint = Keyword.get(opts, :entrypoint, "runtime.cmd")
     dashboard_entries = [{"dashboard-static/index.html", "<main>ok</main>"}]
+    artifact_entries = [{entrypoint, fake_artifact_entrypoint(entrypoint)}, {"WORKFLOW.md", "workflow: artifact\n"}] ++ dashboard_entries
     artifact_contract_fingerprint = Keyword.get(opts, :mcp_contract_fingerprint, expected_mcp_contract_fingerprint())
-    manifest_contract_fingerprint = Keyword.get(opts, :manifest_contract_fingerprint)
+    manifest_contract_fingerprint = Keyword.get(opts, :manifest_contract_fingerprint, expected_mcp_contract_fingerprint())
     File.mkdir_p!(artifact_build_root)
 
     File.write!(Path.join(artifact_build_root, entrypoint), fake_artifact_entrypoint(entrypoint))
@@ -821,8 +973,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
     {:ok, _} =
       :zip.create(
         String.to_charlist(archive_path),
-        [{String.to_charlist(entrypoint), File.read!(Path.join(artifact_build_root, entrypoint))}] ++
-          Enum.map(dashboard_entries, fn {name, content} -> {String.to_charlist(name), content} end)
+        Enum.map(artifact_entries, fn {name, content} -> {String.to_charlist(name), content} end)
       )
 
     sha256 = file_sha256(archive_path)
@@ -833,6 +984,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
         "path" => Path.basename(archive_path),
         "sha256" => sha256,
         "entrypoint" => entrypoint,
+        "workflow" => "WORKFLOW.md",
         "dashboard" => %{
           "asset_root" => "dashboard-static",
           "fingerprint" => dashboard_fingerprint(dashboard_entries)
@@ -999,13 +1151,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherArtifactSelectionTest do
   end
 
   defp expected_mcp_contract_fingerprint do
-    [_, fingerprint] =
-      Regex.run(
-        ~r/\$ExpectedMcpContractFingerprint\s*=\s*"([0-9a-fA-F]{64})"/,
-        File.read!(@mcp_plugin_start_script_path)
-      )
+    @contract_path
+    |> File.read!()
+    |> Jason.decode!()
+    |> Map.fetch!("mcp_contract_fingerprint")
+  end
 
-    String.downcase(fingerprint)
+  defp run_git!(git, cwd, args) do
+    {output, status} = System.cmd(git, args, cd: cwd, stderr_to_stdout: true)
+
+    if status != 0 do
+      raise "git #{Enum.join(args, " ")} failed: #{output}"
+    end
+
+    output
   end
 
   defp file_sha256(path) do

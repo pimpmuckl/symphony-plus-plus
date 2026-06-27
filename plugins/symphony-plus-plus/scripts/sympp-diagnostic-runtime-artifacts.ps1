@@ -376,19 +376,144 @@ function Test-DiagnosticRuntimeArtifactCacheReady([string]$CacheRoot, [string]$E
   }
 }
 
+function Get-DiagnosticMcpContractFingerprintFromContractFile([string]$ContractPath) {
+  if ([string]::IsNullOrWhiteSpace($ContractPath) -or -not (Test-Path -LiteralPath $ContractPath -PathType Leaf)) {
+    return $null
+  }
+
+  try {
+    $contract = Get-Content -LiteralPath $ContractPath -Raw | ConvertFrom-Json
+    return Normalize-DiagnosticMcpContractFingerprint ([string]$contract.mcp_contract_fingerprint)
+  } catch {
+    return $null
+  }
+}
+
+function Get-DiagnosticMcpContractFingerprintFromManifestObject($Manifest) {
+  $fingerprints = New-Object System.Collections.Generic.List[string]
+
+  $manifestFingerprint = Normalize-DiagnosticMcpContractFingerprint ([string](Get-DiagnosticJsonFirstPathValue $Manifest @(
+        @("mcp_contract_fingerprint"),
+        @("launcher_contract", "mcp_contract_fingerprint"),
+        @("contract_fingerprint"),
+        @("launcher_contract", "contract_fingerprint")
+      )))
+  if ($manifestFingerprint) {
+    $fingerprints.Add($manifestFingerprint)
+  }
+
+  foreach ($artifact in @(Get-DiagnosticJsonPropertyValue $Manifest @("artifacts", "runtime_artifacts"))) {
+    $artifactFingerprint = Normalize-DiagnosticMcpContractFingerprint ([string](Get-DiagnosticJsonFirstPathValue $artifact @(
+          @("mcp_contract_fingerprint"),
+          @("launcher_contract", "mcp_contract_fingerprint"),
+          @("runtime", "mcp_contract_fingerprint"),
+          @("contract_fingerprint"),
+          @("launcher_contract", "contract_fingerprint"),
+          @("runtime", "contract_fingerprint")
+        )))
+    if ($artifactFingerprint) {
+      $fingerprints.Add($artifactFingerprint)
+    }
+  }
+
+  $unique = @($fingerprints | Sort-Object -Unique)
+  if ($unique.Count -eq 1) {
+    return $unique[0]
+  }
+
+  return $null
+}
+
+function Read-DiagnosticRuntimeArtifactManifest([string]$Root) {
+  if ((Get-Command Read-SymppArtifactManifest -ErrorAction SilentlyContinue)) {
+    return Read-SymppArtifactManifest $Root
+  }
+
+  $manifestPath = @(
+    Join-Path $Root ".sympp-runtime-artifacts.json"
+    Join-Path $Root "assets/sympp-runtime-artifacts.json"
+  ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+
+  if (-not $manifestPath) {
+    return $null
+  }
+
+  return Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+}
+
+function Get-DiagnosticMcpContractFingerprintFromArtifactManifest([string]$Root) {
+  try {
+    $manifest = Read-DiagnosticRuntimeArtifactManifest $Root
+  } catch {
+    return $null
+  }
+
+  if ($null -eq $manifest) {
+    return $null
+  }
+
+  $fingerprint = Get-DiagnosticMcpContractFingerprintFromManifestObject $manifest
+  if ($fingerprint) {
+    return $fingerprint
+  }
+
+  return "0000000000000000000000000000000000000000000000000000000000000000"
+}
+
 function Get-DiagnosticExpectedMcpContractFingerprint([string]$Root) {
-  $scriptPath = Join-Path $Root "scripts/start-sympp-mcp.ps1"
-  if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
-    return $null
+  if (-not [string]::IsNullOrWhiteSpace($env:SYMPP_REPO_ROOT)) {
+    $explicitRepoRoot = [System.IO.Path]::GetFullPath($env:SYMPP_REPO_ROOT)
+    if (-not (Test-SourceCheckoutRoot $explicitRepoRoot)) {
+      throw "SYMPP_REPO_ROOT does not look like a Symphony++ checkout: $explicitRepoRoot"
+    }
+
+    $contractPath = Join-Path $explicitRepoRoot "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json"
+    $fingerprint = Get-DiagnosticMcpContractFingerprintFromContractFile $contractPath
+    if ($fingerprint) {
+      return $fingerprint
+    }
+
+    throw "Symphony++ diagnostic expected MCP contract fingerprint could not be resolved from explicit SYMPP_REPO_ROOT contract JSON: $contractPath"
   }
 
-  $scriptText = Get-Content -LiteralPath $scriptPath -Raw
-  $match = [regex]::Match($scriptText, '\$ExpectedMcpContractFingerprint\s*=\s*"([0-9a-fA-F]{64})"')
-  if (-not $match.Success) {
-    return $null
+  $candidateRoots = New-Object System.Collections.Generic.List[string]
+  $sourceCandidate = Resolve-OptionalFullPath (Join-Path $Root "../..")
+  if (Test-SourceCheckoutRoot $sourceCandidate) {
+    $candidateRoots.Add($sourceCandidate)
   }
 
-  return Normalize-DiagnosticMcpContractFingerprint $match.Groups[1].Value
+  foreach ($candidateRoot in @($candidateRoots | Select-Object -Unique)) {
+    $fingerprint = Get-DiagnosticMcpContractFingerprintFromContractFile (Join-Path $candidateRoot "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json")
+    if ($fingerprint) {
+      return $fingerprint
+    }
+  }
+
+  $sourceRoot = Resolve-DiagnosticRuntimeArtifactSourceRoot $Root $null
+  if ($sourceRoot) {
+    $fingerprint = Get-DiagnosticMcpContractFingerprintFromContractFile (Join-Path $sourceRoot "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json")
+    if ($fingerprint) {
+      return $fingerprint
+    }
+  }
+
+  $artifactManifest = $null
+  try {
+    $artifactManifest = Read-DiagnosticRuntimeArtifactManifest $Root
+  } catch {
+    $artifactManifest = $null
+  }
+
+  $fingerprint = Get-DiagnosticMcpContractFingerprintFromManifestObject $artifactManifest
+  if ($fingerprint) {
+    return $fingerprint
+  }
+
+  if ($null -ne $artifactManifest) {
+    return "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+
+  return $null
 }
 
 function Get-DiagnosticPinnedRevision([string]$Root) {
