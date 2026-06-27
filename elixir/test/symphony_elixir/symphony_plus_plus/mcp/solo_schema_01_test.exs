@@ -922,6 +922,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
              "stop_conditions"
            ]
 
+    assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "work_request_id", "description"]) =~
+             "Required WorkRequest id"
+
     assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "owned_file_globs", "type"]) == "array"
 
     assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "owned_file_globs", "description"]) =~

@@ -78,7 +78,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
     refute inspect(response) =~ "secret_handoff"
     refute inspect(response) =~ "claim_private_handoff"
 
-    {claim_response, _claimed_server} =
+    {claim_response, claimed_server} =
       Server.handle_state(
         %{
           "jsonrpc" => "2.0",
@@ -94,6 +94,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools01Test do
 
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "claimed_by"]) == "kraken-beta-arch"
+
+    claimed_tools_response = Server.handle(%{"jsonrpc" => "2.0", "id" => "claimed-architect-tools", "method" => "tools/list", "params" => %{}}, claimed_server)
+    claimed_tools_by_name = Map.new(get_in(claimed_tools_response, ["result", "tools"]), &{&1["name"], &1})
+
+    assert get_in(claimed_tools_by_name, ["add_work_request_planned_slice", "inputSchema", "required"]) == [
+             "title",
+             "goal",
+             "work_package_kind",
+             "target_base_branch",
+             "owned_file_globs",
+             "forbidden_file_globs",
+             "acceptance_criteria",
+             "validation_steps",
+             "review_lanes",
+             "stop_conditions"
+           ]
+
+    assert get_in(claimed_tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "work_request_id", "description"]) =~
+             "claimed architect WorkRequest"
+
+    assert get_in(claimed_tools_by_name, ["approve_work_request_planned_slice", "inputSchema", "required"]) == [
+             "planned_slice_id",
+             "current_status"
+           ]
+
+    assert get_in(claimed_tools_by_name, ["skip_work_request_planned_slice", "inputSchema", "required"]) == [
+             "planned_slice_id",
+             "current_status"
+           ]
+
+    assert get_in(claimed_tools_by_name, ["mark_work_request_sliced", "inputSchema", "required"]) == ["current_status"]
 
     {default_owner_response, _default_owner_server} =
       Server.handle_state(
