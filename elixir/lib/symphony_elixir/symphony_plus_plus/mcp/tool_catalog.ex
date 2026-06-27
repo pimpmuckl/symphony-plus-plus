@@ -633,8 +633,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   end
 
   def worker_tool_input_schema("sync_pr") do
-    schema(metadata_properties(pr_metadata_properties()), ["metadata"])
-    |> require_pr_identity_and_head()
+    schema(metadata_properties(sync_pr_metadata_properties()), [])
   end
 
   def worker_tool_input_schema("submit_review_package") do
@@ -1276,6 +1275,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
     }
   end
 
+  defp sync_pr_metadata_properties do
+    Map.merge(pr_metadata_properties(), %{
+      "branch" => string_schema(),
+      "base_branch" => string_schema(),
+      "base_sha" => string_schema(),
+      "changed_files" => changed_files_schema(),
+      "changed_files_count" => nonnegative_integer_schema(),
+      "check_summary" => object_schema(),
+      "review_state" => object_schema(),
+      "merge_state" => object_schema(),
+      "recovery" => object_schema()
+    })
+  end
+
   defp string_schema, do: %{"type" => "string"}
   defp described_string_schema(description), do: Map.put(string_schema(), "description", description)
 
@@ -1357,6 +1370,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   defp string_array_schema, do: %{"type" => "array", "items" => nonblank_string_schema()}
   defp described_string_array_schema(description), do: Map.put(string_array_schema(), "description", description)
   defp nonempty_object_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => object_schema()}
+
+  defp changed_files_schema,
+    do: %{"anyOf" => [%{"type" => "array", "items" => %{"anyOf" => [nonblank_string_schema(), object_schema()]}}, nonnegative_integer_schema()]}
 
   defp metadata_head_schema do
     %{

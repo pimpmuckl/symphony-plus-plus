@@ -90,6 +90,76 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjectionTest do
     assert metadata.pr["source_tool"] == "sync_pr"
   end
 
+  test "metadata treats repaired PR syncs as attached PR evidence" do
+    events = [
+      progress_event(
+        "branch",
+        1,
+        %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/wp-1", "head_sha" => "head-a"},
+        ~U[2026-05-01 00:00:00Z]
+      ),
+      progress_event(
+        "stale-attach-pr",
+        2,
+        %{
+          "type" => "pr",
+          "source_tool" => "attach_pr",
+          "repository" => "nextide/symphony-plus-plus",
+          "number" => 16,
+          "head_sha" => "head-a"
+        },
+        ~U[2026-05-01 00:00:01Z]
+      ),
+      progress_event(
+        "repaired-sync-pr",
+        3,
+        %{
+          "type" => "pr",
+          "source_tool" => "sync_pr",
+          "attachment_repair" => true,
+          "repository" => "nextide/symphony-plus-plus",
+          "number" => 17,
+          "head_sha" => "head-a",
+          "check_summary" => %{"status" => "success"}
+        },
+        ~U[2026-05-01 00:00:02Z]
+      )
+    ]
+
+    assert MetadataProjection.current_pr_state_present?(events, "head-a")
+    metadata = MetadataProjection.metadata(events, [], "wp-1")
+    assert metadata.pr["number"] == 17
+    assert metadata.pr["source_tool"] == "sync_pr"
+  end
+
+  test "metadata displays identity-only repaired PR syncs" do
+    events = [
+      progress_event(
+        "branch",
+        1,
+        %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/wp-1", "head_sha" => "head-a"},
+        ~U[2026-05-01 00:00:00Z]
+      ),
+      progress_event(
+        "repaired-sync-pr",
+        2,
+        %{
+          "type" => "pr",
+          "source_tool" => "sync_pr",
+          "attachment_repair" => true,
+          "repository" => "nextide/symphony-plus-plus",
+          "number" => 17,
+          "head_sha" => "head-a"
+        },
+        ~U[2026-05-01 00:00:01Z]
+      )
+    ]
+
+    metadata = MetadataProjection.metadata(events, [], "wp-1")
+    assert metadata.pr["number"] == 17
+    assert metadata.pr["source_tool"] == "sync_pr"
+  end
+
   test "metadata ignores sequenced PR sync state before a sequence-less reattach" do
     events = [
       progress_event(

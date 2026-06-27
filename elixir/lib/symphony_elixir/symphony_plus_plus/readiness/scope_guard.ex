@@ -281,11 +281,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
     |> select_scope_guard_pr_metadata_event()
   end
 
-  defp current_pr_metadata_event?(%ProgressEvent{} = event, attach_boundary) do
-    (payload_type?(event, "pr", "attach_pr") and attach_boundary(event) == attach_boundary) or
-      (payload_type?(event, "pr", "sync_pr") and progress_after_pr_attach_boundary?(event, attach_boundary))
-  end
-
   defp select_scope_guard_pr_metadata_event([]), do: nil
 
   defp select_scope_guard_pr_metadata_event([%ProgressEvent{payload: payload} = latest | _rest] = events) do
@@ -349,6 +344,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
     Map.merge(payload, Map.take(changed_file_payload, @changed_file_metadata_keys))
   end
 
+  defp current_pr_metadata_event?(%ProgressEvent{} = event, {:repair_sync, repair_boundary}) do
+    payload_type?(event, "pr", "sync_pr") and
+      (attach_boundary(event) == repair_boundary or progress_after_pr_attach_boundary?(event, repair_boundary))
+  end
+
+  defp current_pr_metadata_event?(%ProgressEvent{} = event, attach_boundary) do
+    (payload_type?(event, "pr", "attach_pr") and attach_boundary(event) == attach_boundary) or
+      (payload_type?(event, "pr", "sync_pr") and progress_after_pr_attach_boundary?(event, attach_boundary))
+  end
+
   defp latest_current_head_sha(progress_events) do
     progress_events
     |> authoritative_progress_events()
@@ -366,11 +371,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
     progress_events
     |> chronological_progress_events()
     |> Enum.reverse()
-    |> Enum.find_value(&attached_pr_ref_with_boundary/1)
+    |> Enum.find_value(&attached_or_repaired_pr_ref_with_boundary/1)
     |> case do
       nil -> {:error, :not_found}
       {ref, boundary} -> {:ok, ref, boundary}
     end
+  end
+
+  defp attached_or_repaired_pr_ref_with_boundary(%ProgressEvent{} = event) do
+    attached_pr_ref_with_boundary(event) || repaired_pr_ref_with_boundary(event)
   end
 
   defp attached_pr_ref_with_boundary(%ProgressEvent{payload: payload} = event) when is_map(payload) do
@@ -383,6 +392,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
   end
 
   defp attached_pr_ref_with_boundary(%ProgressEvent{}), do: nil
+
+  defp repaired_pr_ref_with_boundary(%ProgressEvent{payload: payload} = event) when is_map(payload) do
+    if payload_type?(event, "pr", "sync_pr") and Map.get(payload, "attachment_repair") == true do
+      case pr_payload_ref(payload) do
+        nil -> nil
+        ref -> {ref, {:repair_sync, attach_boundary(event)}}
+      end
+    end
+  end
+
+  defp repaired_pr_ref_with_boundary(%ProgressEvent{}), do: nil
 
   defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_integer(number) do
     {String.downcase(repository), number}

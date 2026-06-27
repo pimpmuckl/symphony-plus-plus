@@ -75,9 +75,9 @@ other compact labels plain.
 - Attach the PR with `attach_pr(url, head_sha)` after it exists. Include
   current check, review, or merge metadata in that call when it is already
   available.
-- Refresh current state only for the attached PR with
-  `sync_pr(metadata, url|number)` when the PR changed after attachment or the
-  attach call lacked current-state metadata required by policy.
+- Refresh current state only for the attached PR with `sync_pr()`. Pass
+  top-level current-state fields when they changed; use explicit PR identity or
+  `recovery` only for repair.
 - Submit review evidence with `submit_review_package(summary, tests, artifacts)`
   after branch metadata is current.
 - Attach passing local Review Suite evidence with

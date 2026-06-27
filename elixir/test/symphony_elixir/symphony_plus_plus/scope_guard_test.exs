@@ -281,6 +281,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
     assert ScopeGuard.failure_reasons(package, events) == []
   end
 
+  test "scope guard accepts repaired PR attachment evidence" do
+    package = %{package(["elixir/lib/**"]) | base_branch: "main"}
+
+    events = [
+      event(
+        1,
+        %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/SYMPP-SCOPE-UNIT", "head_sha" => "head-a"},
+        ~U[2026-05-01 00:00:00Z]
+      ),
+      event(
+        2,
+        %{"type" => "pr", "source_tool" => "attach_pr", "url" => "https://github.com/nextide/symphony-plus-plus/pull/16", "head_sha" => "head-a"},
+        ~U[2026-05-01 00:00:01Z]
+      ),
+      event(
+        3,
+        %{
+          "type" => "pr",
+          "source_tool" => "sync_pr",
+          "attachment_repair" => true,
+          "url" => "https://github.com/nextide/symphony-plus-plus/pull/17",
+          "head_sha" => "head-a",
+          "base_branch" => "main",
+          "changed_files" => [%{"path" => "elixir/lib/example.ex"}],
+          "changed_files_count" => 1,
+          "changed_files_available" => true,
+          "changed_files_count_available" => true
+        },
+        ~U[2026-05-01 00:00:02Z]
+      )
+    ]
+
+    assert ScopeGuard.failure_reasons(package, events) == []
+  end
+
   test "scope guard ignores sequenced PR sync metadata before a sequence-less reattach" do
     package = %{package(["elixir/lib/**"]) | base_branch: "main"}
 

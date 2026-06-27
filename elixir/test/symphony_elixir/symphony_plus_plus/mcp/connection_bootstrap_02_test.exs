@@ -395,10 +395,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
            ]
 
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
-    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "required"]) == ["metadata"]
+    attach_pr_properties = get_in(tools_by_name, ["attach_pr", "inputSchema", "properties"])
+
+    for sync_only <- ["branch", "base_branch", "base_sha", "changed_files", "changed_files_count", "check_summary", "review_state", "merge_state", "recovery"] do
+      refute Map.has_key?(attach_pr_properties, sync_only)
+    end
+
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "required"]) == []
 
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
-    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "then", "allOf"]) != nil
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "then"]) == nil
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "recovery", "type"]) == "object"
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "check_summary", "type"]) == "object"
+
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "changed_files", "anyOf"]) == [
+             %{
+               "type" => "array",
+               "items" => %{
+                 "anyOf" => [
+                   %{"type" => "string", "minLength" => 1, "pattern" => "\\S"},
+                   %{"type" => "object", "additionalProperties" => true}
+                 ]
+               }
+             },
+             %{"type" => "integer", "minimum" => 0}
+           ]
 
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "number", "anyOf"]) == [
              %{"type" => "integer", "minimum" => 1},
