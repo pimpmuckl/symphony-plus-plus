@@ -229,10 +229,24 @@
         "compact_call": {"head_sha": "<head sha>"},
         "inferred": ["branch from literal WorkPackage branch_pattern"],
         "fallback": "Pass branch explicitly when the branch pattern is templated or absent."
+      },
+      {
+        "name": "current_work_request_planning_writes",
+        "compact_tools": [
+          "add_work_request_planned_slice",
+          "upsert_work_request_product_plan_node",
+          "move_work_request_planned_slice_to_product_node",
+          "approve_work_request_planned_slice",
+          "skip_work_request_planned_slice",
+          "mark_work_request_sliced"
+        ],
+        "inferred": ["work_request_id from the claimed current architect WorkRequest"],
+        "fallback": "Pass work_request_id explicitly to assert the same current WorkRequest; cross-scope targets are still denied."
       }
     ],
     "follow_ups": [
       "record_planned_slice_delivery and cleanup_work_request_planned_slice_runtime still require WorkRequest and planned-slice ids because they mutate WorkRequest delivery truth and runtime authority across linked records.",
+      "Architect reads, lists, dispatch, status/question tools, durable decision tools, and package tools still require explicit target ids.",
       "Architect package tools such as read_child_status, approve_scope_expansion, prepare_work_package_worktree, and cleanup_work_package_worktree still require WorkPackage ids because architect sessions may see more than one package.",
       "sync_pr(metadata, url|number) is only a refresh path for the already attached PR when state changed after attachment or the attach call did not include current-state metadata required by policy."
     ]
@@ -300,12 +314,12 @@
     {"name": "answer_work_request_question_and_record_decision", "required_arguments": ["answer", "decision", "question_id", "rationale", "scope_impact", "source_type", "work_request_id"], "optional_arguments": ["answered_by", "created_by", "current_status", "expected_question_status", "source_id"]},
     {"name": "close_work_request_question", "required_arguments": ["question_id", "work_request_id"], "optional_arguments": ["current_status", "expected_question_status"]},
     {"name": "record_work_request_decision", "required_arguments": ["created_by", "decision", "rationale", "scope_impact", "source_type", "work_request_id"], "optional_arguments": ["source_id"], "argument_constraints": {"source_type": ["human", "architect", "operator", "ask_pro_advisory"]}},
-    {"name": "add_work_request_planned_slice", "required_arguments": ["acceptance_criteria", "forbidden_file_globs", "goal", "owned_file_globs", "review_lanes", "stop_conditions", "target_base_branch", "title", "validation_steps", "work_package_kind", "work_request_id"], "optional_arguments": ["branch_pattern"], "argument_constraints": {"work_package_kind": ["quick_fix", "hotfix", "docs", "investigation", "adapter", "mcp", "skill", "hooks"]}},
-    {"name": "upsert_work_request_product_plan_node", "required_arguments": ["title", "work_request_id"], "optional_arguments": ["completion_mark", "created_by", "description", "node_kind", "parent_id", "position", "product_tree_node_id"]},
-    {"name": "move_work_request_planned_slice_to_product_node", "required_arguments": ["planned_slice_id", "work_request_id"], "optional_arguments": ["created_by", "position", "product_tree_node_id", "role"]},
-    {"name": "approve_work_request_planned_slice", "required_arguments": ["current_status", "planned_slice_id", "work_request_id"], "optional_arguments": []},
-    {"name": "skip_work_request_planned_slice", "required_arguments": ["current_status", "planned_slice_id", "work_request_id"], "optional_arguments": []},
-    {"name": "mark_work_request_sliced", "required_arguments": ["current_status", "work_request_id"], "optional_arguments": []},
+    {"name": "add_work_request_planned_slice", "required_arguments": ["acceptance_criteria", "forbidden_file_globs", "goal", "owned_file_globs", "review_lanes", "stop_conditions", "target_base_branch", "title", "validation_steps", "work_package_kind"], "optional_arguments": ["branch_pattern", "work_request_id"], "current_work_request_policy": "Omit work_request_id to target the claimed current architect WorkRequest. Explicit ids are still scope-checked.", "argument_constraints": {"work_package_kind": ["quick_fix", "hotfix", "docs", "investigation", "adapter", "mcp", "skill", "hooks"]}},
+    {"name": "upsert_work_request_product_plan_node", "required_arguments": ["title"], "optional_arguments": ["completion_mark", "created_by", "description", "node_kind", "parent_id", "position", "product_tree_node_id", "work_request_id"], "current_work_request_policy": "Omit work_request_id to target the claimed current architect WorkRequest. Explicit ids are still scope-checked."},
+    {"name": "move_work_request_planned_slice_to_product_node", "required_arguments": ["planned_slice_id"], "optional_arguments": ["created_by", "position", "product_tree_node_id", "role", "work_request_id"], "current_work_request_policy": "Omit work_request_id to target the claimed current architect WorkRequest. Explicit ids are still scope-checked."},
+    {"name": "approve_work_request_planned_slice", "required_arguments": ["current_status", "planned_slice_id"], "optional_arguments": ["work_request_id"], "current_work_request_policy": "Omit work_request_id to target the claimed current architect WorkRequest. Explicit ids are still scope-checked."},
+    {"name": "skip_work_request_planned_slice", "required_arguments": ["current_status", "planned_slice_id"], "optional_arguments": ["work_request_id"], "current_work_request_policy": "Omit work_request_id to target the claimed current architect WorkRequest. Explicit ids are still scope-checked."},
+    {"name": "mark_work_request_sliced", "required_arguments": ["current_status"], "optional_arguments": ["work_request_id"], "current_work_request_policy": "Omit work_request_id to target the claimed current architect WorkRequest. Explicit ids are still scope-checked."},
     {"name": "dispatch_work_request_planned_slice", "required_arguments": ["planned_slice_id", "work_request_id"], "optional_arguments": ["claimed_by"], "response_policy": "Returns worker_bootstrap for claim_local_assignment with work_package_id and optional claimed_by."},
     {"name": "prepare_work_package_worktree", "required_arguments": ["work_package_id"], "optional_arguments": ["branch", "target_repo_root"]},
     {"name": "cleanup_work_package_worktree", "required_arguments": ["work_package_id"], "optional_arguments": ["target_repo_root"]},

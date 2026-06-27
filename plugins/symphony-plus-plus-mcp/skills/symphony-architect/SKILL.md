@@ -80,6 +80,14 @@ another shape. Each slice needs:
 - Stop conditions and guidance routing.
 - Dependencies and recorded decisions needed to avoid scope drift.
 
+After claiming a WorkRequest, current-WR planning writes may omit
+`work_request_id`: `add_work_request_planned_slice`,
+`upsert_work_request_product_plan_node`,
+`move_work_request_planned_slice_to_product_node`,
+`approve_work_request_planned_slice`, `skip_work_request_planned_slice`, and
+`mark_work_request_sliced`. Keep reads, lists, delivery closeout, dispatch,
+status/question tools, durable decisions, and package tools explicit.
+
 Approve slices only when the boundary is defensible. Skip stale/superseded
 slices. Mark the WorkRequest sliced once approved slices cover the request.
 

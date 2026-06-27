@@ -66,6 +66,17 @@ metadata required by policy.
 Worker `set_status` and `mark_ready` accept `blocker_closeout` when active
 blockers must be resolved or kept active as part of a finish transition.
 
+## Compact Architect Planning Calls
+
+After `claim_local_architect_assignment`, planning writes that only target the
+claimed current WorkRequest may omit `work_request_id`:
+`add_work_request_planned_slice`, `upsert_work_request_product_plan_node`,
+`move_work_request_planned_slice_to_product_node`,
+`approve_work_request_planned_slice`, `skip_work_request_planned_slice`, and
+`mark_work_request_sliced`. Reads, lists, delivery closeout, dispatch,
+status/question tools, durable decision tools, and package tools still require
+their explicit target ids.
+
 ## Delivery Closeout
 
 Architect delivery closeout uses:

@@ -36,6 +36,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     Auth,
     ClaimToolText,
     Config,
+    CurrentWorkRequest,
     HandleStateStore,
     LocalArchitectGrantClaim,
     LocalClaimLeases,
@@ -798,7 +799,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "resources" => resource_contract_material(),
       "schema_version" => @mcp_contract_schema_version,
       "tool_sets" => %{
-        "architect" => architect_session_tool_specs(),
+        "architect" => ToolCatalog.architect_session_tool_specs(current_work_request?: true),
         "claimable" => claimable_tool_specs(config),
         "local_operator" => LocalTrustedTools.tool_specs(config),
         "unbound" => hide_trusted_local_tool_specs(unbound_tool_specs_for_config(config)),
@@ -1303,8 +1304,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "architect"}}}, %Config{}) do
-    {:ok, architect_session_tool_specs()}
+  defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "architect"}} = session}, %Config{}) do
+    {:ok, architect_session_tool_specs(session)}
   end
 
   defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "worker"}} = session}, %Config{repo: repo}),
@@ -1321,7 +1322,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp claimable_tool_specs(%Config{} = config), do: ToolCatalog.claimable_tool_specs(config)
   defp unbound_tool_specs(%Config{} = config), do: ToolCatalog.unbound_tool_specs_for_config(config)
   defp unbound_tool_specs_for_config(%Config{} = config), do: ToolCatalog.unbound_tool_specs_for_config(config)
-  defp architect_session_tool_specs, do: ToolCatalog.architect_session_tool_specs()
+
+  defp architect_session_tool_specs(%Session{} = session) do
+    ToolCatalog.architect_session_tool_specs(current_work_request?: CurrentWorkRequest.single_scope?(session))
+  end
+
   defp worker_session_tool_specs, do: ToolCatalog.worker_session_tool_specs()
 
   defp worker_session_tool_specs(repo, %Session{} = session) do
@@ -3642,7 +3647,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_tool("add_work_request_planned_slice", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
-         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, work_request_id} <- CurrentWorkRequest.id_argument(arguments, session),
          {:ok, title} <- required_argument(arguments, "title"),
          {:ok, goal} <- required_argument(arguments, "goal"),
          {:ok, work_package_kind} <- required_argument(arguments, "work_package_kind"),
@@ -3714,7 +3719,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     tool = "upsert_work_request_product_plan_node"
 
     with {:ok, session} <- Auth.require_session(session, config.repo),
-         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, work_request_id} <- CurrentWorkRequest.id_argument(arguments, session),
          {:ok, title} <- required_argument(arguments, "title"),
          {:ok, product_tree_node_id} <- optional_string_argument(arguments, "product_tree_node_id"),
          {:ok, parent_id} <- optional_string_argument(arguments, "parent_id"),
@@ -3772,7 +3777,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     tool = "move_work_request_planned_slice_to_product_node"
 
     with {:ok, session} <- Auth.require_session(session, config.repo),
-         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, work_request_id} <- CurrentWorkRequest.id_argument(arguments, session),
          {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
          {:ok, product_tree_node_id} <- optional_string_argument(arguments, "product_tree_node_id"),
          {:ok, role} <- optional_string_argument(arguments, "role"),
@@ -3837,7 +3842,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_tool("mark_work_request_sliced", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
-         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, work_request_id} <- CurrentWorkRequest.id_argument(arguments, session),
          {:ok, current_status} <- required_argument(arguments, "current_status"),
          {:ok, _work_request, _filters, scope} <-
            authorized_work_request_scope(config.repo, session, work_request_id, :work_request_update, "mark_work_request_sliced"),
@@ -4207,7 +4212,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp mutate_work_request_planned_slice_status(tool, arguments, repo, session, next_status, action) do
     with {:ok, session} <- Auth.require_session(session, repo),
-         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, work_request_id} <- CurrentWorkRequest.id_argument(arguments, session),
          {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
          {:ok, current_status} <- required_argument(arguments, "current_status"),
          {:ok, work_request, planned_slice_for_validation, filters, scope} <-

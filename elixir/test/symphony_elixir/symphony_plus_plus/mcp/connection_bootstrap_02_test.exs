@@ -201,6 +201,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
              "title"
            ]
 
+    assert get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node", "inputSchema", "properties", "work_request_id", "description"]) =~
+             "Required WorkRequest id"
+
+    assert get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node", "description"]) =~
+             "explicit WorkRequest"
+
+    refute get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node", "description"]) =~
+             "claimed current WorkRequest"
+
     assert get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node", "description"]) =~
              "Do not create a plan node solely to wrap one slice."
 

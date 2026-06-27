@@ -151,6 +151,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     assert get_in(sibling_skip_response, ["error", "code"]) == -32_004
     assert get_in(sibling_skip_response, ["error", "data", "reason"]) == "not_found"
 
+    assert {:ok, sibling_node} =
+             ProductTree.create_node(repo, %{
+               work_request_id: sibling.id,
+               title: "Sibling plan"
+             })
+
+    sibling_upsert_response =
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+        "work_request_id" => sibling.id,
+        "title" => "Sibling node mutation"
+      })
+
+    assert get_in(sibling_upsert_response, ["error", "code"]) == -32_004
+    assert get_in(sibling_upsert_response, ["error", "data", "reason"]) == "not_found"
+
+    sibling_move_response =
+      mcp_tool(repo, session, "move_work_request_planned_slice_to_product_node", %{
+        "work_request_id" => sibling.id,
+        "planned_slice_id" => sibling_slice.id,
+        "product_tree_node_id" => sibling_node.id
+      })
+
+    assert get_in(sibling_move_response, ["error", "code"]) == -32_004
+    assert get_in(sibling_move_response, ["error", "data", "reason"]) == "not_found"
+
+    sibling_mark_response =
+      mcp_tool(repo, session, "mark_work_request_sliced", %{
+        "work_request_id" => sibling.id,
+        "current_status" => "ready_for_slicing"
+      })
+
+    assert get_in(sibling_mark_response, ["error", "code"]) == -32_004
+    assert get_in(sibling_mark_response, ["error", "data", "reason"]) == "not_found"
+
     sibling_dispatch_response =
       mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
         "work_request_id" => sibling.id,
@@ -184,6 +218,121 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
 
     target_read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => handoff_work_request.id})
     assert get_in(target_read_response, ["result", "structuredContent", "work_request", "id"]) == handoff_work_request.id
+  end
+
+  test "architect current WorkRequest planning writes can omit work_request_id", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-CURRENT-WR-WRITES", [
+        "read:work_request",
+        "write:work_request",
+        "dispatch:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-CURRENT-WR-WRITES",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    sibling =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-CURRENT-WR-WRITES-SIBLING",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    grant_work_request_scope!(repo, session, work_request.id)
+
+    add_args = %{
+      "title" => "Current WorkRequest slice",
+      "goal" => "Use the claimed WorkRequest when omitted.",
+      "work_package_kind" => "mcp",
+      "target_base_branch" => anchor.base_branch,
+      "owned_file_globs" => ["elixir/lib/symphony_elixir/symphony_plus_plus/mcp/server.ex"],
+      "forbidden_file_globs" => [],
+      "acceptance_criteria" => ["Omitted WorkRequest id targets the current claim."],
+      "validation_steps" => ["mix test test/symphony_elixir/symphony_plus_plus/mcp/work_request_tools_02_test.exs"],
+      "review_lanes" => ["normal"],
+      "stop_conditions" => ["Stop before dispatch."]
+    }
+
+    add_response = mcp_tool(repo, session, "add_work_request_planned_slice", add_args)
+    add_payload = get_in(add_response, ["result", "structuredContent"])
+    planned_slice_id = get_in(add_payload, ["planned_slice", "id"])
+
+    assert add_payload["work_request"]["id"] == work_request.id
+    assert get_in(add_payload, ["planned_slice", "work_request_id"]) == work_request.id
+
+    skip_add_response =
+      mcp_tool(
+        repo,
+        session,
+        "add_work_request_planned_slice",
+        Map.merge(add_args, %{
+          "title" => "Current WorkRequest skipped slice",
+          "goal" => "Create a second current WorkRequest slice."
+        })
+      )
+
+    skip_slice_id = get_in(skip_add_response, ["result", "structuredContent", "planned_slice", "id"])
+
+    node_response =
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+        "title" => "Current WorkRequest product node"
+      })
+
+    node_payload = get_in(node_response, ["result", "structuredContent"])
+    node_id = get_in(node_payload, ["product_plan_node", "id"])
+
+    assert node_payload["work_request"]["id"] == work_request.id
+
+    move_response =
+      mcp_tool(repo, session, "move_work_request_planned_slice_to_product_node", %{
+        "planned_slice_id" => planned_slice_id,
+        "product_tree_node_id" => node_id
+      })
+
+    assert get_in(move_response, ["result", "structuredContent", "product_tree_slice_link", "work_request_id"]) == work_request.id
+
+    approve_response =
+      mcp_tool(repo, session, "approve_work_request_planned_slice", %{
+        "planned_slice_id" => planned_slice_id,
+        "current_status" => "planned"
+      })
+
+    assert get_in(approve_response, ["result", "structuredContent", "planned_slice", "status"]) == "approved"
+
+    skip_response =
+      mcp_tool(repo, session, "skip_work_request_planned_slice", %{
+        "planned_slice_id" => skip_slice_id,
+        "current_status" => "planned"
+      })
+
+    assert get_in(skip_response, ["result", "structuredContent", "planned_slice", "status"]) == "skipped"
+
+    mark_response =
+      mcp_tool(repo, session, "mark_work_request_sliced", %{
+        "current_status" => "ready_for_slicing"
+      })
+
+    assert get_in(mark_response, ["result", "structuredContent", "work_request", "status"]) == "sliced"
+
+    assert {:ok, []} = WorkRequestRepository.list_planned_slices(repo, sibling.id)
+    assert {:ok, persisted_sibling} = WorkRequestRepository.get(repo, sibling.id)
+    assert persisted_sibling.status == "ready_for_slicing"
+
+    read_missing_response = mcp_tool(repo, session, "read_work_request", %{})
+    assert get_in(read_missing_response, ["error", "data", "reason"]) == "missing_work_request_id"
+
+    dispatch_missing_response =
+      mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
+        "planned_slice_id" => planned_slice_id
+      })
+
+    assert get_in(dispatch_missing_response, ["error", "data", "reason"]) == "missing_work_request_id"
   end
 
   test "record_planned_slice_delivery requires active blocker closeout and can preserve blockers", %{repo: repo} do

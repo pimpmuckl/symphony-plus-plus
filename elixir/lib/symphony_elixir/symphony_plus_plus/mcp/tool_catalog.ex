@@ -137,6 +137,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
     "mark_work_request_sliced",
     "dispatch_work_request_planned_slice"
   ]
+  @current_work_request_write_tools [
+    "add_work_request_planned_slice",
+    "upsert_work_request_product_plan_node",
+    "move_work_request_planned_slice_to_product_node",
+    "approve_work_request_planned_slice",
+    "skip_work_request_planned_slice",
+    "mark_work_request_sliced"
+  ]
   @delivery_policy_tools [
     "reconcile_work_request",
     "cleanup_work_request_planned_slice_runtime",
@@ -343,26 +351,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   defp architect_tool_description("record_work_request_decision"),
     do: "Record a durable decision log entry on a scoped WorkRequest. source_type must be one of: #{Enum.join(DecisionLogEntry.source_types(), ", ")}."
 
-  defp architect_tool_description("add_work_request_planned_slice"), do: "Add a planned slice to a scoped WorkRequest."
+  defp architect_tool_description("add_work_request_planned_slice"), do: "Add a planned slice to the claimed current WorkRequest."
 
   defp architect_tool_description("upsert_work_request_product_plan_node") do
-    "Create, update, or reparent a V3 product plan node inside a scoped WorkRequest. Do not create a plan node solely to wrap one slice. Leave simple slices direct unless the node groups multiple units or records a real product boundary. If setting completion_mark to done or deferred and descendant blockers are active, answer blocker_closeout before completing the node."
+    "Create, update, or reparent a V3 product plan node inside the claimed current WorkRequest. Do not create a plan node solely to wrap one slice. Leave simple slices direct unless the node groups multiple units or records a real product boundary. If setting completion_mark to done or deferred and descendant blockers are active, answer blocker_closeout before completing the node."
   end
 
   defp architect_tool_description("move_work_request_planned_slice_to_product_node") do
-    "Move a planned slice under a V3 product plan node, or unlink it back to the WorkRequest's direct slice list."
+    "Move a planned slice under a V3 product plan node in the claimed current WorkRequest, or unlink it back to the WorkRequest's direct slice list."
   end
 
   defp architect_tool_description("approve_work_request_planned_slice") do
-    "Approve a planned slice that belongs to a scoped WorkRequest."
+    "Approve a planned slice that belongs to the claimed current WorkRequest."
   end
 
   defp architect_tool_description("skip_work_request_planned_slice") do
-    "Skip a planned slice that belongs to a scoped WorkRequest."
+    "Skip a planned slice that belongs to the claimed current WorkRequest."
   end
 
   defp architect_tool_description("mark_work_request_sliced") do
-    "Mark a scoped WorkRequest sliced using the existing approved-slice requirement."
+    "Mark the claimed current WorkRequest sliced using the existing approved-slice requirement."
   end
 
   defp architect_tool_description("dispatch_work_request_planned_slice") do
@@ -922,7 +930,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   def architect_tool_input_schema("add_work_request_planned_slice") do
     schema(
       %{
-        "work_request_id" => string_schema(),
+        "work_request_id" => current_work_request_id_schema(),
         "title" => string_schema(),
         "goal" => string_schema(),
         "work_package_kind" => string_enum_schema(WorkPackage.planned_slice_kinds()),
@@ -943,7 +951,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
         "branch_pattern" => described_string_schema("Optional exact branch or {{placeholder}} template. Git wildcard patterns such as `*` are not supported.")
       },
       [
-        "work_request_id",
         "title",
         "goal",
         "work_package_kind",
@@ -961,7 +968,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   def architect_tool_input_schema("upsert_work_request_product_plan_node") do
     schema(
       %{
-        "work_request_id" => string_schema(),
+        "work_request_id" => current_work_request_id_schema(),
         "product_tree_node_id" => described_string_schema("Optional existing product plan node id. Omit to create a new node."),
         "title" => nonblank_string_schema(),
         "description" => markdown_nullable_string_schema("Optional human-facing product plan node description."),
@@ -972,14 +979,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
         "created_by" => described_string_schema("Optional architect identity for audit display."),
         "blocker_closeout" => blocker_closeout_schema()
       },
-      ["work_request_id", "title"]
+      ["title"]
     )
   end
 
   def architect_tool_input_schema("move_work_request_planned_slice_to_product_node") do
     schema(
       %{
-        "work_request_id" => string_schema(),
+        "work_request_id" => current_work_request_id_schema(),
         "planned_slice_id" => string_schema(),
         "product_tree_node_id" =>
           nullable_string_schema()
@@ -988,28 +995,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
         "position" => nonnegative_integer_schema(),
         "created_by" => described_string_schema("Optional architect identity for audit display.")
       },
-      ["work_request_id", "planned_slice_id"]
+      ["planned_slice_id"]
     )
   end
 
   def architect_tool_input_schema(name) when name in ["approve_work_request_planned_slice", "skip_work_request_planned_slice"] do
     schema(
       %{
-        "work_request_id" => string_schema(),
+        "work_request_id" => current_work_request_id_schema(),
         "planned_slice_id" => string_schema(),
         "current_status" => string_schema()
       },
-      ["work_request_id", "planned_slice_id", "current_status"]
+      ["planned_slice_id", "current_status"]
     )
   end
 
   def architect_tool_input_schema("mark_work_request_sliced") do
     schema(
       %{
-        "work_request_id" => string_schema(),
+        "work_request_id" => current_work_request_id_schema(),
         "current_status" => string_schema()
       },
-      ["work_request_id", "current_status"]
+      ["current_status"]
     )
   end
 
@@ -1135,11 +1142,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
 
   defp local_architect_assignment_claim_tool_specs(%Config{}), do: [local_architect_assignment_claim_tool_spec()]
 
-  defp architect_tool_specs, do: Enum.map(@architect_tools, &architect_tool_spec/1)
+  defp architect_tool_specs(current_work_request?), do: Enum.map(@architect_tools, &architect_tool_spec(&1, current_work_request?))
 
-  @spec architect_session_tool_specs() :: [tool_spec()]
-  def architect_session_tool_specs do
-    [health_tool_spec(), assignment_release_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs()]
+  @spec architect_session_tool_specs(keyword()) :: [tool_spec()]
+  def architect_session_tool_specs(opts \\ []) do
+    current_work_request? = Keyword.get(opts, :current_work_request?, false)
+
+    [
+      health_tool_spec(),
+      assignment_release_tool_spec(),
+      worker_tool_spec("get_current_assignment")
+      | architect_tool_specs(current_work_request?)
+    ]
   end
 
   @spec worker_session_tool_specs() :: [tool_spec()]
@@ -1148,9 +1162,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   end
 
   defp unbound_scoped_tool_specs do
-    Enum.map(@architect_tools -- @shared_worker_architect_tools, &architect_tool_spec/1) ++
+    Enum.map(@architect_tools -- @shared_worker_architect_tools, &unbound_architect_tool_spec/1) ++
       Enum.map(@worker_tools -- @shared_worker_architect_tools, &unbound_worker_tool_spec/1) ++
       Enum.map(@shared_worker_architect_tools, &shared_worker_architect_tool_spec/1)
+  end
+
+  defp architect_tool_spec(name, true), do: architect_tool_spec(name)
+  defp architect_tool_spec(name, false), do: explicit_work_request_architect_tool_spec(name)
+
+  defp explicit_work_request_architect_tool_spec(name) when name in @current_work_request_write_tools do
+    spec = architect_tool_spec(name)
+    required = ["work_request_id" | architect_tool_input_schema(name)["required"]]
+
+    spec
+    |> Map.put("description", unbound_current_work_request_description(name))
+    |> put_in(["inputSchema", "required"], required)
+    |> put_in(["inputSchema", "properties", "work_request_id"], explicit_work_request_id_schema())
+  end
+
+  defp explicit_work_request_architect_tool_spec(name), do: architect_tool_spec(name)
+
+  defp unbound_architect_tool_spec(name), do: explicit_work_request_architect_tool_spec(name)
+
+  defp unbound_current_work_request_description(name) do
+    name
+    |> architect_tool_description()
+    |> String.replace("the claimed current WorkRequest", "the explicit WorkRequest")
+    |> String.replace("claimed current WorkRequest", "explicit WorkRequest")
   end
 
   defp shared_worker_architect_tool_spec(name), do: architect_tool_spec(name)
@@ -1228,6 +1266,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
 
   defp string_schema, do: %{"type" => "string"}
   defp described_string_schema(description), do: Map.put(string_schema(), "description", description)
+
+  defp current_work_request_id_schema,
+    do:
+      described_string_schema(
+        "Optional for current-WorkRequest planning writes. When omitted, the claimed architect WorkRequest is used; reads, delivery, dispatch, and cross-WorkRequest targets stay explicit."
+      )
+
+  defp explicit_work_request_id_schema,
+    do: described_string_schema("Required WorkRequest id. Compact current-WorkRequest omission is available only after claiming an architect WorkRequest.")
+
   defp markdown_string_schema(description), do: described_string_schema(description)
   defp string_enum_schema(values) when is_list(values), do: %{"type" => "string", "enum" => values}
   defp nonblank_string_schema, do: %{"type" => "string", "minLength" => 1, "pattern" => "\\S"}
