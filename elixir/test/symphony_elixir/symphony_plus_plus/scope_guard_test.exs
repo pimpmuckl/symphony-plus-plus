@@ -242,6 +242,90 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
     assert ScopeGuard.failure_reasons(package, events) == []
   end
 
+  test "scope guard keeps the current attached PR when older PR evidence is backfilled later" do
+    package = %{package(["elixir/lib/**"]) | base_branch: "main"}
+
+    events = [
+      event(
+        1,
+        %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/SYMPP-SCOPE-UNIT", "head_sha" => "head-a"},
+        ~U[2026-05-01 00:00:00Z]
+      ),
+      event(
+        2,
+        %{"type" => "pr", "source_tool" => "attach_pr", "url" => "https://github.com/nextide/symphony-plus-plus/pull/17", "head_sha" => "head-a"},
+        ~U[2026-05-01 00:00:02Z]
+      ),
+      event(
+        3,
+        %{
+          "type" => "pr",
+          "source_tool" => "sync_pr",
+          "url" => "https://github.com/nextide/symphony-plus-plus/pull/17",
+          "head_sha" => "head-a",
+          "base_branch" => "main",
+          "changed_files" => [%{"path" => "elixir/lib/example.ex"}],
+          "changed_files_count" => 1,
+          "changed_files_available" => true,
+          "changed_files_count_available" => true
+        },
+        ~U[2026-05-01 00:00:03Z]
+      ),
+      event(
+        4,
+        %{"type" => "pr", "source_tool" => "attach_pr", "url" => "https://github.com/nextide/symphony-plus-plus/pull/17", "head_sha" => "head-a"},
+        ~U[2026-05-01 00:00:01Z]
+      )
+    ]
+
+    assert ScopeGuard.failure_reasons(package, events) == []
+  end
+
+  test "scope guard ignores sequenced PR sync metadata before a sequence-less reattach" do
+    package = %{package(["elixir/lib/**"]) | base_branch: "main"}
+
+    events = [
+      event(
+        1,
+        %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/SYMPP-SCOPE-UNIT", "head_sha" => "head-a"},
+        ~U[2026-05-01 00:00:00Z]
+      ),
+      event(
+        2,
+        %{"type" => "pr", "source_tool" => "attach_pr", "url" => "https://github.com/nextide/symphony-plus-plus/pull/17", "head_sha" => "head-a"},
+        ~U[2026-05-01 00:00:01Z]
+      ),
+      event(
+        3,
+        %{
+          "type" => "pr",
+          "source_tool" => "sync_pr",
+          "url" => "https://github.com/nextide/symphony-plus-plus/pull/17",
+          "head_sha" => "head-a",
+          "base_branch" => "main",
+          "changed_files" => [%{"path" => "elixir/lib/example.ex"}],
+          "changed_files_count" => 1,
+          "changed_files_available" => true,
+          "changed_files_count_available" => true
+        },
+        ~U[2026-05-01 00:00:02Z]
+      ),
+      unsequenced_event(
+        "sequence-less-reattach",
+        %{"type" => "pr", "source_tool" => "attach_pr", "url" => "https://github.com/nextide/symphony-plus-plus/pull/17", "head_sha" => "head-a"},
+        ~U[2026-05-01 00:00:03Z]
+      )
+    ]
+
+    reasons =
+      package
+      |> ScopeGuard.failure_reasons(events)
+      |> Map.new(&{&1["code"], &1})
+
+    assert reasons["missing_base_branch"]["expected_base_branch"] == "main"
+    assert reasons["changed_files_unavailable"]["gate"] == "scope_guard"
+  end
+
   test "fully unsequenced event streams use normalized timestamp ordering" do
     package = %{package(["elixir/lib/**"]) | base_branch: "main"}
     stale_created_at = ~U[2026-04-30 23:59:59Z]

@@ -5,6 +5,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerToolsReadyGateTest do
 
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ReviewLanes
 
+  test "mark_ready requires plan nodes when package-depth planning is meaningful", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-READY-PACKAGE-PLAN", kind: "mcp", status: "ci_waiting")
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-PACKAGE-PLAN/worker", "head_sha" => "abc126"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/126", "head_sha" => "abc126"})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready except package plan",
+      "tests" => ["mix test"],
+      "artifacts" => ["review-log.txt"],
+      "head_sha" => "abc126",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
+    })
+
+    missing_plan_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-missing-package-plan", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "plan_complete" in get_in(missing_plan_response, ["error", "data", "missing"])
+
+    append_done_plan(repo, package.id)
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-package-plan", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+  end
+
   test "mark_ready rejects empty review packages and allows resolved blockers", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(
@@ -214,6 +258,92 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerToolsReadyGateTest do
                "message" => "Using planned-slice review profiles.",
                "policy_lanes" => ["normal"],
                "required_lanes" => ["brief"]
+             }
+           ]
+  end
+
+  test "mark_ready treats review_github planned-slice lane as canonical github review evidence", %{repo: repo} do
+    work_request =
+      create_work_request!(
+        repo,
+        id: "WR-GITHUB-READY-SLICE",
+        status: "ready_for_slicing",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "main"
+      )
+
+    assert {:ok, planned} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-GITHUB-READY-SLICE",
+                 title: "GitHub review readiness",
+                 goal: "Keep readiness aligned with the planned slice GitHub review profile.",
+                 work_package_kind: "mcp",
+                 target_base_branch: "main",
+                 branch_pattern: "agent/github-ready-slice",
+                 owned_file_globs: ["elixir/lib/symphony_elixir/symphony_plus_plus/review_profiles.ex"],
+                 acceptance_criteria: ["GitHub review evidence is enough for this slice."],
+                 validation_steps: ["mix test worker_tools_ready_gate_test.exs"],
+                 review_lanes: ["review_github"],
+                 stop_conditions: ["Stop before broad lifecycle rewrites."]
+               )
+             )
+
+    assert {:ok, approved} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-GITHUB-READY-SLICE",
+                 kind: "mcp",
+                 title: approved.title,
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main",
+                 branch_pattern: approved.branch_pattern,
+                 product_description: work_request.human_description,
+                 allowed_file_globs: approved.owned_file_globs,
+                 acceptance_criteria: approved.acceptance_criteria,
+                 status: "ci_waiting"
+               )
+             )
+
+    assert {:ok, _linked} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", package.id)
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/github-ready-slice", "head_sha" => "github-head"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/394", "head_sha" => "github-head"})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "GitHub review passed",
+      "tests" => ["mix test worker_tools_ready_gate_test.exs"],
+      "artifacts" => ["github-review-log.txt"],
+      "head_sha" => "github-head",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "github", "verdict" => "green"}]
+    })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-github-slice", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+
+    assert get_in(ready_response, ["result", "structuredContent", "warnings"]) == [
+             %{
+               "code" => "review_lanes_differ",
+               "message" => "Using planned-slice review profiles.",
+               "policy_lanes" => ["normal"],
+               "required_lanes" => ["github"]
              }
            ]
   end

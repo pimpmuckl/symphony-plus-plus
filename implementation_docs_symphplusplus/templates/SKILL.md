@@ -72,10 +72,12 @@ other compact labels plain.
 - Attach the implementation branch with `attach_branch(head_sha)` when the
   package branch pattern is literal. Pass `branch` only when the pattern is
   templated or absent.
-- Attach the PR with `attach_pr(url, head_sha)` after it exists.
+- Attach the PR with `attach_pr(url, head_sha)` after it exists. Include
+  current check, review, or merge metadata in that call when it is already
+  available.
 - Refresh current state only for the attached PR with
-  `sync_pr(metadata, url|number)`; provide the current PR/check metadata
-  snapshot explicitly until runtime redesign.
+  `sync_pr(metadata, url|number)` when the PR changed after attachment or the
+  attach call lacked current-state metadata required by policy.
 - Submit review evidence with `submit_review_package(summary, tests, artifacts)`
   after branch metadata is current.
 - Attach passing local Review Suite evidence with
@@ -99,6 +101,10 @@ Before calling `mark_ready()`:
 - Required tests and review profile evidence are complete.
 - Virtual task plan, findings, and progress are current.
 - Branch, PR, and review artifacts are attached when the policy requires them.
+- Package-depth policies still require at least one terminal package plan node.
+- Do not add lifecycle calls only to restate facts already present; `mark_ready`
+  infers completed plan, PR, branch, and review facts from existing evidence
+  when the matching facts are already recorded.
 - No active blocker remains.
   If a finish transition must address active blockers, pass
   `blocker_closeout` to `set_status` or `mark_ready`.

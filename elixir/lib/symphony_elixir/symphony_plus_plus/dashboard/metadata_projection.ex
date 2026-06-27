@@ -177,11 +177,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection do
 
   @spec current_pr_state_present?([ProgressEvent.t()], String.t()) :: boolean()
   def current_pr_state_present?(progress_events, head_sha) when is_binary(head_sha) do
-    case latest_attached_pr_ref_with_ledger_sequence(progress_events) do
-      {:ok, attached_ref, attach_sequence} ->
+    case latest_attached_pr_ref_with_ledger_boundary(progress_events) do
+      {:ok, attached_ref, attach_boundary} ->
         Enum.any?(progress_events, fn
           %ProgressEvent{payload: payload} = event when is_map(payload) ->
-            payload_type?(event, "pr", "sync_pr") and progress_after_pr_attach_boundary?(event, attach_sequence) and
+            current_pr_state_event?(event, attach_boundary) and
               head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
               pr_payload_ref(payload) == attached_ref and current_pr_state_payload?(payload)
 
@@ -196,12 +196,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection do
 
   def current_pr_state_present?(_progress_events, _head_sha), do: false
 
-  defp progress_after_pr_attach_boundary?(%ProgressEvent{}, nil), do: true
-  defp progress_after_pr_attach_boundary?(%ProgressEvent{sequence: sequence}, attach_sequence) when is_integer(sequence), do: sequence > attach_sequence
-  defp progress_after_pr_attach_boundary?(%ProgressEvent{}, _attach_sequence), do: false
+  defp current_pr_state_event?(%ProgressEvent{} = event, attach_boundary) do
+    (payload_type?(event, "pr", "attach_pr") and attach_boundary(event) == attach_boundary) or
+      (payload_type?(event, "pr", "sync_pr") and progress_after_pr_attach_boundary?(event, attach_boundary))
+  end
 
-  defp current_pr_state_payload?(%{"source_tool" => "sync_pr"} = payload), do: semantic_pr_payload?(payload)
-  defp current_pr_state_payload?(_payload), do: false
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{} = event, {:sequence, attach_boundary}) do
+    progress_event_sequence_order(event) > attach_boundary
+  end
+
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{} = event, {:chronological, attach_boundary}) do
+    progress_event_order(event) > attach_boundary
+  end
+
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{}, _attach_boundary), do: false
+
+  defp current_pr_state_payload?(payload) when is_map(payload), do: semantic_pr_payload?(payload)
 
   defp semantic_pr_payload?(payload) do
     semantic_pr_state?(payload, "check_summary", ["conclusion", "state", "status"]) or
@@ -329,9 +339,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection do
   defp pr_metadata(%{} = pr, :none), do: pr
 
   defp latest_pr_payload(progress_events, :none) do
-    case latest_attached_pr_ref_with_sequence(progress_events) do
-      {:ok, attached_ref, attach_sequence} ->
-        latest_preferred_pr_payload(progress_events, :any, attached_ref, attach_sequence)
+    case latest_attached_pr_ref_with_ledger_boundary(progress_events) do
+      {:ok, attached_ref, attach_boundary} ->
+        latest_preferred_pr_payload(progress_events, :any, attached_ref, attach_boundary)
 
       {:error, :not_found} ->
         nil
@@ -339,10 +349,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection do
   end
 
   defp latest_pr_payload(progress_events, head_filter) do
-    case latest_attached_pr_ref_with_sequence(progress_events) do
-      {:ok, attached_ref, attach_sequence} ->
-        latest_preferred_pr_payload(progress_events, head_filter, attached_ref, attach_sequence) ||
-          latest_preferred_pr_payload(progress_events, :any, attached_ref, attach_sequence)
+    case latest_attached_pr_ref_with_ledger_boundary(progress_events) do
+      {:ok, attached_ref, attach_boundary} ->
+        latest_preferred_pr_payload(progress_events, head_filter, attached_ref, attach_boundary) ||
+          latest_preferred_pr_payload(progress_events, :any, attached_ref, attach_boundary)
 
       {:error, :not_found} ->
         nil
@@ -405,7 +415,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection do
     |> Enum.reverse()
     |> Enum.find(fn
       %ProgressEvent{payload: payload} = event when is_map(payload) ->
-        payload_type?(event, "pr", "sync_pr") and progress_after_pr_attach_boundary?(event, attach_sequence) and
+        current_pr_state_event?(event, attach_sequence) and
           payload_head_matches?(payload, head_filter) and
           pr_ref_matches?(payload, attached_ref) and current_pr_state_payload?(payload)
 
@@ -445,39 +455,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection do
   defp pr_ref_matches?(payload, pr_ref), do: pr_payload_ref(payload) == pr_ref
 
   defp latest_attached_pr_ref(progress_events) do
-    case latest_attached_pr_ref_with_sequence(progress_events) do
-      {:ok, ref, _sequence} -> {:ok, ref}
+    case latest_attached_pr_ref_with_ledger_boundary(progress_events) do
+      {:ok, ref, _boundary} -> {:ok, ref}
       {:error, :not_found} -> {:error, :not_found}
     end
   end
 
-  defp latest_attached_pr_ref_with_sequence(progress_events) do
+  defp latest_attached_pr_ref_with_ledger_boundary(progress_events) do
+    # Attach selection follows event time so replay/backfill can record older PR
+    # attachments later. The returned boundary preserves that selected event.
     progress_events
     |> chronological_progress_events()
     |> Enum.reverse()
-    |> Enum.find_value(&attached_pr_ref_with_sequence/1)
+    |> Enum.find_value(&attached_pr_ref_with_boundary/1)
     |> case do
       nil -> {:error, :not_found}
-      {ref, sequence} -> {:ok, ref, sequence}
+      {ref, boundary} -> {:ok, ref, boundary}
     end
   end
 
-  defp latest_attached_pr_ref_with_ledger_sequence(progress_events) do
-    progress_events
-    |> Enum.sort_by(&progress_event_sequence_order/1)
-    |> Enum.reverse()
-    |> Enum.find_value(&attached_pr_ref_with_sequence/1)
-    |> case do
-      nil -> {:error, :not_found}
-      {ref, sequence} -> {:ok, ref, sequence}
-    end
+  defp attached_pr_ref_with_boundary(%ProgressEvent{payload: payload} = event) when is_map(payload) do
+    if payload_type?(event, "pr", "attach_pr"), do: pr_payload_ref_with_sequence(payload, attach_boundary(event))
   end
 
-  defp attached_pr_ref_with_sequence(%ProgressEvent{payload: payload, sequence: sequence} = event) when is_map(payload) do
-    if payload_type?(event, "pr", "attach_pr"), do: pr_payload_ref_with_sequence(payload, sequence)
-  end
-
-  defp attached_pr_ref_with_sequence(_event), do: nil
+  defp attached_pr_ref_with_boundary(_event), do: nil
 
   defp pr_payload_ref_with_sequence(payload, sequence) do
     case pr_payload_ref(payload) do
@@ -574,6 +575,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.MetadataProjection do
 
   defp progress_event_order(%ProgressEvent{} = event) do
     {Sanitizer.timestamp_sort_value(event.created_at), event.sequence || 0, event.id || ""}
+  end
+
+  defp attach_boundary(%ProgressEvent{sequence: sequence} = event) when is_integer(sequence) do
+    {:sequence, progress_event_sequence_order(event)}
+  end
+
+  defp attach_boundary(%ProgressEvent{} = event) do
+    {:chronological, progress_event_order(event)}
   end
 
   defp progress_event_sequence_order(%ProgressEvent{sequence: sequence} = event) when is_integer(sequence) do

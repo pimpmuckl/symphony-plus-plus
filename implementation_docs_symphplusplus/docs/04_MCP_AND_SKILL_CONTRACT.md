@@ -60,9 +60,9 @@ Bound workers should omit values the current WorkPackage already supplies.
 `attach_review_suite_result(round_id)` when local Review Suite state is
 available.
 
-`sync_pr(metadata, url|number)` only refreshes the already attached PR. Until
-the runtime redesign lands, callers provide the current PR/check metadata
-snapshot and identify the attached PR explicitly.
+`sync_pr(metadata, url|number)` only refreshes the already attached PR when
+state changed after attachment or the attach call did not include current-state
+metadata required by policy.
 Worker `set_status` and `mark_ready` accept `blocker_closeout` when active
 blockers must be resolved or kept active as part of a finish transition.
 

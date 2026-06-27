@@ -58,17 +58,19 @@ Before ready:
    branch pattern is literal; pass `branch` only when the pattern is templated
    or absent.
 3. Open the PR and attach it with `attach_pr(url, head_sha)` when the policy
-   requires PR metadata.
+   requires PR metadata. Include current check, review, or merge metadata there
+   when it is already available.
 4. Refresh current state only for the attached PR with
-   `sync_pr(metadata, url|number)` when policy requires it; provide the current
-   PR/check metadata snapshot explicitly until runtime redesign.
+   `sync_pr(metadata, url|number)` when the PR changed after attachment or the
+   attach call lacked current-state metadata required by policy.
 5. Submit review evidence when available with
    `submit_review_package(summary, tests, artifacts)` after branch metadata is
    current.
 6. Call `mark_ready()` only after acceptance criteria, tests, required review
    profile evidence, progress, findings, branch/PR evidence, and blockers are
-   settled. If active blockers must be resolved or kept active during the
-   finish transition, pass `blocker_closeout`.
+   settled. Do not add lifecycle calls only to restate existing evidence. If
+   active blockers must be resolved or kept active during the finish
+   transition, pass `blocker_closeout`.
 
 Final output:
 - PR URL and final head SHA.
