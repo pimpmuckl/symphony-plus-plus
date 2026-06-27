@@ -274,6 +274,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
   defp write_cached_script(cache_root, source_script_path) do
     target = Path.join([cache_root, "scripts", Path.basename(source_script_path)])
     File.mkdir_p!(Path.dirname(target))
+    File.write!(Path.join(cache_root, ".sympp-source-revision"), "#{String.duplicate("b", 40)}\n")
     File.cp!(source_script_path, target)
 
     for helper_name <-
@@ -327,6 +328,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLauncherSourceDiscoveryTest do
     File.mkdir_p!(Path.join(marketplace_root, "scripts"))
     File.write!(Path.join(marketplace_root, "scripts/refresh-local-plugin.ps1"), "")
     File.write!(Path.join(marketplace_root, "scripts/smoke-sympp-mcp-http.ps1"), "")
+    File.mkdir_p!(Path.join(marketplace_root, "implementation_docs_symphplusplus/mcp"))
+
+    File.cp!(
+      Path.join(@repo_root, "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json"),
+      Path.join(marketplace_root, "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json")
+    )
+
     File.mkdir_p!(Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts"))
 
     File.cp!(
