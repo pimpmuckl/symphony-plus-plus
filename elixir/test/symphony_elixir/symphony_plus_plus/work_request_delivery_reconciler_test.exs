@@ -288,6 +288,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert delivery.merge_commit_sha == "merge-sha-906"
   end
 
+  test "repaired sync PR evidence can drive merged delivery reconciliation", %{repo: repo} do
+    {work_request, _planned_slice, linked_package} =
+      linked_slice!(repo,
+        work_request_id: "WR-RECONCILE-REPAIRED-SYNC-MERGE",
+        work_package_id: "WP-RECONCILE-REPAIRED-SYNC-MERGE",
+        status: "ready_for_merge"
+      )
+
+    append_repaired_merged_pr_evidence!(repo, linked_package, 907, "head-907")
+
+    assert {:ok, result} = DeliveryReconciler.reconcile(repo, work_request.id, mode: :apply)
+
+    assert result.applied_count == 1
+    assert [%{status: "applied", reason: "github_pr_merged", action: %{merge_commit_sha: "merge-sha-907"}}] = result.results
+  end
+
   test "later sync for a replaced PR does not become the active closeout PR", %{repo: repo} do
     {work_request, _planned_slice, linked_package} =
       linked_slice!(repo,
@@ -572,6 +588,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
                  merged: true,
                  merged_at: "2026-05-24T12:00:00Z",
                  merge_commit_sha: "merge-sha-#{number}"
+               }
+             })
+  end
+
+  defp append_repaired_merged_pr_evidence!(repo, work_package, number, head_sha) do
+    url = "https://github.com/nextide/repo/pull/#{number}"
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: head_sha}
+             })
+
+    assert {:ok, _synced} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR repaired and merged",
+               status: "pr_synced",
+               payload: %{
+                 type: "pr",
+                 source_tool: "sync_pr",
+                 attachment_repair: true,
+                 url: url,
+                 repository: "nextide/repo",
+                 number: number,
+                 head_sha: head_sha,
+                 base_branch: "main",
+                 merged_at: "2026-05-24T12:00:00Z",
+                 merge_commit_sha: "merge-sha-#{number}",
+                 merge_state: %{merged: true}
                }
              })
   end

@@ -83,6 +83,10 @@ calls should omit values the bound WorkPackage already carries:
 - `attach_pr(url, head_sha)` may include current check, review, or merge
   metadata. That attachment satisfies current PR state when the metadata proves
   the attached PR and current head.
+- `sync_pr()` refreshes the currently attached PR. Pass top-level current-state
+  fields such as `head_sha`, `check_summary`, `review_state`, or `merge_state`
+  when those facts changed. Pass explicit PR identity or `recovery` only for
+  manual evidence repair.
 
 For Review Suite evidence, call `attach_review_suite_result(round_id)` when
 local Review Suite state is available. The server infers suite, profile,
@@ -101,9 +105,9 @@ Follow-up scope deliberately left out of this pass:
   `approve_scope_expansion`, `prepare_work_package_worktree`, and
   `cleanup_work_package_worktree` still require WorkPackage ids because
   architect sessions may see more than one package.
-- `sync_pr(metadata, url|number)` is only a refresh path for the already
-  attached PR when state changed after attachment or the attach call did not
-  include current-state metadata required by policy.
+- `sync_pr()` is only a refresh path for the already attached PR when state
+  changed after attachment or the attach call did not include current-state
+  metadata required by policy.
 
 Completion mutations that can encounter active package blockers expose
 `blocker_closeout`. Use `decision=resolved` with a resolution when active

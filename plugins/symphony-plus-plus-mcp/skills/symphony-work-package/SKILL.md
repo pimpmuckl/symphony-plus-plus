@@ -74,8 +74,10 @@ S++ explicitly gives scoped context.
   only when the package branch pattern is templated or absent.
 - `attach_pr(url, head_sha)` after PR creation. Include current check, review,
   or merge metadata in the same call when it is already available.
-- Use `sync_pr(metadata, url|number)` only when the attached PR state changed
-  after attachment or the attach call lacked required current-state metadata.
+- Use `sync_pr()` to refresh the currently attached PR. Add top-level current
+  state fields such as `head_sha`, `check_summary`, `review_state`, or
+  `merge_state` when they changed; use explicit `url`/`number` or `recovery`
+  only when repairing missing attachment evidence.
 - `submit_review_package(summary, tests, artifacts)` after branch metadata is
   current; include required review verdicts when Review Suite evidence will not
   supply them.

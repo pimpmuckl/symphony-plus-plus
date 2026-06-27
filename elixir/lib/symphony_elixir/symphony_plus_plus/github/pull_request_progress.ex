@@ -62,8 +62,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequestProgress do
   def stringify_keys(%{} = map), do: Map.new(map, fn {key, value} -> {to_string(key), stringify_nested_keys(value)} end)
   def stringify_keys(_value), do: %{}
 
-  defp pr_state_payload?(%{"type" => "pr", "source_tool" => source_tool}, source_tools), do: source_tool in source_tools
+  defp pr_state_payload?(%{"type" => "pr", "source_tool" => source_tool} = payload, source_tools) do
+    source_tool in source_tools or repaired_sync_pr_state_payload?(payload, source_tools)
+  end
+
   defp pr_state_payload?(_payload, _source_tools), do: false
+
+  defp repaired_sync_pr_state_payload?(%{"source_tool" => "sync_pr", "attachment_repair" => true}, source_tools), do: "attach_pr" in source_tools
+  defp repaired_sync_pr_state_payload?(_payload, _source_tools), do: false
 
   defp pr_state_from_event(%ProgressEvent{} = event, source_tools) do
     payload = stringify_keys(event.payload || %{})

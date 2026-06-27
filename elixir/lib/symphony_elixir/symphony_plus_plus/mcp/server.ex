@@ -8875,12 +8875,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp github_pr_metadata_payload(repo, %Session{} = session, arguments, source_tool) do
     with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, Session.work_package_id(session)),
-         {:ok, metadata_input} <- pr_metadata_input(arguments, source_tool),
+         {:ok, metadata_input} <- pr_metadata_input(repo, session, arguments, source_tool),
          {:ok, arguments} <- pr_reference_arguments(repo, session, arguments, source_tool),
          {:ok, ref} <- PullRequest.parse(arguments, work_package.repo),
          {:ok, metadata} <- Client.fetch_pull_request(DryClient, ref, metadata: metadata_input),
-         {:ok, payload} <- PullRequest.metadata(metadata, ref, pr_fallback_head_sha(arguments, source_tool)) do
-      {:ok, Map.put(payload, "source_tool", source_tool)}
+         {:ok, payload} <- PullRequest.metadata(metadata, ref, pr_fallback_head_sha(arguments, source_tool)),
+         {:ok, attachment_repair?} <- pr_attachment_repair?(repo, session, arguments, source_tool) do
+      {:ok,
+       payload
+       |> Map.put("source_tool", source_tool)
+       |> maybe_mark_pr_attachment_repair(attachment_repair?)}
     else
       {:tool_error, reason} ->
         {:tool_error, reason}
@@ -8953,17 +8957,193 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp pr_fallback_head_sha(arguments, tool) when tool in ["attach_pr", "sync_pr"], do: Map.get(arguments, "head_sha")
 
   defp pr_reference_arguments(repo, %Session{} = session, arguments, "sync_pr") do
-    if Map.has_key?(arguments, "number") and not filled_string?(Map.get(arguments, "repository")) and not filled_string?(Map.get(arguments, "url")) do
-      with {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, Session.work_package_id(session)),
-           {:ok, {repository, _number}} <- latest_attached_pr_ref(progress_events) do
-        {:ok, Map.put(arguments, "repository", repository)}
-      end
-    else
-      {:ok, arguments}
+    arguments = drop_blank_pr_identity_arguments(arguments)
+
+    cond do
+      sync_pr_recovery_arguments?(arguments) -> recovery_pr_reference_arguments(arguments)
+      complete_pr_identity_argument?(arguments) -> {:ok, arguments}
+      true -> infer_sync_pr_reference_arguments(repo, session, arguments)
     end
   end
 
   defp pr_reference_arguments(_repo, %Session{}, arguments, _source_tool), do: {:ok, arguments}
+
+  defp infer_sync_pr_reference_arguments(repo, %Session{} = session, arguments) do
+    with {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, Session.work_package_id(session)) do
+      sync_pr_reference_arguments_from_events(arguments, progress_events)
+    end
+  end
+
+  defp sync_pr_reference_arguments_from_events(arguments, progress_events) do
+    case latest_attached_pr_ref(progress_events) do
+      {:ok, attached_ref} -> sync_pr_reference_arguments(arguments, attached_ref)
+      {:tool_error, "missing_attached_pr"} -> fallback_pr_reference_arguments(arguments)
+      {:tool_error, reason} -> {:tool_error, reason}
+    end
+  end
+
+  defp sync_pr_reference_arguments(arguments, {:url, url}), do: {:ok, put_inferred_pr_argument(arguments, "url", url)}
+
+  defp sync_pr_reference_arguments(arguments, {repository, number}) do
+    {:ok,
+     arguments
+     |> put_inferred_pr_argument("repository", repository)
+     |> put_inferred_pr_argument("number", number)}
+  end
+
+  defp explicit_pr_identity?(arguments) do
+    filled_string?(Map.get(arguments, "url")) or not blank_pr_number_argument?(Map.get(arguments, "number"))
+  end
+
+  defp complete_pr_identity_argument?(arguments) do
+    filled_string?(Map.get(arguments, "url")) or
+      (not blank_pr_number_argument?(Map.get(arguments, "number")) and filled_string?(Map.get(arguments, "repository")))
+  end
+
+  defp fallback_pr_reference_arguments(arguments) do
+    cond do
+      sync_pr_recovery_arguments?(arguments) -> recovery_pr_reference_arguments(arguments)
+      explicit_pr_identity?(arguments) -> {:ok, arguments}
+      true -> {:tool_error, "missing_attached_pr"}
+    end
+  end
+
+  defp sync_pr_recovery_arguments?(%{"recovery" => recovery}) when is_map(recovery), do: recovery_pr_identity?(recovery)
+  defp sync_pr_recovery_arguments?(_arguments), do: false
+
+  defp sync_pr_attachment_repair_arguments?(arguments) do
+    sync_pr_recovery_arguments?(arguments) or explicit_pr_identity?(drop_blank_pr_identity_arguments(arguments))
+  end
+
+  defp pr_attachment_repair?(repo, %Session{} = session, arguments, "sync_pr") when is_map(arguments) do
+    if sync_pr_attachment_repair_arguments?(arguments) do
+      explicit_sync_pr_missing_attached_pr?(repo, session)
+    else
+      {:ok, false}
+    end
+  end
+
+  defp pr_attachment_repair?(_repo, %Session{}, _arguments, _source_tool), do: {:ok, false}
+
+  defp explicit_sync_pr_missing_attached_pr?(repo, %Session{} = session) do
+    with {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, Session.work_package_id(session)) do
+      case latest_real_attached_pr_ref(progress_events) do
+        {:ok, _attached_ref} -> {:ok, false}
+        {:tool_error, "missing_attached_pr"} -> {:ok, true}
+        {:tool_error, reason} -> {:tool_error, reason}
+      end
+    end
+  end
+
+  defp maybe_mark_pr_attachment_repair(payload, true), do: Map.put(payload, "attachment_repair", true)
+  defp maybe_mark_pr_attachment_repair(payload, false), do: payload
+
+  defp recovery_pr_reference_arguments(%{"recovery" => recovery} = arguments) when is_map(recovery) do
+    recovery_arguments =
+      %{}
+      |> put_inferred_pr_argument("url", Map.get(recovery, "html_url") || Map.get(recovery, "url"))
+      |> put_inferred_pr_argument("repository", recovery_repository(recovery))
+      |> put_inferred_pr_argument("number", Map.get(recovery, "number"))
+
+    if explicit_pr_identity?(recovery_arguments) do
+      merge_recovery_pr_reference_arguments(arguments, recovery_arguments)
+    else
+      {:tool_error, "missing_attached_pr"}
+    end
+  end
+
+  defp merge_recovery_pr_reference_arguments(arguments, recovery_arguments) do
+    with :ok <- validate_recovery_number_argument(arguments, recovery_arguments) do
+      case {pr_payload_ref(arguments), pr_payload_ref(recovery_arguments)} do
+        {nil, _recovery_ref} -> {:ok, Map.merge(arguments, recovery_arguments)}
+        {same_ref, same_ref} -> {:ok, Map.merge(arguments, recovery_arguments)}
+        {_argument_ref, _recovery_ref} -> {:tool_error, "pr_recovery_reference_mismatch"}
+      end
+    end
+  end
+
+  defp validate_recovery_number_argument(arguments, recovery_arguments) do
+    case {pr_number_argument(Map.get(arguments, "number")), pr_number_argument(Map.get(recovery_arguments, "number"))} do
+      {nil, _recovery_number} -> :ok
+      {_argument_number, nil} -> :ok
+      {same_number, same_number} -> :ok
+      {_argument_number, _recovery_number} -> {:tool_error, "pr_recovery_reference_mismatch"}
+    end
+  end
+
+  defp recovery_pr_identity?(recovery) do
+    filled_string?(Map.get(recovery, "url") || Map.get(recovery, "html_url")) or
+      (not blank_pr_number_argument?(Map.get(recovery, "number")) and filled_string?(recovery_repository(recovery)))
+  end
+
+  defp pr_number_argument(value) when is_integer(value) and value > 0, do: value
+
+  defp pr_number_argument(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {number, ""} when number > 0 -> number
+      _value -> nil
+    end
+  end
+
+  defp pr_number_argument(_value), do: nil
+
+  defp recovery_repository(recovery) do
+    case Map.get(recovery, "repository") do
+      repository when is_binary(repository) -> repository
+      %{"full_name" => full_name} when is_binary(full_name) -> full_name
+      _repository -> nested_recovery_repository(recovery, "base") || nested_recovery_repository(recovery, "head")
+    end
+  end
+
+  defp nested_recovery_repository(recovery, key) do
+    case Map.get(recovery, key) do
+      %{"repo" => %{"full_name" => full_name}} when is_binary(full_name) -> full_name
+      _value -> nil
+    end
+  end
+
+  defp drop_blank_pr_identity_arguments(arguments) do
+    Enum.reduce(["url", "repository", "number"], arguments, &drop_blank_pr_identity_argument/2)
+  end
+
+  defp drop_blank_pr_identity_argument(key, arguments) do
+    value = Map.get(arguments, key)
+
+    if is_binary(value) and String.trim(value) == "", do: Map.delete(arguments, key), else: arguments
+  end
+
+  defp blank_pr_number_argument?(nil), do: true
+
+  defp blank_pr_number_argument?(value) when is_binary(value), do: String.trim(value) == ""
+
+  defp blank_pr_number_argument?(_value), do: false
+
+  defp put_inferred_pr_argument(arguments, _key, nil), do: arguments
+
+  defp put_inferred_pr_argument(arguments, key, value) when is_binary(value) do
+    if String.trim(value) == "" do
+      arguments
+    else
+      put_nonblank_inferred_pr_argument(arguments, key, value)
+    end
+  end
+
+  defp put_inferred_pr_argument(arguments, key, value) do
+    put_nonblank_inferred_pr_argument(arguments, key, value)
+  end
+
+  defp put_nonblank_inferred_pr_argument(arguments, key, value) do
+    case Map.get(arguments, key) do
+      existing when is_binary(existing) ->
+        if String.trim(existing) == "", do: Map.put(arguments, key, value), else: arguments
+
+      nil ->
+        Map.put(arguments, key, value)
+
+      _existing ->
+        arguments
+    end
+  end
 
   defp pr_missing_repository_reason(arguments, "attach_pr") do
     if Map.has_key?(arguments, "number") and not filled_string?(Map.get(arguments, "url")) do
@@ -8975,13 +9155,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp pr_missing_repository_reason(_arguments, _source_tool), do: "missing_repository"
 
-  defp validate_pr_sync_target(_repo, %Session{}, _ref, "attach_pr"), do: :ok
+  defp validate_pr_sync_target(_repo, %Session{}, _ref, "attach_pr", _repair?), do: :ok
 
-  defp validate_pr_sync_target(repo, %Session{} = session, ref, "sync_pr") do
-    with {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, Session.work_package_id(session)),
-         {:ok, attached_ref} <- latest_attached_pr_ref(progress_events) do
-      if attached_ref == normalized_pr_ref(ref.repository, ref.number), do: :ok, else: {:tool_error, "pr_mismatch"}
+  defp validate_pr_sync_target(repo, %Session{} = session, ref, "sync_pr", repair?) do
+    with {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, Session.work_package_id(session)) do
+      validate_pr_sync_ref_against_events(ref, progress_events, repair?)
     end
+  end
+
+  defp validate_pr_sync_ref_against_events(ref, progress_events, repair?) do
+    case latest_attached_pr_ref(progress_events) do
+      {:ok, attached_ref} -> validate_pr_sync_ref(ref, attached_ref, repair?)
+      {:tool_error, "missing_attached_pr"} -> :ok
+      {:tool_error, reason} -> {:tool_error, reason}
+    end
+  end
+
+  defp validate_pr_sync_ref(ref, attached_ref, _repair?) do
+    if attached_ref == normalized_pr_ref(ref.repository, ref.number), do: :ok, else: {:tool_error, "pr_mismatch"}
   end
 
   defp latest_attached_pr_ref(progress_events) do
@@ -8991,13 +9182,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp latest_real_attached_pr_ref(progress_events) do
+    progress_events
+    |> chronological_progress_events()
+    |> Enum.reverse()
+    |> Enum.find_value(&attached_pr_ref_with_boundary/1)
+    |> case do
+      nil -> {:tool_error, "missing_attached_pr"}
+      {ref, _boundary} -> {:ok, ref}
+    end
+  end
+
   defp latest_attached_pr_ref_with_ledger_boundary(progress_events) do
     # Attach selection follows event time so replay/backfill can record older PR
     # attachments later. The returned boundary preserves that selected event.
     progress_events
     |> chronological_progress_events()
     |> Enum.reverse()
-    |> Enum.find_value(&attached_pr_ref_with_boundary/1)
+    |> Enum.find_value(&attached_or_repaired_pr_ref_with_boundary/1)
     |> case do
       nil -> {:tool_error, "missing_attached_pr"}
       {ref, boundary} -> {:ok, ref, boundary}
@@ -9031,11 +9233,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {timestamp_sort_value(created_at), sequence || 0, id || ""}
   end
 
+  defp attached_or_repaired_pr_ref_with_boundary(%ProgressEvent{} = event) do
+    attached_pr_ref_with_boundary(event) || repaired_pr_ref_with_boundary(event)
+  end
+
   defp attached_pr_ref_with_boundary(%ProgressEvent{payload: payload} = event) when is_map(payload) do
     if payload_type?(event, "pr", "attach_pr"), do: pr_payload_ref_with_sequence(payload, attach_boundary(event))
   end
 
   defp attached_pr_ref_with_boundary(_event), do: nil
+
+  defp repaired_pr_ref_with_boundary(%ProgressEvent{payload: payload} = event) when is_map(payload) do
+    if payload_type?(event, "pr", "sync_pr") and Map.get(payload, "attachment_repair") == true do
+      pr_payload_ref_with_sequence(payload, {:repair_sync, attach_boundary(event)})
+    end
+  end
+
+  defp repaired_pr_ref_with_boundary(_event), do: nil
 
   defp pr_payload_ref_with_sequence(payload, sequence) do
     case pr_payload_ref(payload) do
@@ -9056,7 +9270,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp pr_payload_ref(_payload), do: nil
 
-  defp normalized_pr_ref(repository, number) when is_binary(repository), do: {String.downcase(repository), number}
+  defp normalized_pr_ref(repository, number) when is_binary(repository) do
+    {String.downcase(repository), pr_number_argument(number) || number}
+  end
 
   defp legacy_url_ref(url) do
     case URI.parse(url) do
@@ -9070,7 +9286,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     _error in URI.Error -> {:url, url}
   end
 
-  defp pr_metadata_input(arguments, "attach_pr") do
+  defp pr_metadata_input(_repo, %Session{}, arguments, "attach_pr") do
     case Map.get(arguments, "metadata") do
       metadata when is_map(metadata) -> {:ok, metadata}
       nil -> {:ok, %{"head_sha" => Map.get(arguments, "head_sha")}}
@@ -9078,17 +9294,145 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp pr_metadata_input(arguments, "sync_pr") do
-    case Map.get(arguments, "metadata") do
-      metadata when is_map(metadata) -> {:ok, metadata}
-      _metadata -> {:tool_error, "missing_metadata"}
+  defp pr_metadata_input(repo, %Session{} = session, arguments, "sync_pr") do
+    cond do
+      is_map(Map.get(arguments, "metadata")) ->
+        {:ok, merge_compact_pr_metadata_fields(Map.get(arguments, "metadata"), arguments)}
+
+      Map.has_key?(arguments, "metadata") ->
+        {:tool_error, "invalid_metadata"}
+
+      is_map(Map.get(arguments, "recovery")) ->
+        {:ok, merge_compact_pr_metadata_fields(Map.get(arguments, "recovery"), arguments)}
+
+      Map.has_key?(arguments, "recovery") ->
+        {:tool_error, "invalid_recovery"}
+
+      true ->
+        compact_pr_metadata_input(repo, session, arguments)
     end
   end
+
+  defp compact_pr_metadata_input(repo, %Session{} = session, arguments) do
+    with {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, Session.work_package_id(session)),
+         {:ok, latest_payload} <- latest_current_attached_pr_payload(progress_events) do
+      metadata =
+        latest_payload
+        |> discard_stale_pr_snapshot_metadata(arguments)
+        |> discard_unavailable_changed_file_metadata()
+        |> merge_compact_pr_metadata_fields(arguments)
+
+      {:ok, metadata}
+    else
+      {:tool_error, "missing_attached_pr"} ->
+        if explicit_pr_identity?(drop_blank_pr_identity_arguments(arguments)) do
+          {:ok, Map.take(arguments, compact_pr_metadata_keys())}
+        else
+          {:tool_error, "missing_attached_pr"}
+        end
+
+      error ->
+        error
+    end
+  end
+
+  defp merge_compact_pr_metadata_fields(metadata, arguments) do
+    Map.merge(metadata, compact_pr_metadata_fields(arguments))
+  end
+
+  defp discard_stale_pr_snapshot_metadata(metadata, arguments) do
+    if compact_pr_head_changed?(metadata, arguments) do
+      Map.drop(metadata, compact_pr_snapshot_metadata_keys())
+    else
+      metadata
+    end
+  end
+
+  defp compact_pr_head_changed?(metadata, arguments) do
+    case {compact_pr_head_sha(Map.get(arguments, "head_sha")), compact_pr_head_sha(Map.get(metadata, "head_sha"))} do
+      {requested_head_sha, cached_head_sha} when is_binary(requested_head_sha) ->
+        not PullRequest.head_sha_matches?(requested_head_sha, cached_head_sha)
+
+      _heads ->
+        false
+    end
+  end
+
+  defp compact_pr_head_sha(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      head_sha -> head_sha
+    end
+  end
+
+  defp compact_pr_head_sha(_value), do: nil
+
+  defp discard_unavailable_changed_file_metadata(metadata) do
+    metadata
+    |> maybe_drop_unavailable_changed_files()
+    |> maybe_drop_unavailable_changed_files_count()
+  end
+
+  defp maybe_drop_unavailable_changed_files(%{"changed_files_available" => true} = metadata), do: metadata
+  defp maybe_drop_unavailable_changed_files(metadata), do: Map.delete(metadata, "changed_files")
+
+  defp maybe_drop_unavailable_changed_files_count(%{"changed_files_count_available" => true} = metadata), do: metadata
+  defp maybe_drop_unavailable_changed_files_count(metadata), do: Map.delete(metadata, "changed_files_count")
+
+  defp compact_pr_metadata_keys do
+    ["head_sha", "branch", "base_branch", "base_sha", "changed_files", "changed_files_count", "check_summary", "review_state", "merge_state"]
+  end
+
+  defp compact_pr_metadata_fields(arguments) do
+    arguments
+    |> Map.take(compact_pr_metadata_keys())
+    |> Enum.reject(fn {_key, value} -> blank_argument?(value) end)
+    |> Map.new()
+  end
+
+  defp compact_pr_snapshot_metadata_keys do
+    [
+      "base_sha",
+      "base_branch",
+      "changed_files",
+      "changed_files_count",
+      "changed_files_available",
+      "changed_files_count_available",
+      "check_summary",
+      "review_state",
+      "merge_state",
+      "merged_at",
+      "merge_commit_sha"
+    ]
+  end
+
+  defp latest_current_attached_pr_payload(progress_events) do
+    with {:ok, attached_ref, attach_boundary} <- latest_attached_pr_ref_with_ledger_boundary(progress_events) do
+      latest_current_attached_pr_payload(progress_events, attached_ref, attach_boundary)
+    end
+  end
+
+  defp latest_current_attached_pr_payload(progress_events, attached_ref, attach_boundary) do
+    progress_events
+    |> chronological_progress_events()
+    |> Enum.reverse()
+    |> Enum.find_value(&current_attached_pr_payload(&1, attached_ref, attach_boundary))
+    |> case do
+      nil -> {:tool_error, "missing_attached_pr"}
+      payload -> {:ok, payload}
+    end
+  end
+
+  defp current_attached_pr_payload(%ProgressEvent{payload: payload} = event, attached_ref, attach_boundary) when is_map(payload) do
+    if current_pr_state_event?(event, attach_boundary) and pr_payload_ref(payload) == attached_ref, do: payload
+  end
+
+  defp current_attached_pr_payload(%ProgressEvent{}, _attached_ref, _attach_boundary), do: nil
 
   defp append_pr_metadata(repo, %Session{} = session, arguments, tool, status, payload) do
     with {:ok, idempotency_key, attrs} <- metadata_event_attrs(session, arguments, tool, status, payload),
          {:ok, replay?} <- progress_event_replay?(repo, session, idempotency_key),
-         :ok <- validate_pr_sync_target_unless_replay(repo, session, payload, tool, replay?) do
+         :ok <- validate_pr_sync_target_unless_replay(repo, session, arguments, payload, tool, replay?) do
       run_worker_transaction(repo, fn ->
         append_pr_metadata_event(repo, session, attrs, idempotency_key, tool, payload, replay?)
       end)
@@ -9102,12 +9446,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp validate_pr_sync_target_unless_replay(_repo, %Session{}, _arguments, _tool, true), do: :ok
-  defp validate_pr_sync_target_unless_replay(_repo, %Session{}, _payload, "attach_pr", false), do: :ok
+  defp validate_pr_sync_target_unless_replay(_repo, %Session{}, _arguments, _payload, _tool, true), do: :ok
+  defp validate_pr_sync_target_unless_replay(_repo, %Session{}, _arguments, _payload, "attach_pr", false), do: :ok
 
-  defp validate_pr_sync_target_unless_replay(repo, %Session{} = session, payload, tool, false) do
-    with {:ok, ref} <- PullRequest.parse(payload, nil) do
-      validate_pr_sync_target(repo, session, ref, tool)
+  defp validate_pr_sync_target_unless_replay(repo, %Session{} = session, arguments, payload, tool, false) do
+    with {:ok, ref} <- PullRequest.parse(payload, nil),
+         {:ok, repair?} <- pr_attachment_repair?(repo, session, arguments, tool) do
+      validate_pr_sync_target(repo, session, ref, tool, repair?)
     end
   end
 
@@ -12059,6 +12404,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp current_pr_state_present?(_progress_events, _head_sha), do: false
+
+  defp current_pr_state_event?(%ProgressEvent{} = event, {:repair_sync, repair_boundary}) do
+    payload_type?(event, "pr", "sync_pr") and
+      (attach_boundary(event) == repair_boundary or progress_after_pr_attach_boundary?(event, repair_boundary))
+  end
 
   defp current_pr_state_event?(%ProgressEvent{} = event, attach_boundary) do
     (payload_type?(event, "pr", "attach_pr") and attach_boundary(event) == attach_boundary) or

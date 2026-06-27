@@ -122,7 +122,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert get_in(tool_schemas, ["add_comment", "worker_compact_policy"]) =~ "body-only"
     assert get_in(tool_schemas, ["list_comments", "worker_compact_policy"]) =~ "empty argument object"
     assert get_in(tool_schemas, ["sync_pr", "attached_pr_policy"]) =~ "already attached PR"
-    assert get_in(tool_schemas, ["sync_pr", "required_argument_sets"]) == [["url"], ["number"]]
+    assert get_in(tool_schemas, ["sync_pr", "required_arguments"]) == []
+    assert get_in(tool_schemas, ["sync_pr", "required_argument_sets"]) == []
+    assert "recovery" in get_in(tool_schemas, ["sync_pr", "optional_arguments"])
 
     for tool <- [
           "update_task_plan",
@@ -184,9 +186,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       assert content =~ "list_comments()"
       assert content =~ "attach_branch(head_sha)"
       assert content =~ "attach_review_suite_result(round_id)"
-      assert content =~ "sync_pr(metadata, url|number)"
+      assert content =~ "sync_pr()"
       assert content =~ "blocker_closeout"
       assert content =~ "attached PR"
+      refute content =~ "sync_pr(metadata, url|number)"
       refute content =~ "sync_pr(url_or_number, metadata)"
       refute content =~ "add_comment(target_kind, target_id, body"
       refute content =~ "list_comments(target_kind, target_id"
@@ -195,8 +198,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     for prompt <- prompts do
       assert prompt =~ "attached PR"
       assert prompt =~ "attach_branch(head_sha)"
-      assert prompt =~ "sync_pr(metadata, url|number)"
+      assert prompt =~ "sync_pr()"
       assert prompt =~ "blocker_closeout"
+      refute prompt =~ "sync_pr(metadata, url|number)"
       refute prompt =~ "sync_pr(url_or_number, metadata)"
     end
 
