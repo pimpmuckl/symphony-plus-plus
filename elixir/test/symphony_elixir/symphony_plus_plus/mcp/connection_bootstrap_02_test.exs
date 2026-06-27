@@ -175,6 +175,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     assert get_in(unbound_tools_by_name, ["add_comment", "inputSchema", "required"]) == ["target_kind", "target_id", "body"]
     assert get_in(unbound_tools_by_name, ["list_comments", "inputSchema", "required"]) == ["target_kind", "target_id"]
 
+    for tool <- ["resolve_blocker", "add_comment", "list_comments", "resolve_comment", "read_guidance_request"] do
+      assert get_in(unbound_tools_by_name, [tool, "inputSchema", "properties", "work_package_id", "type"]) == "string"
+    end
+
+    for tool <- [
+          "update_task_plan",
+          "append_finding",
+          "append_progress",
+          "set_status",
+          "report_blocker",
+          "create_guidance_request",
+          "request_scope_expansion",
+          "attach_branch",
+          "attach_pr",
+          "sync_pr",
+          "submit_review_package",
+          "attach_review_suite_result"
+        ] do
+      assert get_in(unbound_tools_by_name, [tool, "inputSchema", "properties", "work_package_id", "type"]) == "string"
+    end
+
     assert get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node", "inputSchema", "required"]) == [
              "work_request_id",
              "title"
@@ -292,7 +313,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "expected_version", "type"]) == "integer"
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "required"]) == ["nodes"]
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "properties", "nodes", "minItems"]) == 1
-    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "work_package_id", "type"]) == "string"
+    refute Map.has_key?(get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties"]), "work_package_id")
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "then", "oneOf"]) != nil
 
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "properties", "nodes", "items", "anyOf"]) == [

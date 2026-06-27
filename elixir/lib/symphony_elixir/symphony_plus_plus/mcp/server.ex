@@ -12855,6 +12855,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> worker_tool_input_schema()
     |> Map.get("properties", %{})
     |> Map.keys()
+    |> Kernel.++(ToolCatalog.hidden_worker_argument_keys(name))
   end
 
   defp allowed_local_operator_argument_keys(name) do

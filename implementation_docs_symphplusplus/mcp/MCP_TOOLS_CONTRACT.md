@@ -15,7 +15,7 @@ Agents claim existing ledger records by id:
 
 | Tool | Required | Optional | Purpose |
 |---|---|---|---|
-| `claim_local_assignment` | `work_package_id` | `claimed_by`, `work_request_id`, `repo`, `base_branch`, `branch`, `worktree_path`, `caller_id` | Bind the current session to one WorkPackage. Runtime metadata is validation context only; the WorkPackage id is the normal claim coordinate. |
+| `claim_local_assignment` | `work_package_id` | `claimed_by` | Bind the current session to one WorkPackage. Runtime metadata is read from the ledger after claim; the WorkPackage id is the normal claim coordinate. |
 | `claim_local_architect_assignment` | `work_request_id` | `claimed_by`, `architect_anchor_work_package_id`, `repo`, `base_branch`, `phase_id`, `caller_id` | Bind the current session to the architect grant for one WorkRequest. |
 | `create_work_request` | `repo`, `base_branch`, `title`, `request_kind`, plus `description` or `human_description` | status/workflow/creator fields | In a trusted local HTTP session, create a WorkRequest and return a ledger claim bootstrap for the architect. |
 
@@ -67,7 +67,9 @@ mark_ready
 Workers are scoped to exactly one WorkPackage. Worker tools never mint grants,
 approve scope, merge PRs, advance phases, or close WorkRequest delivery.
 
-Compact worker calls should omit values the bound WorkPackage already carries:
+Published unbound worker schemas keep explicit package selectors so local MCP
+wrappers can target a package before a worker session is bound. Compact worker
+calls should omit values the bound WorkPackage already carries:
 
 - `add_comment(body)` comments on the current WorkPackage. Pass
   `target_kind` and `target_id` only for a WorkRequest or planned-slice comment.
