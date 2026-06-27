@@ -71,12 +71,18 @@ blockers must be resolved or kept active as part of a finish transition.
 
 After `claim_local_architect_assignment`, planning writes that only target the
 claimed current WorkRequest may omit `work_request_id`:
-`add_work_request_planned_slice`, `upsert_work_request_product_plan_node`,
+`add_work_request_planned_slice`, `upsert_work_request_product_plan_node_content`,
+`move_work_request_product_plan_node`,
+`set_work_request_product_plan_node_completion`,
 `move_work_request_planned_slice_to_product_node`,
 `approve_work_request_planned_slice`, `skip_work_request_planned_slice`, and
 `mark_work_request_sliced`. Reads, lists, delivery closeout, dispatch,
 status/question tools, durable decision tools, and package tools still require
 their explicit target ids.
+
+For product-plan nodes, use the content tool for title, description, or kind,
+the node move tool for parent or position, and the completion tool for
+completion marks and blocker closeout.
 
 ## Delivery Closeout
 
