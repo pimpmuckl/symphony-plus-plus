@@ -3,6 +3,8 @@ Code.require_file("codex_skill_package_case_test.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   use SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageCase, async: true
 
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog
+
   test "skill package has required metadata and worker MCP workflow" do
     skill = File.read!(@skill_path)
 
@@ -121,6 +123,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert get_in(tool_schemas, ["list_comments", "worker_compact_policy"]) =~ "empty argument object"
     assert get_in(tool_schemas, ["sync_pr", "attached_pr_policy"]) =~ "already attached PR"
     assert get_in(tool_schemas, ["sync_pr", "required_argument_sets"]) == [["url"], ["number"]]
+
+    for tool <- [
+          "update_task_plan",
+          "append_finding",
+          "append_progress",
+          "set_status",
+          "report_blocker",
+          "resolve_blocker",
+          "add_comment",
+          "list_comments",
+          "resolve_comment",
+          "create_guidance_request",
+          "read_guidance_request",
+          "request_scope_expansion",
+          "attach_branch",
+          "attach_pr",
+          "sync_pr",
+          "submit_review_package",
+          "attach_review_suite_result"
+        ] do
+      worker_schema = ToolCatalog.worker_tool_input_schema(tool)
+
+      refute "work_package_id" in Map.keys(worker_schema["properties"])
+    end
+
+    assert get_in(tool_schemas, ["add_comment", "required_arguments"]) == ["body", "target_id", "target_kind"]
+    assert get_in(tool_schemas, ["list_comments", "required_arguments"]) == ["target_id", "target_kind"]
+
+    for tool <- ["resolve_blocker", "add_comment", "list_comments", "resolve_comment", "read_guidance_request"] do
+      assert "work_package_id" in get_in(tool_schemas, [tool, "optional_arguments"])
+    end
+
+    for tool <- [
+          "update_task_plan",
+          "append_finding",
+          "append_progress",
+          "set_status",
+          "report_blocker",
+          "create_guidance_request",
+          "request_scope_expansion",
+          "attach_branch",
+          "attach_pr",
+          "sync_pr",
+          "submit_review_package",
+          "attach_review_suite_result"
+        ] do
+      assert "work_package_id" in get_in(tool_schemas, [tool, "optional_arguments"])
+    end
 
     assert get_in(contract, ["discovery_policy", "trusted_local_http_extra_tools"]) == [
              "create_work_request",

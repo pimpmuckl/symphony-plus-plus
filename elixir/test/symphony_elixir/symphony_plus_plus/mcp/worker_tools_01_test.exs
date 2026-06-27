@@ -401,7 +401,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools01Test do
         session: session
       )
 
-    assert get_in(denied_response, ["error", "code"]) == -32_003
+    assert get_in(denied_response, ["error", "data", "reason"]) == "outside_session_scope"
 
     assert {:ok, own_nodes} = PlanningRepository.list_plan_nodes(repo, own_package.id)
     assert {:ok, sibling_nodes} = PlanningRepository.list_plan_nodes(repo, sibling_package.id)
@@ -421,6 +421,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools01Test do
     tools_response = MCPHarness.request(%{"jsonrpc" => "2.0", "id" => "literal-branch-tools", "method" => "tools/list", "params" => %{}}, repo: repo, session: session)
     tools_by_name = tools_response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
     assert get_in(tools_by_name, ["attach_branch", "inputSchema", "required"]) == ["head_sha"]
+
+    for tool <- ["update_task_plan", "append_progress", "attach_branch", "attach_review_suite_result"] do
+      refute Map.has_key?(get_in(tools_by_name, [tool, "inputSchema", "properties"]), "work_package_id")
+    end
 
     compact_branch_response = attach_tool(repo, session, "attach_branch", %{"head_sha" => "compact-head"})
     compact_branch_payload = get_in(compact_branch_response, ["result", "structuredContent", "progress_event", "payload"])

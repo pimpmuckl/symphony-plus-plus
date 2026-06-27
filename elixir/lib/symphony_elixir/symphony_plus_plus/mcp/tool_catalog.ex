@@ -30,6 +30,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   @local_assignment_claim_tool "claim_local_assignment"
   @local_architect_assignment_claim_tool "claim_local_architect_assignment"
   @session_claim_tools [@local_assignment_claim_tool, @local_architect_assignment_claim_tool]
+  @local_assignment_claim_hidden_worker_arguments ["repo", "base_branch", "work_request_id", "branch", "worktree_path", "caller_id"]
+  @session_scoped_worker_tools [
+    "update_task_plan",
+    "append_finding",
+    "append_progress",
+    "set_status",
+    "report_blocker",
+    "resolve_blocker",
+    "add_comment",
+    "list_comments",
+    "resolve_comment",
+    "create_guidance_request",
+    "read_guidance_request",
+    "request_scope_expansion",
+    "attach_branch",
+    "attach_pr",
+    "sync_pr",
+    "submit_review_package",
+    "attach_review_suite_result"
+  ]
   @worker_tools [
     "get_current_assignment",
     "read_context",
@@ -170,6 +190,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   @spec worker_tools() :: [tool_name()]
   def worker_tools, do: @worker_tools
 
+  @spec hidden_worker_argument_keys(tool_name()) :: [String.t()]
+  def hidden_worker_argument_keys(@local_assignment_claim_tool), do: @local_assignment_claim_hidden_worker_arguments
+  def hidden_worker_argument_keys(name) when name in @session_scoped_worker_tools, do: ["work_package_id"]
+  def hidden_worker_argument_keys(_name), do: []
+
   @spec shared_worker_architect_tools() :: [tool_name()]
   def shared_worker_architect_tools, do: @shared_worker_architect_tools
 
@@ -207,6 +232,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
       "title" => name,
       "description" => "Symphony++ worker tool #{name}.",
       "inputSchema" => worker_tool_input_schema(name)
+    }
+  end
+
+  defp unbound_worker_tool_spec(name) do
+    %{
+      "name" => name,
+      "title" => name,
+      "description" => "Symphony++ worker tool #{name}.",
+      "inputSchema" => unbound_worker_tool_input_schema(name)
     }
   end
 
@@ -449,13 +483,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   def worker_tool_input_schema(@local_assignment_claim_tool) do
     schema(
       %{
-        "repo" => string_schema(),
-        "base_branch" => string_schema(),
         "work_package_id" => string_schema(),
-        "work_request_id" => string_schema(),
-        "branch" => string_schema(),
-        "worktree_path" => string_schema(),
-        "caller_id" => string_schema(),
         "claimed_by" => string_schema()
       },
       ["work_package_id"]
@@ -472,7 +500,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
 
   def worker_tool_input_schema("update_task_plan") do
     schema(
-      scoped_properties(%{
+      session_scoped_properties(%{
         "body" => nullable_string_schema(),
         "expected_version" => integer_schema(),
         "id" => string_schema(),
@@ -495,7 +523,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
 
   def worker_tool_input_schema("append_finding") do
     schema(
-      scoped_properties(%{
+      session_scoped_properties(%{
         "body" => markdown_string_schema("Human-facing finding details in Markdown."),
         "id" => string_schema(),
         "idempotency_key" => string_schema(),
@@ -524,7 +552,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
 
   def worker_tool_input_schema("add_comment") do
     schema(
-      scoped_properties(%{
+      session_scoped_properties(%{
         "target_kind" => string_enum_schema(Comment.target_kinds()),
         "target_id" => string_schema(),
         "body" => markdown_string_schema("Human-facing Markdown comment body.") |> Map.put("maxLength", Comment.max_body_length())
@@ -536,7 +564,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
 
   def worker_tool_input_schema("list_comments") do
     schema(
-      scoped_properties(%{
+      session_scoped_properties(%{
         "target_kind" => string_enum_schema(Comment.target_kinds()),
         "target_id" => string_schema()
       }),
@@ -547,7 +575,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
 
   def worker_tool_input_schema("resolve_comment") do
     schema(
-      scoped_properties(%{
+      session_scoped_properties(%{
         "comment_id" => string_schema(),
         "resolution_note" => markdown_string_schema("Optional Markdown resolution note.") |> Map.put("maxLength", Comment.max_resolution_note_length())
       }),
@@ -557,7 +585,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
 
   def worker_tool_input_schema("create_guidance_request") do
     schema(
-      scoped_properties(%{
+      session_scoped_properties(%{
         "summary" => string_schema(),
         "question" => markdown_string_schema("Human-facing guidance question in Markdown."),
         "context" => markdown_string_schema("Human-facing guidance context in Markdown."),
@@ -568,11 +596,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   end
 
   def worker_tool_input_schema("read_guidance_request") do
-    schema(scoped_properties(%{"guidance_request_id" => string_schema()}), ["guidance_request_id"])
+    schema(session_scoped_properties(%{"guidance_request_id" => string_schema()}), ["guidance_request_id"])
   end
 
   def worker_tool_input_schema("set_status") do
-    schema(scoped_properties(set_status_schema_properties()), ["status", "expected_status"])
+    schema(session_scoped_properties(set_status_schema_properties()), ["status", "expected_status"])
   end
 
   def worker_tool_input_schema("attach_branch") do
@@ -605,7 +633,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
 
   def worker_tool_input_schema("attach_review_suite_result") do
     schema(
-      scoped_properties(%{
+      session_scoped_properties(%{
         "anchor" => string_schema(),
         "head_sha" => string_schema(),
         "idempotency_key" => string_schema(),
@@ -627,6 +655,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
       ]
     })
   end
+
+  defp unbound_worker_tool_input_schema(name) when name in @session_scoped_worker_tools do
+    name
+    |> worker_tool_input_schema()
+    |> put_in(["properties", "work_package_id"], string_schema())
+  end
+
+  defp unbound_worker_tool_input_schema(name), do: worker_tool_input_schema(name)
 
   defp set_status_schema_properties do
     %{
@@ -742,11 +778,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   end
 
   def architect_tool_input_schema("resolve_comment") do
-    worker_tool_input_schema("resolve_comment")
+    schema(
+      scoped_properties(%{
+        "comment_id" => string_schema(),
+        "resolution_note" => markdown_string_schema("Optional Markdown resolution note.") |> Map.put("maxLength", Comment.max_resolution_note_length())
+      }),
+      ["comment_id"]
+    )
   end
 
   def architect_tool_input_schema("resolve_blocker") do
-    worker_tool_input_schema("resolve_blocker")
+    schema(
+      progress_properties(:explicit)
+      |> Map.merge(%{"blocker_id" => string_schema(), "resolution" => string_schema()}),
+      ["blocker_id", "resolution", "summary", "idempotency_key"]
+    )
   end
 
   def architect_tool_input_schema("list_guidance_requests") do
@@ -761,7 +807,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   end
 
   def architect_tool_input_schema("read_guidance_request") do
-    worker_tool_input_schema("read_guidance_request")
+    schema(scoped_properties(%{"guidance_request_id" => string_schema()}), ["guidance_request_id"])
   end
 
   def architect_tool_input_schema("answer_guidance_request") do
@@ -1103,12 +1149,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
 
   defp unbound_scoped_tool_specs do
     Enum.map(@architect_tools -- @shared_worker_architect_tools, &architect_tool_spec/1) ++
-      Enum.map(@worker_tools -- @shared_worker_architect_tools, &worker_tool_spec/1) ++
+      Enum.map(@worker_tools -- @shared_worker_architect_tools, &unbound_worker_tool_spec/1) ++
       Enum.map(@shared_worker_architect_tools, &shared_worker_architect_tool_spec/1)
   end
 
-  defp shared_worker_architect_tool_spec(name) when name in ["add_comment", "list_comments"], do: architect_tool_spec(name)
-  defp shared_worker_architect_tool_spec(name), do: worker_tool_spec(name)
+  defp shared_worker_architect_tool_spec(name), do: architect_tool_spec(name)
   @spec local_operator_tool_specs() :: [tool_spec()]
   def local_operator_tool_specs, do: Enum.map(@local_operator_tools, &local_operator_tool_spec/1)
 
@@ -1143,9 +1188,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   end
 
   defp scoped_properties(properties), do: Map.put(properties, "work_package_id", string_schema())
+  defp session_scoped_properties(properties), do: properties
 
-  defp progress_properties do
-    scoped_properties(%{
+  defp progress_properties(scope \\ :session)
+
+  defp progress_properties(:session) do
+    session_scoped_properties(%{
       "summary" => string_schema(),
       "body" => markdown_nullable_string_schema("Optional human-facing Markdown body."),
       "status" => string_schema(),
@@ -1153,6 +1201,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
       "payload" => object_schema()
     })
   end
+
+  defp progress_properties(:explicit), do: progress_properties(:session) |> scoped_properties()
 
   defp metadata_properties(properties) do
     properties
@@ -1163,7 +1213,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
       "status" => string_schema(),
       "summary" => string_schema()
     })
-    |> scoped_properties()
+    |> session_scoped_properties()
   end
 
   defp pr_metadata_properties do

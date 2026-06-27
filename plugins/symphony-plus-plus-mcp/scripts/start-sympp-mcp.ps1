@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 $DefaultBackendPort = 19998
 $DefaultDashboardPort = 19999
 $BoardPath = "/sympp/board"
-$ExpectedMcpContractFingerprint = "42fa98550e67d578148e4a212f7329045d81135ae3009f1bd6c3dab38a88296d"
+$ExpectedMcpContractFingerprint = "ed824d5b481bf0d459f4456853ec4aa67eb505f7258e2a1032a9912c04ac1fdd"
 
 . (Join-Path $PSScriptRoot "sympp-launcher-runtime.ps1")
 . (Join-Path $PSScriptRoot "sympp-mcp-launcher-helpers.ps1")

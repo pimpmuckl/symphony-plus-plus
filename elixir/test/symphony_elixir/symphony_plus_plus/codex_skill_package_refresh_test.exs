@@ -735,15 +735,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageRefreshTest do
     assert worker_claim["tool"] == "claim_local_assignment"
     assert worker_claim["required_arguments"] == ["work_package_id"]
 
-    assert MapSet.new(worker_claim["optional_arguments"]) ==
-             MapSet.new(["claimed_by", "work_request_id", "repo", "base_branch", "branch", "worktree_path", "caller_id"])
+    assert worker_claim["optional_arguments"] == ["claimed_by"]
 
     assert claim_tool["required_arguments"] == [
              "work_package_id"
            ]
 
-    assert MapSet.new(claim_tool["optional_arguments"]) ==
-             MapSet.new(["claimed_by", "work_request_id", "repo", "base_branch", "branch", "worktree_path", "caller_id"])
+    assert claim_tool["optional_arguments"] == ["claimed_by"]
 
     assert get_in(contract, ["claim_policy", "reclaim_policy"]) =~ "Stale leases may be reclaimed"
     assert get_in(contract, ["claim_policy", "secret_policy"]) =~ "do not require raw grant secrets"
