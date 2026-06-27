@@ -3,7 +3,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RuntimeArtifactReleaseChannelTest do
 
   @repo_root Path.expand("../../../../", __DIR__)
   @publisher Path.join(@repo_root, "scripts/publish-sympp-runtime-artifact.ps1")
-  @launcher_script Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1")
+  @contract_path Path.join(@repo_root, "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json")
   @plugin_manifest_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json")
 
   test "publisher validates all required platforms and writes launcher-readable aggregate manifest" do
@@ -128,6 +128,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RuntimeArtifactReleaseChannelTest do
       refute body =~ "WORKFLOW.symfony_pp.md"
       refute body =~ "workflowTemplatePath"
       refute body =~ "workflow_template_path"
+      refute body =~ ~r/(Copy-Item|cp).+WORKFLOW\.md/
+      refute body =~ ~r/workflow\s*=\s*"WORKFLOW\.md"/
+      refute body =~ ~s("workflow": "WORKFLOW.md")
       assert body =~ "runtime/erts-*/bin/*"
       assert body =~ "runtime/bin/*"
       assert body =~ "pluginIdentity.name" or body =~ "plugin_name"
@@ -225,13 +228,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RuntimeArtifactReleaseChannelTest do
   end
 
   defp expected_mcp_contract_fingerprint do
-    [_, fingerprint] =
-      Regex.run(
-        ~r/\$ExpectedMcpContractFingerprint\s*=\s*"([0-9a-fA-F]{64})"/,
-        File.read!(@launcher_script)
-      )
-
-    String.downcase(fingerprint)
+    @contract_path
+    |> File.read!()
+    |> Jason.decode!()
+    |> Map.fetch!("mcp_contract_fingerprint")
   end
 
   defp plugin_version do

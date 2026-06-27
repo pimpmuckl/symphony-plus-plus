@@ -735,12 +735,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
-  test "MCP launcher pins the server-reported agent-facing contract fingerprint" do
+  test "MCP contract pins the server-reported agent-facing contract fingerprint" do
     launcher = File.read!(@mcp_plugin_start_script_path)
     fingerprint = Server.mcp_contract_identity()["fingerprint"]
+    contract = @contract_path |> File.read!() |> Jason.decode!()
 
     assert fingerprint =~ ~r/\A[0-9a-f]{64}\z/
-    assert launcher =~ ~s($ExpectedMcpContractFingerprint = "#{fingerprint}")
+    assert contract["mcp_contract_fingerprint"] == fingerprint
+    refute launcher =~ "$ExpectedMcpContractFingerprint"
+    assert launcher =~ "Resolve-ExpectedMcpContractFingerprint"
   end
 
   test "MCP launcher keeps client lease heartbeat below the server lease ttl" do

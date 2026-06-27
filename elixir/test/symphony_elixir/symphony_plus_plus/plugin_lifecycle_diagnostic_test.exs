@@ -5,15 +5,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLifecycleDiagnosticTest do
   @plugin_marketplace_name "symphony-plus-plus"
   @plugin_manifest_path Path.join(@repo_root, "plugins/symphony-plus-plus/.codex-plugin/plugin.json")
   @plugin_version @plugin_manifest_path |> File.read!() |> Jason.decode!() |> Map.fetch!("version")
+  @marketplace_revision String.duplicate("b", 40)
   @plugin_lifecycle_diagnostic_path Path.join(@repo_root, "plugins/symphony-plus-plus/scripts/diagnose-mcp-lifecycle.ps1")
+  @diagnostic_runtime_artifacts_path Path.join(@repo_root, "plugins/symphony-plus-plus/scripts/sympp-diagnostic-runtime-artifacts.ps1")
   @mcp_plugin_start_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1")
+  @contract_path Path.join(@repo_root, "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json")
 
-  test "lifecycle doctor resolves marketplace source clone before stale cache hints" do
+  test "lifecycle doctor ignores stale cache hints when marketplace source is not verified" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-marketplace-source-doctor")
 
     if powershell do
-      marketplace_root = write_minimal_marketplace_source(temp_codex_home)
+      write_minimal_marketplace_source(temp_codex_home)
       stale_source_root = write_minimal_stale_source(temp_codex_home)
       default_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version])
       mcp_cache_root = plugin_cache_path(temp_codex_home, [@plugin_version], "symphony-plus-plus-mcp")
@@ -28,6 +31,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLifecycleDiagnosticTest do
         write_cache_manifest(default_cache_root, "symphony-plus-plus")
         write_cache_manifest(mcp_cache_root, "symphony-plus-plus-mcp", mcp?: true)
         write_cached_script(mcp_cache_root, @mcp_plugin_start_script_path)
+        write_pinned_source_revision!(default_cache_root, String.duplicate("b", 40))
         write_pinned_source_revision!(mcp_cache_root, String.duplicate("b", 40))
         File.write!(Path.join(default_cache_root, ".sympp-source-root"), "#{stale_source_root}\n")
         File.write!(Path.join(mcp_cache_root, ".sympp-source-root"), "#{stale_source_root}\n")
@@ -54,11 +58,59 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLifecycleDiagnosticTest do
         assert status == 0, output
         report = Jason.decode!(output)
         source_checkout = get_in(report, ["readiness", "source_checkout"])
-        assert source_checkout["status"] == "codex_marketplace_source_clone"
-        assert normalize_path_fragment(source_checkout["root"]) == normalize_path_fragment(marketplace_root)
-        assert report["process_scan_scope"] == "installed_cache_marketplace_source_clone"
-        assert [process_filter] = report["process_repo_root_filters"]
-        assert normalize_path_fragment(process_filter) == normalize_path_fragment(marketplace_root)
+        refute normalize_path_fragment(source_checkout["root"]) == normalize_path_fragment(stale_source_root)
+
+        case source_checkout["status"] do
+          "not_found" ->
+            assert source_checkout["root"] in [nil, ""]
+            assert report["process_scan_scope"] == "skipped_no_repo_root_scope"
+            assert report["process_repo_root_filters"] == []
+
+          "codex_marketplace_source_clone" ->
+            marketplace_root = Path.join([temp_codex_home, ".tmp", "marketplaces", @plugin_marketplace_name])
+            assert normalize_path_fragment(source_checkout["root"]) == normalize_path_fragment(marketplace_root)
+            assert report["process_scan_scope"] == "installed_cache_marketplace_source_clone"
+
+            assert Enum.map(report["process_repo_root_filters"], &normalize_path_fragment/1) == [
+                     normalize_path_fragment(marketplace_root)
+                   ]
+
+          other ->
+            flunk("expected no source checkout or a verified marketplace source clone, got #{inspect(other)}")
+        end
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  test "diagnostic contract resolver fails bad explicit repo override" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = unique_temp_path("sympp-plugin-doctor-explicit-contract")
+
+    if powershell do
+      try do
+        explicit_repo_root = Path.join(temp_codex_home, "explicit-repo")
+        artifact_root = Path.join(temp_codex_home, "artifact-root")
+        File.mkdir_p!(explicit_repo_root)
+        File.mkdir_p!(artifact_root)
+
+        command = """
+        function Test-SourceCheckoutRoot([string]$Path) { return $true }
+        . #{quote_powershell_literal(@diagnostic_runtime_artifacts_path)}
+        Get-DiagnosticExpectedMcpContractFingerprint #{quote_powershell_literal(artifact_root)}
+        """
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            ["-NoProfile", "-Command", command],
+            stderr_to_stdout: true,
+            env: [{"SYMPP_REPO_ROOT", explicit_repo_root}]
+          )
+
+        assert status != 0
+        assert normalize_prose(output) =~ "explicit SYMPP_REPO_ROOT contract JSON"
       after
         File.rm_rf!(temp_codex_home)
       end
@@ -343,7 +395,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLifecycleDiagnosticTest do
   defp write_minimal_marketplace_source(codex_home) do
     marketplace_root = Path.join([codex_home, ".tmp", "marketplaces", @plugin_marketplace_name])
     File.mkdir_p!(marketplace_root)
-    File.write!(Path.join(marketplace_root, ".codex-marketplace-install.json"), Jason.encode!(%{"revision" => String.duplicate("b", 40)}))
+    File.write!(Path.join(marketplace_root, ".codex-marketplace-install.json"), Jason.encode!(%{"revision" => @marketplace_revision}))
     File.mkdir_p!(Path.join(marketplace_root, "elixir"))
     File.write!(Path.join(marketplace_root, "elixir/mix.exs"), "defmodule SymphonyElixir.MixProject do\nend\n")
     File.mkdir_p!(Path.join(marketplace_root, "elixir/lib/mix/tasks"))
@@ -351,6 +403,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLifecycleDiagnosticTest do
     File.mkdir_p!(Path.join(marketplace_root, "scripts"))
     File.write!(Path.join(marketplace_root, "scripts/refresh-local-plugin.ps1"), "")
     File.write!(Path.join(marketplace_root, "scripts/smoke-sympp-mcp-http.ps1"), "")
+    File.mkdir_p!(Path.join(marketplace_root, "implementation_docs_symphplusplus/mcp"))
+    File.cp!(@contract_path, Path.join(marketplace_root, "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json"))
     File.mkdir_p!(Path.join(marketplace_root, "plugins/symphony-plus-plus-mcp/scripts"))
 
     File.cp!(
@@ -377,6 +431,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLifecycleDiagnosticTest do
     File.mkdir_p!(Path.join(source_root, "elixir/lib/mix/tasks"))
     File.write!(Path.join(source_root, "elixir/mix.exs"), "defmodule Stale.MixProject do\nend\n")
     File.write!(Path.join(source_root, "elixir/lib/mix/tasks/sympp.solo.ex"), "")
+    File.mkdir_p!(Path.join(source_root, "scripts"))
+    File.write!(Path.join(source_root, "scripts/refresh-local-plugin.ps1"), "")
+    File.write!(Path.join(source_root, "scripts/smoke-sympp-mcp-http.ps1"), "")
     source_root
   end
 
@@ -385,6 +442,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLifecycleDiagnosticTest do
     archive_path = Path.join(cache_root, "sympp-runtime.zip")
     entrypoint = "runtime.cmd"
     dashboard_entries = [{"dashboard-static/index.html", "<main>ok</main>"}]
+    artifact_entries = [{entrypoint, "@echo off\nexit /b 0\n"}, {"WORKFLOW.md", "workflow: artifact\n"}] ++ dashboard_entries
     artifact_contract_fingerprint = Keyword.get(opts, :mcp_contract_fingerprint, expected_mcp_contract_fingerprint())
     File.mkdir_p!(artifact_build_root)
 
@@ -396,8 +454,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLifecycleDiagnosticTest do
     {:ok, _} =
       :zip.create(
         String.to_charlist(archive_path),
-        [{String.to_charlist(entrypoint), File.read!(Path.join(artifact_build_root, entrypoint))}] ++
-          Enum.map(dashboard_entries, fn {name, content} -> {String.to_charlist(name), content} end)
+        Enum.map(artifact_entries, fn {name, content} -> {String.to_charlist(name), content} end)
       )
 
     artifact =
@@ -406,6 +463,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLifecycleDiagnosticTest do
         "path" => Path.basename(archive_path),
         "sha256" => file_sha256(archive_path),
         "entrypoint" => entrypoint,
+        "workflow" => "WORKFLOW.md",
         "dashboard" => %{
           "asset_root" => "dashboard-static",
           "fingerprint" => dashboard_fingerprint(dashboard_entries)
@@ -491,16 +549,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PluginLifecycleDiagnosticTest do
   end
 
   defp expected_mcp_contract_fingerprint do
-    [_, fingerprint] =
-      Regex.run(
-        ~r/\$ExpectedMcpContractFingerprint\s*=\s*"([0-9a-fA-F]{64})"/,
-        File.read!(@mcp_plugin_start_script_path)
-      )
-
-    String.downcase(fingerprint)
+    @contract_path
+    |> File.read!()
+    |> Jason.decode!()
+    |> Map.fetch!("mcp_contract_fingerprint")
   end
 
   defp normalize_path_fragment(value), do: value |> to_string() |> String.replace("\\", "/") |> String.downcase()
+
+  defp normalize_prose(value) do
+    value
+    |> String.replace("\r\n", "\n")
+    |> String.replace(~r/\e\[[0-9;]*m/, "")
+    |> String.replace(~r/\s+\|\s+|\s+/, " ")
+  end
+
+  defp quote_powershell_literal(value) do
+    "'" <> String.replace(value, "'", "''") <> "'"
+  end
 
   defp unique_temp_path(prefix) do
     Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")

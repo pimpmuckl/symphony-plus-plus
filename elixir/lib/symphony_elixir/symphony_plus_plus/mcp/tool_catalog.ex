@@ -198,6 +198,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   @spec worker_tools() :: [tool_name()]
   def worker_tools, do: @worker_tools
 
+  @spec contract_unbound_tools() :: [tool_name()]
+  def contract_unbound_tools, do: [@health_tool, @assignment_release_tool] ++ @solo_tools ++ @session_claim_tools
+
+  @spec contract_trusted_local_http_extra_tools() :: [tool_name()]
+  def contract_trusted_local_http_extra_tools, do: @bootstrap_tools ++ ["add_work_request_comment", "list_comments", "record_work_request_operator_decision"]
+
+  @spec contract_bound_worker_tools() :: [tool_name()]
+  def contract_bound_worker_tools, do: [@health_tool, @assignment_release_tool] ++ @worker_tools
+
+  @spec contract_bound_architect_tools() :: [tool_name()]
+  def contract_bound_architect_tools, do: [@health_tool, @assignment_release_tool, "get_current_assignment"] ++ @architect_tools
+
   @spec hidden_worker_argument_keys(tool_name()) :: [String.t()]
   def hidden_worker_argument_keys(@local_assignment_claim_tool), do: @local_assignment_claim_hidden_worker_arguments
   def hidden_worker_argument_keys(name) when name in @session_scoped_worker_tools, do: ["work_package_id"]

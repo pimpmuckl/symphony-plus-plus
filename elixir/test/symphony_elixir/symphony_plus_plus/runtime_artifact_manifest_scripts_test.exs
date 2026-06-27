@@ -6,6 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RuntimeArtifactManifestScriptsTest do
   @build_sh Path.join(@repo_root, "scripts/build-sympp-runtime-artifact.sh")
   @publish_ps1 Path.join(@repo_root, "scripts/publish-sympp-runtime-artifact.ps1")
   @publish_sh Path.join(@repo_root, "scripts/publish-sympp-runtime-artifact.sh")
+  @contract_path Path.join(@repo_root, "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json")
 
   test "PowerShell build dry-run resolves MCP contract fingerprint" do
     powershell = System.find_executable("pwsh")
@@ -227,7 +228,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RuntimeArtifactManifestScriptsTest do
         assert channel["mcp_contract_fingerprint"] == fingerprint
         assert channel["plugin"]["name"] == "symphony-plus-plus-mcp"
         assert channel["plugin"]["version"] == expected_mcp_plugin_version()
-        assert channel["artifact"]["contract_fingerprint"] == fingerprint
+        assert channel["artifact"]["mcp_contract_fingerprint"] == fingerprint
+        assert channel["launcher_contract"]["mcp_contract_fingerprint"] == fingerprint
         assert channel["launcher_contract"]["contract_fingerprint"] == fingerprint
       after
         File.rm_rf!(temp_root)
@@ -362,13 +364,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RuntimeArtifactManifestScriptsTest do
   end
 
   defp expected_mcp_contract_fingerprint do
-    [_, fingerprint] =
-      Regex.run(
-        ~r/\$ExpectedMcpContractFingerprint\s*=\s*"([0-9a-fA-F]{64})"/,
-        File.read!(Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1"))
-      )
-
-    String.downcase(fingerprint)
+    @contract_path
+    |> File.read!()
+    |> Jason.decode!()
+    |> Map.fetch!("mcp_contract_fingerprint")
   end
 
   defp expected_mcp_plugin_version do

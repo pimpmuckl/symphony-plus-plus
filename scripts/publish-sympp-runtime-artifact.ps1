@@ -109,12 +109,10 @@ function Normalize-McpContractFingerprint([string]$Fingerprint) {
 }
 
 function Resolve-McpContractFingerprint($Manifest) {
-  foreach ($name in @("mcp_contract_fingerprint", "contract_fingerprint")) {
-    if ($Manifest.PSObject.Properties.Name -contains $name) {
-      $fingerprint = Normalize-McpContractFingerprint ([string]$Manifest.$name)
-      if ($fingerprint) {
-        return $fingerprint
-      }
+  if ($Manifest.PSObject.Properties.Name -contains "mcp_contract_fingerprint") {
+    $fingerprint = Normalize-McpContractFingerprint ([string]$Manifest.mcp_contract_fingerprint)
+    if ($fingerprint) {
+      return $fingerprint
     }
   }
 
@@ -126,6 +124,13 @@ function Resolve-McpContractFingerprint($Manifest) {
           return $fingerprint
         }
       }
+    }
+  }
+
+  if ($Manifest.PSObject.Properties.Name -contains "contract_fingerprint") {
+    $fingerprint = Normalize-McpContractFingerprint ([string]$Manifest.contract_fingerprint)
+    if ($fingerprint) {
+      return $fingerprint
     }
   }
 

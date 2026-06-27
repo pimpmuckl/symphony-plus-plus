@@ -2,7 +2,10 @@
 
 This document mirrors `mcp_tools_contract.json` in readable form. The JSON file
 is the compact machine-readable index of tool names plus required and optional
-arguments. Removed legacy bootstrap paths are intentionally absent.
+arguments. The runtime catalog owns the live tool surfaces; the JSON contract
+publishes those names and the canonical `mcp_contract_fingerprint` consumed by
+smoke checks and runtime artifact scripts. Removed legacy bootstrap paths are
+intentionally absent.
 
 Human-facing long text fields are Markdown unless a field is explicitly a
 compact label, status, identifier, branch, PR URL, or other machine-readable

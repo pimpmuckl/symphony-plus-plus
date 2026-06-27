@@ -158,15 +158,16 @@ print(hashlib.sha256(payload).hexdigest())
 PY
 )"
 
-mcp_contract_fingerprint="$("$python_bin" - "$repo_root/plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1" <<'PY'
+mcp_contract_fingerprint="$("$python_bin" - "$repo_root/implementation_docs_symphplusplus/mcp/mcp_tools_contract.json" <<'PY'
+import json
 import re
 import sys
 
-text = open(sys.argv[1], "r", encoding="utf-8").read()
-match = re.search(r'\$ExpectedMcpContractFingerprint\s*=\s*"([0-9a-fA-F]{64})"', text)
-if not match:
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    fingerprint = str(json.load(handle).get("mcp_contract_fingerprint", "")).strip().lower()
+if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
     raise SystemExit(f"Could not resolve MCP contract fingerprint from {sys.argv[1]}.")
-print(match.group(1).lower())
+print(fingerprint)
 PY
 )"
 
@@ -336,7 +337,6 @@ payload = {
         "manifest": "sympp-runtime-artifact",
         "version": 1,
         "mcp_contract_fingerprint": mcp_contract_fingerprint,
-        "contract_fingerprint": mcp_contract_fingerprint,
     },
 }
 with open(path, "w", encoding="utf-8", newline="\n") as handle:

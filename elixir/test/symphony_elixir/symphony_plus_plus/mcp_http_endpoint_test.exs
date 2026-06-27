@@ -15,7 +15,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     HTTPStateStore,
     Session,
     SessionBinding,
-    SessionRecovery
+    SessionRecovery,
+    ToolCatalog
   }
 
   alias SymphonyElixir.SymphonyPlusPlus.MCP.Server
@@ -170,50 +171,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     names = tool_names(json_response(conn, 200))
     assert length(names) == length(Enum.uniq(names))
 
-    for tool <- [
-          "claim_local_assignment",
-          "claim_local_architect_assignment",
-          "get_current_assignment",
-          "read_context",
-          "read_task_plan",
-          "update_task_plan",
-          "append_finding",
-          "append_progress",
-          "set_status",
-          "report_blocker",
-          "resolve_blocker",
-          "add_comment",
-          "list_comments",
-          "resolve_comment",
-          "create_guidance_request",
-          "read_guidance_request",
-          "request_scope_expansion",
-          "attach_branch",
-          "attach_pr",
-          "sync_pr",
-          "submit_review_package",
-          "attach_review_suite_result",
-          "mark_ready",
-          "read_work_request",
-          "list_guidance_requests",
-          "record_work_request_decision",
-          "add_work_request_planned_slice",
-          "solo_attach",
-          "solo_list",
-          "solo_record_task_plan",
-          "solo_append_progress",
-          "solo_append_finding",
-          "solo_record_decision",
-          "solo_report_blocker",
-          "solo_resolve_blocker",
-          "solo_record_validation",
-          "solo_pause",
-          "solo_resume",
-          "solo_complete",
-          "solo_archive",
-          "solo_show",
-          "sympp.health"
-        ] do
+    expected_names =
+      Config.default(repo: Repo)
+      |> ToolCatalog.unbound_tool_specs_for_config()
+      |> Kernel.++(ToolCatalog.local_operator_tool_specs())
+      |> Enum.map(& &1["name"])
+      |> Enum.uniq()
+
+    for tool <- expected_names do
       assert tool in names
     end
   end

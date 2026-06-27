@@ -30,6 +30,78 @@ function Get-FileSha256([string]$Path) {
   }
 }
 
+function Normalize-SymppMarketplaceSourceRevision([string]$Revision) {
+  if ([string]::IsNullOrWhiteSpace($Revision)) {
+    return $null
+  }
+
+  $normalized = $Revision.Trim().ToLowerInvariant()
+  if ($normalized -match "^[0-9a-f]{40}$") {
+    return $normalized
+  }
+
+  return $null
+}
+
+function Get-SymppMarketplaceSourceRevision([string]$SourceRoot) {
+  $installPath = Join-Path $SourceRoot ".codex-marketplace-install.json"
+  if (Test-Path -LiteralPath $installPath -PathType Leaf) {
+    try {
+      $install = Get-Content -LiteralPath $installPath -Raw | ConvertFrom-Json
+      foreach ($propertyName in @("revision", "source_revision", "sourceRevision")) {
+        if ($install.PSObject.Properties[$propertyName]) {
+          $revision = Normalize-SymppMarketplaceSourceRevision ([string]$install.PSObject.Properties[$propertyName].Value)
+          if ($revision) {
+            return $revision
+          }
+        }
+      }
+    } catch {
+    }
+  }
+
+  $revisionPath = Join-Path $SourceRoot ".sympp-source-revision"
+  if (Test-Path -LiteralPath $revisionPath -PathType Leaf) {
+    return Normalize-SymppMarketplaceSourceRevision (Get-Content -LiteralPath $revisionPath -Raw)
+  }
+
+  return $null
+}
+
+function Test-SymppMarketplaceContractMatchesRevision([string]$SourceRoot, [string]$ExpectedRevision) {
+  $contractRelativePath = "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json"
+  $contractPath = Join-Path $SourceRoot $contractRelativePath
+  if (-not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
+    return $false
+  }
+
+  $git = Get-Command git -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $git) {
+    return $true
+  }
+
+  try {
+    $insideWorkTree = @(& $git.Source @("-C", $SourceRoot, "rev-parse", "--is-inside-work-tree") 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $insideWorkTree.Count -eq 0 -or ([string]$insideWorkTree[0]).Trim().ToLowerInvariant() -ne "true") {
+      return $true
+    }
+
+    $committedObject = @(& $git.Source @("-C", $SourceRoot, "rev-parse", "$($ExpectedRevision):$contractRelativePath") 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $committedObject.Count -eq 0) {
+      return $false
+    }
+
+    $workingObject = @(& $git.Source @("-C", $SourceRoot, "hash-object", "--", $contractRelativePath) 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $workingObject.Count -eq 0) {
+      return $false
+    }
+
+    return [System.StringComparer]::OrdinalIgnoreCase.Equals(([string]$committedObject[0]).Trim(), ([string]$workingObject[0]).Trim())
+  } catch {
+    return $false
+  }
+}
+
 function Test-InstalledPluginPayloadMatchesMarketplaceSource([string]$PluginRoot, [string]$SourceRoot) {
   $packageRoot = Split-Path -Parent ([System.IO.Path]::GetFullPath($PluginRoot))
   $packageName = Split-Path -Leaf $packageRoot
@@ -84,6 +156,17 @@ function Resolve-RepoRootFromMarketplaceCache([string]$PluginRoot) {
   if ((Test-SymphonySourceRoot $candidate) -and
       (Test-Path -LiteralPath (Join-Path $candidate "plugins/symphony-plus-plus/.codex-plugin/plugin.json")) -and
       (Test-Path -LiteralPath (Join-Path $candidate "plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json"))) {
+    $installedRevision = Get-SymppPinnedSourceRevision $versionRoot
+    $marketplaceRevision = Get-SymppMarketplaceSourceRevision $candidate
+    if (-not $installedRevision -or -not $marketplaceRevision -or
+        -not [System.StringComparer]::OrdinalIgnoreCase.Equals($installedRevision, $marketplaceRevision)) {
+      return $null
+    }
+
+    if (-not (Test-SymppMarketplaceContractMatchesRevision $candidate $marketplaceRevision)) {
+      return $null
+    }
+
     if (-not (Test-InstalledPluginPayloadMatchesMarketplaceSource $versionRoot $candidate)) {
       return $null
     }

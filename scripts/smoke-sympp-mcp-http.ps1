@@ -7,110 +7,50 @@ param(
   [string]$RepoRoot,
   [string]$ExpectedSourceRevision,
   [switch]$SkipUnboundTools,
+  [switch]$SkipLiveServer,
+  [switch]$SkipBound,
   [switch]$SelfTest
 )
 
 $ErrorActionPreference = "Stop"
 
-$SoloTools = @(
-  "solo_attach",
-  "solo_show",
-  "solo_list",
-  "solo_record_task_plan",
-  "solo_append_progress",
-  "solo_append_finding",
-  "solo_record_decision",
-  "solo_report_blocker",
-  "solo_resolve_blocker",
-  "solo_record_validation",
-  "solo_pause",
-  "solo_resume",
-  "solo_complete",
-  "solo_archive"
-)
+function Resolve-SmokeRepoRoot {
+  if (-not [string]::IsNullOrWhiteSpace($RepoRoot)) {
+    return [System.IO.Path]::GetFullPath($RepoRoot)
+  }
 
-$ExpectedGenericUnboundTools = @("sympp.health") + $SoloTools
+  return [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+}
 
-$ExpectedHttpUnboundTools = @("claim_local_assignment", "claim_local_architect_assignment", "create_work_request")
+function Get-ContractStringList($Value) {
+  @($Value | ForEach-Object {
+      if ($null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_)) {
+        [string]$_
+      }
+    })
+}
 
-$OptionalTrustedLocalHttpUnboundTools = @(
-  "add_work_request_comment",
-  "record_work_request_operator_decision"
-)
+function Read-McpToolsContract {
+  $contractPath = Join-Path (Resolve-SmokeRepoRoot) "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json"
+  if (-not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
+    throw "MCP tools contract JSON is missing: $contractPath"
+  }
 
-$ExpectedBoundWorkerTools = @(
-  "sympp.health",
-  "get_current_assignment",
-  "read_context",
-  "read_task_plan",
-  "update_task_plan",
-  "append_finding",
-  "append_progress",
-  "set_status",
-  "report_blocker",
-  "resolve_blocker",
-  "add_comment",
-  "list_comments",
-  "resolve_comment",
-  "create_guidance_request",
-  "read_guidance_request",
-  "request_scope_expansion",
-  "attach_branch",
-  "attach_pr",
-  "sync_pr",
-  "submit_review_package",
-  "attach_review_suite_result",
-  "mark_ready"
-)
+  Get-Content -LiteralPath $contractPath -Raw | ConvertFrom-Json
+}
 
-$ArchitectTools = @(
-  "create_child_work_package",
-  "mint_child_worker_key",
-  "revoke_child_worker_key",
-  "list_work_requests",
-  "read_work_request",
-  "read_work_request_product_tree",
-  "add_comment",
-  "list_comments",
-  "resolve_comment",
-  "resolve_blocker",
-  "read_work_request_delivery_board",
-  "reconcile_work_request",
-  "cleanup_work_request_planned_slice_runtime",
-  "record_planned_slice_delivery",
-  "revoke_planned_slice_worker_key",
-  "list_guidance_requests",
-  "read_guidance_request",
-  "answer_guidance_request",
-  "escalate_guidance_request",
-  "set_work_request_status",
-  "ask_work_request_question",
-  "answer_work_request_question",
-  "answer_work_request_question_and_record_decision",
-  "close_work_request_question",
-  "record_work_request_decision",
-  "add_work_request_planned_slice",
-  "approve_work_request_planned_slice",
-  "skip_work_request_planned_slice",
-  "mark_work_request_sliced",
-  "upsert_work_request_product_plan_node",
-  "move_work_request_planned_slice_to_product_node",
-  "dispatch_work_request_planned_slice",
-  "prepare_work_package_worktree",
-  "cleanup_work_package_worktree",
-  "read_child_status",
-  "approve_scope_expansion",
-  "read_phase_board",
-  "request_child_replan",
-  "approve_child_ready_state",
-  "merge_child_into_phase",
-  "split_work_package",
-  "publish_phase_update"
-)
+$McpToolsContract = Read-McpToolsContract
+$DiscoveryPolicy = $McpToolsContract.discovery_policy
+$UnboundContractTools = Get-ContractStringList $DiscoveryPolicy.unbound_tools
+$SoloTools = @($UnboundContractTools | Where-Object { $_ -like "solo_*" })
+$ExpectedGenericUnboundTools = @($UnboundContractTools | Where-Object { $_ -notlike "claim_local_*" })
+$ExpectedHttpUnboundTools = Get-ContractStringList $DiscoveryPolicy.trusted_local_http_extra_tools
+$ExpectedBoundWorkerTools = Get-ContractStringList $DiscoveryPolicy.bound_worker_tools
+$ArchitectTools = Get-ContractStringList $DiscoveryPolicy.unbound_schema_sets.architect_tools
 
 $ArchitectOnlyTools = @($ArchitectTools | Where-Object { $ExpectedBoundWorkerTools -notcontains $_ })
-$ExpectedUnboundTools = @($ExpectedGenericUnboundTools + $ExpectedHttpUnboundTools + $ExpectedBoundWorkerTools + $ArchitectTools | Sort-Object -Unique)
-$AllowedUnboundTools = $ExpectedUnboundTools + $OptionalTrustedLocalHttpUnboundTools
+$ExpectedUnboundTools = @($UnboundContractTools + $ExpectedHttpUnboundTools + $ExpectedBoundWorkerTools + $ArchitectTools | Sort-Object -Unique)
+$AllowedUnboundTools = $ExpectedUnboundTools
 $UnboundOnlyTools = @($AllowedUnboundTools | Where-Object { $ExpectedBoundWorkerTools -notcontains $_ })
 $ForbiddenUnboundTools = @()
 $ForbiddenBoundWorkerTools =
@@ -1461,12 +1401,12 @@ function Invoke-SelfTest {
     throw "Expected trusted local HTTP unbound discovery to include safe bootstrap tools."
   }
 
-  if ($OptionalTrustedLocalHttpUnboundTools -notcontains "add_work_request_comment" -or $OptionalTrustedLocalHttpUnboundTools -notcontains "record_work_request_operator_decision") {
-    throw "Expected unbound discovery to allow trusted local operator note tools when available."
+  if ($ExpectedHttpUnboundTools -notcontains "add_work_request_comment" -or $ExpectedHttpUnboundTools -notcontains "record_work_request_operator_decision") {
+    throw "Expected trusted local HTTP unbound discovery to require safe operator note tools."
   }
 
   if ($ForbiddenUnboundTools -contains "add_work_request_comment" -or $ForbiddenUnboundTools -contains "record_work_request_operator_decision") {
-    throw "Expected unbound forbidden tools to allow optional trusted local operator note tools."
+    throw "Expected unbound forbidden tools to allow trusted local operator note tools."
   }
 
   if ($ExpectedUnboundTools -notcontains "append_progress" -or $ExpectedUnboundTools -notcontains "get_current_assignment") {
@@ -1629,14 +1569,23 @@ function Invoke-SelfTest {
   return New-SmokeResult "ok" "PowerShell header normalization, source revision, redaction, and bound argument validation self-test passed."
 }
 
+function Invoke-StaticSmokeValidation {
+  [void](Invoke-SelfTest)
+  return New-SmokeResult "ok" "Static Symphony++ MCP contract, source revision, redaction, and bound argument validation passed; live server probe skipped."
+}
+
 try {
   if ($SelfTest) {
     Write-SmokeResult (Invoke-SelfTest) 0
   }
 
-  $config = Resolve-BoundSmokeConfig ([bool]$Bound) $WorkPackageId $ClaimedBy
+  $config = Resolve-BoundSmokeConfig ([bool]($Bound -and -not $SkipBound)) $WorkPackageId $ClaimedBy
   if (-not $config.ok) {
     Write-SmokeResult $config.result 1
+  }
+
+  if ($SkipLiveServer) {
+    Write-SmokeResult (Invoke-StaticSmokeValidation) 0
   }
 
   $result = if ($config.bound) { Invoke-BoundMcpSmoke $config } else { Invoke-McpSmoke }

@@ -8,7 +8,6 @@ $ErrorActionPreference = "Stop"
 $DefaultBackendPort = 19998
 $DefaultDashboardPort = 19999
 $BoardPath = "/sympp/board"
-$ExpectedMcpContractFingerprint = "34dfdf8ed2ecdcbb463e69cbd0bcba93428eea7151f448fd19ebdc90ee12296a"
 
 . (Join-Path $PSScriptRoot "sympp-launcher-runtime.ps1")
 . (Join-Path $PSScriptRoot "sympp-mcp-launcher-helpers.ps1")
@@ -463,6 +462,94 @@ function Normalize-McpContractFingerprint([string]$Fingerprint) {
   $fingerprint = $Fingerprint.Trim().ToLowerInvariant()
   if ($fingerprint -match "^[0-9a-f]{64}$") {
     return $fingerprint
+  }
+
+  return $null
+}
+
+function Get-McpContractFingerprintFromContractFile([string]$ContractPath) {
+  if ([string]::IsNullOrWhiteSpace($ContractPath) -or -not (Test-Path -LiteralPath $ContractPath -PathType Leaf)) {
+    return $null
+  }
+
+  try {
+    $contract = Get-Content -LiteralPath $ContractPath -Raw | ConvertFrom-Json
+    return Normalize-McpContractFingerprint ([string]$contract.mcp_contract_fingerprint)
+  } catch {
+    return $null
+  }
+}
+
+function Get-McpContractFingerprintFromArtifactManifest($Manifest) {
+  if ($null -eq $Manifest) {
+    return $null
+  }
+
+  return Normalize-McpContractFingerprint ([string](Get-JsonFirstPathValue $Manifest @(
+        @("mcp_contract_fingerprint"),
+        @("launcher_contract", "mcp_contract_fingerprint"),
+        @("contract_fingerprint"),
+        @("launcher_contract", "contract_fingerprint")
+      )))
+}
+
+function Get-McpContractFingerprintFromMarketplaceSource([string]$PluginRoot) {
+  $marketplaceRoot = Resolve-RepoRootFromMarketplaceCache $PluginRoot
+  if (-not $marketplaceRoot) {
+    return $null
+  }
+
+  return Get-McpContractFingerprintFromContractFile (Join-Path $marketplaceRoot "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json")
+}
+
+function Resolve-ExpectedMcpContractFingerprint([string]$PluginRoot) {
+  if (-not [string]::IsNullOrWhiteSpace($env:SYMPP_REPO_ROOT)) {
+    $explicitRepoRoot = [System.IO.Path]::GetFullPath($env:SYMPP_REPO_ROOT)
+    if (-not (Test-SymphonySourceRoot $explicitRepoRoot)) {
+      throw "SYMPP_REPO_ROOT does not look like a Symphony++ checkout: $explicitRepoRoot"
+    }
+
+    $contractPath = Join-Path $explicitRepoRoot "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json"
+    $fingerprint = Get-McpContractFingerprintFromContractFile $contractPath
+    if ($fingerprint) {
+      return $fingerprint
+    }
+
+    throw "Symphony++ MCP launcher expected MCP contract fingerprint could not be resolved from explicit SYMPP_REPO_ROOT contract JSON: $contractPath"
+  }
+
+  $candidateRoots = New-Object System.Collections.Generic.List[string]
+  $sourceCandidate = [System.IO.Path]::GetFullPath((Join-Path $PluginRoot "../.."))
+  if (Test-SymphonySourceRoot $sourceCandidate) {
+    $candidateRoots.Add($sourceCandidate)
+  }
+
+  foreach ($root in @($candidateRoots | Select-Object -Unique)) {
+    $fingerprint = Get-McpContractFingerprintFromContractFile (Join-Path $root "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json")
+    if ($fingerprint) {
+      return $fingerprint
+    }
+  }
+
+  $fingerprint = Get-McpContractFingerprintFromMarketplaceSource $PluginRoot
+  if ($fingerprint) {
+    return $fingerprint
+  }
+
+  $artifactManifest = $null
+  try {
+    $artifactManifest = Read-SymppArtifactManifest $PluginRoot
+  } catch {
+    $artifactManifest = $null
+  }
+
+  $fingerprint = Get-McpContractFingerprintFromArtifactManifest $artifactManifest
+  if ($fingerprint) {
+    return $fingerprint
+  }
+
+  if ($null -ne $artifactManifest) {
+    return "0000000000000000000000000000000000000000000000000000000000000000"
   }
 
   return $null
@@ -1806,9 +1893,9 @@ if ($Help) {
 
 
 $pluginRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$expectedContractFingerprint = Normalize-McpContractFingerprint $ExpectedMcpContractFingerprint
+$expectedContractFingerprint = Resolve-ExpectedMcpContractFingerprint $pluginRoot
 if ([string]::IsNullOrWhiteSpace($expectedContractFingerprint)) {
-  throw "Symphony++ MCP launcher expected MCP contract fingerprint is invalid."
+  throw "Symphony++ MCP launcher expected MCP contract fingerprint could not be resolved from contract JSON or runtime artifact manifest."
 }
 $expectedSourceRevision = Resolve-ExpectedSourceRevision $pluginRoot
 $bridgeMode = Get-EnvMode "SYMPP_MCP_BRIDGE_MODE" "http" @("http", "direct_stdio")
