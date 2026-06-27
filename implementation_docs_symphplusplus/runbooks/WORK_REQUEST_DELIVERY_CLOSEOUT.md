@@ -11,7 +11,8 @@ gates when present, and a mergeable green PR when a PR exists.
    `reconcile_work_request(work_request_id)`.
 3. If the dry-run proposes the expected PR-merged repair, apply
    `reconcile_work_request(work_request_id, apply: true)` or record the same
-   truth explicitly with `record_planned_slice_delivery`.
+   truth explicitly by replaying the proposed result's `action` payload through
+   `record_planned_slice_delivery`.
 4. For no-PR completion, supersession, or abandonment, call
    `record_planned_slice_delivery` directly with the required evidence.
 5. Re-read the delivery board and verify `needs_closeout` no longer describes
@@ -31,7 +32,11 @@ No-PR completion:
   "planned_slice_id": "wrs_docs_hygiene",
   "outcome": "completed_no_pr",
   "idempotency_key": "kraken-docs-hygiene-no-pr",
-  "no_pr_evidence": "Operator confirmed the docs-only update landed directly."
+  "evidence": {
+    "completed_no_pr": {
+      "no_pr_evidence": "Operator confirmed the docs-only update landed directly."
+    }
+  }
 }
 ```
 
@@ -43,9 +48,13 @@ Supersession:
   "planned_slice_id": "wrs_broad_docs",
   "outcome": "superseded",
   "idempotency_key": "kraken-broad-docs-recut",
-  "successor_planned_slice_id": "wrs_narrow_docs",
-  "successor_work_package_id": "wp_narrow_docs",
-  "superseded_reason": "Recut with narrower owned files."
+  "evidence": {
+    "superseded": {
+      "successor_planned_slice_id": "wrs_narrow_docs",
+      "successor_work_package_id": "wp_narrow_docs",
+      "superseded_reason": "Recut with narrower owned files."
+    }
+  }
 }
 ```
 
@@ -101,8 +110,9 @@ Supersession and abandonment can follow explicit WorkRequest-scoped runtime
 cleanup when stale linked runtime is the remaining blocker. Call
 `cleanup_work_request_planned_slice_runtime(work_request_id, planned_slice_id,
 outcome, reason, ...)` for the linked planned slice with the same superseded or
-abandoned evidence that will be used for `record_planned_slice_delivery`, then
-rerun `record_planned_slice_delivery` with that evidence. The cleanup tool
+abandoned evidence that will be used inside `record_planned_slice_delivery`'s
+typed `evidence` object, then rerun `record_planned_slice_delivery` with that
+evidence. The cleanup tool
 revokes linked live worker grants, releases non-paused current local claim
 leases, clears recoverable worker MCP session bindings for the linked package,
 and records a redacted audit event. It does not expose raw worker secrets.

@@ -200,7 +200,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseoutPausedLea
       "planned_slice_id" => planned_slice.id,
       "outcome" => "completed_no_pr",
       "idempotency_key" => idempotency_key,
-      "no_pr_evidence" => evidence
+      "evidence" => %{"completed_no_pr" => %{"no_pr_evidence" => evidence}}
     }
   end
 

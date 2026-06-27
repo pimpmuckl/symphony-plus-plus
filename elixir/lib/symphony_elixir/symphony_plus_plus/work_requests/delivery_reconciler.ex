@@ -169,18 +169,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     end
   end
 
-  defp maybe_apply_action(_repo, _work_request, %PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, action, :dry_run) do
+  defp maybe_apply_action(_repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, action, :dry_run) do
     planned_slice
     |> base_result(work_package)
     |> Map.merge(%{
       status: "proposed",
       reason: action.reason,
-      action: action_payload(action),
+      action: action_payload(work_request, planned_slice, action),
       evidence: action.evidence
     })
   end
 
   defp maybe_apply_action(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, action, :apply) do
+    action_payload = action_payload(work_request, planned_slice, action)
+
     case WorkRequestService.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, action.attrs) do
       {:ok, delivery} ->
         planned_slice
@@ -188,13 +190,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
         |> Map.merge(%{
           status: "applied",
           reason: action.reason,
-          action: action_payload(action),
+          action: action_payload,
           evidence: action.evidence,
           delivery_id: delivery.id
         })
 
       {:error, reason} ->
-        error_result(planned_slice, work_package, reason, action_payload(action))
+        error_result(planned_slice, work_package, reason, action_payload)
     end
   end
 
@@ -364,15 +366,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
 
   defp merge_reconciliation_payload?(_payload), do: false
 
-  defp action_payload(action) do
+  defp action_payload(%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, action) do
     %{
+      work_request_id: work_request.id,
+      planned_slice_id: planned_slice.id,
       outcome: action.attrs.outcome,
       idempotency_key: action.attrs.idempotency_key,
-      pr_url: action.attrs.pr_url,
-      pr_number: action.attrs.pr_number,
-      pr_repository: action.attrs.pr_repository,
-      pr_merged_at: action.attrs.pr_merged_at,
-      merge_commit_sha: action.attrs.merge_commit_sha
+      evidence: %{
+        pr_merged: %{
+          pr_url: action.attrs.pr_url,
+          pr_number: action.attrs.pr_number,
+          pr_repository: action.attrs.pr_repository,
+          pr_merged_at: action.attrs.pr_merged_at,
+          merge_commit_sha: action.attrs.merge_commit_sha
+        }
+      }
     }
   end
 

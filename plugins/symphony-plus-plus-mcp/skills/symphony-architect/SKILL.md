@@ -148,11 +148,13 @@ Decisions are rationale. Delivery closeout records lifecycle truth.
 
 Record terminal outcomes with `record_planned_slice_delivery`:
 
-- `pr_merged`: PR URL, merged-at timestamp, and merge commit for linked
-  packages.
-- `completed_no_pr`: direct no-PR evidence.
-- `superseded`: successor slice id and reason.
-- `abandoned`: rationale.
+- `outcome: "pr_merged"` with `evidence.pr_merged`: PR URL, merged-at
+  timestamp, and merge commit for linked packages.
+- `outcome: "completed_no_pr"` with `evidence.completed_no_pr`: direct no-PR
+  evidence.
+- `outcome: "superseded"` with `evidence.superseded`: successor slice id and
+  reason.
+- `outcome: "abandoned"` with `evidence.abandoned`: rationale.
 
 Use `reconcile_work_request` for structured PR/GitHub evidence repair. Do not
 infer delivery from prose decisions or chat. Phase-child PRs remain phase
@@ -160,7 +162,8 @@ controlled; call `merge_child_into_phase` before `pr_merged` closeout when
 required. Use `cleanup_work_request_planned_slice_runtime` to recycle linked
 worker grants, non-paused claim leases, and recoverable worker MCP session bindings
 before final closeout when superseded or abandoned delivery truth is established;
-include the same closeout evidence in the cleanup call.
+pass the flat superseded or abandoned evidence fields that authorize cleanup,
+then use the matching typed `evidence` object for final closeout.
 If package evidence is missing or ambiguous, do not record WorkRequest delivery
 closeout; repair evidence first.
 

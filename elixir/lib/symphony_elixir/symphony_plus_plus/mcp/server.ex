@@ -5216,34 +5216,83 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp planned_slice_delivery_attrs(arguments, outcome, idempotency_key, recorded_by) do
-    with {:ok, pr_number} <- optional_positive_integer_argument(arguments, "pr_number"),
-         {:ok, pr_url} <- optional_string_argument(arguments, "pr_url"),
-         {:ok, pr_repository} <- optional_string_argument(arguments, "pr_repository"),
-         {:ok, pr_merged_at} <- optional_string_argument(arguments, "pr_merged_at"),
-         {:ok, merge_commit_sha} <- optional_string_argument(arguments, "merge_commit_sha"),
-         {:ok, no_pr_evidence} <- optional_string_argument(arguments, "no_pr_evidence"),
-         {:ok, successor_planned_slice_id} <- optional_string_argument(arguments, "successor_planned_slice_id"),
-         {:ok, successor_work_package_id} <- optional_string_argument(arguments, "successor_work_package_id"),
-         {:ok, superseded_reason} <- optional_string_argument(arguments, "superseded_reason"),
-         {:ok, abandoned_rationale} <- optional_string_argument(arguments, "abandoned_rationale") do
-      attrs =
-        %{
-          "outcome" => outcome,
-          "idempotency_key" => idempotency_key,
-          "recorded_by" => recorded_by
-        }
-        |> optional_put("pr_url", pr_url)
-        |> optional_put("pr_number", pr_number)
-        |> optional_put("pr_repository", pr_repository)
-        |> optional_put("pr_merged_at", pr_merged_at)
-        |> optional_put("merge_commit_sha", merge_commit_sha)
-        |> optional_put("no_pr_evidence", no_pr_evidence)
-        |> optional_put("successor_planned_slice_id", successor_planned_slice_id)
-        |> optional_put("successor_work_package_id", successor_work_package_id)
-        |> optional_put("superseded_reason", superseded_reason)
-        |> optional_put("abandoned_rationale", abandoned_rationale)
+    with {:ok, evidence} <- required_object(arguments, "evidence"),
+         {:ok, evidence_attrs} <- planned_slice_delivery_evidence_attrs(evidence, outcome) do
+      {:ok,
+       Map.merge(
+         %{
+           "outcome" => outcome,
+           "idempotency_key" => idempotency_key,
+           "recorded_by" => recorded_by
+         },
+         evidence_attrs
+       )}
+    end
+  end
 
-      {:ok, attrs}
+  defp planned_slice_delivery_evidence_attrs(evidence, outcome) do
+    case Map.keys(evidence) do
+      [^outcome] ->
+        with {:ok, typed_evidence} <- required_object(evidence, outcome) do
+          planned_slice_delivery_typed_evidence_attrs(outcome, typed_evidence)
+        end
+
+      [] ->
+        {:tool_error, "missing_evidence"}
+
+      _keys ->
+        {:tool_error, "conflicting_delivery_evidence"}
+    end
+  end
+
+  defp planned_slice_delivery_typed_evidence_attrs("pr_merged", evidence) do
+    with :ok <- require_planned_slice_delivery_evidence_fields(evidence, ["pr_url", "pr_number", "pr_repository", "pr_merged_at", "merge_commit_sha"]),
+         {:ok, pr_number} <- optional_positive_integer_argument(evidence, "pr_number"),
+         {:ok, pr_url} <- optional_string_argument(evidence, "pr_url"),
+         {:ok, pr_repository} <- optional_string_argument(evidence, "pr_repository"),
+         {:ok, pr_merged_at} <- optional_string_argument(evidence, "pr_merged_at"),
+         {:ok, merge_commit_sha} <- optional_string_argument(evidence, "merge_commit_sha") do
+      {:ok,
+       %{}
+       |> optional_put("pr_url", pr_url)
+       |> optional_put("pr_number", pr_number)
+       |> optional_put("pr_repository", pr_repository)
+       |> optional_put("pr_merged_at", pr_merged_at)
+       |> optional_put("merge_commit_sha", merge_commit_sha)}
+    end
+  end
+
+  defp planned_slice_delivery_typed_evidence_attrs("completed_no_pr", evidence) do
+    with :ok <- require_planned_slice_delivery_evidence_fields(evidence, ["no_pr_evidence"]),
+         {:ok, no_pr_evidence} <- optional_string_argument(evidence, "no_pr_evidence") do
+      {:ok, optional_put(%{}, "no_pr_evidence", no_pr_evidence)}
+    end
+  end
+
+  defp planned_slice_delivery_typed_evidence_attrs("superseded", evidence) do
+    with :ok <- require_planned_slice_delivery_evidence_fields(evidence, ["successor_planned_slice_id", "successor_work_package_id", "superseded_reason"]),
+         {:ok, successor_planned_slice_id} <- optional_string_argument(evidence, "successor_planned_slice_id"),
+         {:ok, successor_work_package_id} <- optional_string_argument(evidence, "successor_work_package_id"),
+         {:ok, superseded_reason} <- optional_string_argument(evidence, "superseded_reason") do
+      {:ok,
+       %{}
+       |> optional_put("successor_planned_slice_id", successor_planned_slice_id)
+       |> optional_put("successor_work_package_id", successor_work_package_id)
+       |> optional_put("superseded_reason", superseded_reason)}
+    end
+  end
+
+  defp planned_slice_delivery_typed_evidence_attrs("abandoned", evidence) do
+    with :ok <- require_planned_slice_delivery_evidence_fields(evidence, ["abandoned_rationale"]),
+         {:ok, abandoned_rationale} <- optional_string_argument(evidence, "abandoned_rationale") do
+      {:ok, optional_put(%{}, "abandoned_rationale", abandoned_rationale)}
+    end
+  end
+
+  defp require_planned_slice_delivery_evidence_fields(evidence, allowed_keys) do
+    case Map.keys(evidence) -- allowed_keys do
+      [] -> :ok
+      _unexpected -> {:tool_error, "invalid_evidence"}
     end
   end
 

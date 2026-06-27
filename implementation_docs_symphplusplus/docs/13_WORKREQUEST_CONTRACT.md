@@ -27,8 +27,9 @@ bootstrap metadata for `claim_local_assignment`.
 
 ## Delivery
 
-Closeout is recorded with `record_planned_slice_delivery` using PR evidence,
-direct no-PR evidence, supersession evidence, or an abandoned rationale.
+Closeout is recorded with `record_planned_slice_delivery` using one typed
+`evidence` object matching the outcome: `evidence.pr_merged`,
+`evidence.completed_no_pr`, `evidence.superseded`, or `evidence.abandoned`.
 Skipped planned slices remain visible in normal delivery projection; there is no
 separate scratch-planning projection.
 

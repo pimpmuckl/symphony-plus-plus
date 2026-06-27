@@ -23,7 +23,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ProductTreeRevisionIdempotencyTest
       "work_request_id" => work_request.id,
       "planned_slice_id" => planned_slice.id,
       "outcome" => "completed_no_pr",
-      "no_pr_evidence" => "Operator confirmed the no-PR closeout.",
+      "evidence" => %{
+        "completed_no_pr" => %{"no_pr_evidence" => "Operator confirmed the no-PR closeout."}
+      },
       "idempotency_key" => "delivery-revision-replay"
     }
 

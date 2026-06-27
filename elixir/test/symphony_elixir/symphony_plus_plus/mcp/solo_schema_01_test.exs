@@ -863,10 +863,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     assert get_in(cleanup_schema, ["properties", "outcome", "enum"]) == ["superseded", "abandoned"]
     assert get_in(cleanup_schema, ["properties", "reason", "description"]) =~ "audit reason"
 
-    assert delivery_schema["required"] == ["work_request_id", "planned_slice_id", "outcome", "idempotency_key"]
+    assert delivery_schema["required"] == ["work_request_id", "planned_slice_id", "outcome", "idempotency_key", "evidence"]
     assert get_in(delivery_schema, ["properties", "outcome", "enum"]) == ["pr_merged", "completed_no_pr", "superseded", "abandoned"]
     assert get_in(delivery_schema, ["properties", "idempotency_key", "description"]) =~ "Reusing the same key"
-    assert get_in(delivery_schema, ["properties", "merge_commit_sha", "description"]) =~ "strong evidence"
+    refute Map.has_key?(delivery_schema["properties"], "merge_commit_sha")
+    assert get_in(delivery_schema, ["properties", "evidence", "properties", "pr_merged", "properties", "merge_commit_sha", "description"]) =~ "strong evidence"
+
+    assert get_in(delivery_schema, ["properties", "evidence", "oneOf"]) == [
+             %{"required" => ["pr_merged"]},
+             %{"required" => ["completed_no_pr"]},
+             %{"required" => ["superseded"]},
+             %{"required" => ["abandoned"]}
+           ]
 
     assert revoke_schema["required"] == ["work_request_id", "planned_slice_id", "grant_id", "reason"]
     assert get_in(revoke_schema, ["properties", "grant_id", "description"]) =~ "Raw worker secrets are never accepted or returned"

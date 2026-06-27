@@ -82,12 +82,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
                reason: "github_pr_merged",
                planned_slice_id: planned_slice_id,
                work_package_id: work_package_id,
-               action: %{outcome: "pr_merged", pr_number: 902, merge_commit_sha: "merge-sha-902"}
+               action: action
              }
            ] = dry_run.results
 
     assert planned_slice_id == planned_slice.id
     assert work_package_id == linked_package.id
+    assert action.work_request_id == work_request.id
+    assert action.planned_slice_id == planned_slice.id
+    assert action.outcome == "pr_merged"
+    assert action.evidence.pr_merged.pr_number == 902
+    assert action.evidence.pr_merged.merge_commit_sha == "merge-sha-902"
+    refute Map.has_key?(action, :pr_url)
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
     assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_merge"
 
@@ -196,9 +202,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert result["status"] == "proposed"
     assert result["reason"] == "github_pr_merged"
     assert result["planned_slice_id"] == planned_slice.id
+    assert get_in(result, ["action", "work_request_id"]) == work_request.id
+    assert get_in(result, ["action", "planned_slice_id"]) == planned_slice.id
+    assert get_in(result, ["action", "outcome"]) == "pr_merged"
+    assert get_in(result, ["action", "evidence", "pr_merged", "pr_number"]) == 903
+    assert get_in(result, ["action", "evidence", "pr_merged", "merge_commit_sha"]) == "merge-sha-903"
+    refute Map.has_key?(result["action"], "pr_url")
     assert get_in(response, ["result", "structuredContent", "delivery_board", "counts", "needs_closeout"]) == 1
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
     assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_merge"
+  end
+
+  test "MCP reconcile_work_request dry-run action replays through record_planned_slice_delivery", %{repo: repo} do
+    {work_request, _planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-RECONCILE-MCP-REPLAY",
+        work_package_id: "WP-RECONCILE-MCP-REPLAY",
+        status: "ready_for_merge"
+      )
+
+    append_merged_pr_evidence!(repo, linked_package, 915, "head-915")
+    session = create_work_request_architect_session(repo, work_request, ["read:work_request", "write:work_request"])
+
+    response = mcp_tool(repo, session, "reconcile_work_request", %{"work_request_id" => work_request.id})
+    assert [result] = get_in(response, ["result", "structuredContent", "reconciliation", "results"])
+
+    record_response = mcp_tool(repo, session, "record_planned_slice_delivery", result["action"])
+    assert get_in(record_response, ["result", "structuredContent", "planned_slice_delivery", "outcome"]) == "pr_merged"
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 1
   end
 
   test "MCP reconcile_work_request apply returns fresh post-closeout delivery board", %{repo: repo} do
@@ -281,7 +313,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert {:ok, result} = DeliveryReconciler.reconcile(repo, work_request.id, mode: :apply)
 
     assert result.applied_count == 1
-    assert [%{status: "applied", reason: "github_pr_merged", action: %{merge_commit_sha: "merge-sha-906"}}] = result.results
+    assert [%{status: "applied", reason: "github_pr_merged", action: action}] = result.results
+    assert action.evidence.pr_merged.merge_commit_sha == "merge-sha-906"
 
     assert [delivery] = repo.all(PlannedSliceDelivery)
     assert DateTime.compare(delivery.pr_merged_at, ~U[2026-05-24 12:00:00Z]) == :eq
@@ -301,7 +334,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert {:ok, result} = DeliveryReconciler.reconcile(repo, work_request.id, mode: :apply)
 
     assert result.applied_count == 1
-    assert [%{status: "applied", reason: "github_pr_merged", action: %{merge_commit_sha: "merge-sha-907"}}] = result.results
+    assert [%{status: "applied", reason: "github_pr_merged", action: action}] = result.results
+    assert action.evidence.pr_merged.merge_commit_sha == "merge-sha-907"
   end
 
   test "later sync for a replaced PR does not become the active closeout PR", %{repo: repo} do
