@@ -579,6 +579,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.CommentsGuidanceTest do
     all_response = mcp_tool(repo, architect_session, "list_guidance_requests", %{"status" => "open"})
     all_ids = all_response |> get_in(["result", "structuredContent", "guidance_requests"]) |> Enum.map(& &1["id"])
 
+    assert get_in(all_response, ["result", "structuredContent", "filters"]) == %{
+             "status" => "open",
+             "work_request_id" => first_work_request.id
+           }
+
     assert first_guidance_id in all_ids
     refute second_guidance_id in all_ids
 

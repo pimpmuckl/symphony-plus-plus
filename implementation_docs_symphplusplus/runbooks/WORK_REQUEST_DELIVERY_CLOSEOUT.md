@@ -6,12 +6,15 @@ gates when present, and a mergeable green PR when a PR exists.
 
 ## Default Sequence
 
-1. Read `read_work_request_delivery_board(work_request_id)`.
+1. Read `read_work_request_delivery_board()` when the claim has exactly one
+   current WorkRequest. Pass `work_request_id` when the session is unbound,
+   multi-WorkRequest, or targeting another authorized WorkRequest.
 2. If the board shows merged PR evidence without a delivery outcome, dry-run
-   `reconcile_work_request(work_request_id)`.
+   `reconcile_work_request()` in the same single-current-WorkRequest scope.
 3. If the dry-run proposes the expected PR-merged repair, apply
-   `reconcile_work_request(work_request_id, apply: true)` or record the same
-   truth explicitly with `record_planned_slice_delivery`.
+   `reconcile_work_request(apply: true)`. This uses the merged PR evidence
+   already attached to the linked package; do not repeat PR URL, package, or
+   slice facts manually unless reconciliation reports missing evidence.
 4. For no-PR completion, supersession, or abandonment, call
    `record_planned_slice_delivery` directly with the required evidence.
 5. Re-read the delivery board and verify `needs_closeout` no longer describes
