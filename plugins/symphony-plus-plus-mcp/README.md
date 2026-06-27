@@ -94,7 +94,9 @@ sessions attach to a healthy matching runtime; if the running runtime exposes an
 incompatible MCP contract, the launcher starts a new managed runtime and records
 new leases against that runtime key. When the last bridge lease for a runtime
 key exits, the launcher stops only managed backend/frontend PIDs for that key
-that it can still verify as Symphony++ processes. A healthy default-port
+that it can still verify as Symphony++ processes. The backend
+`/mcp/client-lease` endpoint is heartbeat telemetry for bridge pacing, not a
+runtime shutdown authority. A healthy default-port
 backend on `127.0.0.1:19998` that reports the same agent-facing MCP contract
 fingerprint as the launcher is recorded as `external_loopback` when it was not
 started by the bridge. In artifact mode, the dashboard URL is normally

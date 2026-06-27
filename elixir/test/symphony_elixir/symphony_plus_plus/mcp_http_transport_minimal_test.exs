@@ -348,6 +348,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
     assert get_in(health.response, ["result", "structuredContent", "source", "mcp_contract"]) == Server.mcp_contract_identity()
   end
 
+  test "live repo policy stays in transport for state-local and repo-backed followups", %{config: config} do
+    {:ok, init} = HTTPTransport.handle(config, initialize_request("init"), client_key: "client-a")
+    parent = self()
+    ref = make_ref()
+
+    live_handle = fn _payload, _client_key, _state_key ->
+      send(parent, {:live_handle_called, ref})
+      {:error, :repo_unavailable}
+    end
+
+    assert {:ok, health} =
+             HTTPTransport.handle(config, health_request("health"),
+               client_key: "client-a",
+               state_key: init.state_key,
+               live_handle: live_handle
+             )
+
+    assert get_in(health.response, ["result", "structuredContent", "status"]) == "ok"
+    refute_receive {:live_handle_called, ^ref}
+
+    resources = resources_list_request("resources")
+
+    assert {:error, :ledger_unavailable, ^resources} =
+             HTTPTransport.handle(config, resources,
+               client_key: "client-a",
+               state_key: init.state_key,
+               live_handle: live_handle
+             )
+
+    assert_receive {:live_handle_called, ^ref}
+  end
+
   test "a second client cannot reuse initialized state from a state key", %{config: config} do
     {:ok, init} = HTTPTransport.handle(config, initialize_request("init"), client_key: "client-a")
 
@@ -547,6 +579,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
   end
 
   defp tools_list_request(id), do: %{"jsonrpc" => "2.0", "id" => id, "method" => "tools/list", "params" => %{}}
+  defp resources_list_request(id), do: %{"jsonrpc" => "2.0", "id" => id, "method" => "resources/list", "params" => %{}}
 
   defp health_request(id) do
     %{
