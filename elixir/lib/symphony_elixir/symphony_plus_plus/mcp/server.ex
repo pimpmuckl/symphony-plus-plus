@@ -10161,7 +10161,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp approve_scope_expansion_linked_work_package(repo, %Session{} = session, work_package_id) do
     with :ok <- require_scope_expansion_handoff_package_scope(repo, session),
          {:ok, work_package, _scope} <- scoped_worktree_work_package(repo, session, work_package_id),
-         {:ok, work_request} <- scope_expansion_linked_work_request(repo, work_package_id) do
+         {:ok, work_request} <- optional_scope_expansion_linked_work_request(repo, work_package_id) do
       {:ok, work_package, work_request}
     else
       {:error, :not_found} -> {:error, :phase_scope_not_available}
@@ -10181,18 +10181,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp scope_expansion_linked_work_request(repo, work_package_id) do
-    case optional_scope_expansion_linked_work_request(repo, work_package_id) do
-      {:ok, %WorkRequest{} = work_request} -> {:ok, work_request}
-      {:ok, nil} -> {:error, :phase_scope_not_available}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
   defp optional_scope_expansion_linked_work_request(repo, work_package_id) do
     case linked_planned_slice_work_request_for_work_package(repo, work_package_id) do
       {:ok, {%PlannedSlice{}, %WorkRequest{} = work_request}} -> {:ok, work_request}
       {:error, :not_found} -> {:ok, nil}
+      {:error, :ambiguous_planned_slice_link} -> {:ok, nil}
       {:error, reason} -> {:error, reason}
     end
   end

@@ -167,7 +167,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlannedSliceWorkerRevokeTest do
     assert repo.get!(WorkPackage, linked_package.id).status == "closed"
   end
 
-  test "architect cleanup still targets one planned slice when package link is duplicated", %{repo: repo} do
+  test "architect cleanup and revoke fail closed when package link is duplicated", %{repo: repo} do
     {work_request, planned_slice, linked_package} = linked_slice!(repo, "implementing")
     successor_slice = create_planned_slice!(repo, work_request, "WRS-MCP-DELIVERY-DUPLICATE-CLEANUP-SUCCESSOR")
     other_work_request = create_work_request!(repo, "WR-MCP-DELIVERY-DUPLICATE-CLEANUP-OTHER")

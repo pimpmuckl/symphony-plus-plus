@@ -470,18 +470,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
       assert {:error, :ambiguous_planned_slice_link} =
                PlannedSliceLinkage.linked_slice_for_work_package(repo, work_package.id)
 
-      assert {:error, :ambiguous_planned_slice_link} =
+      assert {:ok, {_linked_slice, linked_request}} =
                PlannedSliceLinkage.linked_work_request_for_work_package(repo, work_package.id)
 
-      assert {:ok, {linked_slice, linked_package}} =
+      assert linked_request.id == work_request.id
+
+      assert {:error, :ambiguous_planned_slice_link} =
                PlannedSliceLinkage.linked_work_package_for_planned_slice(repo, work_request.id, first.id)
 
-      assert {linked_slice.id, linked_package.id} == {first.id, work_package.id}
+      other_work_request = create_work_request!(repo, id: "WR-LINKAGE-DUPLICATE-OTHER")
+      assert {:ok, other} = Repository.add_planned_slice(repo, other_work_request.id, planned_slice_attrs(id: "WRS-LINKAGE-C"))
+
+      SQL.query!(
+        repo,
+        "UPDATE sympp_work_request_planned_slices SET work_package_id = NULL WHERE id = ?",
+        [second.id]
+      )
+
+      SQL.query!(
+        repo,
+        "UPDATE sympp_work_request_planned_slices SET work_package_id = ? WHERE id = ?",
+        [work_package.id, other.id]
+      )
+
+      assert {:error, :ambiguous_planned_slice_link} =
+               PlannedSliceLinkage.linked_work_request_for_work_package(repo, work_package.id)
     after
       SQL.query!(
         repo,
-        "UPDATE sympp_work_request_planned_slices SET work_package_id = NULL WHERE id IN (?, ?)",
-        [first.id, second.id]
+        "UPDATE sympp_work_request_planned_slices SET work_package_id = NULL WHERE work_package_id = ?",
+        [work_package.id]
       )
 
       create_planned_slice_work_package_unique_index!(repo)

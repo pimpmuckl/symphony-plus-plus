@@ -321,6 +321,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
     assert {:ok, _dispatched_slice} =
              WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", package.id)
 
+    assert {:ok, duplicate_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-SCOPE-EXPANSION-DIRECT-LINKED-DUPLICATE",
+                 target_base_branch: work_request.base_branch,
+                 owned_file_globs: ["elixir/lib/**"]
+               )
+             )
+
+    assert {:ok, approved_duplicate_slice} =
+             WorkRequestRepository.approve_planned_slice(repo, work_request.id, duplicate_slice.id, "planned")
+
+    drop_planned_slice_work_package_unique_index!(repo)
+
+    ExUnit.Callbacks.on_exit(fn ->
+      repo.query!(
+        "UPDATE sympp_work_request_planned_slices SET work_package_id = NULL, dispatched_at = NULL WHERE id = ?",
+        [approved_duplicate_slice.id]
+      )
+
+      create_planned_slice_work_package_unique_index!(repo)
+    end)
+
+    repo.update!(
+      Ecto.Changeset.change(approved_duplicate_slice,
+        status: "dispatched",
+        work_package_id: package.id,
+        dispatched_at: DateTime.utc_now(:microsecond)
+      )
+    )
+
     assert {:ok, _stale_package} = WorkPackageRepository.update(repo, package.id, %{"allowed_file_globs" => ["src/**", "elixir/lib/**"]})
 
     approval_response =
@@ -2043,4 +2076,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
 
   defp restore_review_suite_state_dir(nil), do: Application.delete_env(:symphony_elixir, :sympp_review_suite_state_dir)
   defp restore_review_suite_state_dir(value), do: Application.put_env(:symphony_elixir, :sympp_review_suite_state_dir, value)
+
+  defp drop_planned_slice_work_package_unique_index!(repo) do
+    repo.query!("DROP INDEX IF EXISTS sympp_work_request_planned_slices_work_package_id_unique_index")
+  end
+
+  defp create_planned_slice_work_package_unique_index!(repo) do
+    repo.query!("""
+    CREATE UNIQUE INDEX IF NOT EXISTS sympp_work_request_planned_slices_work_package_id_unique_index
+    ON sympp_work_request_planned_slices (work_package_id)
+    WHERE work_package_id IS NOT NULL
+    """)
+  end
 end

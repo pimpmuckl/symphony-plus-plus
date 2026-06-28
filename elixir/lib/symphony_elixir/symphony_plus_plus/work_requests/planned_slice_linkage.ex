@@ -44,9 +44,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceLinkage do
           {:ok, {PlannedSlice.t(), WorkRequest.t()}} | {:error, error()}
   def linked_work_request_for_work_package(repo, work_package_id) when is_atom(repo) do
     case linked_work_requests_for_work_package(repo, work_package_id) do
-      {:ok, [{%PlannedSlice{}, %WorkRequest{}} = link]} -> {:ok, link}
       {:ok, []} -> {:error, :not_found}
-      {:ok, [_first | _rest]} -> {:error, :ambiguous_planned_slice_link}
+      {:ok, links} -> linked_unique_work_request(links)
       {:error, reason} -> {:error, reason}
     end
   end
@@ -77,7 +76,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceLinkage do
   def linked_work_package_for_planned_slice(repo, work_request_id, planned_slice_id)
       when is_atom(repo) and is_binary(work_request_id) and is_binary(planned_slice_id) do
     with {:ok, planned_slice} <- scoped_planned_slice(repo, work_request_id, planned_slice_id),
-         {:ok, work_package_id} <- nonblank(planned_slice.work_package_id, :planned_slice_not_dispatched) do
+         {:ok, work_package_id} <- nonblank(planned_slice.work_package_id, :planned_slice_not_dispatched),
+         :ok <- require_unique_work_package_link(repo, work_package_id) do
       case repo.get(WorkPackage, work_package_id) do
         %WorkPackage{} = work_package -> {:ok, {planned_slice, work_package}}
         nil -> {:error, :work_package_not_found}
@@ -88,6 +88,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceLinkage do
   end
 
   def linked_work_package_for_planned_slice(_repo, _work_request_id, _planned_slice_id), do: {:error, :not_found}
+
+  defp linked_unique_work_request(links) do
+    case Enum.uniq_by(links, fn {%PlannedSlice{}, %WorkRequest{id: work_request_id}} -> work_request_id end) do
+      [{%PlannedSlice{}, %WorkRequest{}} = link] -> {:ok, link}
+      [_first | _rest] -> {:error, :ambiguous_planned_slice_link}
+    end
+  end
+
+  defp require_unique_work_package_link(repo, work_package_id) do
+    case linked_slice_for_work_package(repo, work_package_id) do
+      {:ok, %PlannedSlice{}} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp linked_slice_query(work_package_id) do
     from(planned_slice in PlannedSlice,
