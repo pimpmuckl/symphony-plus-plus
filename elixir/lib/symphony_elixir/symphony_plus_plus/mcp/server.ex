@@ -5261,49 +5261,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp planned_slice_delivery_typed_evidence_attrs("pr_merged", evidence) do
-    with :ok <- require_planned_slice_delivery_evidence_fields(evidence, ["pr_url", "pr_number", "pr_repository", "pr_merged_at", "merge_commit_sha"]),
-         {:ok, pr_number} <- optional_positive_integer_argument(evidence, "pr_number"),
-         {:ok, pr_url} <- optional_string_argument(evidence, "pr_url"),
-         {:ok, pr_repository} <- optional_string_argument(evidence, "pr_repository"),
-         {:ok, pr_merged_at} <- optional_string_argument(evidence, "pr_merged_at"),
-         {:ok, merge_commit_sha} <- optional_string_argument(evidence, "merge_commit_sha") do
-      {:ok,
-       %{}
-       |> optional_put("pr_url", pr_url)
-       |> optional_put("pr_number", pr_number)
-       |> optional_put("pr_repository", pr_repository)
-       |> optional_put("pr_merged_at", pr_merged_at)
-       |> optional_put("merge_commit_sha", merge_commit_sha)}
+  defp planned_slice_delivery_typed_evidence_attrs(outcome, evidence) do
+    field_specs = planned_slice_delivery_evidence_field_specs(outcome)
+    allowed_keys = Enum.map(field_specs, &elem(&1, 0))
+
+    with :ok <- require_planned_slice_delivery_evidence_fields(evidence, allowed_keys) do
+      collect_planned_slice_delivery_evidence_attrs(evidence, field_specs)
     end
   end
 
-  defp planned_slice_delivery_typed_evidence_attrs("completed_no_pr", evidence) do
-    with :ok <- require_planned_slice_delivery_evidence_fields(evidence, ["no_pr_evidence"]),
-         {:ok, no_pr_evidence} <- optional_string_argument(evidence, "no_pr_evidence") do
-      {:ok, optional_put(%{}, "no_pr_evidence", no_pr_evidence)}
-    end
+  defp planned_slice_delivery_evidence_field_specs("pr_merged"),
+    do: [
+      {"pr_url", :string},
+      {"pr_number", :positive_integer},
+      {"pr_repository", :string},
+      {"pr_merged_at", :string},
+      {"merge_commit_sha", :string}
+    ]
+
+  defp planned_slice_delivery_evidence_field_specs("completed_no_pr"), do: [{"no_pr_evidence", :string}]
+
+  defp planned_slice_delivery_evidence_field_specs("superseded"),
+    do: [
+      {"successor_planned_slice_id", :string},
+      {"successor_work_package_id", :string},
+      {"superseded_reason", :string}
+    ]
+
+  defp planned_slice_delivery_evidence_field_specs("abandoned"), do: [{"abandoned_rationale", :string}]
+
+  defp collect_planned_slice_delivery_evidence_attrs(evidence, field_specs) do
+    Enum.reduce_while(field_specs, {:ok, %{}}, fn {field, type}, {:ok, attrs} ->
+      case planned_slice_delivery_evidence_field(evidence, field, type) do
+        {:ok, value} -> {:cont, {:ok, optional_put(attrs, field, value)}}
+        {:tool_error, reason} -> {:halt, {:tool_error, reason}}
+      end
+    end)
   end
 
-  defp planned_slice_delivery_typed_evidence_attrs("superseded", evidence) do
-    with :ok <- require_planned_slice_delivery_evidence_fields(evidence, ["successor_planned_slice_id", "successor_work_package_id", "superseded_reason"]),
-         {:ok, successor_planned_slice_id} <- optional_string_argument(evidence, "successor_planned_slice_id"),
-         {:ok, successor_work_package_id} <- optional_string_argument(evidence, "successor_work_package_id"),
-         {:ok, superseded_reason} <- optional_string_argument(evidence, "superseded_reason") do
-      {:ok,
-       %{}
-       |> optional_put("successor_planned_slice_id", successor_planned_slice_id)
-       |> optional_put("successor_work_package_id", successor_work_package_id)
-       |> optional_put("superseded_reason", superseded_reason)}
-    end
-  end
-
-  defp planned_slice_delivery_typed_evidence_attrs("abandoned", evidence) do
-    with :ok <- require_planned_slice_delivery_evidence_fields(evidence, ["abandoned_rationale"]),
-         {:ok, abandoned_rationale} <- optional_string_argument(evidence, "abandoned_rationale") do
-      {:ok, optional_put(%{}, "abandoned_rationale", abandoned_rationale)}
-    end
-  end
+  defp planned_slice_delivery_evidence_field(evidence, field, :string), do: optional_string_argument(evidence, field)
+  defp planned_slice_delivery_evidence_field(evidence, field, :positive_integer), do: optional_positive_integer_argument(evidence, field)
 
   defp require_planned_slice_delivery_evidence_fields(evidence, allowed_keys) do
     case Map.keys(evidence) -- allowed_keys do
