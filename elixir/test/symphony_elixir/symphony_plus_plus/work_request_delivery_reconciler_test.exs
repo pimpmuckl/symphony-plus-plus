@@ -484,6 +484,60 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert length(reconcile_blocker_closeout_events(repo, linked_package.id)) == 1
   end
 
+  test "already closed repair defers remaining blocker events after partial append", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-RECONCILE-BLOCKER-PARTIAL-REPAIR",
+        work_package_id: "WP-RECONCILE-BLOCKER-PARTIAL-REPAIR",
+        status: "ready_for_merge"
+      )
+
+    append_merged_pr_evidence!(repo, linked_package, 922, "head-922")
+    append_active_blocker!(repo, linked_package.id, "partial-repair-a")
+    append_active_blocker!(repo, linked_package.id, "partial-repair-b")
+
+    assert {:ok, _delivery} =
+             WorkRequestService.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               planned_slice.id,
+               merged_pr_delivery_attrs(922, %{"allow_active_blocker_closeout" => true})
+             )
+
+    Process.put(:partial_repair_append_count, 0)
+
+    failing_second_appender = fn callback_repo, _work_package_id, attrs ->
+      count = Process.get(:partial_repair_append_count, 0) + 1
+      Process.put(:partial_repair_append_count, count)
+
+      case count do
+        1 -> PlanningRepository.append_progress_event(callback_repo, attrs)
+        _count -> {:error, :audit_revoked}
+      end
+    end
+
+    assert {:ok, result} =
+             DeliveryReconciler.reconcile(repo, work_request.id,
+               mode: :apply,
+               append_blocker_closeout_event: failing_second_appender
+             )
+
+    assert result.applied_count == 1
+    assert result.error_count == 0
+
+    assert [
+             %{
+               status: "applied",
+               reason: "already_closeout_blocker_closeout_repaired",
+               blocker_closeout_event_ids: [_event_id],
+               blocker_closeout_repair: %{status: "deferred", reason: "audit_revoked"}
+             }
+           ] = result.results
+
+    assert length(reconcile_blocker_closeout_events(repo, linked_package.id)) == 1
+  end
+
   test "MCP reconcile_work_request apply keys blocker preservation by active blocker event", %{repo: repo} do
     {work_request, _planned_slice, linked_package} =
       linked_slice!(

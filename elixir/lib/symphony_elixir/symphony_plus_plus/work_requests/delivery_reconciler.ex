@@ -242,6 +242,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
         })
         |> maybe_put_blocker_closeout_event_ids(event_ids)
 
+      {:partial, event_ids, reason} ->
+        planned_slice
+        |> base_result(work_package)
+        |> Map.merge(%{
+          status: "applied",
+          reason: "already_closeout_blocker_closeout_repaired",
+          action: action_payload,
+          delivery_outcome: delivery_outcome
+        })
+        |> maybe_put_blocker_closeout_event_ids(event_ids)
+        |> maybe_put_blocker_closeout_repair(%{status: "deferred", reason: reason_text(reason)})
+
       {:error, reason} ->
         error_result(planned_slice, work_package, reason, action_payload)
     end
@@ -662,7 +674,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
   defp append_reconcile_blocker_closeout_event_result(repo, blocker, closeout, event_ids, opts) do
     case append_reconcile_blocker_closeout_event(repo, blocker, closeout, opts) do
       {:ok, event} -> {:cont, {:ok, [event.id | event_ids]}}
-      {:error, reason} -> {:halt, {:error, reason}}
+      {:error, reason} when event_ids == [] -> {:halt, {:error, reason}}
+      {:error, reason} -> {:halt, {:partial, event_ids, reason}}
     end
   end
 
@@ -705,8 +718,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     with {:ok, delivery} <-
            record_planned_slice_delivery(repo, work_request, planned_slice, delivery_attrs, opts) do
       case append_reconcile_blocker_closeout_events(repo, work_package, action_payload, opts) do
-        {:ok, blocker_closeout_event_ids} -> {:ok, delivery, blocker_closeout_event_ids, nil}
-        {:error, reason} -> {:ok, delivery, [], %{status: "deferred", reason: reason_text(reason)}}
+        {:ok, blocker_closeout_event_ids} ->
+          {:ok, delivery, blocker_closeout_event_ids, nil}
+
+        {:partial, blocker_closeout_event_ids, reason} ->
+          {:ok, delivery, blocker_closeout_event_ids, %{status: "deferred", reason: reason_text(reason)}}
+
+        {:error, reason} ->
+          {:ok, delivery, [], %{status: "deferred", reason: reason_text(reason)}}
       end
     end
   end
