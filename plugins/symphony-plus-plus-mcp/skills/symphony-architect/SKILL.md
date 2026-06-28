@@ -80,13 +80,15 @@ another shape. Each slice needs:
 - Stop conditions and guidance routing.
 - Dependencies and recorded decisions needed to avoid scope drift.
 
-After claiming a WorkRequest, current-WR planning writes may omit
+After claiming a WorkRequest, current-WR lifecycle tools may omit
 `work_request_id`: `add_work_request_planned_slice`,
 `upsert_work_request_product_plan_node`,
 `move_work_request_planned_slice_to_product_node`,
 `approve_work_request_planned_slice`, `skip_work_request_planned_slice`, and
-`mark_work_request_sliced`. Keep reads, lists, delivery closeout, dispatch,
-status/question tools, durable decisions, and package tools explicit.
+`mark_work_request_sliced`, plus delivery board/reconcile, planned-slice
+delivery closeout, runtime cleanup, worker-key revocation, and dispatch. Keep
+intentional sibling reads, status/question tools, durable decisions, and package
+tools explicit.
 
 Approve slices only when the boundary is defensible. Skip stale/superseded
 slices. Mark the WorkRequest sliced once approved slices cover the request.
@@ -146,16 +148,20 @@ loop; send important findings back to the worker.
 Use `read_work_request_delivery_board` as the WR delivery board after dispatch.
 Decisions are rationale. Delivery closeout records lifecycle truth.
 
-Record terminal outcomes with `record_planned_slice_delivery`:
+For merged PR evidence, use `reconcile_work_request` first, then
+`reconcile_work_request(apply: true)` when the proposed repair matches the
+delivery board. That path uses attached/synced PR evidence and avoids repeating
+PR URL, package, or slice facts.
 
-- `pr_merged`: PR URL, merged-at timestamp, and merge commit for linked
-  packages.
+Record other terminal outcomes with `record_planned_slice_delivery`:
+
+- `pr_merged`: only when reconciliation lacks structured PR evidence; include
+  PR URL, merged-at timestamp, and merge commit for linked packages.
 - `completed_no_pr`: direct no-PR evidence.
 - `superseded`: successor slice id and reason.
 - `abandoned`: rationale.
 
-Use `reconcile_work_request` for structured PR/GitHub evidence repair. Do not
-infer delivery from prose decisions or chat. Phase-child PRs remain phase
+Do not infer delivery from prose decisions or chat. Phase-child PRs remain phase
 controlled; call `merge_child_into_phase` before `pr_merged` closeout when
 required. Use `cleanup_work_request_planned_slice_runtime` to recycle linked
 worker grants, non-paused claim leases, and recoverable worker MCP session bindings

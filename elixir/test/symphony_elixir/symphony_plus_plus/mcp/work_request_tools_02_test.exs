@@ -313,6 +313,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
 
     assert get_in(skip_response, ["result", "structuredContent", "planned_slice", "status"]) == "skipped"
 
+    board_response = mcp_tool(repo, session, "read_work_request_delivery_board", %{})
+    assert get_in(board_response, ["result", "structuredContent", "work_request", "id"]) == work_request.id
+
     mark_response =
       mcp_tool(repo, session, "mark_work_request_sliced", %{
         "current_status" => "ready_for_slicing"
@@ -327,12 +330,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     read_missing_response = mcp_tool(repo, session, "read_work_request", %{})
     assert get_in(read_missing_response, ["error", "data", "reason"]) == "missing_work_request_id"
 
-    dispatch_missing_response =
+    dispatch_response =
       mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
-        "planned_slice_id" => planned_slice_id
+        "planned_slice_id" => planned_slice_id,
+        "claimed_by" => "current-wr-worker"
       })
 
-    assert get_in(dispatch_missing_response, ["error", "data", "reason"]) == "missing_work_request_id"
+    work_package_id = get_in(dispatch_response, ["result", "structuredContent", "work_package", "id"])
+    assert is_binary(work_package_id)
+
+    assert {:ok, _attached} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package_id,
+               summary: "PR attached and merged",
+               status: "pr_attached",
+               payload: %{
+                 type: "pr",
+                 source_tool: "attach_pr",
+                 url: "https://github.com/#{anchor.repo}/pull/920",
+                 repository: anchor.repo,
+                 number: 920,
+                 base_branch: anchor.base_branch,
+                 head_sha: "head-current-wr",
+                 merged: true,
+                 merged_at: "2026-06-07T10:00:00Z",
+                 merge_commit_sha: "merge-current-wr"
+               }
+             })
+
+    reconcile_response = mcp_tool(repo, session, "reconcile_work_request", %{"apply" => true})
+    assert get_in(reconcile_response, ["result", "structuredContent", "reconciliation", "applied_count"]) == 1
+    assert get_in(reconcile_response, ["result", "structuredContent", "delivery_board", "counts", "delivered"]) == 1
+    assert repo.get!(WorkPackage, work_package_id).status == "merged"
   end
 
   test "record_planned_slice_delivery requires active blocker closeout and can preserve blockers", %{repo: repo} do
@@ -370,7 +399,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
 
     preserve_response =
       mcp_tool(repo, session, "record_planned_slice_delivery", %{
-        "work_request_id" => work_request.id,
         "planned_slice_id" => planned_slice.id,
         "outcome" => "pr_merged",
         "idempotency_key" => "delivery-preserve-with-closeout",
