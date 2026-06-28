@@ -6163,8 +6163,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     Enum.any?(results, &reconcile_result_has_delivery_closeout?/1)
   end
 
-  defp reconcile_product_tree_revision_required?(_reconciliation), do: false
-
   defp reconcile_result_has_delivery_closeout?(%{reason: "already_closeout"}), do: true
   defp reconcile_result_has_delivery_closeout?(_result), do: false
 

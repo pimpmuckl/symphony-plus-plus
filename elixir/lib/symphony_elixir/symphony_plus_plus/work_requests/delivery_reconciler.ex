@@ -152,10 +152,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     end
   end
 
-  defp reconcile_already_closed_slice(_repo, %PlannedSlice{} = planned_slice, delivery_outcome, _mode, _opts) do
-    already_closeout_result(planned_slice, nil, delivery_outcome)
-  end
-
   defp repair_already_closed_blocker_closeout(repo, %PlannedSlice{} = planned_slice, delivery_outcome, opts) do
     case load_already_closed_blocker_closeout_repair(repo, planned_slice, delivery_outcome) do
       {:ok, work_package, missing_blockers} ->
