@@ -514,6 +514,75 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
     assert unchanged_package.allowed_file_globs == ["elixir/lib/**"]
   end
 
+  test "WorkRequest architect claim cannot approve unlinked current package scope expansion", %{
+    repo: repo
+  } do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-SCOPE-EXPANSION-UNLINKED-ANCHOR",
+        status: "ready_for_slicing",
+        constraints: %{"allowed_paths" => ["elixir/lib"], "requires_secret" => false}
+      )
+
+    assert {:ok, _handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               handoff_opts: [
+                 claimed_by: ArchitectHandoff.claimed_by(),
+                 database: repo.database_path(),
+                 local_architect_claim?: true
+               ]
+             )
+
+    {claim_response, architect_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-wr-architect-unlinked-anchor-scope-expansion",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_architect_assignment",
+            "arguments" => %{"work_request_id" => work_request.id}
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "wr-architect-unlinked-anchor-scope-expansion-state")
+      )
+
+    capabilities = get_in(claim_response, ["result", "structuredContent", "assignment", "capabilities"])
+    assert "write:work_request" in capabilities
+    refute "approve:scope_expansion" in capabilities
+
+    anchor_id = ArchitectHandoff.anchor_id_for_work_request(work_request)
+
+    repo.query!(
+      "UPDATE sympp_work_packages SET policy_template = ? WHERE id = ?",
+      ["mcp_changed_file_scope_guard", anchor_id]
+    )
+
+    response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "wr-architect-unlinked-anchor-scope-expansion",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "approve_scope_expansion",
+            "arguments" => %{
+              "work_package_id" => anchor_id,
+              "allowed_file_globs" => ["docs/**"],
+              "rationale" => "Unlinked handoff anchors cannot bypass WorkRequest scope."
+            }
+          }
+        },
+        architect_server
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    assert {:ok, unchanged_anchor} = WorkPackageRepository.get(repo, anchor_id)
+    refute "docs/**" in unchanged_anchor.allowed_file_globs
+  end
+
   test "WorkRequest architect claim approves dispatched package scope expansion", %{repo: repo} do
     work_request =
       create_work_request!(repo,

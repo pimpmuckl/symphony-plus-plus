@@ -10150,7 +10150,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp approve_scope_expansion_work_package(repo, %Session{} = session, work_package_id) do
     if Session.work_package_id(session) == work_package_id do
       with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
-           {:ok, work_request} <- optional_scope_expansion_linked_work_request(repo, work_package_id) do
+           {:ok, work_request} <- optional_scope_expansion_linked_work_request(repo, work_package_id),
+           :ok <- require_current_scope_expansion_work_request_scope(session, work_request) do
         {:ok, work_package, work_request}
       end
     else
@@ -10186,6 +10187,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, {%PlannedSlice{}, %WorkRequest{} = work_request}} -> {:ok, work_request}
       {:error, :not_found} -> {:ok, nil}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_current_scope_expansion_work_request_scope(%Session{}, %WorkRequest{}), do: :ok
+
+  defp require_current_scope_expansion_work_request_scope(%Session{} = session, nil) do
+    case require_architect_capability(session.assignment, "approve:scope_expansion") do
+      :ok -> :ok
+      {:error, :insufficient_capability} -> {:error, :phase_scope_not_available}
     end
   end
 
