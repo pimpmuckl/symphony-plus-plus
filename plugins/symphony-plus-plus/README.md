@@ -186,7 +186,9 @@ if the running runtime is for an older commit, the launcher starts a new
 managed runtime and records a lease against that new runtime key. Runtime
 output is redirected to the log paths recorded in the runtime file. When the
 last bridge lease for a runtime key exits, the launcher stops only the managed
-PIDs for that key whose command lines still match Symphony++.
+PIDs for that key whose command lines still match Symphony++. The backend
+`/mcp/client-lease` endpoint is heartbeat telemetry for bridge pacing, not a
+runtime shutdown authority.
 
 For non-destructive lifecycle forensics, run the installed diagnostic from the
 plugin root:
