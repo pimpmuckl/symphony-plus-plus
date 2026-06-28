@@ -1228,6 +1228,85 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
              successor_package.id
   end
 
+  test "superseded closeout returns structured error for duplicate successor package links", %{
+    repo: repo
+  } do
+    {work_request, planned_slice, _linked_package} =
+      linked_slice!(repo, work_request_id: "WR-MCP-DELIVERY-SUCCESSOR-DUPLICATE")
+
+    successor_slice =
+      create_planned_slice!(repo, work_request, id: "WRS-MCP-DELIVERY-SUCCESSOR-DUPLICATE")
+
+    session = create_work_request_architect_session(repo, work_request, ["write:work_request"])
+
+    assert {:ok, approved_successor} =
+             WorkRequestRepository.approve_planned_slice(
+               repo,
+               work_request.id,
+               successor_slice.id,
+               "planned"
+             )
+
+    successor_package =
+      create_matching_work_package!(repo, work_request, approved_successor,
+        id: "WP-MCP-DELIVERY-SUCCESSOR-DUPLICATE",
+        status: "reviewing"
+      )
+
+    assert {:ok, dispatched_successor} =
+             WorkRequestRepository.dispatch_planned_slice(
+               repo,
+               work_request.id,
+               approved_successor.id,
+               "approved",
+               successor_package.id
+             )
+
+    duplicate_successor_slice =
+      create_planned_slice!(repo, work_request, id: "WRS-MCP-DELIVERY-SUCCESSOR-DUPLICATE-OTHER")
+
+    drop_planned_slice_work_package_unique_index!(repo)
+
+    try do
+      repo.update!(
+        Ecto.Changeset.change(duplicate_successor_slice,
+          status: "dispatched",
+          work_package_id: successor_package.id,
+          dispatched_at: DateTime.utc_now(:microsecond)
+        )
+      )
+
+      response =
+        record_delivery(
+          repo,
+          session,
+          superseded_args(
+            work_request,
+            planned_slice,
+            "delivery-mcp-successor-duplicate-package-link",
+            dispatched_successor.id,
+            "Recut to a successor package with ambiguous duplicate links.",
+            successor_package.id
+          )
+        )
+
+      assert get_in(response, ["error", "data", "reason"]) == "ambiguous_planned_slice_link"
+      assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+    after
+      SQL.query!(
+        repo,
+        """
+        UPDATE sympp_work_request_planned_slices
+        SET work_package_id = NULL, dispatched_at = NULL
+        WHERE id = ?
+        """,
+        [duplicate_successor_slice.id]
+      )
+
+      create_planned_slice_work_package_unique_index!(repo)
+    end
+  end
+
   defp linked_slice!(repo, overrides) do
     request_id = Keyword.fetch!(overrides, :work_request_id)
     work_package_status = Keyword.get(overrides, :work_package_status, "reviewing")
