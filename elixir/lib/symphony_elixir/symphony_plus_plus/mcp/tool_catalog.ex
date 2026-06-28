@@ -788,23 +788,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
           |> string_enum_schema()
           |> Map.put(
             "description",
-            "Delivery outcome. pr_merged requires pr_url and pr_merged_at; linked packages also require merge_commit_sha. completed_no_pr requires no_pr_evidence. superseded requires successor_planned_slice_id and superseded_reason. abandoned requires abandoned_rationale."
+            "Delivery outcome. Must match the single typed key inside evidence."
           ),
         "idempotency_key" => described_string_schema("Stable caller-provided key for replay. Reusing the same key and evidence returns the existing delivery; conflicting evidence is rejected."),
         "recorded_by" => described_string_schema("Optional closeout actor. Defaults to the claimed architect identity."),
-        "pr_url" => described_string_schema("Required for outcome pr_merged."),
-        "pr_number" => integer_schema() |> Map.put("description", "Optional positive PR number for outcome pr_merged."),
-        "pr_repository" => described_string_schema("Optional owner/repository for outcome pr_merged."),
-        "pr_merged_at" => described_string_schema("Required ISO-8601 timestamp for outcome pr_merged."),
-        "merge_commit_sha" => described_string_schema("Required for linked-package pr_merged closeout strong evidence."),
-        "no_pr_evidence" => markdown_string_schema("Required Markdown evidence for outcome completed_no_pr."),
-        "successor_planned_slice_id" => described_string_schema("Required for outcome superseded; must belong to the same WorkRequest."),
-        "successor_work_package_id" => described_string_schema("Optional successor package id; when present it must be linked to the declared successor planned slice inside the same WorkRequest."),
-        "superseded_reason" => markdown_string_schema("Required Markdown reason for outcome superseded."),
-        "abandoned_rationale" => markdown_string_schema("Required Markdown rationale for outcome abandoned."),
+        "evidence" => planned_slice_delivery_evidence_schema(),
         "blocker_closeout" => blocker_closeout_schema()
       },
-      ["planned_slice_id", "outcome", "idempotency_key"]
+      ["planned_slice_id", "outcome", "idempotency_key", "evidence"]
     )
   end
 
@@ -1187,6 +1178,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
       },
       ["planned_slice_id", "grant_id", "reason"]
     )
+  end
+
+  defp planned_slice_delivery_evidence_schema do
+    %{
+      "type" => "object",
+      "description" => "Exactly one typed evidence object matching outcome.",
+      "additionalProperties" => false,
+      "properties" => %{
+        "pr_merged" =>
+          schema(
+            %{
+              "pr_url" => described_string_schema("Merged pull request URL."),
+              "pr_number" => integer_schema() |> Map.put("minimum", 1) |> Map.put("description", "Optional positive pull request number."),
+              "pr_repository" => described_string_schema("Optional owner/repository."),
+              "pr_merged_at" => described_string_schema("ISO-8601 merge timestamp."),
+              "merge_commit_sha" => described_string_schema("Required for linked-package closeout strong evidence.")
+            },
+            ["pr_url", "pr_merged_at"]
+          ),
+        "completed_no_pr" =>
+          schema(
+            %{
+              "no_pr_evidence" => markdown_string_schema("Markdown evidence for direct no-PR completion.")
+            },
+            ["no_pr_evidence"]
+          ),
+        "superseded" =>
+          schema(
+            %{
+              "successor_planned_slice_id" => described_string_schema("Successor planned slice id in the same WorkRequest."),
+              "successor_work_package_id" => described_string_schema("Optional successor package linked to the successor slice."),
+              "superseded_reason" => markdown_string_schema("Markdown reason for supersession.")
+            },
+            ["successor_planned_slice_id", "superseded_reason"]
+          ),
+        "abandoned" =>
+          schema(
+            %{
+              "abandoned_rationale" => markdown_string_schema("Markdown rationale for abandonment.")
+            },
+            ["abandoned_rationale"]
+          )
+      },
+      "oneOf" => Enum.map(PlannedSliceDelivery.outcomes(), &%{"required" => [&1]})
+    }
   end
 
   @spec claimable_tool_specs(Config.t()) :: [tool_spec()]

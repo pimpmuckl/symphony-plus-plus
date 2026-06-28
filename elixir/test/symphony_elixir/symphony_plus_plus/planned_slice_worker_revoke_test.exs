@@ -250,7 +250,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlannedSliceWorkerRevokeTest do
         "planned_slice_id" => planned_slice.id,
         "outcome" => "abandoned",
         "idempotency_key" => "delivery-abandoned-after-runtime-cleanup",
-        "abandoned_rationale" => "The original no-code dispatch was replaced before implementation started."
+        "evidence" => %{
+          "abandoned" => %{"abandoned_rationale" => "The original no-code dispatch was replaced before implementation started."}
+        }
       })
 
     assert get_in(abandoned_response, ["result", "structuredContent", "planned_slice_delivery", "outcome"]) == "abandoned"
@@ -499,8 +501,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlannedSliceWorkerRevokeTest do
       "planned_slice_id" => planned_slice.id,
       "outcome" => "superseded",
       "idempotency_key" => "delivery-mcp-in-progress-recut-after-recycle",
-      "superseded_reason" => "Recut after the old worker authority was explicitly recycled.",
-      "successor_planned_slice_id" => successor_planned_slice_id
+      "evidence" => %{
+        "superseded" => %{
+          "superseded_reason" => "Recut after the old worker authority was explicitly recycled.",
+          "successor_planned_slice_id" => successor_planned_slice_id
+        }
+      }
     }
   end
 

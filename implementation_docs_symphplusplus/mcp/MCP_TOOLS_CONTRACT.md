@@ -220,6 +220,14 @@ and fresh active AgentRun evidence fail closed; after cleanup, record the
 delivery outcome with
 `record_planned_slice_delivery`.
 
+`record_planned_slice_delivery` keeps `work_request_id`, `planned_slice_id`,
+`outcome`, and `idempotency_key` explicit, and groups closeout proof under one
+typed `evidence` object. Provide exactly one key matching `outcome`:
+`evidence.pr_merged`, `evidence.completed_no_pr`, `evidence.superseded`, or
+`evidence.abandoned`. `pr_merged` evidence still requires PR URL and merged-at
+timestamp, and linked packages still require `merge_commit_sha`; active blocker
+closeout remains an explicit `blocker_closeout` argument.
+
 `mint_child_worker_key` accepts an optional `template` object. The template may
 set non-secret `claimed_by`, `capabilities`, and `expires_at`; it cannot provide
 secret handoff options.

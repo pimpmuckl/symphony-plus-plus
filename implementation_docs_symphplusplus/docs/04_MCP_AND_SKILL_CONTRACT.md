@@ -91,18 +91,20 @@ Architect delivery closeout uses:
 ```text
 read_work_request_delivery_board(work_request_id)
 cleanup_work_request_planned_slice_runtime(work_request_id, planned_slice_id, outcome, reason, ...)
-record_planned_slice_delivery(work_request_id, planned_slice_id, outcome, idempotency_key, ...)
+record_planned_slice_delivery(work_request_id, planned_slice_id, outcome, idempotency_key, evidence)
 reconcile_work_request
 ```
 
 Closeout outcomes include `pr_merged`, `completed_no_pr`, `superseded`, and
-`abandoned`. `completed_no_pr` requires `no_pr_evidence`; `superseded` requires
-`successor_planned_slice_id` and a rationale. `reconcile_work_request` may use
-PR/GitHub evidence to propose deterministic closeout repairs. Use
-`cleanup_work_request_planned_slice_runtime` before closeout when stale linked
-worker grants, local claim leases, or recoverable worker MCP session bindings are the
-remaining runtime blocker; include the same superseded or abandoned evidence
-that will authorize closeout. See
+`abandoned`. `record_planned_slice_delivery` groups proof under one typed
+`evidence` object matching `outcome`: `evidence.pr_merged`,
+`evidence.completed_no_pr`, `evidence.superseded`, or `evidence.abandoned`.
+PR/GitHub evidence may also drive deterministic closeout repairs through
+`reconcile_work_request`. Use `cleanup_work_request_planned_slice_runtime`
+before closeout when stale linked worker grants, local claim leases, or
+recoverable worker MCP session bindings are the remaining runtime blocker;
+cleanup keeps the flat superseded or abandoned fields that authorize cleanup
+before the typed closeout call. See
 `../runbooks/WORK_REQUEST_DELIVERY_CLOSEOUT.md` for the operator runbook.
 
 ## Discovery

@@ -1460,7 +1460,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
       "planned_slice_id" => planned_slice.id,
       "outcome" => "completed_no_pr",
       "idempotency_key" => idempotency_key,
-      "no_pr_evidence" => evidence
+      "evidence" => %{"completed_no_pr" => %{"no_pr_evidence" => evidence}}
     }
   end
 
@@ -1470,11 +1470,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
       "planned_slice_id" => planned_slice.id,
       "outcome" => "pr_merged",
       "idempotency_key" => idempotency_key,
-      "pr_url" => "https://github.com/nextide/symphony-plus-plus/pull/24",
-      "pr_number" => 24,
-      "pr_repository" => "nextide/symphony-plus-plus",
-      "pr_merged_at" => "2026-05-28T12:00:00Z",
-      "merge_commit_sha" => "abc24"
+      "evidence" => %{
+        "pr_merged" => %{
+          "pr_url" => "https://github.com/nextide/symphony-plus-plus/pull/24",
+          "pr_number" => 24,
+          "pr_repository" => "nextide/symphony-plus-plus",
+          "pr_merged_at" => "2026-05-28T12:00:00Z",
+          "merge_commit_sha" => "abc24"
+        }
+      }
     }
   end
 
@@ -1484,7 +1488,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
       "planned_slice_id" => planned_slice.id,
       "outcome" => "abandoned",
       "idempotency_key" => idempotency_key,
-      "abandoned_rationale" => rationale
+      "evidence" => %{"abandoned" => %{"abandoned_rationale" => rationale}}
     }
   end
 
@@ -1514,14 +1518,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
       "planned_slice_id" => planned_slice.id,
       "outcome" => "superseded",
       "idempotency_key" => idempotency_key,
-      "superseded_reason" => reason,
-      "successor_planned_slice_id" => successor_planned_slice_id
+      "evidence" =>
+        %{
+          "superseded" => %{
+            "superseded_reason" => reason,
+            "successor_planned_slice_id" => successor_planned_slice_id
+          }
+        }
+        |> put_in_if_present(["superseded", "successor_work_package_id"], successor_work_package_id)
     }
-    |> optional_arg("successor_work_package_id", successor_work_package_id)
   end
 
-  defp optional_arg(attrs, _key, nil), do: attrs
-  defp optional_arg(attrs, key, value), do: Map.put(attrs, key, value)
+  defp put_in_if_present(attrs, _path, nil), do: attrs
+  defp put_in_if_present(attrs, path, value), do: put_in(attrs, path, value)
 
   defp drop_planned_slice_work_package_unique_index!(repo) do
     SQL.query!(repo, "DROP INDEX IF EXISTS sympp_work_request_planned_slices_work_package_id_unique_index")

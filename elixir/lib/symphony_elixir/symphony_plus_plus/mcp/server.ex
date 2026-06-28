@@ -3256,9 +3256,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {visible_work_package_ids, work_package_contexts} <-
            visible_delivery_board_work_package_contexts(config.repo, work_request, planned_slices, filters),
          {:ok, reconciliation} <-
-           DeliveryReconciler.reconcile(config.repo, work_request_id,
+           reconcile_work_request(config.repo, live_session, work_request_id, apply?, recorded_by,
              mode: reconcile_work_request_mode(apply?),
-             recorded_by: recorded_by,
              work_request: work_request,
              planned_slices: planned_slices,
              visible_work_package_ids: visible_work_package_ids,
@@ -5287,34 +5286,80 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp planned_slice_delivery_attrs(arguments, outcome, idempotency_key, recorded_by) do
-    with {:ok, pr_number} <- optional_positive_integer_argument(arguments, "pr_number"),
-         {:ok, pr_url} <- optional_string_argument(arguments, "pr_url"),
-         {:ok, pr_repository} <- optional_string_argument(arguments, "pr_repository"),
-         {:ok, pr_merged_at} <- optional_string_argument(arguments, "pr_merged_at"),
-         {:ok, merge_commit_sha} <- optional_string_argument(arguments, "merge_commit_sha"),
-         {:ok, no_pr_evidence} <- optional_string_argument(arguments, "no_pr_evidence"),
-         {:ok, successor_planned_slice_id} <- optional_string_argument(arguments, "successor_planned_slice_id"),
-         {:ok, successor_work_package_id} <- optional_string_argument(arguments, "successor_work_package_id"),
-         {:ok, superseded_reason} <- optional_string_argument(arguments, "superseded_reason"),
-         {:ok, abandoned_rationale} <- optional_string_argument(arguments, "abandoned_rationale") do
-      attrs =
-        %{
-          "outcome" => outcome,
-          "idempotency_key" => idempotency_key,
-          "recorded_by" => recorded_by
-        }
-        |> optional_put("pr_url", pr_url)
-        |> optional_put("pr_number", pr_number)
-        |> optional_put("pr_repository", pr_repository)
-        |> optional_put("pr_merged_at", pr_merged_at)
-        |> optional_put("merge_commit_sha", merge_commit_sha)
-        |> optional_put("no_pr_evidence", no_pr_evidence)
-        |> optional_put("successor_planned_slice_id", successor_planned_slice_id)
-        |> optional_put("successor_work_package_id", successor_work_package_id)
-        |> optional_put("superseded_reason", superseded_reason)
-        |> optional_put("abandoned_rationale", abandoned_rationale)
+    with {:ok, evidence} <- required_object(arguments, "evidence"),
+         {:ok, evidence_attrs} <- planned_slice_delivery_evidence_attrs(evidence, outcome) do
+      {:ok,
+       Map.merge(
+         %{
+           "outcome" => outcome,
+           "idempotency_key" => idempotency_key,
+           "recorded_by" => recorded_by
+         },
+         evidence_attrs
+       )}
+    end
+  end
 
-      {:ok, attrs}
+  defp planned_slice_delivery_evidence_attrs(evidence, outcome) do
+    case Map.keys(evidence) do
+      [^outcome] ->
+        with {:ok, typed_evidence} <- required_object(evidence, outcome) do
+          planned_slice_delivery_typed_evidence_attrs(outcome, typed_evidence)
+        end
+
+      [] ->
+        {:tool_error, "missing_evidence"}
+
+      _keys ->
+        {:tool_error, "conflicting_delivery_evidence"}
+    end
+  end
+
+  defp planned_slice_delivery_typed_evidence_attrs(outcome, evidence) do
+    field_specs = planned_slice_delivery_evidence_field_specs(outcome)
+    allowed_keys = Enum.map(field_specs, &elem(&1, 0))
+
+    with :ok <- require_planned_slice_delivery_evidence_fields(evidence, allowed_keys) do
+      collect_planned_slice_delivery_evidence_attrs(evidence, field_specs)
+    end
+  end
+
+  defp planned_slice_delivery_evidence_field_specs("pr_merged"),
+    do: [
+      {"pr_url", :string},
+      {"pr_number", :positive_integer},
+      {"pr_repository", :string},
+      {"pr_merged_at", :string},
+      {"merge_commit_sha", :string}
+    ]
+
+  defp planned_slice_delivery_evidence_field_specs("completed_no_pr"), do: [{"no_pr_evidence", :string}]
+
+  defp planned_slice_delivery_evidence_field_specs("superseded"),
+    do: [
+      {"successor_planned_slice_id", :string},
+      {"successor_work_package_id", :string},
+      {"superseded_reason", :string}
+    ]
+
+  defp planned_slice_delivery_evidence_field_specs("abandoned"), do: [{"abandoned_rationale", :string}]
+
+  defp collect_planned_slice_delivery_evidence_attrs(evidence, field_specs) do
+    Enum.reduce_while(field_specs, {:ok, %{}}, fn {field, type}, {:ok, attrs} ->
+      case planned_slice_delivery_evidence_field(evidence, field, type) do
+        {:ok, value} -> {:cont, {:ok, optional_put(attrs, field, value)}}
+        {:tool_error, reason} -> {:halt, {:tool_error, reason}}
+      end
+    end)
+  end
+
+  defp planned_slice_delivery_evidence_field(evidence, field, :string), do: optional_string_argument(evidence, field)
+  defp planned_slice_delivery_evidence_field(evidence, field, :positive_integer), do: optional_positive_integer_argument(evidence, field)
+
+  defp require_planned_slice_delivery_evidence_fields(evidence, allowed_keys) do
+    case Map.keys(evidence) -- allowed_keys do
+      [] -> :ok
+      _unexpected -> {:tool_error, "invalid_evidence"}
     end
   end
 
@@ -6062,6 +6107,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp reconcile_work_request_mode(true), do: :apply
   defp reconcile_work_request_mode(false), do: :dry_run
+
+  defp reconcile_work_request(repo, %Session{} = session, work_request_id, true = _apply?, recorded_by, opts) do
+    opts = Keyword.put(opts, :recorded_by, recorded_by)
+    opts = Keyword.put(opts, :append_blocker_closeout_event, reconcile_blocker_closeout_appender(session))
+
+    run_architect_transaction(repo, fn ->
+      with {:ok, reconciliation} <- DeliveryReconciler.reconcile(repo, work_request_id, opts) do
+        record_reconcile_product_tree_revision_after_apply(repo, work_request_id, recorded_by, reconciliation)
+      end
+    end)
+  end
+
+  defp reconcile_work_request(repo, %Session{}, work_request_id, false = _apply?, recorded_by, opts) do
+    opts = Keyword.put(opts, :recorded_by, recorded_by)
+
+    DeliveryReconciler.reconcile(repo, work_request_id, opts)
+  end
+
+  defp record_reconcile_product_tree_revision_after_apply(
+         repo,
+         work_request_id,
+         recorded_by,
+         reconciliation
+       ) do
+    with {:ok, _revision} <-
+           maybe_record_reconcile_product_tree_revision(
+             repo,
+             work_request_id,
+             recorded_by,
+             reconciliation
+           ) do
+      {:ok, reconciliation}
+    end
+  end
+
+  defp reconcile_blocker_closeout_appender(%Session{} = session) do
+    fn repo, work_package_id, attrs ->
+      PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, work_package_id, attrs)
+    end
+  end
+
+  defp maybe_record_reconcile_product_tree_revision(repo, work_request_id, recorded_by, reconciliation) do
+    if reconcile_product_tree_revision_required?(reconciliation) do
+      record_current_product_tree_revision(repo, work_request_id, "reconcile_work_request", recorded_by)
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp reconcile_product_tree_revision_required?(%{applied_count: count}) when count > 0, do: true
+
+  defp reconcile_product_tree_revision_required?(%{results: results}) when is_list(results) do
+    Enum.any?(results, &reconcile_result_has_delivery_closeout?/1)
+  end
+
+  defp reconcile_result_has_delivery_closeout?(%{reason: "already_closeout", work_package_status: status}) when is_binary(status), do: true
+  defp reconcile_result_has_delivery_closeout?(_result), do: false
 
   defp visible_delivery_board_work_package_contexts(repo, %WorkRequest{} = work_request, planned_slices, filters, opts \\ []) do
     planned_slice_ids = Enum.map(planned_slices, & &1.id)
@@ -14077,6 +14179,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp product_tree_revision_reason("approve_work_request_planned_slice"), do: "Planned slice approved in product tree through MCP."
   defp product_tree_revision_reason("skip_work_request_planned_slice"), do: "Planned slice skipped in product tree through MCP."
   defp product_tree_revision_reason("record_planned_slice_delivery"), do: "Planned slice delivery recorded in product tree through MCP."
+  defp product_tree_revision_reason("reconcile_work_request"), do: "Planned slice delivery reconciled in product tree through MCP."
 
   defp planned_slice_delivery_payload(%PlannedSliceDelivery{} = delivery) do
     %{

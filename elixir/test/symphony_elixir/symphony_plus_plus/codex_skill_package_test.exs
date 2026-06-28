@@ -69,11 +69,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
     for marker <- [
           "read_work_request_delivery_board(work_request_id)",
-          "record_planned_slice_delivery(work_request_id, planned_slice_id, outcome, idempotency_key",
+          "record_planned_slice_delivery(work_request_id, planned_slice_id, outcome, idempotency_key, evidence)",
           "`completed_no_pr`",
-          "`no_pr_evidence`",
+          "`evidence.completed_no_pr`",
           "`superseded`",
-          "`successor_planned_slice_id`",
+          "`evidence.superseded`",
           "`reconcile_work_request`",
           "PR/GitHub evidence",
           "WORK_REQUEST_DELIVERY_CLOSEOUT.md"

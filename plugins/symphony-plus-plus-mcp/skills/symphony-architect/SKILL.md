@@ -157,22 +157,27 @@ Decisions are rationale. Delivery closeout records lifecycle truth.
 For merged PR evidence, use `reconcile_work_request` first, then
 `reconcile_work_request(apply: true)` when the proposed repair matches the
 delivery board. That path uses attached/synced PR evidence and avoids repeating
-PR URL, package, or slice facts.
+PR URL, package, or slice facts. If you choose explicit PR closeout instead of
+`apply: true`, replay the dry-run result's `action` payload through
+`record_planned_slice_delivery`.
 
 Record other terminal outcomes with `record_planned_slice_delivery`:
 
-- `pr_merged`: only when reconciliation lacks structured PR evidence; include
-  PR URL, merged-at timestamp, and merge commit for linked packages.
-- `completed_no_pr`: direct no-PR evidence.
-- `superseded`: successor slice id and reason.
-- `abandoned`: rationale.
+- `outcome: "pr_merged"` with `evidence.pr_merged`: PR URL, merged-at
+  timestamp, and merge commit for linked packages.
+- `outcome: "completed_no_pr"` with `evidence.completed_no_pr`: direct no-PR
+  evidence.
+- `outcome: "superseded"` with `evidence.superseded`: successor slice id and
+  reason.
+- `outcome: "abandoned"` with `evidence.abandoned`: rationale.
 
 Do not infer delivery from prose decisions or chat. Phase-child PRs remain phase
 controlled; call `merge_child_into_phase` before `pr_merged` closeout when
 required. Use `cleanup_work_request_planned_slice_runtime` to recycle linked
 worker grants, non-paused claim leases, and recoverable worker MCP session bindings
 before final closeout when superseded or abandoned delivery truth is established;
-include the same closeout evidence in the cleanup call.
+pass the flat superseded or abandoned evidence fields that authorize cleanup,
+then use the matching typed `evidence` object for final closeout.
 If package evidence is missing or ambiguous, do not record WorkRequest delivery
 closeout; repair evidence first.
 

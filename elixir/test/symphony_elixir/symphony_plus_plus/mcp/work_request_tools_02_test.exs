@@ -200,7 +200,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
         "work_request_id" => sibling.id,
         "planned_slice_id" => sibling_slice.id,
         "outcome" => "completed_no_pr",
-        "no_pr_evidence" => "Sibling delivery mutation should be denied.",
+        "evidence" => %{
+          "completed_no_pr" => %{"no_pr_evidence" => "Sibling delivery mutation should be denied."}
+        },
         "idempotency_key" => "sibling-delivery-denied"
       })
 
@@ -375,6 +377,93 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     assert repo.get!(WorkPackage, work_package_id).status == "merged"
   end
 
+  test "record_planned_slice_delivery accepts typed evidence for each outcome and rejects conflicts", %{repo: repo} do
+    cases = [
+      {"TYPED-PR", "ready_for_merge", "pr_merged", "merged"},
+      {"TYPED-NO-PR", "reviewing", "completed_no_pr", "closed"},
+      {"TYPED-SUPERSEDED", "ready_for_worker", "superseded", "closed"},
+      {"TYPED-ABANDONED", "ready_for_worker", "abandoned", "abandoned"}
+    ]
+
+    for {suffix, package_status, outcome, expected_package_status} <- cases do
+      {work_request, planned_slice, work_package} =
+        linked_delivery_slice!(repo,
+          id_suffix: suffix,
+          package_status: package_status
+        )
+
+      {_anchor, session, _grant} =
+        create_work_request_handoff_architect_session(repo, work_request, [
+          "read:work_request",
+          "write:work_request",
+          "dispatch:work_request"
+        ])
+
+      response =
+        mcp_tool(repo, session, "record_planned_slice_delivery", %{
+          "work_request_id" => work_request.id,
+          "planned_slice_id" => planned_slice.id,
+          "outcome" => outcome,
+          "idempotency_key" => "typed-delivery-#{String.downcase(suffix)}",
+          "evidence" => typed_delivery_evidence(repo, work_request, outcome, suffix)
+        })
+
+      assert get_in(response, ["result", "structuredContent", "planned_slice_delivery", "outcome"]) == outcome
+      assert repo.get!(WorkPackage, work_package.id).status == expected_package_status
+    end
+
+    {work_request, planned_slice, _work_package} =
+      linked_delivery_slice!(repo,
+        id_suffix: "TYPED-CONFLICT",
+        package_status: "ready_for_merge"
+      )
+
+    {_anchor, session, _grant} =
+      create_work_request_handoff_architect_session(repo, work_request, [
+        "read:work_request",
+        "write:work_request",
+        "dispatch:work_request"
+      ])
+
+    mismatch_response =
+      mcp_tool(repo, session, "record_planned_slice_delivery", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice.id,
+        "outcome" => "pr_merged",
+        "idempotency_key" => "typed-delivery-mismatch",
+        "evidence" => %{
+          "completed_no_pr" => %{"no_pr_evidence" => "Wrong typed evidence for this outcome."}
+        }
+      })
+
+    assert get_in(mismatch_response, ["error", "data", "reason"]) == "conflicting_delivery_evidence"
+
+    flat_response =
+      mcp_tool(repo, session, "record_planned_slice_delivery", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice.id,
+        "outcome" => "pr_merged",
+        "idempotency_key" => "typed-delivery-flat-conflict",
+        "pr_url" => "https://github.com/nextide/symphony-plus-plus/pull/301",
+        "evidence" => pr_merged_delivery_evidence(301)
+      })
+
+    assert get_in(flat_response, ["error", "data", "reason"]) == "unexpected_argument"
+
+    extra_field_response =
+      mcp_tool(repo, session, "record_planned_slice_delivery", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice.id,
+        "outcome" => "pr_merged",
+        "idempotency_key" => "typed-delivery-extra-field",
+        "evidence" => %{
+          "pr_merged" => Map.put(pr_merged_delivery_evidence(302)["pr_merged"], "no_pr_evidence", "Not PR evidence.")
+        }
+      })
+
+    assert get_in(extra_field_response, ["error", "data", "reason"]) == "invalid_evidence"
+  end
+
   test "product plan node tools reject mixed intent arguments", %{repo: repo} do
     {anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-NODE-MIXED-INTENT", [
@@ -447,11 +536,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
         "planned_slice_id" => planned_slice.id,
         "outcome" => "pr_merged",
         "idempotency_key" => "delivery-preserve-missing-closeout",
-        "pr_url" => "https://github.com/nextide/symphony-plus-plus/pull/201",
-        "pr_number" => 201,
-        "pr_repository" => "nextide/symphony-plus-plus",
-        "pr_merged_at" => "2026-06-07T10:00:00Z",
-        "merge_commit_sha" => "abc201"
+        "evidence" => %{
+          "pr_merged" => %{
+            "pr_url" => "https://github.com/nextide/symphony-plus-plus/pull/201",
+            "pr_number" => 201,
+            "pr_repository" => "nextide/symphony-plus-plus",
+            "pr_merged_at" => "2026-06-07T10:00:00Z",
+            "merge_commit_sha" => "abc201"
+          }
+        }
       })
 
     assert get_in(missing_closeout_response, ["error", "data", "reason_code"]) == "blocker_closeout_required"
@@ -463,11 +556,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
         "planned_slice_id" => planned_slice.id,
         "outcome" => "pr_merged",
         "idempotency_key" => "delivery-preserve-with-closeout",
-        "pr_url" => "https://github.com/nextide/symphony-plus-plus/pull/201",
-        "pr_number" => 201,
-        "pr_repository" => "nextide/symphony-plus-plus",
-        "pr_merged_at" => "2026-06-07T10:00:00Z",
-        "merge_commit_sha" => "abc201",
+        "evidence" => %{
+          "pr_merged" => %{
+            "pr_url" => "https://github.com/nextide/symphony-plus-plus/pull/201",
+            "pr_number" => 201,
+            "pr_repository" => "nextide/symphony-plus-plus",
+            "pr_merged_at" => "2026-06-07T10:00:00Z",
+            "merge_commit_sha" => "abc201"
+          }
+        },
         "blocker_closeout" => %{
           "decision" => "still_active",
           "blocker_ids" => ["preserve-blocker"],
@@ -505,7 +602,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
         "planned_slice_id" => planned_slice.id,
         "outcome" => "completed_no_pr",
         "idempotency_key" => "delivery-resolve-with-closeout",
-        "no_pr_evidence" => "Operator confirmed this landed directly.",
+        "evidence" => %{
+          "completed_no_pr" => %{"no_pr_evidence" => "Operator confirmed this landed directly."}
+        },
         "blocker_closeout" => %{
           "decision" => "resolved",
           "blocker_ids" => ["resolve-blocker"],
@@ -1779,6 +1878,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
       ],
       &repo.query!("DROP TABLE IF EXISTS #{&1}")
     )
+  end
+
+  defp typed_delivery_evidence(_repo, _work_request, "pr_merged", _suffix), do: pr_merged_delivery_evidence(291)
+
+  defp typed_delivery_evidence(_repo, _work_request, "completed_no_pr", _suffix) do
+    %{"completed_no_pr" => %{"no_pr_evidence" => "Operator confirmed this completed without a PR."}}
+  end
+
+  defp typed_delivery_evidence(repo, work_request, "superseded", suffix) do
+    assert {:ok, successor} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-DELIVERY-SUCCESSOR-#{suffix}",
+                 target_base_branch: work_request.base_branch
+               )
+             )
+
+    %{
+      "superseded" => %{
+        "successor_planned_slice_id" => successor.id,
+        "superseded_reason" => "Recut into a narrower planned slice."
+      }
+    }
+  end
+
+  defp typed_delivery_evidence(_repo, _work_request, "abandoned", _suffix) do
+    %{"abandoned" => %{"abandoned_rationale" => "No code was produced and the slice is abandoned."}}
+  end
+
+  defp pr_merged_delivery_evidence(number) do
+    %{
+      "pr_merged" => %{
+        "pr_url" => "https://github.com/nextide/symphony-plus-plus/pull/#{number}",
+        "pr_number" => number,
+        "pr_repository" => "nextide/symphony-plus-plus",
+        "pr_merged_at" => "2026-06-07T10:00:00Z",
+        "merge_commit_sha" => "abc#{number}"
+      }
+    }
   end
 
   defp linked_delivery_slice!(repo, opts) do

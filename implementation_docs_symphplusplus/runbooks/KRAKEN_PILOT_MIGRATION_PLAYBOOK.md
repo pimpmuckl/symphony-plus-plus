@@ -18,7 +18,8 @@ Use this current flow for any new or replayed Kraken pilot work.
 
 ## Closeout
 
-Use `record_planned_slice_delivery` with merged PR evidence, no-PR evidence,
-supersession evidence, or abandoned rationale.
+Use `record_planned_slice_delivery` with one typed `evidence` object matching
+the outcome: `evidence.pr_merged`, `evidence.completed_no_pr`,
+`evidence.superseded`, or `evidence.abandoned`.
 
 Do not use historical secret bootstrap snippets from older pilot notes.
