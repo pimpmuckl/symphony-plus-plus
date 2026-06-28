@@ -393,6 +393,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
              )
 
     assert reconcile_blocker_closeout_events(repo, linked_package.id) == []
+    append_blocker_resolution!(repo, linked_package.id, "repair-blocker")
 
     assert {:ok, result} = DeliveryReconciler.reconcile(repo, work_request.id, mode: :apply)
 
