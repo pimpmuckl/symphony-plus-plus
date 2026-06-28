@@ -2,15 +2,13 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
   @moduledoc false
 
   alias Plug.Conn
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{ClientLeases, Config, HTTPStateStore, HTTPTransport, Server, Session}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{ClientLeases, Config, HTTPStateStore, HTTPTransport}
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixirWeb.Endpoint
   alias SymphonyElixirWeb.SymppBoardLive
 
   @client_key "__sympp_mcp_local_http_client__"
   @session_header "mcp-session-id"
-  @assignment_resource "sympp://assignment/current"
-  @work_package_resource_prefix "sympp://work-packages/"
   @max_body_bytes 1_000_000
   @forwarded_headers ["forwarded", "x-real-ip"]
 
@@ -21,7 +19,7 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
   def call(%Conn{path_info: ["mcp"]} = conn, _opts) do
     with {:ok, local_daemon_trusted?} <- validate_local_request(conn),
          :ok <- validate_origin(conn),
-         :ok <- ensure_state_store_started() do
+         :ok <- HTTPStateStore.ensure_started() do
       dispatch(conn, local_daemon_trusted?)
     else
       {:error, :state_store_unavailable} -> send_json_rpc_error(conn, 503, :ledger_unavailable)
@@ -32,12 +30,8 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
   def call(%Conn{path_info: ["mcp", "client-lease"]} = conn, _opts) do
     with {:ok, _trusted?} <- validate_local_request(conn),
          :ok <- validate_origin(conn),
-         :ok <- ensure_client_leases_started(),
          {:ok, payload, conn} <- read_json_body(conn),
-         {:ok, client_id} <- client_lease_id(payload),
-         {:ok, action} <- client_lease_action(payload),
-         {:ok, shutdown_on_idle?} <- client_lease_shutdown_on_idle(payload),
-         {:ok, result} <- apply_client_lease(action, client_id, shutdown_on_idle?) do
+         {:ok, result} <- ClientLeases.handle_payload(payload) do
       send_json(conn, 200, %{
         "status" => "ok",
         "active_client_count" => result.active_client_count,
@@ -54,129 +48,6 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
   end
 
   def call(%Conn{} = conn, _opts), do: conn
-
-  defp client_lease_id(%{"client_id" => client_id}) when is_binary(client_id) do
-    client_id = String.trim(client_id)
-
-    if client_id != "" and byte_size(client_id) <= 160 and visible_ascii?(client_id),
-      do: {:ok, client_id},
-      else: {:error, :invalid_client_id}
-  end
-
-  defp client_lease_id(_payload), do: {:error, :invalid_client_id}
-
-  defp client_lease_action(%{"action" => action}) when action in ["attach", "heartbeat", "detach"], do: {:ok, action}
-  defp client_lease_action(_payload), do: {:error, :invalid_action}
-
-  defp client_lease_shutdown_on_idle(%{"shutdown_on_idle" => shutdown_on_idle?}) when is_boolean(shutdown_on_idle?),
-    do: {:ok, shutdown_on_idle?}
-
-  defp client_lease_shutdown_on_idle(_payload), do: {:ok, false}
-
-  defp apply_client_lease("attach", client_id, shutdown_on_idle?),
-    do: normalize_client_lease_result(ClientLeases.attach(client_id, shutdown_on_idle?: shutdown_on_idle?))
-
-  defp apply_client_lease("heartbeat", client_id, shutdown_on_idle?),
-    do: normalize_client_lease_result(ClientLeases.attach(client_id, shutdown_on_idle?: shutdown_on_idle?))
-
-  defp apply_client_lease("detach", client_id, _shutdown_on_idle?), do: normalize_client_lease_result(ClientLeases.detach(client_id))
-
-  defp normalize_client_lease_result({:ok, result}), do: {:ok, result}
-  defp normalize_client_lease_result({:error, _reason}), do: {:error, :client_lease_unavailable}
-
-  defp ensure_client_leases_started do
-    case Process.whereis(ClientLeases) do
-      pid when is_pid(pid) ->
-        :ok
-
-      nil ->
-        start_client_leases()
-    end
-  end
-
-  defp start_client_leases do
-    case Process.whereis(SymphonyElixir.Supervisor) do
-      pid when is_pid(pid) -> start_supervised_client_leases()
-      nil -> start_direct_client_leases()
-    end
-  end
-
-  defp start_supervised_client_leases do
-    case Supervisor.restart_child(SymphonyElixir.Supervisor, ClientLeases) do
-      {:ok, _pid} -> :ok
-      {:ok, _pid, _info} -> :ok
-      {:error, :running} -> :ok
-      {:error, :not_found} -> add_supervised_client_leases()
-      {:error, {:already_started, _pid}} -> :ok
-      {:error, _reason} -> {:error, :client_lease_unavailable}
-    end
-  catch
-    :exit, _reason -> {:error, :client_lease_unavailable}
-  end
-
-  defp add_supervised_client_leases do
-    case Supervisor.start_child(SymphonyElixir.Supervisor, ClientLeases) do
-      {:ok, _pid} -> :ok
-      {:ok, _pid, _info} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-      {:error, _reason} -> {:error, :client_lease_unavailable}
-    end
-  end
-
-  defp start_direct_client_leases do
-    case GenServer.start(ClientLeases, [], name: ClientLeases) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-      {:error, _reason} -> {:error, :client_lease_unavailable}
-    end
-  end
-
-  defp ensure_state_store_started do
-    case Process.whereis(HTTPStateStore) do
-      pid when is_pid(pid) ->
-        :ok
-
-      nil ->
-        start_state_store()
-    end
-  end
-
-  defp start_state_store do
-    case Process.whereis(SymphonyElixir.Supervisor) do
-      pid when is_pid(pid) -> start_supervised_state_store()
-      nil -> start_direct_state_store()
-    end
-  end
-
-  defp start_supervised_state_store do
-    case Supervisor.restart_child(SymphonyElixir.Supervisor, HTTPStateStore) do
-      {:ok, _pid} -> :ok
-      {:ok, _pid, _info} -> :ok
-      {:error, :running} -> :ok
-      {:error, :not_found} -> add_supervised_state_store()
-      {:error, {:already_started, _pid}} -> :ok
-      {:error, _reason} -> {:error, :state_store_unavailable}
-    end
-  catch
-    :exit, _reason -> {:error, :state_store_unavailable}
-  end
-
-  defp add_supervised_state_store do
-    case Supervisor.start_child(SymphonyElixir.Supervisor, HTTPStateStore) do
-      {:ok, _pid} -> :ok
-      {:ok, _pid, _info} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-      {:error, _reason} -> {:error, :state_store_unavailable}
-    end
-  end
-
-  defp start_direct_state_store do
-    case GenServer.start(HTTPStateStore, [], name: HTTPStateStore) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-      {:error, _reason} -> {:error, :state_store_unavailable}
-    end
-  end
 
   defp dispatch(%Conn{method: "POST"} = conn, local_daemon_trusted?) do
     with {:ok, payload, conn} <- read_json_body(conn),
@@ -254,62 +125,24 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
   defp handle_payload(payload, state_key, local_daemon_trusted?) when is_binary(state_key) do
     config = mcp_config(configured_repo(), local_daemon_trusted?)
 
-    case stored_server(config, state_key) do
-      nil ->
-        handle_with_live_repo_or_config(config, payload, state_key, local_daemon_trusted?)
-
-      %Server{} = server ->
-        handle_stored_server_payload(config, payload, state_key, server, local_daemon_trusted?)
-    end
+    HTTPTransport.handle(config, payload,
+      client_key: @client_key,
+      state_key: state_key,
+      live_handle: &handle_with_live_repo(&1, &2, &3, local_daemon_trusted?)
+    )
   end
 
-  defp handle_with_live_repo_or_config(config, payload, state_key, local_daemon_trusted?) do
-    case handle_with_live_repo(payload, state_key, local_daemon_trusted?) do
-      {:error, :ledger_unavailable, ^payload} ->
-        HTTPTransport.handle(config, payload, client_key: @client_key, state_key: state_key)
-
-      result ->
-        result
-    end
-  end
-
-  defp handle_stored_server_payload(config, payload, state_key, %Server{} = server, local_daemon_trusted?) do
-    if repo_backed_followup?(payload, server) do
-      handle_with_live_repo(payload, state_key, local_daemon_trusted?)
-    else
-      HTTPTransport.handle(config, payload, client_key: @client_key, state_key: state_key)
-    end
-  end
-
-  defp handle_with_live_repo(payload, state_key, local_daemon_trusted?) do
-    with_live_repo(payload, fn repo ->
-      HTTPTransport.handle(mcp_config(repo, local_daemon_trusted?), payload, client_key: @client_key, state_key: state_key)
-    end)
-  end
-
-  defp with_live_repo(payload, fun) when is_function(fun, 1) do
-    case SymppBoardLive.with_dashboard_repo(fn repo -> {:ok, fun.(repo)} end, initialize_missing?: true) do
-      {:ok, transport_result} -> transport_result
+  defp handle_with_live_repo(payload, client_key, state_key, local_daemon_trusted?) do
+    case SymppBoardLive.with_dashboard_repo(
+           fn repo ->
+             HTTPTransport.handle(mcp_config(repo, local_daemon_trusted?), payload, client_key: client_key, state_key: state_key)
+           end,
+           initialize_missing?: true
+         ) do
+      {:ok, result} -> result
       {:error, _reason} -> {:error, :ledger_unavailable, payload}
     end
   end
-
-  defp stored_server(%Config{} = config, state_key), do: HTTPStateStore.get(config, @client_key, state_key)
-
-  defp repo_backed_followup?(%{"method" => "tools/list"}, %Server{session: %Session{}}), do: true
-  defp repo_backed_followup?(payload, %Server{}), do: repo_backed_followup?(payload)
-
-  defp repo_backed_followup?(%{"method" => "resources/list"}), do: true
-  defp repo_backed_followup?(%{"method" => "resources/read", "params" => %{"uri" => uri}}), do: protected_resource_uri?(uri)
-  defp repo_backed_followup?(%{"method" => "tools/call", "params" => %{"name" => "sympp.health"}}), do: false
-  defp repo_backed_followup?(%{"method" => "tools/call"}), do: true
-  defp repo_backed_followup?(_payload), do: false
-
-  defp protected_resource_uri?(uri) when is_binary(uri) do
-    uri == @assignment_resource or String.starts_with?(uri, @work_package_resource_prefix)
-  end
-
-  defp protected_resource_uri?(_uri), do: false
 
   defp send_transport_result(conn, %HTTPTransport.Result{status: :no_response, state_key: nil}, request_state_key)
        when is_binary(request_state_key) do

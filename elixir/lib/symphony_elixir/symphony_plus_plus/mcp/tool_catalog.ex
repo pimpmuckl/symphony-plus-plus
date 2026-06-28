@@ -145,6 +145,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
     "skip_work_request_planned_slice",
     "mark_work_request_sliced"
   ]
+  @current_work_request_tools @current_work_request_write_tools ++
+                                [
+                                  "read_work_request_delivery_board",
+                                  "reconcile_work_request",
+                                  "cleanup_work_request_planned_slice_runtime",
+                                  "record_planned_slice_delivery",
+                                  "revoke_planned_slice_worker_key",
+                                  "dispatch_work_request_planned_slice"
+                                ]
   @delivery_policy_tools [
     "reconcile_work_request",
     "cleanup_work_request_planned_slice_runtime",
@@ -733,22 +742,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   def architect_tool_input_schema("read_work_request_delivery_board") do
     schema(
       %{
-        "work_request_id" => described_string_schema("Scoped WorkRequest id to project.")
+        "work_request_id" => current_work_request_id_schema()
       },
-      ["work_request_id"]
+      []
     )
   end
 
   def architect_tool_input_schema("reconcile_work_request") do
     schema(
       %{
-        "work_request_id" => described_string_schema("Scoped WorkRequest id to reconcile."),
+        "work_request_id" => current_work_request_id_schema(),
         "apply" =>
           boolean_schema()
           |> Map.put("description", "When false or omitted, only report proposed closeout repairs. When true, apply through record_planned_slice_delivery."),
         "recorded_by" => described_string_schema("Optional closeout actor for applied repairs. Defaults to the claimed architect identity.")
       },
-      ["work_request_id"]
+      []
     )
   end
 
@@ -758,7 +767,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   def architect_tool_input_schema("record_planned_slice_delivery") do
     schema(
       %{
-        "work_request_id" => described_string_schema("Scoped WorkRequest id that owns the planned slice."),
+        "work_request_id" => current_work_request_id_schema(),
         "planned_slice_id" => described_string_schema("Planned slice id within the WorkRequest."),
         "outcome" =>
           PlannedSliceDelivery.outcomes()
@@ -772,7 +781,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
         "evidence" => planned_slice_delivery_evidence_schema(),
         "blocker_closeout" => blocker_closeout_schema()
       },
-      ["work_request_id", "planned_slice_id", "outcome", "idempotency_key", "evidence"]
+      ["planned_slice_id", "outcome", "idempotency_key", "evidence"]
     )
   end
 
@@ -810,7 +819,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
       %{
         "status" => string_schema(),
         "work_package_id" => string_schema(),
-        "work_request_id" => described_string_schema("Optional WorkRequest id whose linked WorkPackage guidance should be listed. Requires read:work_request when present.")
+        "work_request_id" =>
+          described_string_schema(
+            "Optional WorkRequest id whose linked WorkPackage guidance should be listed. When omitted from a current WorkRequest claim and work_package_id is also omitted, the current WorkRequest is used. Explicit values require read:work_request."
+          )
       },
       []
     )
@@ -1025,11 +1037,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   def architect_tool_input_schema("dispatch_work_request_planned_slice") do
     schema(
       %{
-        "work_request_id" => string_schema(),
+        "work_request_id" => current_work_request_id_schema(),
         "planned_slice_id" => string_schema(),
         "claimed_by" => described_string_schema("Optional claim display name to prefill worker bootstrap metadata.")
       },
-      ["work_request_id", "planned_slice_id"]
+      ["planned_slice_id"]
     )
   end
 
@@ -1095,7 +1107,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   defp delivery_runtime_tool_input_schema("cleanup_work_request_planned_slice_runtime") do
     schema(
       %{
-        "work_request_id" => described_string_schema("Scoped WorkRequest id that owns the planned slice."),
+        "work_request_id" => current_work_request_id_schema(),
         "planned_slice_id" => described_string_schema("Dispatched planned slice whose linked WorkPackage owns the runtime artifacts."),
         "outcome" =>
           ["superseded", "abandoned"]
@@ -1107,19 +1119,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
         "superseded_reason" => markdown_string_schema("Required Markdown reason for outcome superseded."),
         "abandoned_rationale" => markdown_string_schema("Required Markdown rationale for outcome abandoned.")
       },
-      ["work_request_id", "planned_slice_id", "outcome", "reason"]
+      ["planned_slice_id", "outcome", "reason"]
     )
   end
 
   defp delivery_runtime_tool_input_schema("revoke_planned_slice_worker_key") do
     schema(
       %{
-        "work_request_id" => described_string_schema("Scoped WorkRequest id that owns the planned slice."),
+        "work_request_id" => current_work_request_id_schema(),
         "planned_slice_id" => described_string_schema("Dispatched planned slice whose linked WorkPackage owns the worker grant."),
         "grant_id" => described_string_schema("Live worker grant id for the linked WorkPackage. Raw worker secrets are never accepted or returned."),
         "reason" => described_string_schema("Redacted audit reason for revoking the worker grant during recut, recycle, or delivery closeout cleanup.")
       },
-      ["work_request_id", "planned_slice_id", "grant_id", "reason"]
+      ["planned_slice_id", "grant_id", "reason"]
     )
   end
 
@@ -1217,7 +1229,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   defp architect_tool_spec(name, true), do: architect_tool_spec(name)
   defp architect_tool_spec(name, false), do: explicit_work_request_architect_tool_spec(name)
 
-  defp explicit_work_request_architect_tool_spec(name) when name in @current_work_request_write_tools do
+  defp explicit_work_request_architect_tool_spec(name) when name in @current_work_request_tools do
     spec = architect_tool_spec(name)
     required = ["work_request_id" | architect_tool_input_schema(name)["required"]]
 
@@ -1331,7 +1343,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   defp current_work_request_id_schema,
     do:
       described_string_schema(
-        "Optional for current-WorkRequest planning writes. When omitted, the claimed architect WorkRequest is used; reads, delivery, dispatch, and cross-WorkRequest targets stay explicit."
+        "Optional when the claimed architect WorkRequest session has exactly one current WorkRequest. When omitted, that WorkRequest is used; pass an explicit id for another authorized WorkRequest."
       )
 
   defp explicit_work_request_id_schema,

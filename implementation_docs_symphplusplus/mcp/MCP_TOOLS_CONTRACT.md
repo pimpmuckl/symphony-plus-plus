@@ -174,21 +174,23 @@ questions are answered or closed, architects may read the WorkRequest and call
 `ready_for_slicing` before inserting the slice. Open clarification questions
 still block the call with `open_questions`.
 
-Current-WorkRequest planning writes may omit `work_request_id` after
+Current-WorkRequest lifecycle tools may omit `work_request_id` after
 `claim_local_architect_assignment` has bound the session to exactly one
 WorkRequest. This compact path applies to `add_work_request_planned_slice`,
 `upsert_work_request_product_plan_node`,
 `move_work_request_planned_slice_to_product_node`,
 `approve_work_request_planned_slice`, `skip_work_request_planned_slice`, and
-`mark_work_request_sliced`. Supplying `work_request_id` is still allowed and is
-checked against the same architect grant scope. Reads, lists, status/question
-tools, durable decision tools, delivery closeout, dispatch, and package tools
-keep explicit target ids.
+`mark_work_request_sliced`, plus delivery board/reconcile, planned-slice delivery
+closeout, runtime cleanup, worker-key revocation, and dispatch. Supplying
+`work_request_id` is still allowed and is checked against the same architect
+grant scope. Reads that can intentionally target sibling WorkRequests,
+status/question tools, durable decision tools, and package tools keep explicit
+target ids.
 
-`dispatch_work_request_planned_slice` requires only `work_request_id` and
-`planned_slice_id`; `claimed_by` is optional. It creates the linked WorkPackage,
-mints a worker grant, and returns the same simple `claim_local_assignment`
-bootstrap shape.
+`dispatch_work_request_planned_slice` requires only `planned_slice_id` once a
+single current WorkRequest is claimed; `claimed_by` is optional. It creates the
+linked WorkPackage, mints a worker grant, and returns the same simple
+`claim_local_assignment` bootstrap shape.
 
 `cleanup_work_request_planned_slice_runtime` is the WR architect cleanup path
 for linked planned-slice runtime that has been superseded or abandoned by
