@@ -14121,13 +14121,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          } = dispatch,
          scope
        ) do
-    worker_bootstrap = dispatch_or_creation_value(dispatch, creation, :worker_bootstrap)
+    worker_bootstrap =
+      dispatch_or_creation_value(dispatch, creation, :worker_bootstrap)
+      |> dispatch_worker_bootstrap_payload()
 
     %{
-      "coordinates" => %{
-        "worker_execution" => %{"kind" => "work_package", "work_package_id" => planned_slice.work_package_id},
-        "product_coordinate" => %{"kind" => "planned_slice", "work_request_id" => work_request.id, "planned_slice_id" => planned_slice.id}
-      },
+      "coordinates" => worker_bootstrap && Map.get(worker_bootstrap, "coordinates"),
       "work_request" => %{"id" => work_request.id},
       "planned_slice" => %{
         "id" => planned_slice.id,
@@ -14136,7 +14135,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "dispatched_at" => timestamp(planned_slice.dispatched_at)
       },
       "work_package" => dispatch_work_package_payload(Map.fetch!(creation, :work_package)),
-      "worker_bootstrap" => dispatch_worker_bootstrap_payload(worker_bootstrap),
+      "worker_bootstrap" => worker_bootstrap,
       "worker_grant" => dispatch_worker_grant_payload(Map.fetch!(creation, :worker_grant)),
       "scope" => scope,
       "status" => %{"planned_slice_status" => planned_slice.status}

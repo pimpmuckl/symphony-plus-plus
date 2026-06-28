@@ -774,10 +774,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
     no_delivery_operational_state(planned_slice, work_package)
   end
 
-  defp hidden_work_package_marker(%PlannedSlice{} = planned_slice, delivery, context) do
+  defp hidden_work_package_marker(%PlannedSlice{} = planned_slice, _delivery, context) do
     cond do
       hidden_work_package?(planned_slice.work_package_id, context) -> :hidden
-      is_nil(delivery) and ambiguous_work_package?(planned_slice.work_package_id, context) -> :ambiguous
       ambiguous_work_package?(planned_slice.work_package_id, context) -> :ambiguous
       true -> nil
     end

@@ -207,8 +207,8 @@ required blocker closeout.
 `dispatch_work_request_planned_slice` requires only `planned_slice_id` once a
 single current WorkRequest is claimed; `claimed_by` is optional. It creates the
 linked WorkPackage, mints a worker grant, and returns the same simple
-`claim_local_assignment` bootstrap shape with labeled worker execution and
-product coordinates.
+`claim_local_assignment` bootstrap shape with primary execution and product
+audit coordinates.
 
 `cleanup_work_request_planned_slice_runtime` is the WR architect cleanup path
 for linked planned-slice runtime that has been superseded or abandoned by

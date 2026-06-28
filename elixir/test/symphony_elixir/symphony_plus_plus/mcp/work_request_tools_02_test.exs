@@ -339,12 +339,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     work_package_id = get_in(dispatch_response, ["result", "structuredContent", "work_package", "id"])
     assert is_binary(work_package_id)
 
-    assert get_in(dispatch_response, ["result", "structuredContent", "coordinates", "worker_execution"]) == %{
+    assert get_in(dispatch_response, ["result", "structuredContent", "coordinates", "primary_execution"]) == %{
              "kind" => "work_package",
              "work_package_id" => work_package_id
            }
 
-    assert get_in(dispatch_response, ["result", "structuredContent", "coordinates", "product_coordinate"]) == %{
+    assert get_in(dispatch_response, ["result", "structuredContent", "coordinates", "product_audit"]) == %{
              "kind" => "planned_slice",
              "work_request_id" => work_request.id,
              "planned_slice_id" => planned_slice_id
