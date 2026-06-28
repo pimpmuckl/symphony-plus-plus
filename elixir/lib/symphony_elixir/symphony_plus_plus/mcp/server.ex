@@ -10185,7 +10185,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case linked_planned_slice_work_request_for_work_package(repo, work_package_id) do
       {:ok, {%PlannedSlice{}, %WorkRequest{} = work_request}} -> {:ok, work_request}
       {:error, :not_found} -> {:ok, nil}
-      {:error, :ambiguous_planned_slice_link} -> {:ok, nil}
       {:error, reason} -> {:error, reason}
     end
   end
