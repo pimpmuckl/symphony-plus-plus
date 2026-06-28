@@ -18,6 +18,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
+  alias SymphonyElixir.SymphonyPlusPlus.ProductTree.Revision
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -295,6 +296,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert blocker_closeout_event.payload["source_tool"] == "reconcile_work_request"
     assert blocker_closeout_event.payload["blocker_id"] == "apply-blocker"
     assert blocker_closeout_event.payload["decision"] == "still_active"
+    assert revision_count(repo, work_request.id) == 1
   end
 
   test "MCP reconcile_work_request apply returns fresh post-closeout delivery board", %{repo: repo} do
@@ -811,6 +813,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
 
     assert [event] = closeout_events
     event
+  end
+
+  defp revision_count(repo, work_request_id) do
+    Revision
+    |> repo.all()
+    |> Enum.count(&(&1.work_request_id == work_request_id))
   end
 
   defp work_request_attrs(overrides) do

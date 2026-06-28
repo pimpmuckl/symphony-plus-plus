@@ -3255,9 +3255,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {visible_work_package_ids, work_package_contexts} <-
            visible_delivery_board_work_package_contexts(config.repo, work_request, planned_slices, filters),
          {:ok, reconciliation} <-
-           DeliveryReconciler.reconcile(config.repo, work_request_id,
+           reconcile_work_request(config.repo, work_request_id, apply?, recorded_by,
              mode: reconcile_work_request_mode(apply?),
-             recorded_by: recorded_by,
              work_request: work_request,
              planned_slices: planned_slices,
              visible_work_package_ids: visible_work_package_ids,
@@ -6027,6 +6026,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp reconcile_work_request_mode(true), do: :apply
   defp reconcile_work_request_mode(false), do: :dry_run
+
+  defp reconcile_work_request(repo, work_request_id, apply?, recorded_by, opts) do
+    opts = Keyword.put(opts, :recorded_by, recorded_by)
+    reconcile = fn -> DeliveryReconciler.reconcile(repo, work_request_id, opts) end
+
+    if apply? do
+      mutate_product_tree(repo, work_request_id, "reconcile_work_request", recorded_by, reconcile)
+    else
+      reconcile.()
+    end
+  end
 
   defp visible_delivery_board_work_package_contexts(repo, %WorkRequest{} = work_request, planned_slices, filters, opts \\ []) do
     planned_slice_ids = Enum.map(planned_slices, & &1.id)
@@ -13990,6 +14000,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp product_tree_revision_reason("approve_work_request_planned_slice"), do: "Planned slice approved in product tree through MCP."
   defp product_tree_revision_reason("skip_work_request_planned_slice"), do: "Planned slice skipped in product tree through MCP."
   defp product_tree_revision_reason("record_planned_slice_delivery"), do: "Planned slice delivery recorded in product tree through MCP."
+  defp product_tree_revision_reason("reconcile_work_request"), do: "Planned slice delivery reconciled in product tree through MCP."
 
   defp planned_slice_delivery_payload(%PlannedSliceDelivery{} = delivery) do
     %{
