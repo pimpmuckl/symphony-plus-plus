@@ -105,22 +105,135 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
   end
 
   defp reconcile_slice(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, delivery_outcomes, mode, opts) do
+    case Map.fetch(delivery_outcomes, planned_slice.id) do
+      {:ok, delivery_outcome} ->
+        reconcile_already_closed_slice(repo, planned_slice, delivery_outcome, mode, opts)
+
+      :error ->
+        cond do
+          planned_slice.status != "dispatched" ->
+            skipped_result(planned_slice, nil, "not_dispatched")
+
+          not filled_string?(planned_slice.work_package_id) ->
+            skipped_result(planned_slice, nil, "missing_linked_work_package")
+
+          not visible_work_package?(planned_slice.work_package_id, Keyword.get(opts, :visible_work_package_ids, :all)) ->
+            skipped_result(planned_slice, nil, "work_package_out_of_scope")
+
+          true ->
+            reconcile_dispatched_slice(repo, work_request, planned_slice, mode, opts)
+        end
+    end
+  end
+
+  defp reconcile_already_closed_slice(repo, %PlannedSlice{} = planned_slice, delivery_outcome, :apply, opts) do
     cond do
-      Map.has_key?(delivery_outcomes, planned_slice.id) ->
-        skipped_result(planned_slice, nil, "already_closeout", delivery_outcome: Map.fetch!(delivery_outcomes, planned_slice.id))
-
-      planned_slice.status != "dispatched" ->
-        skipped_result(planned_slice, nil, "not_dispatched")
-
       not filled_string?(planned_slice.work_package_id) ->
-        skipped_result(planned_slice, nil, "missing_linked_work_package")
+        already_closeout_result(planned_slice, nil, delivery_outcome)
 
       not visible_work_package?(planned_slice.work_package_id, Keyword.get(opts, :visible_work_package_ids, :all)) ->
-        skipped_result(planned_slice, nil, "work_package_out_of_scope")
+        already_closeout_result(planned_slice, nil, delivery_outcome)
 
       true ->
-        reconcile_dispatched_slice(repo, work_request, planned_slice, mode, opts)
+        repair_already_closed_blocker_closeout(repo, planned_slice, delivery_outcome, opts)
     end
+  end
+
+  defp reconcile_already_closed_slice(_repo, %PlannedSlice{} = planned_slice, delivery_outcome, _mode, _opts) do
+    already_closeout_result(planned_slice, nil, delivery_outcome)
+  end
+
+  defp repair_already_closed_blocker_closeout(repo, %PlannedSlice{} = planned_slice, delivery_outcome, opts) do
+    with {:ok, work_package} <- WorkPackageRepository.get(repo, planned_slice.work_package_id),
+         {:ok, blockers} <- active_blockers(repo, work_package.id) do
+      append_missing_reconcile_blocker_closeout_events(
+        repo,
+        planned_slice,
+        work_package,
+        delivery_outcome,
+        missing_reconcile_blocker_closeout_blockers(repo, blockers),
+        opts
+      )
+    else
+      {:error, :not_found} -> already_closeout_result(planned_slice, nil, delivery_outcome)
+      {:error, reason} -> error_result(planned_slice, nil, reason)
+    end
+  end
+
+  defp append_missing_reconcile_blocker_closeout_events(
+         _repo,
+         %PlannedSlice{} = planned_slice,
+         work_package,
+         delivery_outcome,
+         [],
+         _opts
+       ) do
+    already_closeout_result(planned_slice, work_package, delivery_outcome)
+  end
+
+  defp append_missing_reconcile_blocker_closeout_events(
+         repo,
+         %PlannedSlice{} = planned_slice,
+         work_package,
+         delivery_outcome,
+         missing_blockers,
+         opts
+       ) do
+    closeout = reconcile_still_active_blocker_closeout(missing_blockers)
+    action_payload = already_closed_action_payload(planned_slice, delivery_outcome, closeout)
+
+    case append_reconcile_blocker_closeout_events_for_blockers(repo, missing_blockers, closeout, opts) do
+      {:ok, event_ids} ->
+        planned_slice
+        |> base_result(work_package)
+        |> Map.merge(%{
+          status: "applied",
+          reason: "already_closeout_blocker_closeout_repaired",
+          action: action_payload,
+          delivery_outcome: delivery_outcome
+        })
+        |> maybe_put_blocker_closeout_event_ids(event_ids)
+
+      {:error, reason} ->
+        error_result(planned_slice, work_package, reason, action_payload)
+    end
+  end
+
+  defp already_closeout_result(%PlannedSlice{} = planned_slice, work_package, delivery_outcome) do
+    skipped_result(planned_slice, work_package, "already_closeout", delivery_outcome: delivery_outcome)
+  end
+
+  defp already_closed_action_payload(%PlannedSlice{} = planned_slice, delivery_outcome, closeout) do
+    %{
+      work_request_id: planned_slice.work_request_id,
+      planned_slice_id: planned_slice.id,
+      outcome: delivery_outcome,
+      blocker_closeout: closeout
+    }
+  end
+
+  defp reconcile_still_active_blocker_closeout(blockers) do
+    %{
+      decision: "still_active",
+      blocker_ids: Enum.map(blockers, & &1.id),
+      summary: "Preserve active blockers while recording merged PR delivery."
+    }
+  end
+
+  defp missing_reconcile_blocker_closeout_blockers(repo, blockers) do
+    Enum.reject(blockers, fn blocker ->
+      idempotency_key = reconcile_blocker_closeout_idempotency_key(blocker, "still_active")
+      reconcile_blocker_closeout_event_exists?(repo, blocker.work_package_id, idempotency_key)
+    end)
+  end
+
+  defp reconcile_blocker_closeout_event_exists?(repo, work_package_id, idempotency_key) do
+    repo.exists?(
+      from(event in ProgressEvent,
+        where: event.work_package_id == ^work_package_id,
+        where: event.idempotency_key == ^idempotency_key
+      )
+    )
   end
 
   defp reconcile_dispatched_slice(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, mode, opts) do

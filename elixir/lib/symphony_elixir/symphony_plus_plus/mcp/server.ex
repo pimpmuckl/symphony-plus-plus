@@ -6135,14 +6135,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp maybe_record_reconcile_product_tree_revision(repo, work_request_id, recorded_by, %{applied_count: count})
-       when count > 0 do
-    record_current_product_tree_revision(repo, work_request_id, "reconcile_work_request", recorded_by)
+  defp maybe_record_reconcile_product_tree_revision(repo, work_request_id, recorded_by, reconciliation) do
+    if reconcile_product_tree_revision_required?(reconciliation) do
+      record_current_product_tree_revision(repo, work_request_id, "reconcile_work_request", recorded_by)
+    else
+      {:ok, nil}
+    end
   end
 
-  defp maybe_record_reconcile_product_tree_revision(_repo, _work_request_id, _recorded_by, _reconciliation) do
-    {:ok, nil}
+  defp reconcile_product_tree_revision_required?(%{applied_count: count}) when count > 0, do: true
+
+  defp reconcile_product_tree_revision_required?(%{results: results}) when is_list(results) do
+    Enum.any?(results, &reconcile_result_has_delivery_closeout?/1)
   end
+
+  defp reconcile_product_tree_revision_required?(_reconciliation), do: false
+
+  defp reconcile_result_has_delivery_closeout?(%{reason: "already_closeout"}), do: true
+  defp reconcile_result_has_delivery_closeout?(_result), do: false
 
   defp visible_delivery_board_work_package_contexts(repo, %WorkRequest{} = work_request, planned_slices, filters, opts \\ []) do
     planned_slice_ids = Enum.map(planned_slices, & &1.id)

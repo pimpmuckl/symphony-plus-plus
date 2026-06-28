@@ -28,6 +28,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixir.WorkPackageFactory
 
@@ -304,6 +305,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
 
     assert get_in(replay_response, ["result", "structuredContent", "reconciliation", "applied_count"]) == 0
     assert revision_count(repo, work_request.id) == 1
+
+    repo.delete_all(from(revision in Revision, where: revision.work_request_id == ^work_request.id))
+    assert revision_count(repo, work_request.id) == 0
+
+    backfill_response = mcp_tool(repo, session, "reconcile_work_request", %{"work_request_id" => work_request.id, "apply" => true})
+
+    assert get_in(backfill_response, ["result", "structuredContent", "reconciliation", "applied_count"]) == 0
+    assert revision_count(repo, work_request.id) == 1
   end
 
   test "apply does not append blocker preservation events when delivery recording fails", %{repo: repo} do
@@ -361,6 +370,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
                event.payload["type"] == "blocker_closeout_decision" and
                event.payload["source_tool"] == "reconcile_work_request"
            end)
+  end
+
+  test "apply repairs missing blocker preservation events for already closed deliveries", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-RECONCILE-BLOCKER-REPAIR",
+        work_package_id: "WP-RECONCILE-BLOCKER-REPAIR",
+        status: "ready_for_merge"
+      )
+
+    append_merged_pr_evidence!(repo, linked_package, 920, "head-920")
+    append_active_blocker!(repo, linked_package.id, "repair-blocker")
+
+    assert {:ok, _delivery} =
+             WorkRequestService.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               planned_slice.id,
+               merged_pr_delivery_attrs(920, %{"allow_active_blocker_closeout" => true})
+             )
+
+    assert reconcile_blocker_closeout_events(repo, linked_package.id) == []
+
+    assert {:ok, result} = DeliveryReconciler.reconcile(repo, work_request.id, mode: :apply)
+
+    assert result.applied_count == 1
+
+    assert [
+             %{
+               status: "applied",
+               reason: "already_closeout_blocker_closeout_repaired",
+               delivery_outcome: "pr_merged",
+               blocker_closeout_event_ids: [event_id]
+             }
+           ] = result.results
+
+    blocker_closeout_event = repo.get!(ProgressEvent, event_id)
+    assert blocker_closeout_event.payload["blocker_id"] == "repair-blocker"
+    assert blocker_closeout_event.payload["decision"] == "still_active"
+
+    assert {:ok, replay} = DeliveryReconciler.reconcile(repo, work_request.id, mode: :apply)
+    assert replay.applied_count == 0
+    assert [%{status: "skipped", reason: "already_closeout", delivery_outcome: "pr_merged"}] = replay.results
+    assert length(reconcile_blocker_closeout_events(repo, linked_package.id)) == 1
   end
 
   test "MCP reconcile_work_request apply keys blocker preservation by active blocker event", %{repo: repo} do
@@ -953,6 +1007,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     event
   end
 
+  defp reconcile_blocker_closeout_events(repo, work_package_id) do
+    repo.all(
+      from(event in ProgressEvent,
+        where: event.work_package_id == ^work_package_id,
+        order_by: [asc: event.sequence]
+      )
+    )
+    |> Enum.filter(fn event ->
+      event.payload["type"] == "blocker_closeout_decision" and event.payload["source_tool"] == "reconcile_work_request"
+    end)
+  end
+
   defp closeout_event!(repo) do
     closeout_events =
       repo.all(ProgressEvent)
@@ -966,6 +1032,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     Revision
     |> repo.all()
     |> Enum.count(&(&1.work_request_id == work_request_id))
+  end
+
+  defp merged_pr_delivery_attrs(number, overrides) do
+    Map.merge(
+      %{
+        outcome: "pr_merged",
+        idempotency_key: "delivery-reconciler-test:#{number}",
+        recorded_by: "reconciler-test",
+        pr_url: "https://github.com/nextide/repo/pull/#{number}",
+        pr_number: number,
+        pr_repository: "nextide/repo",
+        pr_merged_at: ~U[2026-05-24 12:00:00Z],
+        merge_commit_sha: "merge-sha-#{number}"
+      },
+      overrides
+    )
   end
 
   defp work_request_attrs(overrides) do
