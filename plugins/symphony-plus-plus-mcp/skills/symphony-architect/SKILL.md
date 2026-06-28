@@ -82,13 +82,19 @@ another shape. Each slice needs:
 
 After claiming a WorkRequest, current-WR lifecycle tools may omit
 `work_request_id`: `add_work_request_planned_slice`,
-`upsert_work_request_product_plan_node`,
+`upsert_work_request_product_plan_node_content`,
+`move_work_request_product_plan_node`,
+`set_work_request_product_plan_node_completion`,
 `move_work_request_planned_slice_to_product_node`,
 `approve_work_request_planned_slice`, `skip_work_request_planned_slice`, and
 `mark_work_request_sliced`, plus delivery board/reconcile, planned-slice
 delivery closeout, runtime cleanup, worker-key revocation, and dispatch. Keep
 intentional sibling reads, status/question tools, durable decisions, and package
 tools explicit.
+
+Use product-plan node content, move, and completion tools separately: content
+changes title/description/kind, move changes parent/position, and completion
+sets completion marks plus any required blocker closeout.
 
 Approve slices only when the boundary is defensible. Skip stale/superseded
 slices. Mark the WorkRequest sliced once approved slices cover the request.

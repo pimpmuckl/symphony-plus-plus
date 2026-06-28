@@ -164,8 +164,13 @@ Architect-facing MCP mutation tools maintain product trees:
   `nodes_with_slices` includes visible planned-slice payloads. Completion and
   attention rollups use scoped delivery-board operational state for linked
   WorkPackages.
-- `upsert_work_request_product_plan_node` creates, updates, and reparents
-  product plan nodes inside a scoped WorkRequest.
+- `upsert_work_request_product_plan_node_content` creates product plan nodes
+  and edits their title, description, or node kind inside a scoped WorkRequest.
+- `move_work_request_product_plan_node` reparents or reorders product plan nodes
+  inside a scoped WorkRequest.
+- `set_work_request_product_plan_node_completion` updates product plan node
+  completion marks and uses the existing blocker closeout guard for terminal
+  marks.
 - `move_work_request_planned_slice_to_product_node` moves a planned slice under
   a product plan node, or unlinks it back to the WorkRequest's direct slice
   list.

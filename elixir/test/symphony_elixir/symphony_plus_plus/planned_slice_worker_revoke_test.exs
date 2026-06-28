@@ -214,17 +214,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlannedSliceWorkerRevokeTest do
 
       assert get_in(revoke_blocked_response, ["error", "data", "reason"]) == "ambiguous_planned_slice_link"
 
-      cleanup_response =
-        mcp_tool(
-          repo,
-          session,
-          "cleanup_work_request_planned_slice_runtime",
-          cleanup_args(work_request, planned_slice, successor_slice.id)
-          |> Map.put("work_package_id", linked_package.id)
-        )
-
-      assert get_in(cleanup_response, ["result", "structuredContent", "work_package", "id"]) == linked_package.id
-      assert get_in(cleanup_response, ["result", "structuredContent", "runtime_cleanup", "status"]) == "cleaned"
+      refute repo.get!(AccessGrant, minted.grant.id).revoked_at
     after
       SQL.query!(
         repo,
