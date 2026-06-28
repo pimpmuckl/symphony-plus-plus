@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
   @moduledoc false
 
+  alias SymphonyElixir.SymphonyPlusPlus.Dashboard.BlockerProjection
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequestProgress
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
@@ -419,17 +420,57 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     end
   end
 
-  defp append_reconcile_blocker_closeout_events(repo, %WorkPackage{} = work_package, %{blocker_closeout: %{blocker_ids: blocker_ids} = closeout})
+  defp append_reconcile_blocker_closeout_events(repo, %WorkPackage{} = work_package, %{
+         blocker_closeout: %{blocker_ids: blocker_ids} = closeout
+       })
        when is_list(blocker_ids) do
-    Enum.reduce_while(blocker_ids, {:ok, []}, fn blocker_id, {:ok, event_ids} ->
-      case append_reconcile_blocker_closeout_event(repo, work_package, blocker_id, closeout) do
-        {:ok, event} -> {:cont, {:ok, [event.id | event_ids]}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
+    with {:ok, active_blockers} <- active_blockers(repo, work_package.id),
+         {:ok, closeout_blockers} <- reconcile_closeout_blockers(active_blockers, blocker_ids) do
+      append_reconcile_blocker_closeout_events_for_blockers(repo, closeout_blockers, closeout)
+    end
   end
 
   defp append_reconcile_blocker_closeout_events(_repo, %WorkPackage{}, _action_payload), do: {:ok, []}
+
+  defp append_reconcile_blocker_closeout_events_for_blockers(repo, blockers, closeout) do
+    Enum.reduce_while(blockers, {:ok, []}, fn blocker, {:ok, event_ids} ->
+      append_reconcile_blocker_closeout_event_result(repo, blocker, closeout, event_ids)
+    end)
+  end
+
+  defp append_reconcile_blocker_closeout_event_result(repo, blocker, closeout, event_ids) do
+    case append_reconcile_blocker_closeout_event(repo, blocker, closeout) do
+      {:ok, event} -> {:cont, {:ok, [event.id | event_ids]}}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp active_blockers(repo, work_package_id) do
+    with {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, work_package_id) do
+      blockers =
+        progress_events
+        |> BlockerProjection.blockers()
+        |> Enum.filter(& &1.active)
+        |> Enum.map(&Map.put(&1, :work_package_id, work_package_id))
+
+      {:ok, blockers}
+    end
+  end
+
+  defp reconcile_closeout_blockers(active_blockers, []) do
+    {:ok, active_blockers}
+  end
+
+  defp reconcile_closeout_blockers(active_blockers, blocker_ids) do
+    active_by_id = Map.new(active_blockers, &{&1.id, &1})
+    active_ids = active_by_id |> Map.keys() |> Enum.sort()
+    missing_ids = Enum.reject(blocker_ids, &Map.has_key?(active_by_id, &1))
+
+    case missing_ids do
+      [] -> {:ok, Enum.map(blocker_ids, &Map.fetch!(active_by_id, &1))}
+      _missing -> {:error, {:blocker_closeout_scope_mismatch, active_ids, Enum.sort(blocker_ids)}}
+    end
+  end
 
   defp record_reconciled_delivery(
          repo,
@@ -468,19 +509,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     end
   end
 
-  defp append_reconcile_blocker_closeout_event(repo, %WorkPackage{} = work_package, blocker_id, closeout) do
+  defp append_reconcile_blocker_closeout_event(repo, blocker, closeout) do
     PlanningRepository.append_progress_event(repo, %{
-      work_package_id: work_package.id,
+      work_package_id: blocker.work_package_id,
       summary: closeout.summary || "Preserved active blocker during reconcile_work_request",
       status: "blocked",
-      idempotency_key: ["blocker_closeout", "reconcile_work_request", work_package.id, blocker_id, "still_active"] |> Enum.join(":"),
+      idempotency_key: reconcile_blocker_closeout_idempotency_key(blocker, "still_active"),
       payload: %{
         type: "blocker_closeout_decision",
         source_tool: "reconcile_work_request",
-        blocker_id: blocker_id,
+        blocker_id: blocker.id,
         decision: "still_active"
       }
     })
+  end
+
+  defp reconcile_blocker_closeout_idempotency_key(blocker, decision) do
+    ["blocker_closeout", "reconcile_work_request", blocker.work_package_id, blocker.id, blocker.event_id, decision]
+    |> Enum.join(":")
   end
 
   defp maybe_put_blocker_closeout_event_ids(result, []), do: result

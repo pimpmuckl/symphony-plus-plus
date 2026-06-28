@@ -299,6 +299,71 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert revision_count(repo, work_request.id) == 1
   end
 
+  test "MCP reconcile_work_request apply keys blocker preservation by active blocker event", %{repo: repo} do
+    {work_request, _planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-RECONCILE-MCP-RERAISED-BLOCKER",
+        work_package_id: "WP-RECONCILE-MCP-RERAISED-BLOCKER",
+        status: "ready_for_merge"
+      )
+
+    append_merged_pr_evidence!(repo, linked_package, 918, "head-918")
+    append_active_blocker!(repo, linked_package.id, "reraised-blocker", idempotency_key: "reraised-blocker:first")
+
+    assert {:ok, old_closeout_event} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: linked_package.id,
+               summary: "Preserved prior active blocker",
+               status: "blocked",
+               idempotency_key:
+                 [
+                   "blocker_closeout",
+                   "reconcile_work_request",
+                   linked_package.id,
+                   "reraised-blocker",
+                   "still_active"
+                 ]
+                 |> Enum.join(":"),
+               payload: %{
+                 type: "blocker_closeout_decision",
+                 source_tool: "reconcile_work_request",
+                 blocker_id: "reraised-blocker",
+                 decision: "still_active"
+               }
+             })
+
+    append_blocker_resolution!(repo, linked_package.id, "reraised-blocker")
+
+    reraised_blocker =
+      append_active_blocker!(repo, linked_package.id, "reraised-blocker", idempotency_key: "reraised-blocker:second")
+
+    session = create_work_request_architect_session(repo, work_request, ["read:work_request", "write:work_request"])
+
+    response = mcp_tool(repo, session, "reconcile_work_request", %{"work_request_id" => work_request.id, "apply" => true})
+    payload = get_in(response, ["result", "structuredContent", "reconciliation"])
+
+    assert [result] = payload["results"]
+    assert [event_id] = result["blocker_closeout_event_ids"]
+    refute event_id == old_closeout_event.id
+
+    blocker_closeout_event = repo.get!(ProgressEvent, event_id)
+
+    assert blocker_closeout_event.idempotency_key ==
+             [
+               "blocker_closeout",
+               "reconcile_work_request",
+               linked_package.id,
+               "reraised-blocker",
+               reraised_blocker.id,
+               "still_active"
+             ]
+             |> Enum.join(":")
+
+    assert blocker_closeout_event.payload["blocker_id"] == "reraised-blocker"
+    assert blocker_closeout_event.payload["decision"] == "still_active"
+  end
+
   test "MCP reconcile_work_request apply returns fresh post-closeout delivery board", %{repo: repo} do
     {work_request, _planned_slice, linked_package} =
       linked_slice!(
@@ -788,18 +853,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
              })
   end
 
-  defp append_active_blocker!(repo, work_package_id, blocker_id) do
+  defp append_active_blocker!(repo, work_package_id, blocker_id, opts \\ []) do
     assert {:ok, event} =
              PlanningRepository.append_progress_event(repo, %{
                work_package_id: work_package_id,
                summary: "Review scope blocker",
                status: "blocked",
-               idempotency_key: blocker_id,
+               idempotency_key: Keyword.get(opts, :idempotency_key, blocker_id),
                payload: %{
                  type: "blocker",
                  source_tool: "report_blocker",
                  blocker_id: blocker_id,
                  active: true
+               }
+             })
+
+    event
+  end
+
+  defp append_blocker_resolution!(repo, work_package_id, blocker_id) do
+    assert {:ok, event} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package_id,
+               summary: "Review scope blocker resolved",
+               status: "resolved",
+               idempotency_key: "#{blocker_id}:resolved",
+               payload: %{
+                 type: "blocker",
+                 source_tool: "resolve_blocker",
+                 blocker_id: blocker_id,
+                 active: false
                }
              })
 
