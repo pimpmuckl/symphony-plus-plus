@@ -4,6 +4,8 @@ Code.require_file("../../support/symphony_plus_plus/mcp_session_helpers.exs", __
 defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL
+
   import SymphonyElixir.SymphonyPlusPlus.MCPCase.SessionHelpers,
     only: [create_phase_architect_session: 4]
 
@@ -616,6 +618,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
 
     assert get_in(response, ["result", "structuredContent", "work_package", "status"]) ==
              linked_package.status
+  end
+
+  test "WR architect read_child_status still works for duplicate planned-slice package links", %{
+    repo: repo
+  } do
+    {work_request, _planned_slice, linked_package} =
+      linked_slice!(repo, work_request_id: "WR-MCP-DELIVERY-STATUS-DUPLICATE")
+
+    other_work_request =
+      sibling_work_request!(
+        repo,
+        work_request,
+        "WR-MCP-DELIVERY-STATUS-DUPLICATE-OTHER"
+      )
+
+    other_slice =
+      create_planned_slice!(
+        repo,
+        other_work_request,
+        id: "WRS-MCP-DELIVERY-STATUS-DUPLICATE-OTHER"
+      )
+
+    session =
+      create_work_request_architect_session(repo, work_request, ArchitectHandoff.capabilities())
+
+    drop_planned_slice_work_package_unique_index!(repo)
+
+    try do
+      repo.update!(
+        Ecto.Changeset.change(other_slice,
+          status: "dispatched",
+          work_package_id: linked_package.id,
+          dispatched_at: DateTime.utc_now(:microsecond)
+        )
+      )
+
+      response =
+        mcp_tool(repo, session, "read_child_status", %{"work_package_id" => linked_package.id})
+
+      assert get_in(response, ["result", "structuredContent", "work_package", "id"]) ==
+               linked_package.id
+    after
+      SQL.query!(
+        repo,
+        "UPDATE sympp_work_request_planned_slices SET work_package_id = NULL, dispatched_at = NULL WHERE id = ?",
+        [other_slice.id]
+      )
+
+      create_planned_slice_work_package_unique_index!(repo)
+    end
   end
 
   test "WR architect narrowed capabilities do not regain child status calls", %{repo: repo} do
@@ -1349,6 +1401,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
 
   defp optional_arg(attrs, _key, nil), do: attrs
   defp optional_arg(attrs, key, value), do: Map.put(attrs, key, value)
+
+  defp drop_planned_slice_work_package_unique_index!(repo) do
+    SQL.query!(repo, "DROP INDEX IF EXISTS sympp_work_request_planned_slices_work_package_id_unique_index")
+  end
+
+  defp create_planned_slice_work_package_unique_index!(repo) do
+    SQL.query!(repo, """
+    CREATE UNIQUE INDEX IF NOT EXISTS sympp_work_request_planned_slices_work_package_id_unique_index
+    ON sympp_work_request_planned_slices (work_package_id)
+    WHERE work_package_id IS NOT NULL
+    """)
+  end
 
   defp work_request_attrs(overrides) do
     defaults = %{

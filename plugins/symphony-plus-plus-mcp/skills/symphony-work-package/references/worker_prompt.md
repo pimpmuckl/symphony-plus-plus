@@ -10,6 +10,7 @@ expands scope.
 
 Assignment:
 - WorkPackage: <WORK_PACKAGE_ID>
+- Primary worker coordinate: <WORK_PACKAGE_ID>
 - Repo: <REPO>
 - Base branch: <BASE_BRANCH>
 - Worker branch: <PREPARED_BRANCH>
@@ -35,6 +36,9 @@ Before coding:
 
 During coding:
 1. Keep changes tightly scoped to this package.
+   Treat linked planned-slice and WorkRequest ids as product/audit context
+   unless a tool explicitly asks for a delivery closeout, successor, repair, or
+   concurrency-protection target.
 2. Append meaningful discoveries with `append_finding(finding, idempotency_key)`.
 3. Append implementation and validation events with
    `append_progress(event, idempotency_key)`.

@@ -862,6 +862,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
     assert cleanup_schema["required"] == ["work_request_id", "planned_slice_id", "outcome", "reason"]
     assert get_in(cleanup_schema, ["properties", "outcome", "enum"]) == ["superseded", "abandoned"]
     assert get_in(cleanup_schema, ["properties", "reason", "description"]) =~ "audit reason"
+    assert get_in(cleanup_schema, ["properties", "work_package_id", "description"]) =~ "concurrency guard"
 
     assert delivery_schema["required"] == ["work_request_id", "planned_slice_id", "outcome", "idempotency_key"]
     assert get_in(delivery_schema, ["properties", "outcome", "enum"]) == ["pr_merged", "completed_no_pr", "superseded", "abandoned"]
@@ -870,6 +871,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.SoloSchema01Test do
 
     assert revoke_schema["required"] == ["work_request_id", "planned_slice_id", "grant_id", "reason"]
     assert get_in(revoke_schema, ["properties", "grant_id", "description"]) =~ "Raw worker secrets are never accepted or returned"
+    assert get_in(revoke_schema, ["properties", "work_package_id", "description"]) =~ "concurrency guard"
 
     assert get_in(tools_by_name, ["set_work_request_status", "inputSchema", "required"]) == ["work_request_id", "current_status", "next_status"]
     assert get_in(tools_by_name, ["ask_work_request_question", "inputSchema", "required"]) == ["work_request_id", "category", "question", "why_needed"]

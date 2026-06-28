@@ -28,6 +28,11 @@ PR-sized assignment.
 5. Return a review-green, merge-ready PR, or a no-PR evidence packet for
    investigation/docs/read-only work.
 
+For assigned WorkPackages, use the WorkPackage id as the worker execution
+coordinate. Treat linked WorkRequest/planned-slice ids as product/audit context
+unless the specific tool call is a delivery closeout, successor, repair, or
+concurrency-protection operation that asks for them.
+
 ## Scope
 
 - Stay inside the assignment boundary.

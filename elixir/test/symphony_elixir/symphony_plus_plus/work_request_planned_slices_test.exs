@@ -14,6 +14,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceLinkage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service
@@ -426,6 +427,67 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
              Service.dispatch_planned_slice(repo, work_request.id, approved.id, "dispatched", other_package.id)
   end
 
+  test "infers linked planned slice from WorkPackage and linked package from planned slice", %{repo: repo} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+    assert {:ok, planned} = Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-LINKAGE-INFER"))
+    assert {:ok, approved} = Repository.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+    work_package = create_matching_work_package!(repo, work_request, approved, id: "SYMPP-LINKAGE-INFER")
+    assert {:ok, dispatched} = Repository.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", work_package.id)
+
+    assert {:ok, linked_slice} = PlannedSliceLinkage.linked_slice_for_work_package(repo, work_package.id)
+    assert linked_slice.id == dispatched.id
+
+    assert {:ok, {linked_slice, linked_request}} =
+             PlannedSliceLinkage.linked_work_request_for_work_package(repo, work_package.id)
+
+    assert {linked_slice.id, linked_request.id} == {dispatched.id, work_request.id}
+
+    assert {:ok, {linked_slice, linked_package}} =
+             PlannedSliceLinkage.linked_work_package_for_planned_slice(repo, work_request.id, dispatched.id)
+
+    assert {linked_slice.id, linked_package.id} == {dispatched.id, work_package.id}
+  end
+
+  test "linked planned-slice inference reports missing and ambiguous links", %{repo: repo} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+    assert {:ok, first} = Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-LINKAGE-A"))
+    assert {:ok, second} = Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-LINKAGE-B"))
+    work_package = create_work_package!(repo, id: "SYMPP-LINKAGE-DUPLICATE")
+
+    assert {:error, :not_found} = PlannedSliceLinkage.linked_slice_for_work_package(repo, work_package.id)
+    assert {:error, :planned_slice_not_dispatched} = PlannedSliceLinkage.linked_work_package_for_planned_slice(repo, work_request.id, first.id)
+    assert {:error, :not_found} = PlannedSliceLinkage.linked_work_package_for_planned_slice(repo, "WR-LINKAGE-OTHER", first.id)
+
+    drop_planned_slice_work_package_unique_index!(repo)
+
+    try do
+      SQL.query!(
+        repo,
+        "UPDATE sympp_work_request_planned_slices SET work_package_id = ? WHERE id IN (?, ?)",
+        [work_package.id, first.id, second.id]
+      )
+
+      assert {:error, :ambiguous_planned_slice_link} =
+               PlannedSliceLinkage.linked_slice_for_work_package(repo, work_package.id)
+
+      assert {:error, :ambiguous_planned_slice_link} =
+               PlannedSliceLinkage.linked_work_request_for_work_package(repo, work_package.id)
+
+      assert {:ok, {linked_slice, linked_package}} =
+               PlannedSliceLinkage.linked_work_package_for_planned_slice(repo, work_request.id, first.id)
+
+      assert {linked_slice.id, linked_package.id} == {first.id, work_package.id}
+    after
+      SQL.query!(
+        repo,
+        "UPDATE sympp_work_request_planned_slices SET work_package_id = NULL WHERE id IN (?, ?)",
+        [first.id, second.id]
+      )
+
+      create_planned_slice_work_package_unique_index!(repo)
+    end
+  end
+
   test "dispatch linkage rejects invalid WorkPackage ids and already linked WorkPackages", %{repo: repo} do
     work_request = create_work_request!(repo, status: "ready_for_slicing")
 
@@ -610,6 +672,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
            }
 
     assert create_work.worker_bootstrap.claim.required_runtime_arguments == []
+
+    assert create_work.worker_bootstrap.coordinates.primary_execution == %{
+             kind: "work_package",
+             work_package_id: create_work.work_package.id
+           }
+
+    assert create_work.worker_bootstrap.coordinates.product_audit == %{
+             kind: "planned_slice",
+             work_request_id: work_request.id,
+             planned_slice_id: approved.id
+           }
 
     assert [
              ["symphony-plus-plus-mcp:symphony-worker", "symphony-plus-plus-mcp:symphony-work-package"],
@@ -1218,6 +1291,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
     Enum.any?(index_rows, fn row ->
       Enum.at(row, 1) == index_name and Enum.at(row, 4) == 1
     end)
+  end
+
+  defp drop_planned_slice_work_package_unique_index!(repo) do
+    SQL.query!(repo, "DROP INDEX IF EXISTS sympp_work_request_planned_slices_work_package_id_unique_index")
+  end
+
+  defp create_planned_slice_work_package_unique_index!(repo) do
+    SQL.query!(repo, """
+    CREATE UNIQUE INDEX IF NOT EXISTS sympp_work_request_planned_slices_work_package_id_unique_index
+    ON sympp_work_request_planned_slices (work_package_id)
+    WHERE work_package_id IS NOT NULL
+    """)
   end
 
   defp database_path do

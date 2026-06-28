@@ -35,6 +35,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
     "linked_package_active_after_delivery" => {"Active After Delivery", "warning", "Worker activity remains after delivery closeout."},
     "linked_package_blocked_after_delivery" => {"Blocked After Delivery", "warning", "A blocker remains after delivery closeout."},
     "linked_package_status_stale_after_delivery" => {"Status Needs Repair", "warning", "Package status does not match the delivery outcome."},
+    "ambiguous_linked_work_package" => {"Ambiguous Package", "warning", "Multiple planned slices point at the same WorkPackage."},
     "missing_linked_work_package" => {"Missing Package", "warning", "Dispatched slice has no visible package."},
     "pr_merged_without_delivery_outcome" => {"Needs Closeout", "warning", "Merged PR needs delivery closeout."},
     "terminal_package_without_delivery_outcome" => {"Needs Closeout", "warning", "Terminal package needs delivery closeout."}
@@ -251,6 +252,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
       |> Enum.filter(&filled_string?/1)
       |> Enum.uniq()
 
+    ambiguous_work_package_ids = ambiguous_work_package_ids(repo, all_work_package_ids)
     work_package_ids = visible_work_package_ids(all_work_package_ids, Keyword.get(opts, :visible_work_package_ids, :all))
     hidden_work_package_ids = MapSet.difference(MapSet.new(all_work_package_ids), MapSet.new(work_package_ids))
 
@@ -278,10 +280,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
        progress_events: progress_events,
        activity_contexts: activity_contexts,
        metadata_contexts: preloaded_metadata_contexts,
-       hidden_work_package_ids: hidden_work_package_ids
+       hidden_work_package_ids: hidden_work_package_ids,
+       ambiguous_work_package_ids: ambiguous_work_package_ids
      }}
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp ambiguous_work_package_ids(_repo, []), do: MapSet.new()
+
+  defp ambiguous_work_package_ids(repo, work_package_ids) do
+    work_package_ids
+    |> context_lookup_chunks()
+    |> Enum.flat_map(fn work_package_id_chunk ->
+      repo.all(
+        from(planned_slice in PlannedSlice,
+          where: planned_slice.work_package_id in ^work_package_id_chunk,
+          group_by: planned_slice.work_package_id,
+          having: count(planned_slice.id) > 1,
+          select: planned_slice.work_package_id
+        )
+      )
+    end)
+    |> MapSet.new()
   end
 
   defp visible_work_package_ids(work_package_ids, :all), do: work_package_ids
@@ -453,6 +474,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
       delivery: delivery_summary(delivery, context),
       work_package: work_package,
       work_package_hidden?: hidden_work_package?(planned_slice.work_package_id, context),
+      work_package_ambiguous?: visible_ambiguous_work_package?(planned_slice.work_package_id, context),
       successor: successor,
       operational_state: operational_state,
       attention_reason_codes: Map.fetch!(operational_state, :attention_reason_codes)
@@ -471,6 +493,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   defp operational_work_package_summary("", _context), do: nil
 
   defp operational_work_package_summary(work_package_id, context) do
+    if ambiguous_work_package?(work_package_id, context) do
+      nil
+    else
+      visible_operational_work_package_summary(work_package_id, context)
+    end
+  end
+
+  defp visible_operational_work_package_summary(work_package_id, context) do
     case get_in(context, [:work_packages, work_package_id]) do
       %WorkPackage{} = work_package ->
         events = Map.get(context.progress_events, work_package_id, [])
@@ -516,6 +546,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   defp work_package_summary("", _context), do: nil
 
   defp work_package_summary(work_package_id, context) do
+    if ambiguous_work_package?(work_package_id, context) do
+      nil
+    else
+      visible_work_package_summary(work_package_id, context)
+    end
+  end
+
+  defp visible_work_package_summary(work_package_id, context) do
     case get_in(context, [:work_packages, work_package_id]) do
       %WorkPackage{} = work_package ->
         events = Map.get(context.progress_events, work_package_id, [])
@@ -736,11 +774,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
     no_delivery_operational_state(planned_slice, work_package)
   end
 
-  defp hidden_work_package_marker(%PlannedSlice{} = planned_slice, nil, context) do
-    if hidden_work_package?(planned_slice.work_package_id, context), do: :hidden, else: nil
+  defp hidden_work_package_marker(%PlannedSlice{} = planned_slice, delivery, context) do
+    cond do
+      hidden_work_package?(planned_slice.work_package_id, context) -> :hidden
+      is_nil(delivery) and ambiguous_work_package?(planned_slice.work_package_id, context) -> :ambiguous
+      ambiguous_work_package?(planned_slice.work_package_id, context) -> :ambiguous
+      true -> nil
+    end
   end
-
-  defp hidden_work_package_marker(%PlannedSlice{}, %PlannedSliceDelivery{}, _context), do: nil
 
   defp no_delivery_operational_state(%PlannedSlice{status: "planned"} = planned_slice, nil) do
     state("planned", "Planned", "neutral", "Slice is planned and has no linked WorkPackage.", planned_slice.status, nil, nil, [])
@@ -764,6 +805,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
       nil,
       nil,
       []
+    )
+  end
+
+  defp no_delivery_operational_state(%PlannedSlice{} = planned_slice, :ambiguous) do
+    state(
+      "needs_repair",
+      "Needs Repair",
+      "warning",
+      "Multiple planned slices point at the same WorkPackage.",
+      planned_slice.status,
+      nil,
+      nil,
+      ["ambiguous_linked_work_package"]
     )
   end
 
@@ -850,9 +904,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
 
   defp terminal_delivery_attention_codes(%PlannedSliceDelivery{} = delivery, work_package) do
     [
+      if(work_package == :ambiguous, do: "ambiguous_linked_work_package"),
       if(work_package && active_blocker?(work_package), do: "linked_package_blocked_after_delivery"),
       if(work_package && active_runtime?(work_package), do: "linked_package_active_after_delivery"),
-      if(work_package && not package_reconciled_with_delivery?(work_package.raw_status, delivery.outcome),
+      if(is_map(work_package) and not package_reconciled_with_delivery?(work_package.raw_status, delivery.outcome),
         do: "linked_package_status_stale_after_delivery"
       )
     ]
@@ -866,6 +921,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   end
 
   defp state(key, label, tone, reason, raw_status, delivery_outcome, work_package, attention_reason_codes) do
+    work_package = if is_map(work_package), do: work_package
+
     %{
       key: key,
       label: label,
@@ -953,7 +1010,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   defp visible_work_package_id("", _context), do: nil
 
   defp visible_work_package_id(work_package_id, context) do
-    if hidden_work_package?(work_package_id, context), do: nil, else: work_package_id
+    if hidden_work_package?(work_package_id, context) or ambiguous_work_package?(work_package_id, context) do
+      nil
+    else
+      work_package_id
+    end
   end
 
   defp hidden_work_package?(work_package_id, context) when is_binary(work_package_id) do
@@ -961,6 +1022,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   end
 
   defp hidden_work_package?(_work_package_id, _context), do: false
+
+  defp ambiguous_work_package?(work_package_id, context) when is_binary(work_package_id) do
+    MapSet.member?(Map.fetch!(context, :ambiguous_work_package_ids), work_package_id)
+  end
+
+  defp ambiguous_work_package?(_work_package_id, _context), do: false
+
+  defp visible_ambiguous_work_package?(work_package_id, context) when is_binary(work_package_id) do
+    ambiguous_work_package?(work_package_id, context) and not hidden_work_package?(work_package_id, context)
+  end
+
+  defp visible_ambiguous_work_package?(_work_package_id, _context), do: false
 
   defp status_label(value) when is_binary(value) do
     value

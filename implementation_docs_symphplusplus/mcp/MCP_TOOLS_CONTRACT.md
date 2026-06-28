@@ -95,12 +95,21 @@ Verbose fields remain a fallback when the round cannot be resolved; `suite`
 must still identify Review Suite. Omit `round_id` when using verbose fallback
 fields because a present `round_id` selects the local-round resolution path.
 
-Follow-up scope deliberately left out of this pass:
+Retained explicit-id operations and their reasons:
 
 - `record_planned_slice_delivery` and
-  `cleanup_work_request_planned_slice_runtime` still require WorkRequest and
-  planned-slice ids because they mutate WorkRequest delivery truth and runtime
-  authority across linked records.
+  `cleanup_work_request_planned_slice_runtime` still require a planned-slice id
+  because they mutate product delivery truth and linked runtime authority.
+  `work_request_id` may be inferred from the claimed current WorkRequest.
+- `cleanup_work_request_planned_slice_runtime` and
+  `revoke_planned_slice_worker_key` accept `work_package_id` as an ambiguity
+  and concurrency guard. It is optional for normal one-to-one links and required
+  when duplicate planned-slice links share the same WorkPackage runtime.
+- Superseded closeout keeps `successor_planned_slice_id`, and optional
+  `successor_work_package_id`, because the caller is naming a cross-slice
+  successor relation.
+- `revoke_planned_slice_worker_key` keeps `grant_id` because revocation is a
+  concurrency-sensitive runtime operation on one live worker grant.
 - Architect package tools such as `read_child_status`,
   `approve_scope_expansion`, `prepare_work_package_worktree`, and
   `cleanup_work_package_worktree` still require WorkPackage ids because
@@ -190,7 +199,8 @@ target ids.
 `dispatch_work_request_planned_slice` requires only `planned_slice_id` once a
 single current WorkRequest is claimed; `claimed_by` is optional. It creates the
 linked WorkPackage, mints a worker grant, and returns the same simple
-`claim_local_assignment` bootstrap shape.
+`claim_local_assignment` bootstrap shape with labeled worker execution and
+product coordinates.
 
 `cleanup_work_request_planned_slice_runtime` is the WR architect cleanup path
 for linked planned-slice runtime that has been superseded or abandoned by

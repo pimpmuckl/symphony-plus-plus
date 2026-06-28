@@ -1118,6 +1118,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
       %{
         "work_request_id" => current_work_request_id_schema(),
         "planned_slice_id" => described_string_schema("Dispatched planned slice whose linked WorkPackage owns the runtime artifacts."),
+        "work_package_id" => described_string_schema("Optional concurrency guard. Required when duplicate planned-slice links make the linked WorkPackage ambiguous."),
         "outcome" =>
           ["superseded", "abandoned"]
           |> string_enum_schema()
@@ -1137,6 +1138,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
       %{
         "work_request_id" => current_work_request_id_schema(),
         "planned_slice_id" => described_string_schema("Dispatched planned slice whose linked WorkPackage owns the worker grant."),
+        "work_package_id" => described_string_schema("Optional concurrency guard. Required when duplicate planned-slice links make the linked WorkPackage ambiguous."),
         "grant_id" => described_string_schema("Live worker grant id for the linked WorkPackage. Raw worker secrets are never accepted or returned."),
         "reason" => described_string_schema("Redacted audit reason for revoking the worker grant during recut, recycle, or delivery closeout cleanup.")
       },

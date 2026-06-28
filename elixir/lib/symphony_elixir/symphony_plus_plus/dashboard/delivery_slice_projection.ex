@@ -90,6 +90,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard.DeliverySliceProjection do
     attention_reason_codes = map_value(operational_state, "attention_reason_codes") || []
 
     is_binary(delivery_outcome) or
+      "ambiguous_linked_work_package" in attention_reason_codes or
       (key == "needs_closeout" and "pr_merged_without_delivery_outcome" in attention_reason_codes) or
       terminal_without_delivery_state?(key, attention_reason_codes)
   end
