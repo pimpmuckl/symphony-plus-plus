@@ -446,6 +446,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert reconcile_blocker_closeout_events(repo, linked_package.id) == []
     append_blocker_resolution!(repo, linked_package.id, "repair-blocker")
 
+    assert {:ok, scoped_dry_run} =
+             DeliveryReconciler.reconcile(repo, work_request.id, visible_work_package_ids: [])
+
+    assert scoped_dry_run.proposed_count == 0
+    assert [%{status: "skipped", reason: "already_closeout", delivery_outcome: "pr_merged"}] = scoped_dry_run.results
+
     assert {:ok, dry_run} = DeliveryReconciler.reconcile(repo, work_request.id)
     assert dry_run.proposed_count == 1
 

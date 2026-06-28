@@ -140,7 +140,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
   end
 
   defp reconcile_already_closed_slice(repo, %PlannedSlice{} = planned_slice, delivery_outcome, :dry_run, opts) do
-    preview_already_closed_blocker_closeout(repo, planned_slice, delivery_outcome, opts)
+    cond do
+      not filled_string?(planned_slice.work_package_id) ->
+        already_closeout_result(planned_slice, nil, delivery_outcome)
+
+      not visible_work_package?(planned_slice.work_package_id, Keyword.get(opts, :visible_work_package_ids, :all)) ->
+        already_closeout_result(planned_slice, nil, delivery_outcome)
+
+      true ->
+        preview_already_closed_blocker_closeout(repo, planned_slice, delivery_outcome, opts)
+    end
   end
 
   defp reconcile_already_closed_slice(_repo, %PlannedSlice{} = planned_slice, delivery_outcome, _mode, _opts) do
