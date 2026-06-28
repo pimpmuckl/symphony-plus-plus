@@ -91,6 +91,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert action.work_request_id == work_request.id
     assert action.planned_slice_id == planned_slice.id
     assert action.outcome == "pr_merged"
+    assert action.recorded_by == "reconciler-test"
     assert action.evidence.pr_merged.pr_number == 902
     assert action.evidence.pr_merged.merge_commit_sha == "merge-sha-902"
     refute Map.has_key?(action, :pr_url)
@@ -225,11 +226,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     append_merged_pr_evidence!(repo, linked_package, 915, "head-915")
     session = create_work_request_architect_session(repo, work_request, ["read:work_request", "write:work_request"])
 
-    response = mcp_tool(repo, session, "reconcile_work_request", %{"work_request_id" => work_request.id})
+    response =
+      mcp_tool(repo, session, "reconcile_work_request", %{
+        "work_request_id" => work_request.id,
+        "recorded_by" => "manual-reconciler"
+      })
+
     assert [result] = get_in(response, ["result", "structuredContent", "reconciliation", "results"])
+    assert get_in(result, ["action", "recorded_by"]) == "manual-reconciler"
 
     record_response = mcp_tool(repo, session, "record_planned_slice_delivery", result["action"])
     assert get_in(record_response, ["result", "structuredContent", "planned_slice_delivery", "outcome"]) == "pr_merged"
+    assert get_in(record_response, ["result", "structuredContent", "planned_slice_delivery", "recorded_by"]) == "manual-reconciler"
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 1
+  end
+
+  test "MCP reconcile_work_request dry-run action preserves active blockers when replayed", %{repo: repo} do
+    {work_request, _planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-RECONCILE-MCP-BLOCKER-REPLAY",
+        work_package_id: "WP-RECONCILE-MCP-BLOCKER-REPLAY",
+        status: "ready_for_merge"
+      )
+
+    append_merged_pr_evidence!(repo, linked_package, 916, "head-916")
+    append_active_blocker!(repo, linked_package.id, "replay-blocker")
+    session = create_work_request_architect_session(repo, work_request, ["read:work_request", "write:work_request"])
+
+    response = mcp_tool(repo, session, "reconcile_work_request", %{"work_request_id" => work_request.id})
+    assert [result] = get_in(response, ["result", "structuredContent", "reconciliation", "results"])
+    assert get_in(result, ["action", "blocker_closeout", "decision"]) == "still_active"
+    assert get_in(result, ["action", "blocker_closeout", "blocker_ids"]) == ["replay-blocker"]
+
+    record_response = mcp_tool(repo, session, "record_planned_slice_delivery", result["action"])
+    assert get_in(record_response, ["result", "structuredContent", "planned_slice_delivery", "outcome"]) == "pr_merged"
+    assert get_in(record_response, ["result", "structuredContent", "blocker_closeout", "decision"]) == "still_active"
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 1
   end
 
@@ -720,6 +752,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
                  merge_state: %{merged: true}
                }
              })
+  end
+
+  defp append_active_blocker!(repo, work_package_id, blocker_id) do
+    assert {:ok, event} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package_id,
+               summary: "Review scope blocker",
+               status: "blocked",
+               idempotency_key: blocker_id,
+               payload: %{
+                 type: "blocker",
+                 source_tool: "report_blocker",
+                 blocker_id: blocker_id,
+                 active: true
+               }
+             })
+
+    event
   end
 
   defp closeout_event!(repo) do

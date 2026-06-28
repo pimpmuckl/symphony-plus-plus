@@ -11,6 +11,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
   import Ecto.Query
@@ -169,19 +170,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     end
   end
 
-  defp maybe_apply_action(_repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, action, :dry_run) do
+  defp maybe_apply_action(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, action, :dry_run) do
+    action_payload = action_payload(repo, work_request, planned_slice, work_package, action)
+
     planned_slice
     |> base_result(work_package)
     |> Map.merge(%{
       status: "proposed",
       reason: action.reason,
-      action: action_payload(work_request, planned_slice, action),
+      action: action_payload,
       evidence: action.evidence
     })
   end
 
   defp maybe_apply_action(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, action, :apply) do
-    action_payload = action_payload(work_request, planned_slice, action)
+    action_payload = action_payload(repo, work_request, planned_slice, work_package, action)
 
     case WorkRequestService.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, action.attrs) do
       {:ok, delivery} ->
@@ -366,12 +369,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
 
   defp merge_reconciliation_payload?(_payload), do: false
 
-  defp action_payload(%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, action) do
+  defp action_payload(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, action) do
     %{
       work_request_id: work_request.id,
       planned_slice_id: planned_slice.id,
       outcome: action.attrs.outcome,
       idempotency_key: action.attrs.idempotency_key,
+      recorded_by: action.attrs.recorded_by,
       evidence: %{
         pr_merged: %{
           pr_url: action.attrs.pr_url,
@@ -382,6 +386,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
         }
       }
     }
+    |> maybe_put_blocker_closeout(repo, work_package)
+  end
+
+  defp maybe_put_blocker_closeout(payload, repo, %WorkPackage{} = work_package) do
+    case active_blocker_ids(repo, work_package.id) do
+      [] ->
+        payload
+
+      blocker_ids ->
+        Map.put(payload, :blocker_closeout, %{
+          decision: "still_active",
+          blocker_ids: blocker_ids,
+          summary: "Preserve active blockers while recording merged PR delivery."
+        })
+    end
+  end
+
+  defp active_blocker_ids(repo, work_package_id) do
+    repo
+    |> WorkPackageActivity.context(work_package_id)
+    |> get_in([:blocker_state, :active_ids])
+    |> List.wrap()
   end
 
   defp idempotency_key(%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, evidence, merge_commit_sha) do
