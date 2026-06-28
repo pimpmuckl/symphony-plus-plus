@@ -510,7 +510,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
   defp append_reconcile_blocker_closeout_event(repo, blocker, closeout, opts) do
     attrs = %{
       work_package_id: blocker.work_package_id,
-      summary: closeout.summary || "Preserved active blocker during reconcile_work_request",
+      summary: reconcile_blocker_closeout_summary(closeout),
       status: "blocked",
       idempotency_key: reconcile_blocker_closeout_idempotency_key(blocker, "still_active"),
       payload: %{
@@ -522,6 +522,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     }
 
     append_reconcile_blocker_closeout_event_attrs(repo, blocker.work_package_id, attrs, opts)
+  end
+
+  defp reconcile_blocker_closeout_summary(closeout) do
+    case Map.get(closeout, :summary) do
+      summary when is_binary(summary) and summary != "" -> summary
+      _summary -> "Preserved active blocker during reconcile_work_request"
+    end
   end
 
   defp append_reconcile_blocker_closeout_event_attrs(repo, work_package_id, attrs, opts) do
