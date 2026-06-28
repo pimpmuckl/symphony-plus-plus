@@ -265,6 +265,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 1
   end
 
+  test "MCP reconcile_work_request apply preserves active blockers", %{repo: repo} do
+    {work_request, _planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-RECONCILE-MCP-BLOCKER-APPLY",
+        work_package_id: "WP-RECONCILE-MCP-BLOCKER-APPLY",
+        status: "ready_for_merge"
+      )
+
+    append_merged_pr_evidence!(repo, linked_package, 917, "head-917")
+    append_active_blocker!(repo, linked_package.id, "apply-blocker")
+    session = create_work_request_architect_session(repo, work_request, ["read:work_request", "write:work_request"])
+
+    response = mcp_tool(repo, session, "reconcile_work_request", %{"work_request_id" => work_request.id, "apply" => true})
+    payload = get_in(response, ["result", "structuredContent", "reconciliation"])
+
+    assert payload["applied_count"] == 1
+    assert [result] = payload["results"]
+    assert result["status"] == "applied"
+    assert get_in(result, ["action", "blocker_closeout", "decision"]) == "still_active"
+    assert get_in(result, ["action", "blocker_closeout", "blocker_ids"]) == ["apply-blocker"]
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 1
+  end
+
   test "MCP reconcile_work_request apply returns fresh post-closeout delivery board", %{repo: repo} do
     {work_request, _planned_slice, linked_package} =
       linked_slice!(

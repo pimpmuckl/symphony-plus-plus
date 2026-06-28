@@ -185,8 +185,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
 
   defp maybe_apply_action(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, action, :apply) do
     action_payload = action_payload(repo, work_request, planned_slice, work_package, action)
+    delivery_attrs = delivery_attrs(repo, work_package, action)
 
-    case WorkRequestService.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, action.attrs) do
+    case WorkRequestService.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, delivery_attrs) do
       {:ok, delivery} ->
         planned_slice
         |> base_result(work_package)
@@ -408,6 +409,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     |> WorkPackageActivity.context(work_package_id)
     |> get_in([:blocker_state, :active_ids])
     |> List.wrap()
+  end
+
+  defp delivery_attrs(repo, %WorkPackage{} = work_package, action) do
+    case active_blocker_ids(repo, work_package.id) do
+      [] -> action.attrs
+      _blocker_ids -> Map.put(action.attrs, "allow_active_blocker_closeout", true)
+    end
   end
 
   defp idempotency_key(%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, evidence, merge_commit_sha) do
