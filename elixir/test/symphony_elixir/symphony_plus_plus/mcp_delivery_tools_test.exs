@@ -626,17 +626,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     {work_request, _planned_slice, linked_package} =
       linked_slice!(repo, work_request_id: "WR-MCP-DELIVERY-STATUS-DUPLICATE")
 
-    other_work_request =
-      sibling_work_request!(
-        repo,
-        work_request,
-        "WR-MCP-DELIVERY-STATUS-DUPLICATE-OTHER"
-      )
-
     other_slice =
       create_planned_slice!(
         repo,
-        other_work_request,
+        work_request,
         id: "WRS-MCP-DELIVERY-STATUS-DUPLICATE-OTHER"
       )
 
@@ -659,6 +652,55 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
 
       assert get_in(response, ["result", "structuredContent", "work_package", "id"]) ==
                linked_package.id
+    after
+      SQL.query!(
+        repo,
+        "UPDATE sympp_work_request_planned_slices SET work_package_id = NULL, dispatched_at = NULL WHERE id = ?",
+        [other_slice.id]
+      )
+
+      create_planned_slice_work_package_unique_index!(repo)
+    end
+  end
+
+  test "WR architect read_child_status fails closed for cross-WorkRequest duplicate links", %{
+    repo: repo
+  } do
+    {work_request, _planned_slice, linked_package} =
+      linked_slice!(repo, work_request_id: "WR-MCP-DELIVERY-STATUS-CROSS-DUPLICATE")
+
+    other_work_request =
+      sibling_work_request!(
+        repo,
+        work_request,
+        "WR-MCP-DELIVERY-STATUS-CROSS-DUPLICATE-OTHER"
+      )
+
+    other_slice =
+      create_planned_slice!(
+        repo,
+        other_work_request,
+        id: "WRS-MCP-DELIVERY-STATUS-CROSS-DUPLICATE-OTHER"
+      )
+
+    session =
+      create_work_request_architect_session(repo, work_request, ArchitectHandoff.capabilities())
+
+    drop_planned_slice_work_package_unique_index!(repo)
+
+    try do
+      repo.update!(
+        Ecto.Changeset.change(other_slice,
+          status: "dispatched",
+          work_package_id: linked_package.id,
+          dispatched_at: DateTime.utc_now(:microsecond)
+        )
+      )
+
+      response =
+        mcp_tool(repo, session, "read_child_status", %{"work_package_id" => linked_package.id})
+
+      assert get_in(response, ["error", "data", "reason"]) == "ambiguous_planned_slice_link"
     after
       SQL.query!(
         repo,

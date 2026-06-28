@@ -6242,10 +6242,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         {:error, :forbidden}
 
       {:ok, links} ->
-        require_any_worktree_work_package_link_scope(repo, work_package, links, filters)
+        with :ok <- require_unique_worktree_work_request_link(links) do
+          require_any_worktree_work_package_link_scope(repo, work_package, links, filters)
+        end
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp require_unique_worktree_work_request_link(links) do
+    case Enum.uniq_by(links, fn {%PlannedSlice{}, %WorkRequest{id: work_request_id}} -> work_request_id end) do
+      [_single] -> :ok
+      [_first | _rest] -> {:error, :ambiguous_planned_slice_link}
     end
   end
 
