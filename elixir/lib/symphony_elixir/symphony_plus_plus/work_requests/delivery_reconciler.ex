@@ -189,15 +189,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
 
     case WorkRequestService.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, delivery_attrs) do
       {:ok, delivery} ->
-        planned_slice
-        |> base_result(work_package)
-        |> Map.merge(%{
-          status: "applied",
-          reason: action.reason,
-          action: action_payload,
-          evidence: action.evidence,
-          delivery_id: delivery.id
-        })
+        case append_reconcile_blocker_closeout_events(repo, work_package, action_payload) do
+          {:ok, blocker_closeout_event_ids} ->
+            planned_slice
+            |> base_result(work_package)
+            |> Map.merge(%{
+              status: "applied",
+              reason: action.reason,
+              action: action_payload,
+              evidence: action.evidence,
+              delivery_id: delivery.id
+            })
+            |> maybe_put_blocker_closeout_event_ids(blocker_closeout_event_ids)
+
+          {:error, reason} ->
+            error_result(planned_slice, work_package, reason, action_payload)
+        end
 
       {:error, reason} ->
         error_result(planned_slice, work_package, reason, action_payload)
@@ -417,6 +424,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
       _blocker_ids -> Map.put(action.attrs, "allow_active_blocker_closeout", true)
     end
   end
+
+  defp append_reconcile_blocker_closeout_events(repo, %WorkPackage{} = work_package, %{blocker_closeout: %{blocker_ids: blocker_ids} = closeout})
+       when is_list(blocker_ids) do
+    Enum.reduce_while(blocker_ids, {:ok, []}, fn blocker_id, {:ok, event_ids} ->
+      case append_reconcile_blocker_closeout_event(repo, work_package, blocker_id, closeout) do
+        {:ok, event} -> {:cont, {:ok, [event.id | event_ids]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp append_reconcile_blocker_closeout_events(_repo, %WorkPackage{}, _action_payload), do: {:ok, []}
+
+  defp append_reconcile_blocker_closeout_event(repo, %WorkPackage{} = work_package, blocker_id, closeout) do
+    PlanningRepository.append_progress_event(repo, %{
+      work_package_id: work_package.id,
+      summary: closeout.summary || "Preserved active blocker during reconcile_work_request",
+      status: "blocked",
+      idempotency_key: ["blocker_closeout", "reconcile_work_request", work_package.id, blocker_id, "still_active"] |> Enum.join(":"),
+      payload: %{
+        type: "blocker_closeout_decision",
+        source_tool: "reconcile_work_request",
+        blocker_id: blocker_id,
+        decision: "still_active"
+      }
+    })
+  end
+
+  defp maybe_put_blocker_closeout_event_ids(result, []), do: result
+  defp maybe_put_blocker_closeout_event_ids(result, event_ids), do: Map.put(result, :blocker_closeout_event_ids, Enum.reverse(event_ids))
 
   defp idempotency_key(%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, evidence, merge_commit_sha) do
     material = [work_request.id, planned_slice.id, evidence.url, evidence.head_sha, merge_commit_sha] |> Enum.join(":")

@@ -286,7 +286,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert result["status"] == "applied"
     assert get_in(result, ["action", "blocker_closeout", "decision"]) == "still_active"
     assert get_in(result, ["action", "blocker_closeout", "blocker_ids"]) == ["apply-blocker"]
+    assert [event_id] = result["blocker_closeout_event_ids"]
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 1
+
+    blocker_closeout_event = repo.get!(ProgressEvent, event_id)
+    assert blocker_closeout_event.work_package_id == linked_package.id
+    assert blocker_closeout_event.payload["type"] == "blocker_closeout_decision"
+    assert blocker_closeout_event.payload["source_tool"] == "reconcile_work_request"
+    assert blocker_closeout_event.payload["blocker_id"] == "apply-blocker"
+    assert blocker_closeout_event.payload["decision"] == "still_active"
   end
 
   test "MCP reconcile_work_request apply returns fresh post-closeout delivery board", %{repo: repo} do
