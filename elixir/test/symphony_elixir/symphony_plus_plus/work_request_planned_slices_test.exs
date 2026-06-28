@@ -470,6 +470,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
       assert {:error, :ambiguous_planned_slice_link} =
                PlannedSliceLinkage.linked_slice_for_work_package(repo, work_package.id)
 
+      assert {:error, :ambiguous_planned_slice_link} =
+               PlannedSliceLinkage.linked_slice_for_work_package(repo, work_request.id, work_package.id)
+
       assert {:ok, {_linked_slice, linked_request}} =
                PlannedSliceLinkage.linked_work_request_for_work_package(repo, work_package.id)
 
@@ -495,6 +498,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
 
       assert {:error, :ambiguous_planned_slice_link} =
                PlannedSliceLinkage.linked_work_request_for_work_package(repo, work_package.id)
+
+      early_request_a = create_work_request!(repo, id: "WR-LINKAGE-DUPLICATE-000-A")
+      early_request_b = create_work_request!(repo, id: "WR-LINKAGE-DUPLICATE-000-B")
+      target_request = create_work_request!(repo, id: "WR-LINKAGE-DUPLICATE-ZZZ")
+
+      assert {:ok, early_slice_a} =
+               Repository.add_planned_slice(repo, early_request_a.id, planned_slice_attrs(id: "WRS-LINKAGE-EARLY-A"))
+
+      assert {:ok, early_slice_b} =
+               Repository.add_planned_slice(repo, early_request_b.id, planned_slice_attrs(id: "WRS-LINKAGE-EARLY-B"))
+
+      assert {:ok, target_slice} =
+               Repository.add_planned_slice(repo, target_request.id, planned_slice_attrs(id: "WRS-LINKAGE-TARGET-Z"))
+
+      SQL.query!(
+        repo,
+        "UPDATE sympp_work_request_planned_slices SET work_package_id = ? WHERE id IN (?, ?, ?)",
+        [work_package.id, early_slice_a.id, early_slice_b.id, target_slice.id]
+      )
+
+      assert {:ok, scoped_target_slice} =
+               PlannedSliceLinkage.linked_slice_for_work_package(repo, target_request.id, work_package.id)
+
+      assert scoped_target_slice.id == target_slice.id
     after
       SQL.query!(
         repo,

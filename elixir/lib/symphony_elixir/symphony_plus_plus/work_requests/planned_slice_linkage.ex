@@ -28,6 +28,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceLinkage do
           work_package_id
           |> linked_slice_query()
           |> maybe_scoped_to_work_request(work_request_id)
+          |> ambiguity_probe_query()
         )
 
       case planned_slices do
@@ -92,6 +93,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceLinkage do
   defp linked_unique_work_request(links) do
     case Enum.uniq_by(links, fn {%PlannedSlice{}, %WorkRequest{id: work_request_id}} -> work_request_id end) do
       [{%PlannedSlice{}, %WorkRequest{}} = link] -> {:ok, link}
+      [] -> {:error, :not_found}
       [_first | _rest] -> {:error, :ambiguous_planned_slice_link}
     end
   end
@@ -106,7 +108,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceLinkage do
   defp linked_slice_query(work_package_id) do
     from(planned_slice in PlannedSlice,
       where: planned_slice.work_package_id == ^work_package_id,
-      order_by: [asc: planned_slice.work_request_id, asc: planned_slice.sequence, asc: planned_slice.id],
+      order_by: [asc: planned_slice.work_request_id, asc: planned_slice.sequence, asc: planned_slice.id]
+    )
+  end
+
+  defp ambiguity_probe_query(query) do
+    from(planned_slice in query,
       limit: 2
     )
   end

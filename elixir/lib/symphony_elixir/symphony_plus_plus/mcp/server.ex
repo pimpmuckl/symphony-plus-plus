@@ -6013,21 +6013,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp planned_slice_work_package_id(repo, %WorkRequest{id: work_request_id}, %PlannedSlice{id: planned_slice_id}) do
-    with {:ok, {%PlannedSlice{}, %WorkPackage{id: work_package_id}}} <-
-           PlannedSliceLinkage.linked_work_package_for_planned_slice(repo, work_request_id, planned_slice_id),
-         {:ok, false} <- ambiguous_planned_slice_work_package?(repo, work_package_id) do
-      {:ok, work_package_id}
-    else
+    case PlannedSliceLinkage.linked_work_package_for_planned_slice(repo, work_request_id, planned_slice_id) do
+      {:ok, {%PlannedSlice{}, %WorkPackage{id: work_package_id}}} -> {:ok, work_package_id}
       {:error, :planned_slice_not_dispatched} -> {:tool_error, "planned_slice_not_dispatched"}
-      {:ok, true} -> {:tool_error, "ambiguous_planned_slice_link"}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp ambiguous_planned_slice_work_package?(repo, work_package_id) do
-    case PlannedSliceLinkage.linked_slice_for_work_package(repo, work_package_id) do
-      {:ok, %PlannedSlice{}} -> {:ok, false}
-      {:error, :ambiguous_planned_slice_link} -> {:ok, true}
+      {:error, :ambiguous_planned_slice_link} -> {:tool_error, "ambiguous_planned_slice_link"}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -6255,6 +6244,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_unique_worktree_work_request_link(links) do
     case Enum.uniq_by(links, fn {%PlannedSlice{}, %WorkRequest{id: work_request_id}} -> work_request_id end) do
       [_single] -> :ok
+      [] -> {:error, :forbidden}
       [_first | _rest] -> {:error, :ambiguous_planned_slice_link}
     end
   end
