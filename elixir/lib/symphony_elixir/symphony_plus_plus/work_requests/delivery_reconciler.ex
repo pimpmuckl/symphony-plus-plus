@@ -139,75 +139,74 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     end
   end
 
+  defp reconcile_already_closed_slice(repo, %PlannedSlice{} = planned_slice, delivery_outcome, :dry_run, opts) do
+    preview_already_closed_blocker_closeout(repo, planned_slice, delivery_outcome, opts)
+  end
+
   defp reconcile_already_closed_slice(_repo, %PlannedSlice{} = planned_slice, delivery_outcome, _mode, _opts) do
     already_closeout_result(planned_slice, nil, delivery_outcome)
   end
 
   defp repair_already_closed_blocker_closeout(repo, %PlannedSlice{} = planned_slice, delivery_outcome, opts) do
+    case load_already_closed_blocker_closeout_repair(repo, planned_slice, delivery_outcome) do
+      {:ok, work_package, missing_blockers} ->
+        append_missing_reconcile_blocker_closeout_events(
+          repo,
+          planned_slice,
+          work_package,
+          delivery_outcome,
+          missing_blockers,
+          opts
+        )
+
+      :skip ->
+        already_closeout_result(planned_slice, nil, delivery_outcome)
+
+      {:error, reason} ->
+        error_result(planned_slice, nil, reason)
+    end
+  end
+
+  defp preview_already_closed_blocker_closeout(repo, %PlannedSlice{} = planned_slice, delivery_outcome, _opts) do
+    case load_already_closed_blocker_closeout_repair(repo, planned_slice, delivery_outcome) do
+      {:ok, work_package, []} ->
+        already_closeout_result(planned_slice, work_package, delivery_outcome)
+
+      {:ok, work_package, missing_blockers} ->
+        closeout = reconcile_still_active_blocker_closeout(missing_blockers)
+
+        planned_slice
+        |> base_result(work_package)
+        |> Map.merge(%{
+          status: "proposed",
+          reason: "already_closeout_blocker_closeout_repair",
+          action: already_closed_action_payload(planned_slice, delivery_outcome, closeout),
+          delivery_outcome: delivery_outcome
+        })
+
+      :skip ->
+        already_closeout_result(planned_slice, nil, delivery_outcome)
+
+      {:error, reason} ->
+        error_result(planned_slice, nil, reason)
+    end
+  end
+
+  defp load_already_closed_blocker_closeout_repair(repo, %PlannedSlice{} = planned_slice, delivery_outcome) do
     with {:ok, work_package} <- WorkPackageRepository.get(repo, planned_slice.work_package_id),
          {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, work_package.id),
          {:ok, closeout_event} <- delivery_closeout_event(progress_events, planned_slice, delivery_outcome) do
-      closeout_blockers = closeout_blockers(progress_events, closeout_event)
+      missing_blockers =
+        progress_events
+        |> closeout_blockers(closeout_event)
+        |> then(&missing_reconcile_blocker_closeout_blockers(repo, &1))
 
-      append_missing_reconcile_blocker_closeout_events(
-        repo,
-        planned_slice,
-        work_package,
-        delivery_outcome,
-        missing_reconcile_blocker_closeout_blockers(repo, closeout_blockers),
-        opts
-      )
+      {:ok, work_package, missing_blockers}
     else
-      {:error, :not_found} -> already_closeout_result(planned_slice, nil, delivery_outcome)
-      {:error, reason} -> error_result(planned_slice, nil, reason)
+      {:error, :not_found} -> :skip
+      {:error, reason} -> {:error, reason}
     end
   end
-
-  defp delivery_closeout_event(progress_events, %PlannedSlice{} = planned_slice, delivery_outcome) do
-    progress_events
-    |> Enum.reverse()
-    |> Enum.find(&delivery_closeout_event?(&1, planned_slice.id, delivery_outcome))
-    |> case do
-      %ProgressEvent{} = event -> {:ok, event}
-      nil -> {:error, :not_found}
-    end
-  end
-
-  defp delivery_closeout_event?(%ProgressEvent{} = event, planned_slice_id, delivery_outcome) do
-    payload = event.payload || %{}
-
-    Map.get(payload, "type") == "work_request_delivery_closeout" and
-      Map.get(payload, "source_tool") == "record_planned_slice_delivery" and
-      Map.get(payload, "planned_slice_id") == planned_slice_id and
-      Map.get(payload, "outcome") == delivery_outcome
-  end
-
-  defp closeout_blockers(progress_events, %ProgressEvent{} = closeout_event) do
-    closeout_blocker_ids =
-      closeout_event
-      |> closeout_active_blocker_ids()
-      |> MapSet.new()
-
-    progress_events
-    |> Enum.filter(&progress_event_observed_by?(&1, closeout_event))
-    |> BlockerProjection.blockers()
-    |> Enum.filter(&(&1.active and MapSet.member?(closeout_blocker_ids, &1.id)))
-    |> Enum.map(&Map.put(&1, :work_package_id, closeout_event.work_package_id))
-  end
-
-  defp closeout_active_blocker_ids(%ProgressEvent{} = closeout_event) do
-    closeout_event.payload
-    |> map_value("active_blocker_ids")
-    |> List.wrap()
-    |> Enum.filter(&is_binary/1)
-  end
-
-  defp progress_event_observed_by?(%ProgressEvent{sequence: sequence}, %ProgressEvent{sequence: closeout_sequence})
-       when is_integer(sequence) and is_integer(closeout_sequence) do
-    sequence <= closeout_sequence
-  end
-
-  defp progress_event_observed_by?(%ProgressEvent{}, %ProgressEvent{}), do: false
 
   defp append_missing_reconcile_blocker_closeout_events(
          _repo,
@@ -284,6 +283,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
       )
     )
   end
+
+  defp delivery_closeout_event(progress_events, %PlannedSlice{} = planned_slice, delivery_outcome) do
+    progress_events
+    |> Enum.reverse()
+    |> Enum.find(&delivery_closeout_event?(&1, planned_slice.id, delivery_outcome))
+    |> case do
+      %ProgressEvent{} = event -> {:ok, event}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp delivery_closeout_event?(%ProgressEvent{} = event, planned_slice_id, delivery_outcome) do
+    payload = event.payload || %{}
+
+    Map.get(payload, "type") == "work_request_delivery_closeout" and
+      Map.get(payload, "source_tool") == "record_planned_slice_delivery" and
+      Map.get(payload, "planned_slice_id") == planned_slice_id and
+      Map.get(payload, "outcome") == delivery_outcome
+  end
+
+  defp closeout_blockers(progress_events, %ProgressEvent{} = closeout_event) do
+    closeout_blocker_ids =
+      closeout_event
+      |> closeout_active_blocker_ids()
+      |> MapSet.new()
+
+    progress_events
+    |> Enum.filter(&progress_event_observed_by?(&1, closeout_event))
+    |> BlockerProjection.blockers()
+    |> Enum.filter(&(&1.active and MapSet.member?(closeout_blocker_ids, &1.id)))
+    |> Enum.map(&Map.put(&1, :work_package_id, closeout_event.work_package_id))
+  end
+
+  defp closeout_active_blocker_ids(%ProgressEvent{} = closeout_event) do
+    closeout_event.payload
+    |> map_value("active_blocker_ids")
+    |> List.wrap()
+    |> Enum.filter(&is_binary/1)
+  end
+
+  defp progress_event_observed_by?(%ProgressEvent{sequence: sequence}, %ProgressEvent{sequence: closeout_sequence})
+       when is_integer(sequence) and is_integer(closeout_sequence) do
+    sequence <= closeout_sequence
+  end
+
+  defp progress_event_observed_by?(%ProgressEvent{}, %ProgressEvent{}), do: false
 
   defp reconcile_dispatched_slice(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, mode, opts) do
     with {:ok, work_package} <- WorkPackageRepository.get(repo, planned_slice.work_package_id),
