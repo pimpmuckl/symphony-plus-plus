@@ -14,6 +14,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
+  @spec ensure_started() :: :ok | {:error, :state_store_unavailable}
+  def ensure_started do
+    case Process.whereis(__MODULE__) do
+      pid when is_pid(pid) -> :ok
+      nil -> start_store()
+    end
+  end
+
   @spec get(Config.t(), String.t(), String.t()) :: Server.t() | nil
   def get(%Config{} = config, client_key, state_key) when is_binary(client_key) and is_binary(state_key) do
     GenServer.call(__MODULE__, {:get, store_key(config, client_key, state_key)})
@@ -237,6 +245,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
     {:noreply, release_lock_ref(state, ref)}
+  end
+
+  defp start_store do
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      pid when is_pid(pid) -> start_supervised_store()
+      nil -> start_direct_store()
+    end
+  end
+
+  defp start_supervised_store do
+    case Supervisor.restart_child(SymphonyElixir.Supervisor, __MODULE__) do
+      {:ok, _pid} -> :ok
+      {:ok, _pid, _info} -> :ok
+      {:error, :running} -> :ok
+      {:error, :not_found} -> add_supervised_store()
+      {:error, {:already_started, _pid}} -> :ok
+      {:error, _reason} -> {:error, :state_store_unavailable}
+    end
+  catch
+    :exit, _reason -> {:error, :state_store_unavailable}
+  end
+
+  defp add_supervised_store do
+    case Supervisor.start_child(SymphonyElixir.Supervisor, __MODULE__) do
+      {:ok, _pid} -> :ok
+      {:ok, _pid, _info} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+      {:error, _reason} -> {:error, :state_store_unavailable}
+    end
+  end
+
+  defp start_direct_store do
+    case GenServer.start(__MODULE__, [], name: __MODULE__) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+      {:error, _reason} -> {:error, :state_store_unavailable}
+    end
   end
 
   defp get_by_key(key), do: GenServer.call(__MODULE__, {:get, key})

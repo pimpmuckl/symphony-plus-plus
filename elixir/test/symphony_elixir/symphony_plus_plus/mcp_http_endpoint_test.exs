@@ -160,6 +160,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     assert Process.whereis(ClientLeases)
   end
 
+  test "POST /mcp/client-lease keeps loopback and origin checks strict" do
+    payload = %{"client_id" => "endpoint-client", "action" => "attach"}
+
+    assert get_in(post_json(payload, [], path: "/mcp/client-lease", remote_ip: {10, 0, 0, 2}) |> json_response(403), [
+             "error",
+             "data",
+             "reason"
+           ]) == "local_only"
+
+    assert get_in(post_json(payload, [{"x-forwarded-for", "10.0.0.2"}], path: "/mcp/client-lease") |> json_response(403), [
+             "error",
+             "data",
+             "reason"
+           ]) == "local_only"
+
+    assert get_in(post_json(payload, [{"origin", "http://localhost:9999"}], path: "/mcp/client-lease") |> json_response(403), [
+             "error",
+             "data",
+             "reason"
+           ]) == "origin_not_allowed"
+  end
+
   test "POST /mcp tools/list uses Mcp-Session-Id continuity" do
     init = post_json(initialize_request("init"))
     [session_id] = get_resp_header(init, "mcp-session-id")

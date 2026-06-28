@@ -799,7 +799,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "resources" => resource_contract_material(),
       "schema_version" => @mcp_contract_schema_version,
       "tool_sets" => %{
-        "architect" => ToolCatalog.architect_session_tool_specs(current_work_request?: true),
+        "architect" => ToolCatalog.architect_session_tool_specs(current_work_request?: false),
+        "architect_current_work_request" => ToolCatalog.architect_session_tool_specs(current_work_request?: true),
         "claimable" => claimable_tool_specs(config),
         "local_operator" => LocalTrustedTools.tool_specs(config),
         "unbound" => hide_trusted_local_tool_specs(unbound_tool_specs_for_config(config)),
@@ -3195,7 +3196,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     repo_scope_opts = work_request_repo_scope_opts(config)
 
     with {:ok, session} <- Auth.require_session(session, config.repo),
-         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, work_request_id} <- CurrentWorkRequest.id_argument(arguments, session),
          {:ok, work_request, filters, scope} <-
            authorized_work_request_scope(
              config.repo,
@@ -3246,7 +3247,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, apply?} <- optional_boolean(arguments, "apply", false),
          {:ok, live_session} <- Auth.require_session(session, config.repo),
          :ok <- require_delivery_reconcile_capability(live_session, apply?),
-         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, work_request_id} <- CurrentWorkRequest.id_argument(arguments, live_session),
          {:ok, recorded_by} <- optional_string_argument(arguments, "recorded_by", session_claimed_by(live_session)),
          {:ok, work_request, filters, scope} <-
            authorized_work_request_scope(config.repo, live_session, work_request_id, reconcile_work_request_action(apply?), "reconcile_work_request"),
@@ -3279,7 +3280,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool("record_planned_slice_delivery", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, live_session} <- Auth.require_session(session, config.repo),
          :ok <- require_delivery_write_capability(live_session),
-         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, work_request_id} <- CurrentWorkRequest.id_argument(arguments, live_session),
          {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
          {:ok, outcome} <- required_planned_slice_delivery_outcome(arguments),
          {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
@@ -3338,8 +3339,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- architect_session(config.repo, session, "read:guidance_request"),
          {:ok, status} <- optional_guidance_request_status(arguments),
          {:ok, work_package_id} <- optional_string_argument(arguments, "work_package_id"),
-         {:ok, work_request_id} <- optional_string_argument(arguments, "work_request_id"),
-         :ok <- maybe_require_guidance_work_request_filter_scope(config.repo, session, work_request_id),
+         {:ok, requested_work_request_id} <- optional_string_argument(arguments, "work_request_id"),
+         {:ok, work_request_id} <-
+           guidance_work_request_id_argument(requested_work_request_id, session, work_package_id),
+         :ok <- maybe_require_guidance_work_request_filter_scope(config.repo, session, requested_work_request_id),
          {:ok, filters, scope} <- scoped_guidance_request_filters(config.repo, session),
          {:ok, filters} <- guidance_request_list_filters(config.repo, filters, status, work_package_id, work_request_id),
          {:ok, guidance_requests} <- GuidanceRequestService.list_visible_to_architect(config.repo, filters) do
@@ -3916,7 +3919,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_tool("dispatch_work_request_planned_slice", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
-         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, work_request_id} <- CurrentWorkRequest.id_argument(arguments, session),
          {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
          {:ok, claimed_by} <- optional_string_argument(arguments, "claimed_by", default_claimed_by(%__MODULE__{config: config})),
          {:ok, _work_request, planned_slice, _filters, scope} <-
@@ -4127,7 +4130,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp cleanup_work_request_planned_slice_runtime_tool(arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, live_session} <- Auth.require_session(session, config.repo),
          :ok <- require_delivery_write_capability(live_session),
-         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, work_request_id} <- CurrentWorkRequest.id_argument(arguments, live_session),
          {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
          {:ok, outcome} <- required_runtime_cleanup_delivery_outcome(arguments),
          {:ok, reason} <- required_argument(arguments, "reason"),
@@ -4187,7 +4190,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp revoke_planned_slice_worker_key_tool(arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, live_session} <- Auth.require_session(session, config.repo),
          :ok <- require_delivery_write_capability(live_session),
-         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, work_request_id} <- CurrentWorkRequest.id_argument(arguments, live_session),
          {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
          {:ok, grant_id} <- required_argument(arguments, "grant_id"),
          {:ok, reason} <- required_argument(arguments, "reason"),
@@ -5156,6 +5159,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        |> maybe_put_guidance_work_package_filter(work_package_id)}
     end
   end
+
+  defp guidance_work_request_id_argument(work_request_id, %Session{} = session, nil), do: infer_guidance_work_request_id(work_request_id, session)
+
+  defp guidance_work_request_id_argument(work_request_id, %Session{}, _work_package_id), do: {:ok, work_request_id}
+
+  defp infer_guidance_work_request_id(nil, %Session{} = session) do
+    case CurrentWorkRequest.id_argument(%{}, session) do
+      {:ok, work_request_id} -> {:ok, work_request_id}
+      {:tool_error, _reason} -> {:ok, nil}
+    end
+  end
+
+  defp infer_guidance_work_request_id(work_request_id, %Session{}), do: {:ok, work_request_id}
 
   defp maybe_put_work_request_guidance_filter(_repo, filters, nil), do: {:ok, filters}
 

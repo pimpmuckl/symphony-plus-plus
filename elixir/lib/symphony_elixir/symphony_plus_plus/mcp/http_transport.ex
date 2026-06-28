@@ -7,8 +7,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
   current-alias, explicit reconnect, or browser auth semantics.
   """
 
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, HTTPStateStore, Server, SessionRecovery}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, HTTPStateStore, Server, Session, SessionRecovery}
 
+  @assignment_resource "sympp://assignment/current"
+  @work_package_resource_prefix "sympp://work-packages/"
   @client_lock_key "__sympp_mcp_client_lock__"
   @current_state_key "__sympp_mcp_current_state__"
   @unbound_client_key "__sympp_mcp_unbound__"
@@ -30,6 +32,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
           }
   end
 
+  @typep handle_result :: {:ok, Result.t()} | {:error, :invalid_client_key} | {:error, :ledger_unavailable, term()}
+
   @spec new_state_key() :: String.t()
   def new_state_key do
     @state_key_bytes
@@ -45,11 +49,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
 
   def reserved_state_key?(_state_key), do: false
 
-  @spec handle(Config.t(), term(), keyword()) :: {:ok, Result.t()} | {:error, :invalid_client_key}
+  @spec handle(Config.t(), term(), keyword()) :: handle_result()
   def handle(%Config{} = config, payload, opts \\ []) when is_list(opts) do
     with {:ok, client_key} <- normalize_client_key(Keyword.get(opts, :client_key)),
          {:ok, state_key} <- normalize_state_key(Keyword.get(opts, :state_key)) do
-      handle_payload(config, payload, client_key, state_key)
+      handle_payload(config, payload, client_key, state_key, Keyword.get(opts, :live_handle))
     else
       {:error, :invalid_client_key} ->
         {:error, :invalid_client_key}
@@ -59,7 +63,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
     end
   end
 
-  defp handle_payload(%Config{} = config, payload, client_key, nil) do
+  defp handle_payload(%Config{} = config, payload, client_key, nil, _live_handle) do
     if initialize_request?(payload) do
       process_new_initialize(config, payload, client_key)
     else
@@ -67,20 +71,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
     end
   end
 
-  defp handle_payload(%Config{} = config, payload, client_key, state_key) do
+  defp handle_payload(%Config{} = config, payload, client_key, state_key, live_handle) do
     case HTTPStateStore.get(config, client_key, state_key) do
-      %Server{} ->
-        process_existing_state(config, payload, client_key, state_key)
+      %Server{} = server ->
+        if repo_backed_followup?(payload, server) and is_function(live_handle, 3) do
+          handle_with_live_repo(payload, client_key, state_key, live_handle)
+        else
+          process_existing_state(config, payload, client_key, state_key)
+        end
 
       nil ->
-        case recover_existing_state(config, client_key, state_key) do
-          {:ok, %Server{} = server} ->
-            :ok = HTTPStateStore.put(config, client_key, state_key, server)
-            process_existing_state(config, payload, client_key, state_key)
+        handle_missing_state(config, payload, client_key, state_key, live_handle)
+    end
+  end
 
-          :not_found ->
-            {:ok, result(unknown_state_key_error(payload), nil)}
-        end
+  defp handle_missing_state(%Config{} = config, payload, client_key, state_key, live_handle) when is_function(live_handle, 3) do
+    case handle_with_live_repo(payload, client_key, state_key, live_handle) do
+      {:error, :ledger_unavailable, ^payload} -> recover_or_unknown_state(config, payload, client_key, state_key)
+      result -> result
+    end
+  end
+
+  defp handle_missing_state(%Config{} = config, payload, client_key, state_key, _live_handle) do
+    recover_or_unknown_state(config, payload, client_key, state_key)
+  end
+
+  defp handle_with_live_repo(payload, client_key, state_key, live_handle) do
+    case live_handle.(payload, client_key, state_key) do
+      %Result{} = result -> {:ok, result}
+      {:ok, %Result{}} = result -> result
+      {:error, :ledger_unavailable, ^payload} = error -> error
+      {:error, _reason} -> {:error, :ledger_unavailable, payload}
+    end
+  end
+
+  defp recover_or_unknown_state(%Config{} = config, payload, client_key, state_key) do
+    case recover_existing_state(config, client_key, state_key) do
+      {:ok, %Server{} = server} ->
+        :ok = HTTPStateStore.put(config, client_key, state_key, server)
+        process_existing_state(config, payload, client_key, state_key)
+
+      :not_found ->
+        {:ok, result(unknown_state_key_error(payload), nil)}
     end
   end
 
@@ -153,6 +185,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
   defp initialize_request?(%{"jsonrpc" => "2.0", "method" => "initialize"}), do: true
   defp initialize_request?(payloads) when is_list(payloads), do: Enum.any?(payloads, &initialize_request?/1)
   defp initialize_request?(_payload), do: false
+
+  defp repo_backed_followup?(%{"method" => "tools/list"}, %Server{session: %Session{}}), do: true
+  defp repo_backed_followup?(payload, %Server{}), do: repo_backed_followup?(payload)
+
+  defp repo_backed_followup?(%{"method" => "resources/list"}), do: true
+  defp repo_backed_followup?(%{"method" => "resources/read", "params" => %{"uri" => uri}}), do: protected_resource_uri?(uri)
+  defp repo_backed_followup?(%{"method" => "tools/call", "params" => %{"name" => "sympp.health"}}), do: false
+  defp repo_backed_followup?(%{"method" => "tools/call"}), do: true
+  defp repo_backed_followup?(_payload), do: false
+
+  defp protected_resource_uri?(uri) when is_binary(uri) do
+    uri == @assignment_resource or String.starts_with?(uri, @work_package_resource_prefix)
+  end
+
+  defp protected_resource_uri?(_uri), do: false
 
   defp normalize_client_key(client_key) when is_binary(client_key) do
     cond do
