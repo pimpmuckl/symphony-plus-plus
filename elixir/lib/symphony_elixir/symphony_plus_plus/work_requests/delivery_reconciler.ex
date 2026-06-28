@@ -19,6 +19,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
 
   @default_recorded_by "work_request_delivery_reconciler"
   @terminal_without_pr_reason "no_structured_pr_merge_evidence"
+  @blocker_closeout_repair_tools ["record_planned_slice_delivery", "reconcile_work_request"]
 
   @type mode :: :dry_run | :apply
   @type result :: map()
@@ -287,16 +288,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
 
   defp missing_reconcile_blocker_closeout_blockers(repo, blockers) do
     Enum.reject(blockers, fn blocker ->
-      idempotency_key = reconcile_blocker_closeout_idempotency_key(blocker, "still_active")
-      reconcile_blocker_closeout_event_exists?(repo, blocker.work_package_id, idempotency_key)
+      blocker_closeout_event_exists?(repo, blocker, "still_active")
     end)
   end
 
-  defp reconcile_blocker_closeout_event_exists?(repo, work_package_id, idempotency_key) do
+  defp blocker_closeout_event_exists?(repo, blocker, decision) do
+    idempotency_keys =
+      Enum.map(@blocker_closeout_repair_tools, &blocker_closeout_idempotency_key(&1, blocker, decision))
+
     repo.exists?(
       from(event in ProgressEvent,
-        where: event.work_package_id == ^work_package_id,
-        where: event.idempotency_key == ^idempotency_key
+        where: event.work_package_id == ^blocker.work_package_id,
+        where: event.idempotency_key in ^idempotency_keys
       )
     )
   end
@@ -774,7 +777,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
   end
 
   defp reconcile_blocker_closeout_idempotency_key(blocker, decision) do
-    ["blocker_closeout", "reconcile_work_request", blocker.work_package_id, blocker.id, blocker.event_id, decision]
+    blocker_closeout_idempotency_key("reconcile_work_request", blocker, decision)
+  end
+
+  defp blocker_closeout_idempotency_key(tool, blocker, decision) do
+    ["blocker_closeout", tool, blocker.work_package_id, blocker.id, blocker.event_id, decision]
     |> Enum.join(":")
   end
 

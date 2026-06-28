@@ -265,6 +265,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert get_in(record_response, ["result", "structuredContent", "planned_slice_delivery", "outcome"]) == "pr_merged"
     assert get_in(record_response, ["result", "structuredContent", "blocker_closeout", "decision"]) == "still_active"
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 1
+
+    assert {:ok, replay} = DeliveryReconciler.reconcile(repo, work_request.id, mode: :apply)
+
+    assert replay.applied_count == 0
+    assert [%{status: "skipped", reason: "already_closeout", delivery_outcome: "pr_merged"}] = replay.results
+    assert reconcile_blocker_closeout_events(repo, linked_package.id) == []
   end
 
   test "MCP reconcile_work_request apply preserves active blockers", %{repo: repo} do
