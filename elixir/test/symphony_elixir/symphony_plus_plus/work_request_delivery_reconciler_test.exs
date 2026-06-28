@@ -306,6 +306,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert revision_count(repo, work_request.id) == 1
   end
 
+  test "apply does not append blocker preservation events when delivery recording fails", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-RECONCILE-BLOCKER-DELIVERY-FAILS",
+        work_package_id: "WP-RECONCILE-BLOCKER-DELIVERY-FAILS",
+        status: "ready_for_merge"
+      )
+
+    append_merged_pr_evidence!(repo, linked_package, 919, "head-919")
+    append_active_blocker!(repo, linked_package.id, "delivery-failure-blocker")
+    test_pid = self()
+
+    record_delivery = fn callback_repo, callback_work_request_id, callback_planned_slice_id, attrs ->
+      send(test_pid, {
+        :record_delivery_called,
+        callback_repo,
+        callback_work_request_id,
+        callback_planned_slice_id,
+        attrs
+      })
+
+      {:error, :concurrent_closeout}
+    end
+
+    assert {:ok, result} =
+             DeliveryReconciler.reconcile(repo, work_request.id,
+               mode: :apply,
+               record_planned_slice_delivery: record_delivery
+             )
+
+    assert_received {
+      :record_delivery_called,
+      ^repo,
+      callback_work_request_id,
+      callback_planned_slice_id,
+      attrs
+    }
+
+    assert callback_work_request_id == work_request.id
+    assert callback_planned_slice_id == planned_slice.id
+    assert attrs.outcome == "pr_merged"
+    assert attrs["allow_active_blocker_closeout"] == true
+
+    assert result.applied_count == 0
+    assert result.error_count == 1
+    assert [%{status: "error", reason: "concurrent_closeout", action: action}] = result.results
+    assert action.blocker_closeout.blocker_ids == ["delivery-failure-blocker"]
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+
+    refute Enum.any?(repo.all(ProgressEvent), fn event ->
+             event.work_package_id == linked_package.id and
+               event.payload["type"] == "blocker_closeout_decision" and
+               event.payload["source_tool"] == "reconcile_work_request"
+           end)
+  end
+
   test "MCP reconcile_work_request apply keys blocker preservation by active blocker event", %{repo: repo} do
     {work_request, _planned_slice, linked_package} =
       linked_slice!(

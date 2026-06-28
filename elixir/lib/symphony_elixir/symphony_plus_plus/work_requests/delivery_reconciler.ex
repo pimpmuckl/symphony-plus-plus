@@ -494,16 +494,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
          action_payload,
          opts
        ) do
-    with {:ok, blocker_closeout_event_ids} <-
-           append_reconcile_blocker_closeout_events(repo, work_package, action_payload, opts),
-         {:ok, delivery} <-
-           WorkRequestService.record_planned_slice_delivery(
-             repo,
-             work_request.id,
-             planned_slice.id,
-             delivery_attrs
-           ) do
+    with {:ok, delivery} <-
+           record_planned_slice_delivery(repo, work_request, planned_slice, delivery_attrs, opts),
+         {:ok, blocker_closeout_event_ids} <-
+           append_reconcile_blocker_closeout_events(repo, work_package, action_payload, opts) do
       {:ok, delivery, blocker_closeout_event_ids}
+    end
+  end
+
+  defp record_planned_slice_delivery(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, attrs, opts) do
+    case Keyword.get(opts, :record_planned_slice_delivery) do
+      fun when is_function(fun, 4) -> fun.(repo, work_request.id, planned_slice.id, attrs)
+      _missing -> WorkRequestService.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
     end
   end
 
