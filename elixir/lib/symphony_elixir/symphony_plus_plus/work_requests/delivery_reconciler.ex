@@ -187,24 +187,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     action_payload = action_payload(repo, work_request, planned_slice, work_package, action)
     delivery_attrs = delivery_attrs(repo, work_package, action)
 
-    case WorkRequestService.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, delivery_attrs) do
-      {:ok, delivery} ->
-        case append_reconcile_blocker_closeout_events(repo, work_package, action_payload) do
-          {:ok, blocker_closeout_event_ids} ->
-            planned_slice
-            |> base_result(work_package)
-            |> Map.merge(%{
-              status: "applied",
-              reason: action.reason,
-              action: action_payload,
-              evidence: action.evidence,
-              delivery_id: delivery.id
-            })
-            |> maybe_put_blocker_closeout_event_ids(blocker_closeout_event_ids)
-
-          {:error, reason} ->
-            error_result(planned_slice, work_package, reason, action_payload)
-        end
+    case record_reconciled_delivery(repo, work_request, planned_slice, work_package, delivery_attrs, action_payload) do
+      {:ok, delivery, blocker_closeout_event_ids} ->
+        planned_slice
+        |> base_result(work_package)
+        |> Map.merge(%{
+          status: "applied",
+          reason: action.reason,
+          action: action_payload,
+          evidence: action.evidence,
+          delivery_id: delivery.id
+        })
+        |> maybe_put_blocker_closeout_event_ids(blocker_closeout_event_ids)
 
       {:error, reason} ->
         error_result(planned_slice, work_package, reason, action_payload)
@@ -436,6 +430,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
   end
 
   defp append_reconcile_blocker_closeout_events(_repo, %WorkPackage{}, _action_payload), do: {:ok, []}
+
+  defp record_reconciled_delivery(
+         repo,
+         %WorkRequest{} = work_request,
+         %PlannedSlice{} = planned_slice,
+         %WorkPackage{} = work_package,
+         delivery_attrs,
+         action_payload
+       ) do
+    transaction_args = {work_request, planned_slice, work_package, delivery_attrs, action_payload}
+
+    case repo.transaction(fn ->
+           record_reconciled_delivery_transaction(repo, transaction_args)
+         end) do
+      {:ok, {delivery, blocker_closeout_event_ids}} -> {:ok, delivery, blocker_closeout_event_ids}
+      {:error, {:error, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp record_reconciled_delivery_transaction(repo, transaction_args) do
+    {work_request, planned_slice, work_package, delivery_attrs, action_payload} = transaction_args
+
+    with {:ok, delivery} <-
+           WorkRequestService.record_planned_slice_delivery(
+             repo,
+             work_request.id,
+             planned_slice.id,
+             delivery_attrs
+           ),
+         {:ok, blocker_closeout_event_ids} <-
+           append_reconcile_blocker_closeout_events(repo, work_package, action_payload) do
+      {delivery, blocker_closeout_event_ids}
+    else
+      {:error, reason} -> repo.rollback({:error, reason})
+    end
+  end
 
   defp append_reconcile_blocker_closeout_event(repo, %WorkPackage{} = work_package, blocker_id, closeout) do
     PlanningRepository.append_progress_event(repo, %{
