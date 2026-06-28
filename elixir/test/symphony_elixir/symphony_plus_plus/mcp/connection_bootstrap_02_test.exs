@@ -230,22 +230,60 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ConnectionBootstrap02Test do
       assert get_in(unbound_tools_by_name, [tool, "inputSchema", "properties", "work_package_id", "type"]) == "string"
     end
 
-    assert get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node", "inputSchema", "required"]) == [
-             "work_request_id",
-             "title"
+    refute Map.has_key?(unbound_tools_by_name, "upsert_work_request_product_plan_node")
+
+    assert get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node_content", "inputSchema", "required"]) == [
+             "work_request_id"
            ]
 
-    assert get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node", "inputSchema", "properties", "work_request_id", "description"]) =~
-             "Required WorkRequest id"
+    content_schema = get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node_content", "inputSchema"])
+    content_properties = get_in(content_schema, ["properties"])
+    assert get_in(content_properties, ["work_request_id", "description"]) =~ "Required WorkRequest id"
+    assert Map.has_key?(content_properties, "title")
+    refute Map.has_key?(content_properties, "parent_id")
+    refute Map.has_key?(content_properties, "completion_mark")
 
-    assert get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node", "description"]) =~
-             "explicit WorkRequest"
+    assert get_in(content_schema, ["then", "allOf"]) == [
+             %{"anyOf" => [%{"required" => ["product_tree_node_id"]}, %{"required" => ["title"]}]},
+             %{"anyOf" => [%{"required" => ["title"]}, %{"required" => ["description"]}, %{"required" => ["node_kind"]}]}
+           ]
 
-    refute get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node", "description"]) =~
-             "claimed current WorkRequest"
+    assert get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node_content", "description"]) =~ "explicit WorkRequest"
+    refute get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node_content", "description"]) =~ "claimed current WorkRequest"
 
-    assert get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node", "description"]) =~
+    assert get_in(unbound_tools_by_name, ["upsert_work_request_product_plan_node_content", "description"]) =~
              "Do not create a plan node solely to wrap one slice."
+
+    assert get_in(unbound_tools_by_name, ["move_work_request_product_plan_node", "inputSchema", "required"]) == [
+             "work_request_id",
+             "product_tree_node_id"
+           ]
+
+    move_node_schema = get_in(unbound_tools_by_name, ["move_work_request_product_plan_node", "inputSchema"])
+    move_node_properties = get_in(move_node_schema, ["properties"])
+    assert get_in(move_node_properties, ["product_tree_node_id", "minLength"]) == 1
+    assert get_in(move_node_properties, ["product_tree_node_id", "pattern"]) == "\\S"
+    assert Map.has_key?(move_node_properties, "parent_id")
+    assert Map.has_key?(move_node_properties, "position")
+    refute Map.has_key?(move_node_properties, "title")
+
+    assert get_in(move_node_schema, ["then", "anyOf"]) == [
+             %{"required" => ["parent_id"]},
+             %{"required" => ["position"]}
+           ]
+
+    assert get_in(unbound_tools_by_name, ["set_work_request_product_plan_node_completion", "inputSchema", "required"]) == [
+             "work_request_id",
+             "product_tree_node_id",
+             "completion_mark"
+           ]
+
+    completion_properties = get_in(unbound_tools_by_name, ["set_work_request_product_plan_node_completion", "inputSchema", "properties"])
+    assert get_in(completion_properties, ["product_tree_node_id", "minLength"]) == 1
+    assert get_in(completion_properties, ["product_tree_node_id", "pattern"]) == "\\S"
+    assert Map.has_key?(completion_properties, "blocker_closeout")
+    refute Map.has_key?(completion_properties, "title")
+    refute Map.has_key?(completion_properties, "parent_id")
 
     assert get_in(unbound_tools_by_name, ["move_work_request_planned_slice_to_product_node", "inputSchema", "required"]) == [
              "work_request_id",

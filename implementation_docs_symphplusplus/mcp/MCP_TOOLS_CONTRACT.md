@@ -177,7 +177,9 @@ still block the call with `open_questions`.
 Current-WorkRequest lifecycle tools may omit `work_request_id` after
 `claim_local_architect_assignment` has bound the session to exactly one
 WorkRequest. This compact path applies to `add_work_request_planned_slice`,
-`upsert_work_request_product_plan_node`,
+`upsert_work_request_product_plan_node_content`,
+`move_work_request_product_plan_node`,
+`set_work_request_product_plan_node_completion`,
 `move_work_request_planned_slice_to_product_node`,
 `approve_work_request_planned_slice`, `skip_work_request_planned_slice`, and
 `mark_work_request_sliced`, plus delivery board/reconcile, planned-slice delivery
@@ -186,6 +188,12 @@ closeout, runtime cleanup, worker-key revocation, and dispatch. Supplying
 grant scope. Reads that can intentionally target sibling WorkRequests,
 status/question tools, durable decision tools, and package tools keep explicit
 target ids.
+
+Product-plan node authoring is split by intent: use
+`upsert_work_request_product_plan_node_content` for title, description, or kind,
+`move_work_request_product_plan_node` for parent or position, and
+`set_work_request_product_plan_node_completion` for completion marks and
+required blocker closeout.
 
 `dispatch_work_request_planned_slice` requires only `planned_slice_id` once a
 single current WorkRequest is claimed; `claimed_by` is optional. It creates the

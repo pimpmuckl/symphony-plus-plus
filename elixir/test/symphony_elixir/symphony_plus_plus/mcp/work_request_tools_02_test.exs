@@ -158,7 +158,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
              })
 
     sibling_upsert_response =
-      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node_content", %{
         "work_request_id" => sibling.id,
         "title" => "Sibling node mutation"
       })
@@ -282,7 +282,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     skip_slice_id = get_in(skip_add_response, ["result", "structuredContent", "planned_slice", "id"])
 
     node_response =
-      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node_content", %{
         "title" => "Current WorkRequest product node"
       })
 
@@ -453,6 +453,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     assert get_in(extra_field_response, ["error", "data", "reason"]) == "invalid_evidence"
   end
 
+  test "product plan node tools reject mixed intent arguments", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-NODE-MIXED-INTENT", [
+        "read:work_request",
+        "write:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-NODE-MIXED-INTENT",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    grant_work_request_scope!(repo, session, work_request.id)
+
+    content_with_topology =
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node_content", %{
+        "work_request_id" => work_request.id,
+        "title" => "Content only",
+        "parent_id" => "ptn-parent"
+      })
+
+    assert get_in(content_with_topology, ["error", "data", "reason"]) == "unexpected_argument"
+    assert get_in(content_with_topology, ["error", "data", "arguments"]) == ["parent_id"]
+
+    move_with_content =
+      mcp_tool(repo, session, "move_work_request_product_plan_node", %{
+        "work_request_id" => work_request.id,
+        "product_tree_node_id" => "ptn-child",
+        "parent_id" => nil,
+        "title" => "Content belongs in the content tool"
+      })
+
+    assert get_in(move_with_content, ["error", "data", "reason"]) == "unexpected_argument"
+    assert get_in(move_with_content, ["error", "data", "arguments"]) == ["title"]
+
+    completion_with_topology =
+      mcp_tool(repo, session, "set_work_request_product_plan_node_completion", %{
+        "work_request_id" => work_request.id,
+        "product_tree_node_id" => "ptn-child",
+        "completion_mark" => "done",
+        "parent_id" => nil
+      })
+
+    assert get_in(completion_with_topology, ["error", "data", "reason"]) == "unexpected_argument"
+    assert get_in(completion_with_topology, ["error", "data", "arguments"]) == ["parent_id"]
+  end
+
   test "record_planned_slice_delivery requires active blocker closeout and can preserve blockers", %{repo: repo} do
     {work_request, planned_slice, work_package} =
       linked_delivery_slice!(repo,
@@ -575,7 +625,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
       ])
 
     node_response =
-      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node_content", %{
         "work_request_id" => work_request.id,
         "title" => "Blocked plan node"
       })
@@ -594,20 +644,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     append_active_blocker!(repo, work_package.id, "node-blocker")
 
     missing_closeout_response =
-      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+      mcp_tool(repo, session, "set_work_request_product_plan_node_completion", %{
         "work_request_id" => work_request.id,
         "product_tree_node_id" => product_tree_node_id,
-        "title" => "Blocked plan node",
         "completion_mark" => "done"
       })
 
     assert get_in(missing_closeout_response, ["error", "data", "reason_code"]) == "blocker_closeout_required"
 
     resolved_response =
-      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+      mcp_tool(repo, session, "set_work_request_product_plan_node_completion", %{
         "work_request_id" => work_request.id,
         "product_tree_node_id" => product_tree_node_id,
-        "title" => "Blocked plan node",
         "completion_mark" => "done",
         "blocker_closeout" => %{
           "decision" => "resolved",
@@ -626,10 +674,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     append_active_blocker!(repo, work_package.id, "node-blocker", idempotency_key: "node-blocker-reraised")
 
     reraised_resolved_response =
-      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+      mcp_tool(repo, session, "set_work_request_product_plan_node_completion", %{
         "work_request_id" => work_request.id,
         "product_tree_node_id" => product_tree_node_id,
-        "title" => "Blocked plan node",
         "completion_mark" => "done",
         "blocker_closeout" => %{
           "decision" => "resolved",
@@ -1376,11 +1423,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
              )
 
     node_response =
-      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node_content", %{
         "work_request_id" => work_request.id,
         "title" => "Backend product layer",
-        "node_kind" => "layer",
-        "position" => 2
+        "node_kind" => "layer"
       })
 
     node_payload = get_in(node_response, ["result", "structuredContent"])
@@ -1393,47 +1439,73 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     assert get_in(node_payload, ["product_tree", "latest_revision", "revision_number"]) == 1
     assert node_payload["scope"] == %{"repo" => anchor.repo, "base_branch" => anchor.base_branch}
 
-    child_response =
-      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+    positioned_node_response =
+      mcp_tool(repo, session, "move_work_request_product_plan_node", %{
         "work_request_id" => work_request.id,
-        "parent_id" => product_tree_node_id,
+        "product_tree_node_id" => product_tree_node_id,
+        "position" => 2
+      })
+
+    assert get_in(positioned_node_response, ["result", "structuredContent", "product_plan_node", "position"]) == 2
+    assert get_in(positioned_node_response, ["result", "structuredContent", "product_tree", "latest_revision", "revision_number"]) == 2
+
+    child_response =
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node_content", %{
+        "work_request_id" => work_request.id,
         "title" => "Nested cleanup"
       })
 
     child_node_id = get_in(child_response, ["result", "structuredContent", "product_plan_node", "id"])
 
-    root_child_response =
-      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+    nested_child_response =
+      mcp_tool(repo, session, "move_work_request_product_plan_node", %{
         "work_request_id" => work_request.id,
         "product_tree_node_id" => child_node_id,
-        "parent_id" => "",
-        "title" => "Nested cleanup"
+        "parent_id" => product_tree_node_id
+      })
+
+    assert get_in(nested_child_response, ["result", "structuredContent", "product_plan_node", "parent_id"]) == product_tree_node_id
+    assert get_in(nested_child_response, ["result", "structuredContent", "product_tree", "latest_revision", "revision_number"]) == 4
+
+    root_child_response =
+      mcp_tool(repo, session, "move_work_request_product_plan_node", %{
+        "work_request_id" => work_request.id,
+        "product_tree_node_id" => child_node_id,
+        "parent_id" => ""
       })
 
     assert get_in(root_child_response, ["result", "structuredContent", "product_plan_node", "parent_id"]) == nil
     assert Enum.sort(get_in(root_child_response, ["result", "structuredContent", "product_tree", "root_node_ids"])) == Enum.sort([product_tree_node_id, child_node_id])
-    assert get_in(root_child_response, ["result", "structuredContent", "product_tree", "latest_revision", "revision_number"]) == 3
+    assert get_in(root_child_response, ["result", "structuredContent", "product_tree", "latest_revision", "revision_number"]) == 5
 
     nested_again_response =
-      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+      mcp_tool(repo, session, "move_work_request_product_plan_node", %{
         "work_request_id" => work_request.id,
         "product_tree_node_id" => child_node_id,
-        "parent_id" => product_tree_node_id,
-        "title" => "Nested cleanup"
+        "parent_id" => product_tree_node_id
       })
 
     assert get_in(nested_again_response, ["result", "structuredContent", "product_plan_node", "parent_id"]) == product_tree_node_id
 
-    omitted_parent_response =
-      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+    content_edit_response =
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node_content", %{
         "work_request_id" => work_request.id,
         "product_tree_node_id" => child_node_id,
-        "title" => "Nested cleanup"
+        "description" => "A content-only edit keeps topology unchanged."
       })
 
-    assert get_in(omitted_parent_response, ["result", "structuredContent", "product_plan_node", "parent_id"]) == nil
-    assert Enum.sort(get_in(omitted_parent_response, ["result", "structuredContent", "product_tree", "root_node_ids"])) == Enum.sort([product_tree_node_id, child_node_id])
-    assert get_in(omitted_parent_response, ["result", "structuredContent", "product_tree", "latest_revision", "revision_number"]) == 5
+    assert get_in(content_edit_response, ["result", "structuredContent", "product_plan_node", "parent_id"]) == product_tree_node_id
+
+    explicit_root_response =
+      mcp_tool(repo, session, "move_work_request_product_plan_node", %{
+        "work_request_id" => work_request.id,
+        "product_tree_node_id" => child_node_id,
+        "parent_id" => ""
+      })
+
+    assert get_in(explicit_root_response, ["result", "structuredContent", "product_plan_node", "parent_id"]) == nil
+    assert Enum.sort(get_in(explicit_root_response, ["result", "structuredContent", "product_tree", "root_node_ids"])) == Enum.sort([product_tree_node_id, child_node_id])
+    assert get_in(explicit_root_response, ["result", "structuredContent", "product_tree", "latest_revision", "revision_number"]) == 8
 
     move_response =
       mcp_tool(repo, session, "move_work_request_planned_slice_to_product_node", %{
@@ -1450,7 +1522,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     assert link_payload["product_tree_node_id"] == product_tree_node_id
     assert link_payload["position"] == 3
     assert get_in(move_payload, ["status", "slice_product_tree_location"]) == "product_plan_node"
-    assert get_in(move_payload, ["product_tree", "latest_revision", "revision_number"]) == 6
+    assert get_in(move_payload, ["product_tree", "latest_revision", "revision_number"]) == 9
 
     moved_nodes_by_id = Map.new(move_payload["product_tree"]["nodes"], &{&1["id"], &1})
     assert moved_nodes_by_id[product_tree_node_id]["slice_ids"] == [planned_slice.id]
@@ -1565,7 +1637,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     assert direct_payload["product_tree_slice_link"] == nil
     assert get_in(direct_payload, ["status", "slice_product_tree_location"]) == "direct"
     assert get_in(direct_payload, ["product_tree", "root_slice_ids"]) == [planned_slice.id]
-    assert get_in(direct_payload, ["product_tree", "latest_revision", "revision_number"]) == 7
+    assert get_in(direct_payload, ["product_tree", "latest_revision", "revision_number"]) == 10
   end
 
   test "architect WorkRequest product tree tools require authoring status", %{repo: repo} do
@@ -1600,7 +1672,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkRequestTools02Test do
     assert {:ok, _clarifying} = WorkRequestRepository.update_status(repo, work_request.id, "ready_for_slicing", "clarifying")
 
     upsert_response =
-      mcp_tool(repo, session, "upsert_work_request_product_plan_node", %{
+      mcp_tool(repo, session, "upsert_work_request_product_plan_node_content", %{
         "work_request_id" => work_request.id,
         "title" => "Should not be accepted"
       })

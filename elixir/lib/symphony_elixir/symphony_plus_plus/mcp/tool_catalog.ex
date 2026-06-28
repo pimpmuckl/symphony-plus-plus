@@ -101,7 +101,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
     "close_work_request_question",
     "record_work_request_decision",
     "add_work_request_planned_slice",
-    "upsert_work_request_product_plan_node",
+    "upsert_work_request_product_plan_node_content",
+    "move_work_request_product_plan_node",
+    "set_work_request_product_plan_node_completion",
     "move_work_request_planned_slice_to_product_node",
     "approve_work_request_planned_slice",
     "skip_work_request_planned_slice",
@@ -130,7 +132,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
     "close_work_request_question",
     "record_work_request_decision",
     "add_work_request_planned_slice",
-    "upsert_work_request_product_plan_node",
+    "upsert_work_request_product_plan_node_content",
+    "move_work_request_product_plan_node",
+    "set_work_request_product_plan_node_completion",
     "move_work_request_planned_slice_to_product_node",
     "approve_work_request_planned_slice",
     "skip_work_request_planned_slice",
@@ -139,7 +143,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
   ]
   @current_work_request_write_tools [
     "add_work_request_planned_slice",
-    "upsert_work_request_product_plan_node",
+    "upsert_work_request_product_plan_node_content",
+    "move_work_request_product_plan_node",
+    "set_work_request_product_plan_node_completion",
     "move_work_request_planned_slice_to_product_node",
     "approve_work_request_planned_slice",
     "skip_work_request_planned_slice",
@@ -374,8 +380,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
 
   defp architect_tool_description("add_work_request_planned_slice"), do: "Add a planned slice to the claimed current WorkRequest."
 
-  defp architect_tool_description("upsert_work_request_product_plan_node") do
-    "Create, update, or reparent a V3 product plan node inside the claimed current WorkRequest. Do not create a plan node solely to wrap one slice. Leave simple slices direct unless the node groups multiple units or records a real product boundary. If setting completion_mark to done or deferred and descendant blockers are active, answer blocker_closeout before completing the node."
+  defp architect_tool_description("upsert_work_request_product_plan_node_content") do
+    "Create or edit V3 product plan node content inside the claimed current WorkRequest. Do not create a plan node solely to wrap one slice. Leave simple slices direct unless the node groups multiple units or records a real product boundary."
+  end
+
+  defp architect_tool_description("move_work_request_product_plan_node") do
+    "Reparent or reorder a V3 product plan node inside the claimed current WorkRequest."
+  end
+
+  defp architect_tool_description("set_work_request_product_plan_node_completion") do
+    "Set a V3 product plan node completion mark inside the claimed current WorkRequest. If setting completion_mark to done or deferred and descendant blockers are active, answer blocker_closeout before completing the node."
   end
 
   defp architect_tool_description("move_work_request_planned_slice_to_product_node") do
@@ -979,21 +993,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ToolCatalog do
     )
   end
 
-  def architect_tool_input_schema("upsert_work_request_product_plan_node") do
+  def architect_tool_input_schema("upsert_work_request_product_plan_node_content") do
     schema(
       %{
         "work_request_id" => current_work_request_id_schema(),
         "product_tree_node_id" => described_string_schema("Optional existing product plan node id. Omit to create a new node."),
         "title" => nonblank_string_schema(),
         "description" => markdown_nullable_string_schema("Optional human-facing product plan node description."),
-        "parent_id" => nullable_string_schema() |> Map.put("description", "Optional parent product plan node id. Omit, null, or empty string to keep the node at the WorkRequest root."),
         "node_kind" => described_string_schema("Optional loose architect-facing grouping hint such as layer, capability, milestone, or risk."),
-        "completion_mark" => string_enum_schema(Node.completion_marks()),
+        "created_by" => described_string_schema("Optional architect identity for audit display.")
+      },
+      []
+    )
+    |> always_validate(%{
+      "allOf" => [
+        %{"anyOf" => [%{"required" => ["product_tree_node_id"]}, %{"required" => ["title"]}]},
+        %{"anyOf" => [%{"required" => ["title"]}, %{"required" => ["description"]}, %{"required" => ["node_kind"]}]}
+      ]
+    })
+  end
+
+  def architect_tool_input_schema("move_work_request_product_plan_node") do
+    schema(
+      %{
+        "work_request_id" => current_work_request_id_schema(),
+        "product_tree_node_id" => nonblank_string_schema(),
+        "parent_id" =>
+          nullable_string_schema()
+          |> Map.put("description", "Target parent product plan node id. Omit to keep the current parent; pass null or an empty string to move the node to the WorkRequest root."),
         "position" => nonnegative_integer_schema(),
+        "created_by" => described_string_schema("Optional architect identity for audit display.")
+      },
+      ["product_tree_node_id"]
+    )
+    |> always_validate(%{"anyOf" => [%{"required" => ["parent_id"]}, %{"required" => ["position"]}]})
+  end
+
+  def architect_tool_input_schema("set_work_request_product_plan_node_completion") do
+    schema(
+      %{
+        "work_request_id" => current_work_request_id_schema(),
+        "product_tree_node_id" => nonblank_string_schema(),
+        "completion_mark" => string_enum_schema(Node.completion_marks()),
         "created_by" => described_string_schema("Optional architect identity for audit display."),
         "blocker_closeout" => blocker_closeout_schema()
       },
-      ["title"]
+      ["product_tree_node_id", "completion_mark"]
     )
   end
 

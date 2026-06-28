@@ -3717,18 +3717,83 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp architect_tool("upsert_work_request_product_plan_node", arguments, %__MODULE__{config: config, session: session}) do
-    tool = "upsert_work_request_product_plan_node"
+  defp architect_tool("upsert_work_request_product_plan_node_content", arguments, %__MODULE__{config: config, session: session}) do
+    tool = "upsert_work_request_product_plan_node_content"
 
     with {:ok, session} <- Auth.require_session(session, config.repo),
          {:ok, work_request_id} <- CurrentWorkRequest.id_argument(arguments, session),
-         {:ok, title} <- required_argument(arguments, "title"),
          {:ok, product_tree_node_id} <- optional_string_argument(arguments, "product_tree_node_id"),
-         {:ok, parent_id} <- optional_string_argument(arguments, "parent_id"),
+         {:ok, title} <- optional_string_argument(arguments, "title"),
          {:ok, description} <- optional_string_argument(arguments, "description"),
          {:ok, node_kind} <- optional_string_argument(arguments, "node_kind"),
-         {:ok, completion_mark} <- optional_string_argument(arguments, "completion_mark"),
+         {:ok, created_by} <- optional_string_argument(arguments, "created_by", session_claimed_by(session)),
+         :ok <- require_product_plan_node_content(product_tree_node_id, title, description, node_kind),
+         {:ok, work_request, _filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :work_request_update, tool),
+         :ok <- require_planned_slice_authoring_status(work_request.status),
+         {:ok, current_parent_id} <- product_plan_node_current_parent_id(config.repo, work_request_id, product_tree_node_id),
+         attrs =
+           %{
+             "work_request_id" => work_request_id
+           }
+           |> optional_put("id", product_tree_node_id)
+           |> optional_put("parent_id", current_parent_id)
+           |> optional_put("title", title)
+           |> optional_put("description", description)
+           |> optional_put("node_kind", node_kind)
+           |> optional_put("created_by", created_by),
+         {:ok, {{product_tree_node, blocker_closeout}, detail}} <-
+           mutate_product_plan_node(config.repo, session, work_request_id, tool, created_by, attrs, :not_needed) do
+      {:ok, product_plan_node_tool_result(work_request, product_tree_node, blocker_closeout, detail, scope)}
+    else
+      {:tool_error, reason} -> invalid_params_error(tool, reason)
+      {:error, %Ecto.Changeset{}} -> invalid_params_error(tool, "invalid_product_plan_node")
+      {:error, :not_found} -> not_found_error(tool)
+      {:error, reason} -> architect_error(reason, tool)
+    end
+  end
+
+  defp architect_tool("move_work_request_product_plan_node", arguments, %__MODULE__{config: config, session: session}) do
+    tool = "move_work_request_product_plan_node"
+    parent_id_supplied? = Map.has_key?(arguments, "parent_id")
+
+    with {:ok, session} <- Auth.require_session(session, config.repo),
+         {:ok, work_request_id} <- CurrentWorkRequest.id_argument(arguments, session),
+         {:ok, product_tree_node_id} <- required_argument(arguments, "product_tree_node_id"),
+         {:ok, parent_id} <- optional_string_argument(arguments, "parent_id"),
          {:ok, position} <- optional_nonnegative_integer_argument(arguments, "position"),
+         {:ok, created_by} <- optional_string_argument(arguments, "created_by", session_claimed_by(session)),
+         :ok <- require_product_plan_node_topology(parent_id_supplied?, position),
+         {:ok, work_request, _filters, scope} <-
+           authorized_work_request_scope(config.repo, session, work_request_id, :work_request_update, tool),
+         :ok <- require_planned_slice_authoring_status(work_request.status),
+         attrs =
+           %{
+             "work_request_id" => work_request_id,
+             "id" => product_tree_node_id
+           }
+           |> optional_put_present("parent_id", parent_id, parent_id_supplied?)
+           |> optional_put("position", position)
+           |> optional_put("created_by", created_by),
+         {:ok, {{product_tree_node, blocker_closeout}, detail}} <-
+           mutate_product_plan_node(config.repo, session, work_request_id, tool, created_by, attrs, :not_needed) do
+      {:ok, product_plan_node_tool_result(work_request, product_tree_node, blocker_closeout, detail, scope)}
+    else
+      {:tool_error, reason} -> invalid_params_error(tool, reason)
+      {:error, %Ecto.Changeset{}} -> invalid_params_error(tool, "invalid_product_plan_node")
+      {:error, :not_found} -> not_found_error(tool)
+      {:error, reason} -> architect_error(reason, tool)
+    end
+  end
+
+  defp architect_tool("set_work_request_product_plan_node_completion", arguments, %__MODULE__{config: config, session: session}) do
+    tool = "set_work_request_product_plan_node_completion"
+
+    with {:ok, session} <- Auth.require_session(session, config.repo),
+         {:ok, work_request_id} <- CurrentWorkRequest.id_argument(arguments, session),
+         {:ok, product_tree_node_id} <- required_argument(arguments, "product_tree_node_id"),
+         {:ok, completion_mark} <- required_argument(arguments, "completion_mark"),
+         :ok <- require_product_tree_completion_mark(completion_mark),
          {:ok, created_by} <- optional_string_argument(arguments, "created_by", session_claimed_by(session)),
          {:ok, work_request, _filters, scope} <-
            authorized_work_request_scope(config.repo, session, work_request_id, :work_request_update, tool),
@@ -3736,14 +3801,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          attrs =
            %{
              "work_request_id" => work_request_id,
-             "title" => title
+             "id" => product_tree_node_id,
+             "completion_mark" => completion_mark
            }
-           |> optional_put("id", product_tree_node_id)
-           |> Map.put("parent_id", parent_id)
-           |> optional_put("description", description)
-           |> optional_put("node_kind", node_kind)
-           |> optional_put("completion_mark", completion_mark)
-           |> optional_put("position", position)
            |> optional_put("created_by", created_by),
          {:ok, blocker_closeout_plan} <-
            maybe_prepare_product_plan_node_blocker_closeout(
@@ -3752,21 +3812,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              work_request_id,
              product_tree_node_id,
              completion_mark,
-             arguments
+             arguments,
+             tool
            ),
          {:ok, {{product_tree_node, blocker_closeout}, detail}} <-
-           mutate_product_tree_with_projection(config.repo, work_request_id, tool, created_by, fn ->
-             upsert_product_plan_node_with_blocker_closeout(config.repo, session, attrs, blocker_closeout_plan)
-           end) do
-      {:ok,
-       tool_result(%{
-         "work_request" => work_request_mutation_payload(work_request),
-         "product_plan_node" => product_tree_node_payload(product_tree_node),
-         "blocker_closeout" => blocker_closeout,
-         "product_tree" => json_safe_payload(detail.product_tree),
-         "scope" => scope,
-         "status" => %{"work_request_status" => work_request.status}
-       })}
+           mutate_product_plan_node(config.repo, session, work_request_id, tool, created_by, attrs, blocker_closeout_plan) do
+      {:ok, product_plan_node_tool_result(work_request, product_tree_node, blocker_closeout, detail, scope)}
     else
       {:tool_error, reason} -> invalid_params_error(tool, reason)
       {:error, %Ecto.Changeset{}} -> invalid_params_error(tool, "invalid_product_plan_node")
@@ -5182,6 +5233,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp optional_put(attrs, _key, nil), do: attrs
   defp optional_put(attrs, key, value), do: Map.put(attrs, key, value)
 
+  defp optional_put_present(attrs, key, value, true), do: Map.put(attrs, key, value)
+  defp optional_put_present(attrs, _key, _value, false), do: attrs
+
   defp required_planned_slice_delivery_outcome(arguments) do
     with {:ok, outcome} <- required_argument(arguments, "outcome") do
       if outcome in PlannedSliceDelivery.outcomes() do
@@ -5361,6 +5415,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp mutate_product_plan_node(repo, %Session{} = session, work_request_id, tool, created_by, attrs, blocker_closeout_plan) do
+    mutate_product_tree_with_projection(repo, work_request_id, tool, created_by, fn ->
+      upsert_product_plan_node_with_blocker_closeout(repo, session, attrs, blocker_closeout_plan)
+    end)
+  end
+
+  defp product_plan_node_tool_result(work_request, product_tree_node, blocker_closeout, detail, scope) do
+    tool_result(%{
+      "work_request" => work_request_mutation_payload(work_request),
+      "product_plan_node" => product_tree_node_payload(product_tree_node),
+      "blocker_closeout" => blocker_closeout,
+      "product_tree" => json_safe_payload(detail.product_tree),
+      "scope" => scope,
+      "status" => %{"work_request_status" => work_request.status}
+    })
+  end
+
+  defp product_plan_node_current_parent_id(_repo, _work_request_id, nil), do: {:ok, nil}
+
+  defp product_plan_node_current_parent_id(repo, work_request_id, product_tree_node_id) do
+    with {:ok, tree} <- ProductTree.tree_for_work_request(repo, work_request_id) do
+      case Enum.find(tree.nodes, &(&1.id == product_tree_node_id)) do
+        %Node{} = node -> {:ok, node.parent_id}
+        nil -> {:error, :not_found}
+      end
+    end
+  end
+
   defp maybe_prepare_work_package_status_blocker_closeout(repo, %Session{} = session, status, arguments)
        when status in @terminal_work_package_statuses do
     prepare_scoped_blocker_closeout(repo, session, [Session.work_package_id(session)], arguments, "set_status")
@@ -5370,18 +5452,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:ok, :not_needed}
   end
 
-  defp maybe_prepare_product_plan_node_blocker_closeout(_repo, %Session{}, _work_request_id, _node_id, completion_mark, _arguments)
+  defp maybe_prepare_product_plan_node_blocker_closeout(_repo, %Session{}, _work_request_id, _node_id, completion_mark, _arguments, _tool)
        when completion_mark not in @terminal_product_tree_completion_marks do
     {:ok, :not_needed}
   end
 
-  defp maybe_prepare_product_plan_node_blocker_closeout(_repo, %Session{}, _work_request_id, nil, _completion_mark, _arguments) do
-    {:ok, :not_needed}
-  end
-
-  defp maybe_prepare_product_plan_node_blocker_closeout(repo, %Session{} = session, work_request_id, product_tree_node_id, _completion_mark, arguments) do
+  defp maybe_prepare_product_plan_node_blocker_closeout(repo, %Session{} = session, work_request_id, product_tree_node_id, _completion_mark, arguments, tool) do
     with {:ok, work_package_ids} <- product_plan_node_work_package_ids(repo, work_request_id, product_tree_node_id) do
-      prepare_scoped_blocker_closeout(repo, session, work_package_ids, arguments, "upsert_work_request_product_plan_node")
+      prepare_scoped_blocker_closeout(repo, session, work_package_ids, arguments, tool)
     end
   end
 
@@ -5793,7 +5871,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp work_request_policy_action("close_work_request_question"), do: :question_close
   defp work_request_policy_action("record_work_request_decision"), do: :decision_record
   defp work_request_policy_action("add_work_request_planned_slice"), do: :planned_slice_create
-  defp work_request_policy_action("upsert_work_request_product_plan_node"), do: :work_request_update
+  defp work_request_policy_action("upsert_work_request_product_plan_node_content"), do: :work_request_update
+  defp work_request_policy_action("move_work_request_product_plan_node"), do: :work_request_update
+  defp work_request_policy_action("set_work_request_product_plan_node_completion"), do: :work_request_update
   defp work_request_policy_action("move_work_request_planned_slice_to_product_node"), do: :work_request_update
   defp work_request_policy_action("approve_work_request_planned_slice"), do: :planned_slice_approve
   defp work_request_policy_action("skip_work_request_planned_slice"), do: :planned_slice_skip
@@ -6434,6 +6514,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_planned_slice_authoring_status(status) when status in ["ready_for_slicing", "sliced"], do: :ok
   defp require_planned_slice_authoring_status(_status), do: {:tool_error, "invalid_status"}
+
+  defp require_product_plan_node_content(nil, title, _description, _node_kind) do
+    if filled_string?(title), do: :ok, else: {:tool_error, "missing_title"}
+  end
+
+  defp require_product_plan_node_content(_product_tree_node_id, title, description, node_kind) do
+    if Enum.any?([title, description, node_kind], &filled_string?/1),
+      do: :ok,
+      else: {:tool_error, "missing_product_plan_node_content"}
+  end
+
+  defp require_product_plan_node_topology(parent_id_supplied?, position) do
+    if parent_id_supplied? or is_integer(position),
+      do: :ok,
+      else: {:tool_error, "missing_product_plan_node_topology"}
+  end
+
+  defp require_product_tree_completion_mark(completion_mark) do
+    if completion_mark in Node.completion_marks(),
+      do: :ok,
+      else: {:tool_error, "invalid_completion_mark"}
+  end
 
   defp work_request_matches_filters?(repo, %WorkRequest{} = work_request, filters, opts) do
     with {:ok, repo_scopes} <- work_request_repo_scope_payloads(repo, work_request) do
@@ -10288,7 +10390,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_capability("close_work_request_question"), do: "write:work_request"
   defp architect_tool_capability("record_work_request_decision"), do: "write:work_request"
   defp architect_tool_capability("add_work_request_planned_slice"), do: "write:work_request"
-  defp architect_tool_capability("upsert_work_request_product_plan_node"), do: "write:work_request"
+  defp architect_tool_capability("upsert_work_request_product_plan_node_content"), do: "write:work_request"
+  defp architect_tool_capability("move_work_request_product_plan_node"), do: "write:work_request"
+  defp architect_tool_capability("set_work_request_product_plan_node_completion"), do: "write:work_request"
   defp architect_tool_capability("move_work_request_planned_slice_to_product_node"), do: "write:work_request"
   defp architect_tool_capability("approve_work_request_planned_slice"), do: "write:work_request"
   defp architect_tool_capability("skip_work_request_planned_slice"), do: "write:work_request"
@@ -13995,7 +14099,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp product_tree_revision_reason("add_work_request_planned_slice"), do: "Planned slice added to product tree through MCP."
-  defp product_tree_revision_reason("upsert_work_request_product_plan_node"), do: "Product plan node rearranged through MCP."
+  defp product_tree_revision_reason("upsert_work_request_product_plan_node_content"), do: "Product plan node content changed through MCP."
+  defp product_tree_revision_reason("move_work_request_product_plan_node"), do: "Product plan node rearranged through MCP."
+  defp product_tree_revision_reason("set_work_request_product_plan_node_completion"), do: "Product plan node completion changed through MCP."
   defp product_tree_revision_reason("move_work_request_planned_slice_to_product_node"), do: "Planned slice rearranged in product tree through MCP."
   defp product_tree_revision_reason("approve_work_request_planned_slice"), do: "Planned slice approved in product tree through MCP."
   defp product_tree_revision_reason("skip_work_request_planned_slice"), do: "Planned slice skipped in product tree through MCP."
