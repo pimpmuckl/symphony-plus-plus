@@ -296,6 +296,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert blocker_closeout_event.payload["source_tool"] == "reconcile_work_request"
     assert blocker_closeout_event.payload["blocker_id"] == "apply-blocker"
     assert blocker_closeout_event.payload["decision"] == "still_active"
+    assert blocker_closeout_event.actor_id == session.assignment.claimed_by
+    assert blocker_closeout_event.access_grant_id == session.assignment.grant_id
+    assert revision_count(repo, work_request.id) == 1
+
+    replay_response = mcp_tool(repo, session, "reconcile_work_request", %{"work_request_id" => work_request.id, "apply" => true})
+
+    assert get_in(replay_response, ["result", "structuredContent", "reconciliation", "applied_count"]) == 0
     assert revision_count(repo, work_request.id) == 1
   end
 

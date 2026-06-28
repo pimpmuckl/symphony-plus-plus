@@ -126,7 +126,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
   defp reconcile_dispatched_slice(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, mode, opts) do
     with {:ok, work_package} <- WorkPackageRepository.get(repo, planned_slice.work_package_id),
          {:ok, action} <- closeout_action(repo, work_request, planned_slice, work_package, opts) do
-      maybe_apply_action(repo, work_request, planned_slice, work_package, action, mode)
+      maybe_apply_action(repo, work_request, planned_slice, work_package, action, mode, opts)
     else
       {:skip, reason, extras} -> skipped_result(planned_slice, nil, reason, extras)
       {:error, :not_found} -> skipped_result(planned_slice, nil, "missing_linked_work_package")
@@ -171,7 +171,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     end
   end
 
-  defp maybe_apply_action(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, action, :dry_run) do
+  defp maybe_apply_action(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, action, :dry_run, _opts) do
     action_payload = action_payload(repo, work_request, planned_slice, work_package, action)
 
     planned_slice
@@ -184,11 +184,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     })
   end
 
-  defp maybe_apply_action(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, action, :apply) do
+  defp maybe_apply_action(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, action, :apply, opts) do
     action_payload = action_payload(repo, work_request, planned_slice, work_package, action)
     delivery_attrs = delivery_attrs(repo, work_package, action)
 
-    case record_reconciled_delivery(repo, work_request, planned_slice, work_package, delivery_attrs, action_payload) do
+    case record_reconciled_delivery(
+           repo,
+           work_request,
+           planned_slice,
+           work_package,
+           delivery_attrs,
+           action_payload,
+           opts
+         ) do
       {:ok, delivery, blocker_closeout_event_ids} ->
         planned_slice
         |> base_result(work_package)
@@ -420,26 +428,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     end
   end
 
-  defp append_reconcile_blocker_closeout_events(repo, %WorkPackage{} = work_package, %{
-         blocker_closeout: %{blocker_ids: blocker_ids} = closeout
-       })
+  defp append_reconcile_blocker_closeout_events(
+         repo,
+         %WorkPackage{} = work_package,
+         %{
+           blocker_closeout: %{blocker_ids: blocker_ids} = closeout
+         },
+         opts
+       )
        when is_list(blocker_ids) do
     with {:ok, active_blockers} <- active_blockers(repo, work_package.id),
          {:ok, closeout_blockers} <- reconcile_closeout_blockers(active_blockers, blocker_ids) do
-      append_reconcile_blocker_closeout_events_for_blockers(repo, closeout_blockers, closeout)
+      append_reconcile_blocker_closeout_events_for_blockers(repo, closeout_blockers, closeout, opts)
     end
   end
 
-  defp append_reconcile_blocker_closeout_events(_repo, %WorkPackage{}, _action_payload), do: {:ok, []}
+  defp append_reconcile_blocker_closeout_events(_repo, %WorkPackage{}, _action_payload, _opts), do: {:ok, []}
 
-  defp append_reconcile_blocker_closeout_events_for_blockers(repo, blockers, closeout) do
+  defp append_reconcile_blocker_closeout_events_for_blockers(repo, blockers, closeout, opts) do
     Enum.reduce_while(blockers, {:ok, []}, fn blocker, {:ok, event_ids} ->
-      append_reconcile_blocker_closeout_event_result(repo, blocker, closeout, event_ids)
+      append_reconcile_blocker_closeout_event_result(repo, blocker, closeout, event_ids, opts)
     end)
   end
 
-  defp append_reconcile_blocker_closeout_event_result(repo, blocker, closeout, event_ids) do
-    case append_reconcile_blocker_closeout_event(repo, blocker, closeout) do
+  defp append_reconcile_blocker_closeout_event_result(repo, blocker, closeout, event_ids, opts) do
+    case append_reconcile_blocker_closeout_event(repo, blocker, closeout, opts) do
       {:ok, event} -> {:cont, {:ok, [event.id | event_ids]}}
       {:error, reason} -> {:halt, {:error, reason}}
     end
@@ -478,39 +491,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
          %PlannedSlice{} = planned_slice,
          %WorkPackage{} = work_package,
          delivery_attrs,
-         action_payload
+         action_payload,
+         opts
        ) do
-    transaction_args = {work_request, planned_slice, work_package, delivery_attrs, action_payload}
-
-    case repo.transaction(fn ->
-           record_reconciled_delivery_transaction(repo, transaction_args)
-         end) do
-      {:ok, {delivery, blocker_closeout_event_ids}} -> {:ok, delivery, blocker_closeout_event_ids}
-      {:error, {:error, reason}} -> {:error, reason}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp record_reconciled_delivery_transaction(repo, transaction_args) do
-    {work_request, planned_slice, work_package, delivery_attrs, action_payload} = transaction_args
-
-    with {:ok, delivery} <-
+    with {:ok, blocker_closeout_event_ids} <-
+           append_reconcile_blocker_closeout_events(repo, work_package, action_payload, opts),
+         {:ok, delivery} <-
            WorkRequestService.record_planned_slice_delivery(
              repo,
              work_request.id,
              planned_slice.id,
              delivery_attrs
-           ),
-         {:ok, blocker_closeout_event_ids} <-
-           append_reconcile_blocker_closeout_events(repo, work_package, action_payload) do
-      {delivery, blocker_closeout_event_ids}
-    else
-      {:error, reason} -> repo.rollback({:error, reason})
+           ) do
+      {:ok, delivery, blocker_closeout_event_ids}
     end
   end
 
-  defp append_reconcile_blocker_closeout_event(repo, blocker, closeout) do
-    PlanningRepository.append_progress_event(repo, %{
+  defp append_reconcile_blocker_closeout_event(repo, blocker, closeout, opts) do
+    attrs = %{
       work_package_id: blocker.work_package_id,
       summary: closeout.summary || "Preserved active blocker during reconcile_work_request",
       status: "blocked",
@@ -521,7 +519,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
         blocker_id: blocker.id,
         decision: "still_active"
       }
-    })
+    }
+
+    append_reconcile_blocker_closeout_event_attrs(repo, blocker.work_package_id, attrs, opts)
+  end
+
+  defp append_reconcile_blocker_closeout_event_attrs(repo, work_package_id, attrs, opts) do
+    case Keyword.get(opts, :append_blocker_closeout_event) do
+      fun when is_function(fun, 3) -> fun.(repo, work_package_id, attrs)
+      _missing -> PlanningRepository.append_progress_event(repo, attrs)
+    end
   end
 
   defp reconcile_blocker_closeout_idempotency_key(blocker, decision) do

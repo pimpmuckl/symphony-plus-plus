@@ -3255,7 +3255,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {visible_work_package_ids, work_package_contexts} <-
            visible_delivery_board_work_package_contexts(config.repo, work_request, planned_slices, filters),
          {:ok, reconciliation} <-
-           reconcile_work_request(config.repo, work_request_id, apply?, recorded_by,
+           reconcile_work_request(config.repo, live_session, work_request_id, apply?, recorded_by,
              mode: reconcile_work_request_mode(apply?),
              work_request: work_request,
              planned_slices: planned_slices,
@@ -6107,15 +6107,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp reconcile_work_request_mode(true), do: :apply
   defp reconcile_work_request_mode(false), do: :dry_run
 
-  defp reconcile_work_request(repo, work_request_id, apply?, recorded_by, opts) do
+  defp reconcile_work_request(repo, %Session{} = session, work_request_id, true = _apply?, recorded_by, opts) do
     opts = Keyword.put(opts, :recorded_by, recorded_by)
-    reconcile = fn -> DeliveryReconciler.reconcile(repo, work_request_id, opts) end
+    opts = Keyword.put(opts, :append_blocker_closeout_event, reconcile_blocker_closeout_appender(session))
 
-    if apply? do
-      mutate_product_tree(repo, work_request_id, "reconcile_work_request", recorded_by, reconcile)
-    else
-      reconcile.()
+    with {:ok, reconciliation} <- DeliveryReconciler.reconcile(repo, work_request_id, opts),
+         {:ok, _revision} <-
+           maybe_record_reconcile_product_tree_revision(
+             repo,
+             work_request_id,
+             recorded_by,
+             reconciliation
+           ) do
+      {:ok, reconciliation}
     end
+  end
+
+  defp reconcile_work_request(repo, %Session{}, work_request_id, false = _apply?, recorded_by, opts) do
+    opts = Keyword.put(opts, :recorded_by, recorded_by)
+
+    DeliveryReconciler.reconcile(repo, work_request_id, opts)
+  end
+
+  defp reconcile_blocker_closeout_appender(%Session{} = session) do
+    fn repo, work_package_id, attrs ->
+      PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, work_package_id, attrs)
+    end
+  end
+
+  defp maybe_record_reconcile_product_tree_revision(repo, work_request_id, recorded_by, %{applied_count: count})
+       when count > 0 do
+    record_current_product_tree_revision(repo, work_request_id, "reconcile_work_request", recorded_by)
+  end
+
+  defp maybe_record_reconcile_product_tree_revision(_repo, _work_request_id, _recorded_by, _reconciliation) do
+    {:ok, nil}
   end
 
   defp visible_delivery_board_work_package_contexts(repo, %WorkRequest{} = work_request, planned_slices, filters, opts \\ []) do
