@@ -6112,9 +6112,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     opts = Keyword.put(opts, :recorded_by, recorded_by)
     opts = Keyword.put(opts, :append_blocker_closeout_event, reconcile_blocker_closeout_appender(session))
 
-    with {:ok, reconciliation} <- DeliveryReconciler.reconcile(repo, work_request_id, opts) do
-      record_reconcile_product_tree_revision_after_apply(repo, work_request_id, recorded_by, reconciliation)
-    end
+    run_architect_transaction(repo, fn ->
+      with {:ok, reconciliation} <- DeliveryReconciler.reconcile(repo, work_request_id, opts) do
+        record_reconcile_product_tree_revision_after_apply(repo, work_request_id, recorded_by, reconciliation)
+      end
+    end)
   end
 
   defp reconcile_work_request(repo, %Session{}, work_request_id, false = _apply?, recorded_by, opts) do
@@ -6123,32 +6125,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     DeliveryReconciler.reconcile(repo, work_request_id, opts)
   end
 
+  defp record_reconcile_product_tree_revision_after_apply(
+         repo,
+         work_request_id,
+         recorded_by,
+         reconciliation
+       ) do
+    with {:ok, _revision} <-
+           maybe_record_reconcile_product_tree_revision(
+             repo,
+             work_request_id,
+             recorded_by,
+             reconciliation
+           ) do
+      {:ok, reconciliation}
+    end
+  end
+
   defp reconcile_blocker_closeout_appender(%Session{} = session) do
     fn repo, work_package_id, attrs ->
       PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, work_package_id, attrs)
     end
   end
-
-  defp record_reconcile_product_tree_revision_after_apply(repo, work_request_id, recorded_by, reconciliation) do
-    case maybe_record_reconcile_product_tree_revision(repo, work_request_id, recorded_by, reconciliation) do
-      {:ok, _revision} ->
-        {:ok, reconciliation}
-
-      {:error, reason} ->
-        if reconcile_delivery_mutation_applied?(reconciliation) do
-          {:ok,
-           Map.put(reconciliation, :product_tree_revision, %{
-             status: "deferred",
-             reason: reason_text(reason)
-           })}
-        else
-          {:error, reason}
-        end
-    end
-  end
-
-  defp reconcile_delivery_mutation_applied?(%{applied_count: count}) when count > 0, do: true
-  defp reconcile_delivery_mutation_applied?(_reconciliation), do: false
 
   defp maybe_record_reconcile_product_tree_revision(repo, work_request_id, recorded_by, reconciliation) do
     if reconcile_product_tree_revision_required?(reconciliation) do
@@ -6164,7 +6162,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     Enum.any?(results, &reconcile_result_has_delivery_closeout?/1)
   end
 
-  defp reconcile_result_has_delivery_closeout?(%{reason: "already_closeout"}), do: true
+  defp reconcile_result_has_delivery_closeout?(%{reason: "already_closeout", work_package_status: status}) when is_binary(status), do: true
   defp reconcile_result_has_delivery_closeout?(_result), do: false
 
   defp visible_delivery_board_work_package_contexts(repo, %WorkRequest{} = work_request, planned_slices, filters, opts \\ []) do

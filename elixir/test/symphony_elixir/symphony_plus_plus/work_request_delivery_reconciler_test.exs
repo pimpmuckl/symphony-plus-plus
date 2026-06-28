@@ -456,7 +456,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
              DeliveryReconciler.reconcile(repo, work_request.id, visible_work_package_ids: [])
 
     assert scoped_dry_run.proposed_count == 0
-    assert [%{status: "skipped", reason: "already_closeout", delivery_outcome: "pr_merged"}] = scoped_dry_run.results
+    assert [%{status: "skipped", reason: "already_closeout", delivery_outcome: "pr_merged"} = scoped_result] = scoped_dry_run.results
+    refute Map.has_key?(scoped_result, :work_package_status)
 
     assert {:ok, dry_run} = DeliveryReconciler.reconcile(repo, work_request.id)
     assert dry_run.proposed_count == 1
@@ -471,6 +472,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
            ] = dry_run.results
 
     assert dry_run_action.blocker_closeout.blocker_ids == ["repair-blocker"]
+    assert dry_run_action.blocker_closeout.summary == "Preserve active blockers while repairing merged PR delivery closeout."
     assert reconcile_blocker_closeout_events(repo, linked_package.id) == []
 
     assert {:ok, result} = DeliveryReconciler.reconcile(repo, work_request.id, mode: :apply)
@@ -494,6 +496,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert replay.applied_count == 0
     assert [%{status: "skipped", reason: "already_closeout", delivery_outcome: "pr_merged"}] = replay.results
     assert length(reconcile_blocker_closeout_events(repo, linked_package.id)) == 1
+  end
+
+  test "already closed blocker repair summary names non-PR delivery outcomes", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-RECONCILE-NO-PR-BLOCKER-REPAIR",
+        work_package_id: "WP-RECONCILE-NO-PR-BLOCKER-REPAIR",
+        status: "reviewing"
+      )
+
+    append_active_blocker!(repo, linked_package.id, "no-pr-repair-blocker")
+
+    assert {:ok, _delivery} =
+             WorkRequestService.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               planned_slice.id,
+               no_pr_delivery_attrs("no-pr-repair", %{"allow_active_blocker_closeout" => true})
+             )
+
+    append_blocker_resolution!(repo, linked_package.id, "no-pr-repair-blocker")
+
+    assert {:ok, dry_run} = DeliveryReconciler.reconcile(repo, work_request.id)
+
+    assert [
+             %{
+               status: "proposed",
+               reason: "already_closeout_blocker_closeout_repair",
+               delivery_outcome: "completed_no_pr",
+               action: dry_run_action
+             }
+           ] = dry_run.results
+
+    expected_summary = "Preserve active blockers while repairing completed no pr delivery closeout."
+    assert dry_run_action.blocker_closeout.summary == expected_summary
+
+    assert {:ok, result} = DeliveryReconciler.reconcile(repo, work_request.id, mode: :apply)
+    assert [%{blocker_closeout_event_ids: [event_id]}] = result.results
+
+    blocker_closeout_event = repo.get!(ProgressEvent, event_id)
+    assert blocker_closeout_event.summary == expected_summary
   end
 
   test "already closed repair defers remaining blocker events after partial append", %{repo: repo} do
@@ -1178,6 +1222,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
         pr_repository: "nextide/repo",
         pr_merged_at: ~U[2026-05-24 12:00:00Z],
         merge_commit_sha: "merge-sha-#{number}"
+      },
+      overrides
+    )
+  end
+
+  defp no_pr_delivery_attrs(suffix, overrides) do
+    Map.merge(
+      %{
+        outcome: "completed_no_pr",
+        idempotency_key: "delivery-reconciler-test:no-pr:#{suffix}",
+        recorded_by: "reconciler-test",
+        no_pr_evidence: "Operator confirmed this slice completed without a PR."
       },
       overrides
     )

@@ -179,7 +179,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
         already_closeout_result(planned_slice, work_package, delivery_outcome)
 
       {:ok, work_package, missing_blockers} ->
-        closeout = reconcile_still_active_blocker_closeout(missing_blockers)
+        closeout = reconcile_still_active_blocker_closeout(missing_blockers, delivery_outcome)
 
         planned_slice
         |> base_result(work_package)
@@ -233,7 +233,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
          missing_blockers,
          opts
        ) do
-    closeout = reconcile_still_active_blocker_closeout(missing_blockers)
+    closeout = reconcile_still_active_blocker_closeout(missing_blockers, delivery_outcome)
     action_payload = already_closed_action_payload(planned_slice, delivery_outcome, closeout)
 
     case append_reconcile_blocker_closeout_events_for_blockers(repo, missing_blockers, closeout, opts) do
@@ -278,13 +278,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     }
   end
 
-  defp reconcile_still_active_blocker_closeout(blockers) do
+  defp reconcile_still_active_blocker_closeout(blockers, delivery_outcome) do
     %{
       decision: "still_active",
       blocker_ids: Enum.map(blockers, & &1.id),
-      summary: "Preserve active blockers while recording merged PR delivery."
+      summary: "Preserve active blockers while repairing #{delivery_outcome_label(delivery_outcome)} delivery closeout."
     }
   end
+
+  defp delivery_outcome_label("pr_merged"), do: "merged PR"
+  defp delivery_outcome_label(outcome) when is_binary(outcome), do: String.replace(outcome, "_", " ")
+  defp delivery_outcome_label(_outcome), do: "planned-slice"
 
   defp missing_reconcile_blocker_closeout_blockers(repo, blockers) do
     Enum.reject(blockers, fn blocker ->
