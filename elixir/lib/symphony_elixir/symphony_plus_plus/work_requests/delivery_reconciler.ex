@@ -404,7 +404,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
            action_payload,
            opts
          ) do
-      {:ok, delivery, blocker_closeout_event_ids} ->
+      {:ok, delivery, blocker_closeout_event_ids, blocker_closeout_repair} ->
         planned_slice
         |> base_result(work_package)
         |> Map.merge(%{
@@ -415,6 +415,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
           delivery_id: delivery.id
         })
         |> maybe_put_blocker_closeout_event_ids(blocker_closeout_event_ids)
+        |> maybe_put_blocker_closeout_repair(blocker_closeout_repair)
 
       {:error, reason} ->
         error_result(planned_slice, work_package, reason, action_payload)
@@ -702,10 +703,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
          opts
        ) do
     with {:ok, delivery} <-
-           record_planned_slice_delivery(repo, work_request, planned_slice, delivery_attrs, opts),
-         {:ok, blocker_closeout_event_ids} <-
-           append_reconcile_blocker_closeout_events(repo, work_package, action_payload, opts) do
-      {:ok, delivery, blocker_closeout_event_ids}
+           record_planned_slice_delivery(repo, work_request, planned_slice, delivery_attrs, opts) do
+      case append_reconcile_blocker_closeout_events(repo, work_package, action_payload, opts) do
+        {:ok, blocker_closeout_event_ids} -> {:ok, delivery, blocker_closeout_event_ids, nil}
+        {:error, reason} -> {:ok, delivery, [], %{status: "deferred", reason: reason_text(reason)}}
+      end
     end
   end
 
@@ -754,6 +756,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
 
   defp maybe_put_blocker_closeout_event_ids(result, []), do: result
   defp maybe_put_blocker_closeout_event_ids(result, event_ids), do: Map.put(result, :blocker_closeout_event_ids, Enum.reverse(event_ids))
+
+  defp maybe_put_blocker_closeout_repair(result, nil), do: result
+  defp maybe_put_blocker_closeout_repair(result, repair), do: Map.put(result, :blocker_closeout_repair, repair)
 
   defp idempotency_key(%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, evidence, merge_commit_sha) do
     material = [work_request.id, planned_slice.id, evidence.url, evidence.head_sha, merge_commit_sha] |> Enum.join(":")

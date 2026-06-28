@@ -372,6 +372,57 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
            end)
   end
 
+  test "apply defers blocker preservation repair when append fails after delivery records", %{repo: repo} do
+    {work_request, _planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-RECONCILE-BLOCKER-APPEND-FAILS",
+        work_package_id: "WP-RECONCILE-BLOCKER-APPEND-FAILS",
+        status: "ready_for_merge"
+      )
+
+    append_merged_pr_evidence!(repo, linked_package, 921, "head-921")
+    append_active_blocker!(repo, linked_package.id, "append-failure-blocker")
+
+    failing_appender = fn _repo, _work_package_id, _attrs -> {:error, :audit_revoked} end
+
+    assert {:ok, result} =
+             DeliveryReconciler.reconcile(repo, work_request.id,
+               mode: :apply,
+               append_blocker_closeout_event: failing_appender
+             )
+
+    assert result.applied_count == 1
+    assert result.error_count == 0
+
+    assert [
+             %{
+               status: "applied",
+               reason: "github_pr_merged",
+               blocker_closeout_repair: %{status: "deferred", reason: "audit_revoked"}
+             }
+           ] = result.results
+
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 1
+    assert reconcile_blocker_closeout_events(repo, linked_package.id) == []
+
+    assert {:ok, retry} = DeliveryReconciler.reconcile(repo, work_request.id, mode: :apply)
+
+    assert retry.applied_count == 1
+
+    assert [
+             %{
+               status: "applied",
+               reason: "already_closeout_blocker_closeout_repaired",
+               blocker_closeout_event_ids: [event_id]
+             }
+           ] = retry.results
+
+    blocker_closeout_event = repo.get!(ProgressEvent, event_id)
+    assert blocker_closeout_event.payload["blocker_id"] == "append-failure-blocker"
+    assert blocker_closeout_event.payload["decision"] == "still_active"
+  end
+
   test "apply repairs missing blocker preservation events for already closed deliveries", %{repo: repo} do
     {work_request, planned_slice, linked_package} =
       linked_slice!(
