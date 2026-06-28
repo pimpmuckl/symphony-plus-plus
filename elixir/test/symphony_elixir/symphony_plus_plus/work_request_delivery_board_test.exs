@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL
+  alias SymphonyElixir.SymphonyPlusPlus.Dashboard.DeliverySliceProjection
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
@@ -486,6 +488,97 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
     assert slice.attention_reason_codes == []
   end
 
+  test "projection marks duplicate planned-slice package links as repair-needed", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-BOARD-AMBIGUOUS-PACKAGE")
+    other_work_request = create_work_request!(repo, id: "WR-BOARD-AMBIGUOUS-PACKAGE-OTHER")
+    first = create_planned_slice!(repo, work_request, id: "WRS-BOARD-AMBIGUOUS-A")
+    second = create_planned_slice!(repo, other_work_request, id: "WRS-BOARD-AMBIGUOUS-B")
+
+    work_package =
+      create_matching_work_package!(repo, work_request, first,
+        id: "WP-BOARD-AMBIGUOUS-PACKAGE",
+        status: "ready_for_merge"
+      )
+
+    drop_planned_slice_work_package_unique_index!(repo)
+
+    try do
+      now = DateTime.utc_now(:microsecond)
+
+      repo.update!(Ecto.Changeset.change(first, status: "dispatched", work_package_id: work_package.id, dispatched_at: now))
+      repo.update!(Ecto.Changeset.change(second, status: "dispatched", work_package_id: work_package.id, dispatched_at: now))
+
+      assert {:ok, board} = DeliveryBoard.project(repo, work_request.id)
+      slices_by_id = Map.new(board.slices, &{&1.id, &1})
+
+      projected = Map.fetch!(slices_by_id, first.id)
+      assert projected.work_package == nil
+      assert projected.work_package_ambiguous? == true
+      assert projected.operational_state.key == "needs_repair"
+      assert projected.attention_reason_codes == ["ambiguous_linked_work_package"]
+
+      assert {:ok, scoped_board} = DeliveryBoard.project(repo, work_request.id, visible_work_package_ids: [])
+      scoped_projected = scoped_board.slices |> Map.new(&{&1.id, &1}) |> Map.fetch!(first.id)
+
+      assert scoped_projected.work_package == nil
+      assert scoped_projected.work_package_hidden? == true
+      assert scoped_projected.work_package_ambiguous? == false
+      assert scoped_projected.operational_state.key == "dispatched"
+      refute "ambiguous_linked_work_package" in scoped_projected.attention_reason_codes
+
+      assert DeliverySliceProjection.primary_operational_state(projected, []) == %{
+               attention_items: [
+                 %{
+                   key: "ambiguous_linked_work_package",
+                   label: "Ambiguous Package",
+                   reason: "Multiple planned slices point at the same WorkPackage.",
+                   tone: "warning"
+                 }
+               ],
+               attention_reason_codes: ["ambiguous_linked_work_package"],
+               delivery_outcome: nil,
+               key: "needs_repair",
+               label: "Needs Repair",
+               raw_status: "dispatched",
+               reason: "Multiple planned slices point at the same WorkPackage.",
+               tone: "warning",
+               work_package_status: nil
+             }
+
+      assert {:ok, _delivery} =
+               Repository.record_planned_slice_delivery(
+                 repo,
+                 work_request.id,
+                 first.id,
+                 delivery_attrs(%{
+                   outcome: "pr_merged",
+                   idempotency_key: "delivery-board-ambiguous-pr-merged",
+                   pr_url: "https://github.com/nextide/symphony-plus-plus/pull/902",
+                   pr_number: 902,
+                   pr_repository: "nextide/symphony-plus-plus",
+                   pr_merged_at: ~U[2026-05-24 12:00:00.000000Z],
+                   merge_commit_sha: "abc902"
+                 })
+               )
+
+      assert {:ok, delivered_board} = DeliveryBoard.project(repo, work_request.id)
+      delivered = delivered_board.slices |> Map.new(&{&1.id, &1}) |> Map.fetch!(first.id)
+
+      assert delivered.work_package == nil
+      assert delivered.work_package_ambiguous? == true
+      assert delivered.operational_state.key == "delivered"
+      assert "ambiguous_linked_work_package" in delivered.attention_reason_codes
+    after
+      SQL.query!(
+        repo,
+        "UPDATE sympp_work_request_planned_slices SET work_package_id = NULL, dispatched_at = NULL WHERE id IN (?, ?)",
+        [first.id, second.id]
+      )
+
+      create_planned_slice_work_package_unique_index!(repo)
+    end
+  end
+
   test "keeps skipped planned slices visible on the delivery board", %{repo: repo} do
     work_request = create_work_request!(repo, id: "WR-BOARD-SKIPPED-SCRATCH")
     visible_slice = create_planned_slice!(repo, work_request, id: "WRS-BOARD-VISIBLE-PLANNED")
@@ -742,6 +835,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryBoardTest do
     }
 
     Enum.into(overrides, defaults)
+  end
+
+  defp drop_planned_slice_work_package_unique_index!(repo) do
+    SQL.query!(repo, "DROP INDEX IF EXISTS sympp_work_request_planned_slices_work_package_id_unique_index")
+  end
+
+  defp create_planned_slice_work_package_unique_index!(repo) do
+    SQL.query!(repo, """
+    CREATE UNIQUE INDEX IF NOT EXISTS sympp_work_request_planned_slices_work_package_id_unique_index
+    ON sympp_work_request_planned_slices (work_package_id)
+    WHERE work_package_id IS NOT NULL
+    """)
   end
 
   defp database_path do

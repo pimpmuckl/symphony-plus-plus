@@ -321,6 +321,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
     assert {:ok, _dispatched_slice} =
              WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", package.id)
 
+    assert {:ok, duplicate_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-SCOPE-EXPANSION-DIRECT-LINKED-DUPLICATE",
+                 target_base_branch: work_request.base_branch,
+                 owned_file_globs: ["elixir/lib/**"]
+               )
+             )
+
+    assert {:ok, approved_duplicate_slice} =
+             WorkRequestRepository.approve_planned_slice(repo, work_request.id, duplicate_slice.id, "planned")
+
+    drop_planned_slice_work_package_unique_index!(repo)
+
+    ExUnit.Callbacks.on_exit(fn ->
+      repo.query!(
+        "UPDATE sympp_work_request_planned_slices SET work_package_id = NULL, dispatched_at = NULL WHERE id = ?",
+        [approved_duplicate_slice.id]
+      )
+
+      create_planned_slice_work_package_unique_index!(repo)
+    end)
+
+    repo.update!(
+      Ecto.Changeset.change(approved_duplicate_slice,
+        status: "dispatched",
+        work_package_id: package.id,
+        dispatched_at: DateTime.utc_now(:microsecond)
+      )
+    )
+
     assert {:ok, _stale_package} = WorkPackageRepository.update(repo, package.id, %{"allowed_file_globs" => ["src/**", "elixir/lib/**"]})
 
     approval_response =
@@ -370,6 +403,184 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
 
     assert {:ok, repaired_package} = WorkPackageRepository.get(repo, package.id)
     assert repaired_package.allowed_file_globs == ["elixir/lib/**", "docs/**"]
+  end
+
+  test "direct package architect approval fails closed for cross-WorkRequest duplicate links", %{repo: repo} do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-SCOPE-EXPANSION-CROSS-LINK",
+        status: "ready_for_slicing",
+        constraints: %{"allowed_paths" => ["elixir/lib", "docs"], "requires_secret" => false}
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-SCOPE-EXPANSION-CROSS-LINK",
+                 target_base_branch: work_request.base_branch,
+                 owned_file_globs: ["elixir/lib/**"]
+               )
+             )
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-SCOPE-EXPANSION-CROSS-LINK",
+                 title: approved_slice.title,
+                 kind: approved_slice.work_package_kind,
+                 repo: work_request.repo,
+                 base_branch: approved_slice.target_base_branch,
+                 branch_pattern: approved_slice.branch_pattern,
+                 product_description: work_request.human_description,
+                 status: "blocked",
+                 policy_template: "mcp_changed_file_scope_guard",
+                 allowed_file_globs: approved_slice.owned_file_globs,
+                 acceptance_criteria: approved_slice.acceptance_criteria
+               )
+             )
+
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["approve:scope_expansion"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    architect_session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+
+    assert {:ok, _dispatched_slice} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", package.id)
+
+    other_work_request = create_work_request!(repo, id: "WR-MCP-SCOPE-EXPANSION-CROSS-LINK-OTHER", status: "ready_for_slicing")
+
+    assert {:ok, other_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               other_work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-SCOPE-EXPANSION-CROSS-LINK-OTHER",
+                 target_base_branch: other_work_request.base_branch,
+                 owned_file_globs: ["docs/**"]
+               )
+             )
+
+    assert {:ok, approved_other_slice} =
+             WorkRequestRepository.approve_planned_slice(repo, other_work_request.id, other_slice.id, "planned")
+
+    drop_planned_slice_work_package_unique_index!(repo)
+
+    ExUnit.Callbacks.on_exit(fn ->
+      repo.query!(
+        "UPDATE sympp_work_request_planned_slices SET work_package_id = NULL, dispatched_at = NULL WHERE id = ?",
+        [approved_other_slice.id]
+      )
+
+      create_planned_slice_work_package_unique_index!(repo)
+    end)
+
+    repo.update!(
+      Ecto.Changeset.change(approved_other_slice,
+        status: "dispatched",
+        work_package_id: package.id,
+        dispatched_at: DateTime.utc_now(:microsecond)
+      )
+    )
+
+    approval_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "direct-cross-linked-scope-expansion",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "approve_scope_expansion",
+            "arguments" => %{
+              "work_package_id" => package.id,
+              "allowed_file_globs" => ["docs/**"],
+              "rationale" => "Cross-WorkRequest duplicates must be repaired before approval."
+            }
+          }
+        },
+        repo: repo,
+        session: architect_session
+      )
+
+    assert get_in(approval_response, ["error", "data", "reason"]) == "ambiguous_planned_slice_link"
+
+    assert {:ok, unchanged_package} = WorkPackageRepository.get(repo, package.id)
+    assert unchanged_package.allowed_file_globs == ["elixir/lib/**"]
+  end
+
+  test "WorkRequest architect claim cannot approve unlinked current package scope expansion", %{
+    repo: repo
+  } do
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-SCOPE-EXPANSION-UNLINKED-ANCHOR",
+        status: "ready_for_slicing",
+        constraints: %{"allowed_paths" => ["elixir/lib"], "requires_secret" => false}
+      )
+
+    assert {:ok, _handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               handoff_opts: [
+                 claimed_by: ArchitectHandoff.claimed_by(),
+                 database: repo.database_path(),
+                 local_architect_claim?: true
+               ]
+             )
+
+    {claim_response, architect_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-wr-architect-unlinked-anchor-scope-expansion",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_architect_assignment",
+            "arguments" => %{"work_request_id" => work_request.id}
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "wr-architect-unlinked-anchor-scope-expansion-state")
+      )
+
+    capabilities = get_in(claim_response, ["result", "structuredContent", "assignment", "capabilities"])
+    assert "write:work_request" in capabilities
+    refute "approve:scope_expansion" in capabilities
+
+    anchor_id = ArchitectHandoff.anchor_id_for_work_request(work_request)
+
+    repo.query!(
+      "UPDATE sympp_work_packages SET policy_template = ? WHERE id = ?",
+      ["mcp_changed_file_scope_guard", anchor_id]
+    )
+
+    response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "wr-architect-unlinked-anchor-scope-expansion",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "approve_scope_expansion",
+            "arguments" => %{
+              "work_package_id" => anchor_id,
+              "allowed_file_globs" => ["docs/**"],
+              "rationale" => "Unlinked handoff anchors cannot bypass WorkRequest scope."
+            }
+          }
+        },
+        architect_server
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    assert {:ok, unchanged_anchor} = WorkPackageRepository.get(repo, anchor_id)
+    refute "docs/**" in unchanged_anchor.allowed_file_globs
   end
 
   test "WorkRequest architect claim approves dispatched package scope expansion", %{repo: repo} do
@@ -2043,4 +2254,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.WorkerTools06Test do
 
   defp restore_review_suite_state_dir(nil), do: Application.delete_env(:symphony_elixir, :sympp_review_suite_state_dir)
   defp restore_review_suite_state_dir(value), do: Application.put_env(:symphony_elixir, :sympp_review_suite_state_dir, value)
+
+  defp drop_planned_slice_work_package_unique_index!(repo) do
+    repo.query!("DROP INDEX IF EXISTS sympp_work_request_planned_slices_work_package_id_unique_index")
+  end
+
+  defp create_planned_slice_work_package_unique_index!(repo) do
+    repo.query!("""
+    CREATE UNIQUE INDEX IF NOT EXISTS sympp_work_request_planned_slices_work_package_id_unique_index
+    ON sympp_work_request_planned_slices (work_package_id)
+    WHERE work_package_id IS NOT NULL
+    """)
+  end
 end

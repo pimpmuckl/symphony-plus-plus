@@ -13,6 +13,11 @@ The MCP server is the permission boundary and the WorkPackage is the worker
 scope boundary. V3 product progress lives on the WorkRequest/product tree;
 this skill handles only the dispatched execution/audit record.
 
+For workers, the WorkPackage id is the primary execution coordinate. A linked
+planned-slice id is product-planning/audit context inferred from the current
+assignment when possible; pass both ids only when a tool explicitly needs a
+cross-slice target, successor relation, audit closeout, or concurrency guard.
+
 ## Start
 
 1. Use a dedicated S++ MCP-enabled session connected to the same ledger as
