@@ -2490,7 +2490,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute "review_lanes_complete" in missing["missing"]
   end
 
-  test "work request detail falls back to policy lanes for duplicate linked planned slices", %{repo: repo} do
+  test "work request detail marks duplicate linked planned slices for repair", %{repo: repo} do
     work_request = create_work_request!(repo, id: "WR-DASH-DUPLICATE-LINK-READY", status: "ready_for_slicing")
 
     assert {:ok, first_planned} =
@@ -2540,8 +2540,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       assert {:ok, payload} = Dashboard.work_request_detail(repo, work_request.id)
       [first_slice, second_slice] = payload.planned_slices
 
-      assert first_slice.operational_state.key in ["merge_ready", "needs_attention"]
-      assert second_slice.operational_state.key in ["merge_ready", "needs_attention"]
+      assert first_slice.operational_state.key == "needs_repair"
+      assert second_slice.operational_state.key == "needs_repair"
+
+      assert Enum.any?(
+               first_slice.operational_state.attention_items,
+               &(&1.key == "ambiguous_linked_work_package")
+             )
+
+      assert Enum.any?(
+               second_slice.operational_state.attention_items,
+               &(&1.key == "ambiguous_linked_work_package")
+             )
     after
       repo.query!(
         "UPDATE sympp_work_request_planned_slices SET work_package_id = NULL WHERE id = ?",

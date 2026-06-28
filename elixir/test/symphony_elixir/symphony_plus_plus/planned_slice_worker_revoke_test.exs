@@ -3,6 +3,7 @@ Code.require_file("../../support/mcp_harness.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.PlannedSliceWorkerRevokeTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL
   alias SymphonyElixir.MCPHarness
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.GrantScope
@@ -164,6 +165,65 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlannedSliceWorkerRevokeTest do
 
     assert get_in(closeout_response, ["result", "structuredContent", "planned_slice_delivery", "outcome"]) == "superseded"
     assert repo.get!(WorkPackage, linked_package.id).status == "closed"
+  end
+
+  test "architect cleanup and revoke fail closed when package link is duplicated", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, "implementing")
+    successor_slice = create_planned_slice!(repo, work_request, "WRS-MCP-DELIVERY-DUPLICATE-CLEANUP-SUCCESSOR")
+    other_work_request = create_work_request!(repo, "WR-MCP-DELIVERY-DUPLICATE-CLEANUP-OTHER")
+    other_slice = create_planned_slice!(repo, other_work_request, "WRS-MCP-DELIVERY-DUPLICATE-CLEANUP-OTHER")
+    session = create_work_request_architect_session(repo, work_request)
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "active-worker")
+
+    assert {:ok, _claim_lease} =
+             ClaimLeaseService.claim(repo, linked_package.id, local_worker_actor("active-worker"),
+               access_grant_id: minted.grant.id,
+               stale_after_ms: 60_000
+             )
+
+    drop_planned_slice_work_package_unique_index!(repo)
+
+    try do
+      repo.update!(
+        Ecto.Changeset.change(other_slice,
+          status: "dispatched",
+          work_package_id: linked_package.id,
+          dispatched_at: DateTime.utc_now(:microsecond)
+        )
+      )
+
+      blocked_response =
+        mcp_tool(
+          repo,
+          session,
+          "cleanup_work_request_planned_slice_runtime",
+          cleanup_args(work_request, planned_slice, successor_slice.id)
+        )
+
+      assert get_in(blocked_response, ["error", "data", "reason"]) == "ambiguous_planned_slice_link"
+
+      revoke_blocked_response =
+        mcp_tool(repo, session, "revoke_planned_slice_worker_key", %{
+          "work_request_id" => work_request.id,
+          "planned_slice_id" => planned_slice.id,
+          "grant_id" => minted.grant.id,
+          "reason" => "Worker runtime owner is ambiguous without an explicit package guard."
+        })
+
+      assert get_in(revoke_blocked_response, ["error", "data", "reason"]) == "ambiguous_planned_slice_link"
+
+      refute repo.get!(AccessGrant, minted.grant.id).revoked_at
+    after
+      SQL.query!(
+        repo,
+        "UPDATE sympp_work_request_planned_slices SET work_package_id = NULL, dispatched_at = NULL WHERE id = ?",
+        [other_slice.id]
+      )
+
+      create_planned_slice_work_package_unique_index!(repo)
+    end
   end
 
   test "architect cleanup allows abandoned no-code closeout after claimed runtime is recycled", %{repo: repo} do
@@ -389,6 +449,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlannedSliceWorkerRevokeTest do
 
     assert {:ok, work_package} = WorkPackageRepository.create(repo, attrs)
     work_package
+  end
+
+  defp drop_planned_slice_work_package_unique_index!(repo) do
+    SQL.query!(repo, "DROP INDEX IF EXISTS sympp_work_request_planned_slices_work_package_id_unique_index")
+  end
+
+  defp create_planned_slice_work_package_unique_index!(repo) do
+    SQL.query!(repo, """
+    CREATE UNIQUE INDEX IF NOT EXISTS sympp_work_request_planned_slices_work_package_id_unique_index
+    ON sympp_work_request_planned_slices (work_package_id)
+    WHERE work_package_id IS NOT NULL
+    """)
   end
 
   defp create_work_request_architect_session(repo, %WorkRequest{} = work_request) do

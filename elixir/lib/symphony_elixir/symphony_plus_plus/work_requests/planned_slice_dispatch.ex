@@ -191,6 +191,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
         arguments: claim_arguments,
         required_runtime_arguments: []
       },
+      coordinates: worker_bootstrap_coordinates(work_request, planned_slice, work_package),
       required_skills: @preferred_worker_skill_set,
       preferred_skill_set: @preferred_worker_skill_set,
       supported_skill_sets: supported_worker_skill_sets(),
@@ -204,6 +205,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
         )
     }
     |> drop_nil_values()
+  end
+
+  defp worker_bootstrap_coordinates(%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, work_package) do
+    %{
+      primary_execution: %{kind: "work_package", work_package_id: work_package.id},
+      product_audit: %{
+        kind: "planned_slice",
+        work_request_id: work_request.id,
+        planned_slice_id: planned_slice.id
+      }
+    }
   end
 
   defp link_or_cleanup(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, creation, handoff_opts, opts) do
@@ -290,16 +302,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
       |> Jason.encode!()
 
     """
-    Symphony++ WorkPackage #{work_package_id}: #{title}
-    WorkRequest #{work_request_id}; planned slice #{planned_slice_id}.
+    WorkPackage #{work_package_id}: #{title}
+    Worker: WorkPackage #{work_package_id}.
+    Audit: WorkRequest #{work_request_id}; planned slice #{planned_slice_id}.
 
-    Skills: `#{@mcp_worker_skill}` + `#{@mcp_work_package_skill}`. Fallback: `#{@default_worker_skill}` + `#{@repo_work_package_skill}`.
+    Skills: `#{@mcp_worker_skill}` + `#{@mcp_work_package_skill}`; fallback `#{@default_worker_skill}` + `#{@repo_work_package_skill}`.
     #{ledger_line}
 
     Start: call `claim_local_assignment` with #{claim_arguments}; stop on paused/owned/scope failure.
-    Then `get_current_assignment()`, read `read_context()`, `read_task_plan()`, virtual resources, and update the task plan before coding.
+    Then `get_current_assignment()`, `read_context()`, `read_task_plan()`, virtual resources, and update the task plan before coding.
     Track progress/findings/blockers/review evidence; ready only after acceptance/tests/review gates.
-    Scope: only this WorkPackage/planned slice. Never request, print, paste, or commit raw secrets.
+    Scope: only this WorkPackage. Planned slice is audit context, not a worker target. Never request, print, paste, or commit raw secrets.
     Stop if MCP, claim, assignment, context, or scope is missing.
     """
     |> String.trim()
