@@ -600,16 +600,16 @@ function Convert-HttpClientHeaders($Response) {
   return $headers
 }
 
-function Wait-McpTaskWithLeaseHeartbeat($Task, [string]$McpUrl, [string]$LeaseClientId, [int]$HeartbeatIntervalMs, [bool]$LeaseShutdownOnIdle) {
+function Wait-McpTaskWithLeaseHeartbeat($Task, [string]$McpUrl, [string]$LeaseClientId, [int]$HeartbeatIntervalMs) {
   $waitMs = [Math]::Max(1000, $HeartbeatIntervalMs)
   while (-not $Task.Wait($waitMs)) {
-    Invoke-McpClientLease $McpUrl $LeaseClientId "heartbeat" $false $LeaseShutdownOnIdle | Out-Null
+    Invoke-McpClientLease $McpUrl $LeaseClientId "heartbeat" | Out-Null
   }
 
   return $Task.GetAwaiter().GetResult()
 }
 
-function Invoke-McpPostWithLeaseHeartbeat([string]$Url, [string]$Body, [string]$SessionId, [string]$ProtocolVersion, [int]$TimeoutSec, [string]$LeaseClientId, [int]$LeaseHeartbeatIntervalMs, [bool]$LeaseShutdownOnIdle) {
+function Invoke-McpPostWithLeaseHeartbeat([string]$Url, [string]$Body, [string]$SessionId, [string]$ProtocolVersion, [int]$TimeoutSec, [string]$LeaseClientId, [int]$LeaseHeartbeatIntervalMs) {
   Add-Type -AssemblyName System.Net.Http
   $client = [System.Net.Http.HttpClient]::new()
   $request = $null
@@ -626,8 +626,8 @@ function Invoke-McpPostWithLeaseHeartbeat([string]$Url, [string]$Body, [string]$
     }
     $request.Content = [System.Net.Http.StringContent]::new($Body, [System.Text.Encoding]::UTF8, "application/json")
 
-    $response = Wait-McpTaskWithLeaseHeartbeat ($client.SendAsync($request)) $Url $LeaseClientId $LeaseHeartbeatIntervalMs $LeaseShutdownOnIdle
-    $content = Wait-McpTaskWithLeaseHeartbeat ($response.Content.ReadAsStringAsync()) $Url $LeaseClientId $LeaseHeartbeatIntervalMs $LeaseShutdownOnIdle
+    $response = Wait-McpTaskWithLeaseHeartbeat ($client.SendAsync($request)) $Url $LeaseClientId $LeaseHeartbeatIntervalMs
+    $content = Wait-McpTaskWithLeaseHeartbeat ($response.Content.ReadAsStringAsync()) $Url $LeaseClientId $LeaseHeartbeatIntervalMs
     $headers = Convert-HttpClientHeaders $response
     $ok = $response.IsSuccessStatusCode
 
@@ -659,9 +659,9 @@ function Invoke-McpPostWithLeaseHeartbeat([string]$Url, [string]$Body, [string]$
   }
 }
 
-function Invoke-McpPost([string]$Url, [string]$Body, [string]$SessionId, [string]$ProtocolVersion, [int]$TimeoutSec, [string]$LeaseClientId = $null, [int]$LeaseHeartbeatIntervalMs = 0, [bool]$LeaseShutdownOnIdle = $false) {
+function Invoke-McpPost([string]$Url, [string]$Body, [string]$SessionId, [string]$ProtocolVersion, [int]$TimeoutSec, [string]$LeaseClientId = $null, [int]$LeaseHeartbeatIntervalMs = 0) {
   if (-not [string]::IsNullOrWhiteSpace($LeaseClientId) -and $LeaseHeartbeatIntervalMs -gt 0) {
-    return Invoke-McpPostWithLeaseHeartbeat $Url $Body $SessionId $ProtocolVersion $TimeoutSec $LeaseClientId $LeaseHeartbeatIntervalMs $LeaseShutdownOnIdle
+    return Invoke-McpPostWithLeaseHeartbeat $Url $Body $SessionId $ProtocolVersion $TimeoutSec $LeaseClientId $LeaseHeartbeatIntervalMs
   }
 
   $headers = @{ Accept = "application/json, text/event-stream" }
@@ -2139,8 +2139,7 @@ if ($null -ne $fastAttachCandidate) {
   if ($null -ne $bridgeLeasePath) {
     try {
       Write-Diagnostic "Symphony++ MCP bridge attached: backend=$($backendPlan.url) dashboard=$($dashboardPlan.url) runtime=$runtimeFile"
-      $shutdownOnIdle = ($backendPlan.managed -eq $true) -and ($dashboardPlan.managed -ne $true)
-      Invoke-HttpMcpBridge $backendPlan.mcp_url $bridgeTimeout (New-McpClientLeaseId) $clientHeartbeatInterval $shutdownOnIdle
+      Invoke-HttpMcpBridge $backendPlan.mcp_url $bridgeTimeout (New-McpClientLeaseId) $clientHeartbeatInterval
     } finally {
       Remove-BridgeLease $bridgeLeasePath
       Stop-ManagedServersIfUnused $runtimeFile $runtimeKey
@@ -2205,7 +2204,8 @@ try {
       [void](Initialize-ElixirRuntime $elixirDir $launcher $mix $mise $logDir $elixirSetupTimeout)
     }
     $backendDashboardOrigin = if ($runtimeMode -eq "artifact" -and [string]$dashboardPlan.status -eq "artifact_static") { $null } else { $dashboardPlan.origin }
-    $backendLaunch = Start-Backend $backendPlan $backendDashboardOrigin $elixirDir $launcher $mix $mise $logDir $backendTimeout $expectedContractFingerprint $artifactRuntime
+    $backendShutdownOnIdle = ($backendPlan.managed -eq $true) -and ($dashboardPlan.managed -ne $true)
+    $backendLaunch = Start-Backend $backendPlan $backendDashboardOrigin $elixirDir $launcher $mix $mise $logDir $backendTimeout $expectedContractFingerprint $artifactRuntime $backendShutdownOnIdle
     $backendPlan.status = "started"
     $backendPlan.pid = $backendLaunch.pid
     $backendPlan.source_revision = $backendLaunch.source_revision
@@ -2311,8 +2311,7 @@ try {
   Exit-FileLock $startupLock
 }
 try {
-  $shutdownOnIdle = ($backendPlan.managed -eq $true) -and ($dashboardPlan.managed -ne $true)
-  Invoke-HttpMcpBridge $backendPlan.mcp_url $bridgeTimeout (New-McpClientLeaseId) $clientHeartbeatInterval $shutdownOnIdle
+  Invoke-HttpMcpBridge $backendPlan.mcp_url $bridgeTimeout (New-McpClientLeaseId) $clientHeartbeatInterval
 } finally {
   Remove-BridgeLease $bridgeLeasePath
   Stop-ManagedServersIfUnused $runtimeFile $runtimeKey

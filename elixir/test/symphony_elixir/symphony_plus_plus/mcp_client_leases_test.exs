@@ -23,7 +23,97 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPClientLeasesTest do
     assert ClientLeases.active_count(server) == 0
   end
 
-  test "heartbeats remain telemetry only" do
+  test "stale leases stop runtime when shutdown-on-idle is enabled" do
+    parent = self()
+
+    server =
+      start_lease_server("shutdown",
+        shutdown_fun: fn -> send(parent, :shutdown_requested) end,
+        shutdown_delay_ms: 1,
+        shutdown_on_idle: true
+      )
+
+    assert {:ok, %{active_client_count: 1}} = ClientLeases.attach("client-a", server)
+    Process.sleep(10)
+    send(server, :sweep)
+
+    assert_receive :shutdown_requested, 100
+  end
+
+  test "shutdown-on-idle waits for the first lease before stopping runtime" do
+    parent = self()
+
+    server =
+      start_lease_server("no-lease-yet",
+        shutdown_fun: fn -> send(parent, :shutdown_requested) end,
+        shutdown_delay_ms: 1,
+        shutdown_on_idle: true
+      )
+
+    send(server, :sweep)
+    refute_receive :shutdown_requested, 30
+
+    assert {:ok, %{active_client_count: 1}} = ClientLeases.attach("client-a", server)
+    assert {:ok, %{active_client_count: 0}} = ClientLeases.detach("client-a", server)
+    assert_receive :shutdown_requested, 100
+  end
+
+  test "shutdown-on-idle remains telemetry without runtime policy" do
+    parent = self()
+
+    server =
+      start_lease_server("client-requested-shutdown",
+        shutdown_fun: fn -> send(parent, :shutdown_requested) end,
+        shutdown_delay_ms: 1
+      )
+
+    assert {:ok, %{active_client_count: 1}} = ClientLeases.attach("client-a", server)
+    Process.sleep(10)
+    send(server, :sweep)
+
+    refute_receive :shutdown_requested, 30
+    assert ClientLeases.active_count(server) == 0
+  end
+
+  test "new client cancels pending idle shutdown" do
+    parent = self()
+
+    server =
+      start_lease_server("cancel-shutdown",
+        shutdown_fun: fn -> send(parent, :shutdown_requested) end,
+        shutdown_delay_ms: 30,
+        shutdown_on_idle: true
+      )
+
+    assert {:ok, %{active_client_count: 1}} = ClientLeases.attach("client-a", server)
+    assert {:ok, %{active_client_count: 0}} = ClientLeases.detach("client-a", server)
+    assert {:ok, %{active_client_count: 1}} = ClientLeases.attach("client-b", server)
+
+    refute_receive :shutdown_requested, 50
+
+    assert {:ok, %{active_client_count: 0}} = ClientLeases.detach("client-b", server)
+    assert_receive :shutdown_requested, 100
+  end
+
+  test "stale idle shutdown messages do not bypass the current grace period" do
+    parent = self()
+
+    server =
+      start_lease_server("stale-shutdown-message",
+        shutdown_fun: fn -> send(parent, :shutdown_requested) end,
+        shutdown_delay_ms: 40,
+        shutdown_on_idle: true
+      )
+
+    assert {:ok, %{active_client_count: 1}} = ClientLeases.attach("client-a", server)
+    assert {:ok, %{active_client_count: 0}} = ClientLeases.detach("client-a", server)
+
+    send(server, {:shutdown_on_idle, make_ref()})
+    refute_receive :shutdown_requested, 30
+    assert_receive :shutdown_requested, 100
+  end
+
+  test "heartbeats without shutdown authority remain telemetry only" do
     server = start_lease_server("telemetry")
 
     assert {:ok, %{active_client_count: 1}} = ClientLeases.attach("client-a", server)
@@ -39,12 +129,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPClientLeasesTest do
     assert ClientLeases.active_count(server) == 0
   end
 
-  defp start_lease_server(name) do
-    opts = [
-      name: :"#{__MODULE__}.#{name}",
-      ttl_ms: 5,
-      sweep_ms: 60_000
-    ]
+  defp start_lease_server(name, extra_opts \\ []) do
+    opts =
+      [
+        name: :"#{__MODULE__}.#{name}",
+        ttl_ms: 5,
+        sweep_ms: 60_000
+      ]
+      |> Keyword.merge(extra_opts)
 
     start_supervised!({ClientLeases, opts})
   end

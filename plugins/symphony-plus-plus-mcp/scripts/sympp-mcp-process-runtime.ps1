@@ -244,7 +244,7 @@ function Get-ArtifactBackendCommand($ArtifactRuntime, $Plan, [string]$DashboardO
   }
 }
 
-function Start-Backend($Plan, [string]$DashboardOrigin, [string]$ElixirDir, [string]$Launcher, [string]$MixCommand, [string]$MiseCommand, [string]$LogDir, [int]$TimeoutSec, [string]$ExpectedContractFingerprint, $ArtifactRuntime = $null) {
+function Start-Backend($Plan, [string]$DashboardOrigin, [string]$ElixirDir, [string]$Launcher, [string]$MixCommand, [string]$MiseCommand, [string]$LogDir, [int]$TimeoutSec, [string]$ExpectedContractFingerprint, $ArtifactRuntime = $null, [bool]$ShutdownOnIdle = $false) {
   $args = @("sympp.cockpit", "--host", "127.0.0.1", "--port", [string]$Plan.port)
   if (-not [string]::IsNullOrWhiteSpace($DashboardOrigin)) {
     $args += @("--dashboard-origin", $DashboardOrigin)
@@ -264,6 +264,10 @@ function Start-Backend($Plan, [string]$DashboardOrigin, [string]$ElixirDir, [str
       working_directory = $ElixirDir
       environment = @{}
     }
+  }
+
+  if ($ShutdownOnIdle) {
+    $command.environment["SYMPP_MCP_SHUTDOWN_ON_IDLE"] = "1"
   }
 
   $launch = Start-LoggedProcess $command.file $command.args $command.working_directory $command.environment "backend-$($Plan.port)" $LogDir
@@ -411,7 +415,7 @@ function New-McpClientLeaseId {
   return "bridge-$PID-$([guid]::NewGuid().ToString('N'))"
 }
 
-function Invoke-McpClientLease([string]$McpUrl, [string]$ClientId, [string]$Action, [bool]$Required = $false, [bool]$ShutdownOnIdle = $false) {
+function Invoke-McpClientLease([string]$McpUrl, [string]$ClientId, [string]$Action, [bool]$Required = $false) {
   if ([string]::IsNullOrWhiteSpace($ClientId)) {
     return $null
   }
@@ -419,7 +423,6 @@ function Invoke-McpClientLease([string]$McpUrl, [string]$ClientId, [string]$Acti
   $body = @{
     client_id = $ClientId
     action = $Action
-    shutdown_on_idle = $ShutdownOnIdle -eq $true
   } | ConvertTo-Json -Depth 4 -Compress
   $leaseUrl = $McpUrl.TrimEnd("/") + "/client-lease"
   try {
@@ -457,13 +460,13 @@ function Get-McpNowMs {
   return [int64]([DateTime]::UtcNow.Subtract([datetime]"1970-01-01T00:00:00Z").TotalMilliseconds)
 }
 
-function Invoke-McpClientHeartbeatIfDue([string]$McpUrl, [string]$ClientId, [int64]$LastHeartbeatMs, [int]$HeartbeatIntervalMs, [bool]$ShutdownOnIdle) {
+function Invoke-McpClientHeartbeatIfDue([string]$McpUrl, [string]$ClientId, [int64]$LastHeartbeatMs, [int]$HeartbeatIntervalMs) {
   $now = Get-McpNowMs
   if (($now - $LastHeartbeatMs) -lt $HeartbeatIntervalMs) {
     return $LastHeartbeatMs
   }
 
-  Invoke-McpClientLease $McpUrl $ClientId "heartbeat" $false $ShutdownOnIdle | Out-Null
+  Invoke-McpClientLease $McpUrl $ClientId "heartbeat" | Out-Null
   return $now
 }
 
@@ -483,10 +486,10 @@ function Test-McpRecoverableSessionNotFound($Response, [string]$SessionId, [stri
   return $statusCode -eq 404
 }
 
-function Invoke-McpBridgeInitialize([string]$McpUrl, [int]$TimeoutSec, [string]$ClientId, [int]$HeartbeatIntervalMs, [bool]$ShutdownOnIdle) {
+function Invoke-McpBridgeInitialize([string]$McpUrl, [int]$TimeoutSec, [string]$ClientId, [int]$HeartbeatIntervalMs) {
   $initializeBody = ConvertTo-JsonBody (New-InitializeRequest)
   $initializeProtocolVersion = Get-InitializeProtocolVersion $initializeBody
-  $response = Invoke-McpPost $McpUrl $initializeBody $null $null $TimeoutSec $ClientId $HeartbeatIntervalMs $ShutdownOnIdle
+  $response = Invoke-McpPost $McpUrl $initializeBody $null $null $TimeoutSec $ClientId $HeartbeatIntervalMs
   if (-not $response.ok) {
     return [pscustomobject]@{
       ok = $false
@@ -523,18 +526,18 @@ function New-McpStdinReader {
   return [System.IO.StreamReader]::new([Console]::OpenStandardInput())
 }
 
-function Invoke-HttpMcpBridge([string]$McpUrl, [int]$TimeoutSec, [string]$ClientId = $null, [int]$HeartbeatIntervalSec = 300, [bool]$ShutdownOnIdle = $false) {
+function Invoke-HttpMcpBridge([string]$McpUrl, [int]$TimeoutSec, [string]$ClientId = $null, [int]$HeartbeatIntervalSec = 300) {
   $sessionId = $null
   $protocolVersion = $null
   $stdinReader = New-McpStdinReader
-  $lease = Invoke-McpClientLease $McpUrl $ClientId "attach" $true $ShutdownOnIdle
+  $lease = Invoke-McpClientLease $McpUrl $ClientId "attach" $true
   $heartbeatIntervalMs = Resolve-McpClientHeartbeatIntervalMs $HeartbeatIntervalSec $lease
   $lastHeartbeatMs = Get-McpNowMs
   try {
     $readTask = $stdinReader.ReadLineAsync()
     while ($true) {
       if (-not $readTask.Wait($heartbeatIntervalMs)) {
-        Invoke-McpClientLease $McpUrl $ClientId "heartbeat" $false $ShutdownOnIdle | Out-Null
+        Invoke-McpClientLease $McpUrl $ClientId "heartbeat" | Out-Null
         $lastHeartbeatMs = Get-McpNowMs
         continue
       }
@@ -548,23 +551,23 @@ function Invoke-HttpMcpBridge([string]$McpUrl, [int]$TimeoutSec, [string]$Client
         continue
       }
 
-      $lastHeartbeatMs = Invoke-McpClientHeartbeatIfDue $McpUrl $ClientId $lastHeartbeatMs $heartbeatIntervalMs $ShutdownOnIdle
+      $lastHeartbeatMs = Invoke-McpClientHeartbeatIfDue $McpUrl $ClientId $lastHeartbeatMs $heartbeatIntervalMs
       $requestProtocolVersion = Get-InitializeProtocolVersion $line
-      $response = Invoke-McpPost $McpUrl $line $sessionId $protocolVersion $TimeoutSec $ClientId $heartbeatIntervalMs $ShutdownOnIdle
-      $lastHeartbeatMs = Invoke-McpClientHeartbeatIfDue $McpUrl $ClientId $lastHeartbeatMs $heartbeatIntervalMs $ShutdownOnIdle
+      $response = Invoke-McpPost $McpUrl $line $sessionId $protocolVersion $TimeoutSec $ClientId $heartbeatIntervalMs
+      $lastHeartbeatMs = Invoke-McpClientHeartbeatIfDue $McpUrl $ClientId $lastHeartbeatMs $heartbeatIntervalMs
       $nextSessionId = Get-ResponseHeaderValue $response.headers "Mcp-Session-Id"
       if (-not [string]::IsNullOrWhiteSpace($nextSessionId)) {
         $sessionId = $nextSessionId
       }
 
       if (Test-McpRecoverableSessionNotFound $response $sessionId $requestProtocolVersion) {
-        $bridgeInitialize = Invoke-McpBridgeInitialize $McpUrl $TimeoutSec $ClientId $heartbeatIntervalMs $ShutdownOnIdle
-        $lastHeartbeatMs = Invoke-McpClientHeartbeatIfDue $McpUrl $ClientId $lastHeartbeatMs $heartbeatIntervalMs $ShutdownOnIdle
+        $bridgeInitialize = Invoke-McpBridgeInitialize $McpUrl $TimeoutSec $ClientId $heartbeatIntervalMs
+        $lastHeartbeatMs = Invoke-McpClientHeartbeatIfDue $McpUrl $ClientId $lastHeartbeatMs $heartbeatIntervalMs
         if ($bridgeInitialize.ok) {
           $sessionId = $bridgeInitialize.session_id
           $protocolVersion = $bridgeInitialize.protocol_version
-          $response = Invoke-McpPost $McpUrl $line $sessionId $protocolVersion $TimeoutSec $ClientId $heartbeatIntervalMs $ShutdownOnIdle
-          $lastHeartbeatMs = Invoke-McpClientHeartbeatIfDue $McpUrl $ClientId $lastHeartbeatMs $heartbeatIntervalMs $ShutdownOnIdle
+          $response = Invoke-McpPost $McpUrl $line $sessionId $protocolVersion $TimeoutSec $ClientId $heartbeatIntervalMs
+          $lastHeartbeatMs = Invoke-McpClientHeartbeatIfDue $McpUrl $ClientId $lastHeartbeatMs $heartbeatIntervalMs
           $nextSessionId = Get-ResponseHeaderValue $response.headers "Mcp-Session-Id"
           if (-not [string]::IsNullOrWhiteSpace($nextSessionId)) {
             $sessionId = $nextSessionId
@@ -597,7 +600,7 @@ function Invoke-HttpMcpBridge([string]$McpUrl, [int]$TimeoutSec, [string]$Client
     if ($null -ne $stdinReader) {
       $stdinReader.Dispose()
     }
-    Invoke-McpClientLease $McpUrl $ClientId "detach" $false $ShutdownOnIdle | Out-Null
+    Invoke-McpClientLease $McpUrl $ClientId "detach" | Out-Null
   }
 }
 

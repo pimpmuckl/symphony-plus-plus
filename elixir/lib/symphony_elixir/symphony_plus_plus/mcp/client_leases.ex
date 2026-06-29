@@ -3,14 +3,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClientLeases do
   Tracks stdio bridge heartbeat freshness for `/mcp/client-lease`.
 
   Bridge lease files under `codex-plugin-leases` are the runtime liveness
-  authority. This process never stops the BEAM; launcher cleanup uses bridge
-  lease files so old managed runtimes can drain after plugin upgrades.
+  authority. When the runtime opts into shutdown-on-idle, this process also
+  stops the BEAM after every bridge lease is gone or stale.
   """
 
   use GenServer
 
   @default_ttl_ms 10 * 60 * 1_000
   @default_sweep_ms 30 * 1_000
+  @default_shutdown_delay_ms 1_000
   @actions ["attach", "heartbeat", "detach"]
 
   @type summary :: %{active_client_count: non_neg_integer(), stale_after_ms: pos_integer()}
@@ -54,6 +55,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClientLeases do
   @spec attach(binary(), GenServer.server()) :: {:ok, summary()} | {:error, :unavailable}
   def attach(client_id, server), do: lease_call(server, {:attach, client_id})
 
+  @spec heartbeat(binary()) :: {:ok, summary()} | {:error, :unavailable}
   @spec heartbeat(binary(), GenServer.server()) :: {:ok, summary()} | {:error, :unavailable}
   def heartbeat(client_id, server \\ __MODULE__), do: lease_call(server, {:heartbeat, client_id})
 
@@ -70,10 +72,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClientLeases do
 
   @impl true
   def init(opts) do
+    shutdown_delay_ms =
+      option(opts, :shutdown_delay_ms, :mcp_client_lease_shutdown_delay_ms, @default_shutdown_delay_ms)
+
     state = %{
       leases: %{},
       ttl_ms: option(opts, :ttl_ms, :mcp_client_lease_ttl_ms, @default_ttl_ms),
-      sweep_ms: option(opts, :sweep_ms, :mcp_client_lease_sweep_ms, @default_sweep_ms)
+      sweep_ms: option(opts, :sweep_ms, :mcp_client_lease_sweep_ms, @default_sweep_ms),
+      shutdown_delay_ms: shutdown_delay_ms,
+      shutdown_on_idle?: shutdown_on_idle_runtime?(opts),
+      lease_seen?: false,
+      shutdown_timer: nil,
+      shutdown_id: nil,
+      shutdown_fun: Keyword.get(opts, :shutdown_fun, fn -> System.stop(0) end)
     }
 
     schedule_sweep(state)
@@ -82,12 +93,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClientLeases do
 
   @impl true
   def handle_call({:attach, client_id}, _from, state) do
-    state = upsert_lease(state, client_id)
+    state =
+      state
+      |> cancel_shutdown()
+      |> upsert_lease(client_id)
+
     {:reply, {:ok, summary(state)}, state}
   end
 
   def handle_call({:heartbeat, client_id}, _from, state) do
-    state = upsert_lease(state, client_id)
+    state =
+      state
+      |> cancel_shutdown()
+      |> upsert_lease(client_id)
+
     {:reply, {:ok, summary(state)}, state}
   end
 
@@ -98,6 +117,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClientLeases do
       state
       |> prune(now)
       |> Map.update!(:leases, &Map.delete(&1, client_id))
+      |> maybe_schedule_shutdown()
 
     {:reply, {:ok, summary(state)}, state}
   end
@@ -107,21 +127,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClientLeases do
     {:reply, {:ok, summary(state)}, state}
   end
 
-  defp upsert_lease(state, client_id) do
-    now = now_ms()
-
-    state
-    |> prune(now)
-    |> Map.update!(:leases, &Map.put(&1, client_id, %{last_seen_ms: now}))
-  end
-
   @impl true
   def handle_info(:sweep, state) do
     state = prune(state, now_ms())
 
     schedule_sweep(state)
+    {:noreply, maybe_schedule_shutdown(state)}
+  end
+
+  def handle_info({:shutdown_on_idle, shutdown_id}, %{shutdown_id: shutdown_id} = state) do
+    state =
+      state
+      |> Map.put(:shutdown_timer, nil)
+      |> Map.put(:shutdown_id, nil)
+      |> prune(now_ms())
+
+    if state.shutdown_on_idle? and map_size(state.leases) == 0 do
+      state.shutdown_fun.()
+    end
+
     {:noreply, state}
   end
+
+  def handle_info({:shutdown_on_idle, _stale_shutdown_id}, state), do: {:noreply, state}
+
+  def handle_info(:shutdown_on_idle, state), do: {:noreply, state}
 
   defp lease_call(server, message) do
     GenServer.call(server, message)
@@ -195,6 +225,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClientLeases do
 
   defp lease_action(%{"action" => action}) when action in @actions, do: {:ok, action}
   defp lease_action(_payload), do: {:error, :invalid_action}
+
+  defp upsert_lease(state, client_id) do
+    now = now_ms()
+
+    state
+    |> prune(now)
+    |> Map.put(:lease_seen?, true)
+    |> Map.update!(:leases, &Map.put(&1, client_id, %{last_seen_ms: now}))
+  end
+
+  defp maybe_schedule_shutdown(%{shutdown_on_idle?: false} = state), do: state
+  defp maybe_schedule_shutdown(%{lease_seen?: false} = state), do: state
+  defp maybe_schedule_shutdown(%{shutdown_timer: timer} = state) when is_reference(timer), do: state
+  defp maybe_schedule_shutdown(%{leases: leases} = state) when map_size(leases) > 0, do: state
+
+  defp maybe_schedule_shutdown(state) do
+    shutdown_id = make_ref()
+    shutdown_timer = Process.send_after(self(), {:shutdown_on_idle, shutdown_id}, state.shutdown_delay_ms)
+    %{state | shutdown_timer: shutdown_timer, shutdown_id: shutdown_id}
+  end
+
+  defp cancel_shutdown(%{shutdown_timer: timer} = state) when is_reference(timer) do
+    Process.cancel_timer(timer)
+    %{state | shutdown_timer: nil, shutdown_id: nil}
+  end
+
+  defp cancel_shutdown(state), do: state
+
+  defp shutdown_on_idle_runtime?(opts) do
+    value =
+      Keyword.get(
+        opts,
+        :shutdown_on_idle,
+        Application.get_env(:symphony_elixir, :mcp_client_shutdown_on_idle, System.get_env("SYMPP_MCP_SHUTDOWN_ON_IDLE"))
+      )
+
+    truthy?(value)
+  end
+
+  defp truthy?(value) when value in [true, 1, "1"], do: true
+  defp truthy?(value) when is_binary(value), do: String.downcase(String.trim(value)) in ["true", "yes", "on"]
+  defp truthy?(_value), do: false
 
   defp visible_ascii?(<<>>), do: true
   defp visible_ascii?(<<byte, rest::binary>>) when byte >= 0x21 and byte <= 0x7E, do: visible_ascii?(rest)
