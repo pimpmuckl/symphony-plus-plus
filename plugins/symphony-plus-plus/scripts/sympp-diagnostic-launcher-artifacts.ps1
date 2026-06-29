@@ -74,7 +74,6 @@ function Import-DiagnosticMcpArtifactHelpers([string]$Root) {
     "Select-Sympp",
     "Set-Sympp",
     "Test-ArtifactRuntimeAllowed",
-    "Test-ArtifactWorkflowAvailable",
     "Test-EnvEnabled",
     "Test-InstalledPluginPayloadMatchesMarketplaceSource",
     "Test-SourceCheckout",
@@ -97,14 +96,6 @@ function Get-DiagnosticRuntimeArtifactLaunchBlockReason($Runtime, [string]$Root,
   $bridgeMode = Get-EnvMode "SYMPP_MCP_BRIDGE_MODE" "http" @("http", "direct_stdio")
   if ($bridgeMode -eq "direct_stdio") {
     return "direct_stdio_unsupported"
-  }
-
-  if ($CacheReady) {
-    $sourceRoot = Resolve-DiagnosticRuntimeArtifactSourceRoot $Root $null
-    $elixirDir = if ([string]::IsNullOrWhiteSpace($sourceRoot)) { $null } else { Join-Path $sourceRoot "elixir" }
-    if (-not (Test-ArtifactWorkflowAvailable $Runtime $elixirDir)) {
-      return "workflow_missing"
-    }
   }
 
   if (-not [string]::IsNullOrWhiteSpace($env:SYMPP_DATABASE)) {

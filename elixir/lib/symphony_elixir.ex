@@ -23,22 +23,57 @@ defmodule SymphonyElixir.Application do
   def start(_type, _args) do
     :ok = SymphonyElixir.LogFile.configure()
 
-    children = [
-      {Phoenix.PubSub, name: SymphonyElixir.PubSub},
-      {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
-      SymphonyElixir.WorkflowStore,
-      SymphonyElixir.Orchestrator,
-      SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore,
-      SymphonyElixir.SymphonyPlusPlus.MCP.ClientLeases,
-      SymphonyElixir.HttpServer,
-      SymphonyElixir.StatusDashboard
-    ]
-
     Supervisor.start_link(
-      children,
+      children(),
       strategy: :one_for_one,
       name: SymphonyElixir.Supervisor
     )
+  end
+
+  @doc false
+  @spec children() :: [Supervisor.child_spec() | module() | {module(), keyword()}]
+  def children do
+    [
+      {Phoenix.PubSub, name: SymphonyElixir.PubSub},
+      {Task.Supervisor, name: SymphonyElixir.TaskSupervisor}
+    ] ++
+      legacy_daemon_children() ++
+      mcp_runtime_children()
+  end
+
+  defp legacy_daemon_children do
+    if artifact_runtime?() do
+      []
+    else
+      [
+        SymphonyElixir.WorkflowStore,
+        SymphonyElixir.Orchestrator
+      ]
+    end
+  end
+
+  defp mcp_runtime_children do
+    if artifact_runtime?() do
+      [
+        SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore,
+        SymphonyElixir.SymphonyPlusPlus.MCP.ClientLeases,
+        {SymphonyElixir.HttpServer, host: "127.0.0.1"}
+      ]
+    else
+      [
+        SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore,
+        SymphonyElixir.SymphonyPlusPlus.MCP.ClientLeases,
+        SymphonyElixir.HttpServer,
+        SymphonyElixir.StatusDashboard
+      ]
+    end
+  end
+
+  defp artifact_runtime? do
+    case System.get_env("SYMPP_RUNTIME_ARTIFACT") do
+      value when is_binary(value) -> (value |> String.trim() |> String.downcase()) in ["1", "true", "yes", "on"]
+      _ -> false
+    end
   end
 
   @impl true

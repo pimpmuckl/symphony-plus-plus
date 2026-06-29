@@ -18,9 +18,9 @@ defmodule SymphonyElixir.HttpServer do
 
   @spec start_link(keyword()) :: GenServer.on_start() | :ignore
   def start_link(opts \\ []) do
-    case Keyword.get(opts, :port, Config.server_port()) do
+    case keyword_get_lazy(opts, :port, &Config.server_port/0) do
       port when is_integer(port) and port >= 0 ->
-        host = Keyword.get(opts, :host, Config.settings!().server.host)
+        host = keyword_get_lazy(opts, :host, fn -> Config.settings!().server.host end)
         orchestrator = Keyword.get(opts, :orchestrator, Orchestrator)
         snapshot_timeout_ms = Keyword.get(opts, :snapshot_timeout_ms, 15_000)
 
@@ -81,6 +81,13 @@ defmodule SymphonyElixir.HttpServer do
   defp normalize_host(host) when host in ["", nil], do: "127.0.0.1"
   defp normalize_host(host) when is_binary(host), do: host
   defp normalize_host(host) when is_tuple(host), do: host |> :inet.ntoa() |> to_string()
+
+  defp keyword_get_lazy(opts, key, fun) do
+    case Keyword.fetch(opts, key) do
+      {:ok, value} -> value
+      :error -> fun.()
+    end
+  end
 
   defp secret_key_base do
     Base.encode64(:crypto.strong_rand_bytes(@secret_key_bytes), padding: false)

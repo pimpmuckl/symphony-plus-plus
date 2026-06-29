@@ -117,9 +117,11 @@ function Resolve-ArtifactWorkflowPath($ArtifactRuntime, [string]$ElixirDir) {
     }
   }
 
-  $artifactWorkflow = Join-Path ([string]$ArtifactRuntime.root) "WORKFLOW.md"
-  if (Test-Path -LiteralPath $artifactWorkflow -PathType Leaf) {
-    return [System.IO.Path]::GetFullPath($artifactWorkflow)
+  if ($null -ne $ArtifactRuntime -and -not [string]::IsNullOrWhiteSpace([string]$ArtifactRuntime.root)) {
+    $artifactWorkflow = Join-Path ([string]$ArtifactRuntime.root) "WORKFLOW.md"
+    if (Test-Path -LiteralPath $artifactWorkflow -PathType Leaf) {
+      return [System.IO.Path]::GetFullPath($artifactWorkflow)
+    }
   }
 
   if (-not [string]::IsNullOrWhiteSpace($ElixirDir)) {
@@ -129,7 +131,7 @@ function Resolve-ArtifactWorkflowPath($ArtifactRuntime, [string]$ElixirDir) {
     }
   }
 
-  throw "artifact_workflow_missing: verified artifact runtime requires a WORKFLOW.md path. Set SYMPP_WORKFLOW_FILE or include WORKFLOW.md in the runtime artifact."
+  return $null
 }
 
 function Get-ArtifactRuntimeArgList($ArtifactRuntime) {
@@ -141,28 +143,6 @@ function Get-ArtifactRuntimeArgList($ArtifactRuntime) {
   }
 
   return $args
-}
-
-function Test-ArtifactWorkflowAvailable($ArtifactRuntime, [string]$ElixirDir) {
-  if ((Get-ArtifactRuntimeArgList $ArtifactRuntime).Count -gt 0) {
-    return $true
-  }
-
-  $entrypointName = (Split-Path -Leaf ([string]$ArtifactRuntime.entrypoint)).ToLowerInvariant()
-  if ($entrypointName -like "*.bat" -or $entrypointName -like "*.cmd") {
-    return $true
-  }
-
-  if ($null -ne $ArtifactRuntime -and -not [string]::IsNullOrWhiteSpace([string]$ArtifactRuntime.workflow)) {
-    return Test-Path -LiteralPath ([string]$ArtifactRuntime.workflow) -PathType Leaf
-  }
-
-  try {
-    [void](Resolve-ArtifactWorkflowPath $ArtifactRuntime $ElixirDir)
-    return $true
-  } catch {
-    return $false
-  }
 }
 
 function Expand-ArtifactRuntimeArg([string]$Arg, [string]$Workflow, [string]$RuntimeLogRoot, $Plan, [string]$DashboardOrigin) {
@@ -189,20 +169,28 @@ function Resolve-ArtifactRuntimeArgs($ArtifactRuntime, [string]$Workflow, [strin
   }
 
   if ($entrypointName -like "*.ps1") {
-    return @(
+    $args = @(
       "-IUnderstandThatThisWillBeRunningWithoutTheUsualGuardrails",
-      "-Workflow", $workflow,
       "-LogsRoot", $runtimeLogRoot,
       "-Port", [string]$Plan.port
     )
+    if (-not [string]::IsNullOrWhiteSpace($Workflow)) {
+      $args += @("-Workflow", $Workflow)
+    }
+
+    return $args
   }
   if ($entrypointName -like "*.sh") {
-    return @(
+    $args = @(
       "--i-understand-that-this-will-be-running-without-the-usual-guardrails",
-      "--workflow", $workflow,
       "--logs-root", $runtimeLogRoot,
       "--port", [string]$Plan.port
     )
+    if (-not [string]::IsNullOrWhiteSpace($Workflow)) {
+      $args += @("--workflow", $Workflow)
+    }
+
+    return $args
   }
   if ($entrypointName -like "*.bat" -or $entrypointName -like "*.cmd") {
     return @()
@@ -220,12 +208,13 @@ function Get-ArtifactBackendCommand($ArtifactRuntime, $Plan, [string]$DashboardO
   $runtimeLogRoot = Join-Path $LogDir "artifact-runtime"
   $entrypoint = [string]$ArtifactRuntime.entrypoint
   $entrypointName = (Split-Path -Leaf $entrypoint).ToLowerInvariant()
-  $workflow = if ($manifestArgs.Count -gt 0 -or $entrypointName -like "*.bat" -or $entrypointName -like "*.cmd") { [string]$ArtifactRuntime.workflow } else { Resolve-ArtifactWorkflowPath $ArtifactRuntime $ElixirDir }
+  $workflow = Resolve-ArtifactWorkflowPath $ArtifactRuntime $ElixirDir
   $environment = @{
     SYMPP_RUNTIME_ARTIFACT = "1"
     SYMPP_RUNTIME_ARTIFACT_ACKNOWLEDGED = "1"
     SYMPP_LOGS_ROOT = $runtimeLogRoot
     SYMPP_BACKEND_PORT = [string]$Plan.port
+    SYMPP_WORKFLOW_FILE = ""
   }
   if (-not [string]::IsNullOrWhiteSpace($workflow)) {
     $environment["SYMPP_WORKFLOW_FILE"] = $workflow

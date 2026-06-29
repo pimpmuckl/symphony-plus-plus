@@ -228,10 +228,10 @@ The aggregate manifest is the launcher-consumable channel document. It includes:
 Release artifacts must not package
 `implementation_docs_symphplusplus/templates/WORKFLOW.symfony_pp.md` as
 `WORKFLOW.md`. That template is an explicit-copy operator starting point with
-placeholders, not an installed-runtime default. Artifact launch remains blocked
-with `workflow_missing` unless a real workflow is supplied through
+placeholders, not an installed-runtime default. Artifact MCP startup does not
+require a workflow file. If a real workflow is supplied through
 `SYMPP_WORKFLOW_FILE`, runtime arguments, or a source checkout fallback that has
-its own `elixir/WORKFLOW.md`.
+its own `elixir/WORKFLOW.md`, the runtime may use it for legacy daemon paths.
 
 The publisher refuses to write the aggregate manifest unless every required
 platform manifest is present, every package exists locally, every local archive

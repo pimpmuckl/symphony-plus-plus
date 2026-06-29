@@ -1969,8 +1969,6 @@ if ($artifactValidationLaunchable) {
   $artifactLaunchBlockReason = $null
   if ($bridgeMode -eq "direct_stdio") {
     $artifactLaunchBlockReason = "direct_stdio_unsupported"
-  } elseif (@("ready", "artifact_selected") -contains $artifactProbe.status -and -not (Test-ArtifactWorkflowAvailable $artifactProbe.runtime $elixirDir)) {
-    $artifactLaunchBlockReason = "workflow_missing"
   } elseif (-not [string]::IsNullOrWhiteSpace($env:SYMPP_DATABASE)) {
     $artifactLaunchBlockReason = "database_unsupported"
   }

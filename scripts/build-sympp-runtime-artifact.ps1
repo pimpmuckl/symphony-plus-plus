@@ -231,7 +231,7 @@ acknowledged=0
 
 usage() {
   cat <<'USAGE'
-Usage: start-runtime.sh --i-understand-that-this-will-be-running-without-the-usual-guardrails --workflow <WORKFLOW.md> --logs-root <dir> --port <port>
+Usage: start-runtime.sh --i-understand-that-this-will-be-running-without-the-usual-guardrails [--workflow <WORKFLOW.md>] --logs-root <dir> --port <port>
 USAGE
 }
 
@@ -266,7 +266,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ "$acknowledged" -eq 1 ]] || { echo "Missing required acknowledgement: $ack_flag" >&2; exit 2; }
-[[ -f "$workflow" ]] || { echo "Workflow file not found: $workflow" >&2; exit 1; }
+[[ -z "${workflow// }" || -f "$workflow" ]] || { echo "Workflow file not found: $workflow" >&2; exit 1; }
 [[ -n "${logs_root// }" ]] || { echo "--logs-root is required." >&2; exit 2; }
 [[ "$port" =~ ^[0-9]+$ ]] || { echo "--port must be a non-negative integer." >&2; exit 2; }
 
@@ -282,7 +282,11 @@ release_tmp="$logs_root/release-tmp"
 mkdir -p "$logs_root" "$release_tmp"
 export SYMPP_RUNTIME_ARTIFACT=1
 export SYMPP_RUNTIME_ARTIFACT_ACKNOWLEDGED=1
-export SYMPP_WORKFLOW_FILE="$workflow"
+if [[ -n "${workflow// }" ]]; then
+  export SYMPP_WORKFLOW_FILE="$workflow"
+else
+  unset SYMPP_WORKFLOW_FILE
+fi
 export SYMPP_LOGS_ROOT="$logs_root"
 export SYMPP_BACKEND_PORT="$port"
 export RELEASE_TMP="$release_tmp"
@@ -304,7 +308,7 @@ Set-StrictMode -Version Latest
 
 function Show-Usage {
   @"
-Usage: start-runtime.ps1 -IUnderstandThatThisWillBeRunningWithoutTheUsualGuardrails -Workflow <WORKFLOW.md> -LogsRoot <dir> -Port <port>
+Usage: start-runtime.ps1 -IUnderstandThatThisWillBeRunningWithoutTheUsualGuardrails [-Workflow <WORKFLOW.md>] -LogsRoot <dir> -Port <port>
 "@ | Write-Host
 }
 
@@ -316,7 +320,7 @@ if ($Help) {
 if (-not $IUnderstandThatThisWillBeRunningWithoutTheUsualGuardrails) {
   throw "Missing required acknowledgement: -IUnderstandThatThisWillBeRunningWithoutTheUsualGuardrails"
 }
-if (-not (Test-Path -LiteralPath $Workflow -PathType Leaf)) {
+if (-not [string]::IsNullOrWhiteSpace($Workflow) -and -not (Test-Path -LiteralPath $Workflow -PathType Leaf)) {
   throw "Workflow file not found: $Workflow"
 }
 if ([string]::IsNullOrWhiteSpace($LogsRoot)) {
@@ -332,7 +336,11 @@ New-Item -ItemType Directory -Force -Path $LogsRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $releaseTmp | Out-Null
 $env:SYMPP_RUNTIME_ARTIFACT = "1"
 $env:SYMPP_RUNTIME_ARTIFACT_ACKNOWLEDGED = "1"
-$env:SYMPP_WORKFLOW_FILE = $Workflow
+if (-not [string]::IsNullOrWhiteSpace($Workflow)) {
+  $env:SYMPP_WORKFLOW_FILE = $Workflow
+} else {
+  Remove-Item Env:SYMPP_WORKFLOW_FILE -ErrorAction SilentlyContinue
+}
 $env:SYMPP_LOGS_ROOT = $LogsRoot
 $env:SYMPP_BACKEND_PORT = [string]$Port
 $env:RELEASE_TMP = $releaseTmp

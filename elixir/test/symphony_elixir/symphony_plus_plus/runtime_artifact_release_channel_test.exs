@@ -131,6 +131,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RuntimeArtifactReleaseChannelTest do
       refute body =~ ~r/(Copy-Item|cp).+WORKFLOW\.md/
       refute body =~ ~r/workflow\s*=\s*"WORKFLOW\.md"/
       refute body =~ ~s("workflow": "WORKFLOW.md")
+      assert body =~ "unset SYMPP_WORKFLOW_FILE"
+      assert body =~ "Remove-Item Env:SYMPP_WORKFLOW_FILE"
       assert body =~ "runtime/erts-*/bin/*"
       assert body =~ "runtime/bin/*"
       assert body =~ "pluginIdentity.name" or body =~ "plugin_name"
