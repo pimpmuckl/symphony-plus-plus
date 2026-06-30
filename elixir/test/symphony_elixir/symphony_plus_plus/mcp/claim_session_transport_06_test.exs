@@ -36,7 +36,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport06Test do
     assert server.session.assignment.work_package_id == package.id
   end
 
-  test "batch claim guard returns unauthorized after an earlier claim binds the batch", %{repo: repo} do
+  test "batch claim releases the earlier claim before binding a later claim", %{repo: repo} do
     first_package = create_local_claim_package!(repo, "SYMPP-BATCH-FIRST-CLAIM")
     second_package = create_local_claim_package!(repo, "SYMPP-BATCH-SECOND-CLAIM")
     assert {:ok, _first_minted} = AccessGrantService.mint_worker_grant(repo, first_package.id)
@@ -68,18 +68,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport06Test do
     second_response = Enum.at(responses, 1)
 
     assert get_in(first_response, ["result", "structuredContent", "assignment", "work_package_id"]) == first_package.id
-    assert get_in(second_response, ["error", "data", "reason"]) == "session_already_bound"
-    assert get_in(second_response, ["error", "data", "action"]) == "use_fresh_mcp_session_or_release_current_assignment"
-
-    assert get_in(second_response, ["error", "data", "current_assignment"]) == %{
-             "grant_role" => "worker",
-             "work_package_id" => first_package.id,
-             "claimed_by" => "local-worker-1",
-             "repo" => first_package.repo,
-             "base_branch" => first_package.base_branch
-           }
-
-    assert server.session.assignment.work_package_id == first_package.id
+    assert get_in(second_response, ["result", "structuredContent", "assignment", "work_package_id"]) == second_package.id
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, first_package.id)
+    assert server.session.assignment.work_package_id == second_package.id
   end
 
   test "claim_local_assignment reclaims a stale bound local session for the same package with a new owner label", %{repo: repo} do
@@ -206,7 +197,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport06Test do
     assert server.session.assignment.claimed_by == "worker-before-reboot"
   end
 
-  test "claim_local_assignment blocks stale sessions after another active owner reclaims the old lease", %{repo: repo} do
+  test "claim_local_assignment switches after another active owner reclaims the old lease", %{repo: repo} do
     stale_package = create_local_claim_package!(repo, "SYMPP-MISMATCHED-BOUND-WORKER")
     next_package = create_local_claim_package!(repo, "SYMPP-MISMATCHED-BOUND-WORKER-NEXT")
     assert {:ok, _stale_minted} = AccessGrantService.mint_worker_grant(repo, stale_package.id)
@@ -254,8 +245,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport06Test do
         stale_server
       )
 
-    assert get_in(next_claim_response, ["error", "data", "reason"]) == "session_already_bound"
-    assert next_server.session.assignment.work_package_id == stale_package.id
+    assert get_in(next_claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == next_package.id
+    assert next_server.session.assignment.work_package_id == next_package.id
+    assert {:ok, ^replacement_lease} = ClaimLeaseService.current_for_work_package(repo, stale_package.id)
   end
 
   test "claim_local_assignment blocks different claims when current session validation fails", %{repo: repo} do

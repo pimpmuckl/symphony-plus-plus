@@ -397,7 +397,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp handle_batch_claim_state(payload, {true, %__MODULE__{} = current_server, claimed_server} = claim_state) do
     if batch_session_claim_request?(payload, current_server) do
-      {{payload, batch_session_claim_rebind_item(payload, claimed_server || current_server)}, claim_state}
+      item = handle_batch_item(payload, claimed_server || current_server)
+      {_response, %__MODULE__{} = item_server} = item
+
+      claimed_server =
+        if batch_session_claim_success?(item, claimed_server || current_server),
+          do: item_server,
+          else: claimed_server
+
+      {{payload, item}, {true, current_server, claimed_server}}
     else
       handle_unblocked_batch_item(payload, claim_state)
     end
@@ -462,13 +470,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        do: true
 
   defp batch_session_claim_request?(_payload, %__MODULE__{}), do: false
-
-  defp batch_session_claim_rebind_item(%{"id" => id, "params" => %{"name" => name}}, %__MODULE__{} = server)
-       when valid_request_id(id) and name in @session_claim_tools do
-    {error_response(id, -32_001, "Unauthorized", session_already_bound_data(name, server)), server}
-  end
-
-  defp batch_session_claim_rebind_item(_payload, %__MODULE__{} = server), do: {nil, server}
 
   defp dispatch(
          "initialize",
@@ -1614,15 +1615,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, arguments} <- worker_tool_arguments(params, @local_assignment_claim_tool),
          {:ok, claim} <- local_assignment_claim_arguments(arguments, server),
          :ok <- require_local_assignment_claim_mode(server),
-         :ok <- require_local_assignment_rebind_allowed(config.repo, session, claim),
          :ok <- prepare_mcp_repository(config.repo),
          {:ok, work_package} <- WorkPackageRepository.get(config.repo, claim.work_package_id),
          claim <- hydrate_local_assignment_claim(config.repo, work_package, claim),
          :ok <- validate_local_assignment_scope(config.repo, work_package, claim),
          {:ok, lease, lease_action} <- ensure_local_assignment_claim_lease(config.repo, work_package, claim) do
       case claim_local_assignment_session(config.repo, work_package, claim, lease, lease_action) do
-        {:ok, result, session, grant_action} ->
-          finalize_local_assignment_claim(config.repo, result, session, claim, lease, lease_action, grant_action)
+        {:ok, result, new_session, grant_action} ->
+          finalize_local_assignment_rebind(config.repo, server, session, claim, lease, lease_action, {result, new_session, grant_action})
 
         {:error, reason} ->
           release_failed_local_assignment_lease(config.repo, lease, lease_action, reason)
@@ -1635,6 +1635,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   rescue
     _error -> {:error, -32_000, "Server error", %{"tool" => @local_assignment_claim_tool, "reason" => "ledger_unavailable"}}
+  end
+
+  defp finalize_local_assignment_rebind(
+         repo,
+         %__MODULE__{} = server,
+         old_session,
+         claim,
+         lease,
+         lease_action,
+         {result, new_session, grant_action}
+       ) do
+    with {:ok, result, new_session} <-
+           finalize_local_assignment_claim(repo, result, new_session, claim, lease, lease_action, grant_action),
+         {:ok, _released_server} <- release_local_assignment_rebind(repo, server, old_session, claim) do
+      {:ok, result, new_session}
+    else
+      {:error, code, message, data} ->
+        {:error, code, message, data}
+
+      {:error, reason} ->
+        rollback_failed_local_assignment_claim(repo, new_session, lease, lease_action, grant_action, reason)
+        local_assignment_claim_error(reason)
+    end
   end
 
   defp local_assignment_claim_arguments(arguments, %__MODULE__{} = server) do
@@ -1694,13 +1717,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   # explicit trusted-state checks above because that transport has ambient reach.
   defp require_local_assignment_claim_mode(%__MODULE__{}), do: :ok
 
-  defp require_local_assignment_rebind_allowed(_repo, nil, _claim), do: :ok
+  defp release_local_assignment_rebind(_repo, %__MODULE__{} = server, nil, _claim), do: {:ok, server}
 
-  defp require_local_assignment_rebind_allowed(repo, %Session{} = session, claim) do
+  defp release_local_assignment_rebind(_repo, %__MODULE__{} = server, %Session{} = session, claim) do
     if same_local_assignment_claim?(session, claim) do
-      :ok
+      {:ok, server}
     else
-      reject_live_bound_session_rebind(repo, session)
+      release_bound_session_for_claim_rebind(server, session, @local_assignment_claim_tool)
     end
   end
 
@@ -2002,8 +2025,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     revoke_failed_local_assignment_grant(repo, session, lease_action, grant_action)
   end
 
-  defp revoke_failed_local_assignment_grant(repo, %Session{assignment: %{grant_id: grant_id}}, :reclaimed, :claimed)
-       when is_binary(grant_id) do
+  defp revoke_failed_local_assignment_grant(repo, %Session{assignment: %{grant_id: grant_id}}, lease_action, :claimed)
+       when lease_action in [:created, :reclaimed] and is_binary(grant_id) do
     _result = AccessGrantService.revoke(repo, grant_id)
     :ok
   end
@@ -2107,13 +2130,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, work_request} <- WorkRequestRepository.get(config.repo, claim.work_request_id),
          :ok <- require_local_architect_assignment_work_request_claimable(work_request),
          claim <- hydrate_local_architect_assignment_claim(work_request, claim),
-         :ok <- require_local_architect_assignment_rebind_allowed(config.repo, session, claim),
          {:ok, anchor} <- require_local_architect_handoff_anchor(config, work_request, claim),
          :ok <- validate_local_architect_assignment_scope(work_request, anchor, claim),
          {:ok, lease, lease_action} <- ensure_local_architect_assignment_claim_lease(config.repo, anchor, claim) do
       case claim_local_architect_assignment_session(config.repo, anchor, claim, lease_action) do
-        {:ok, result, session, grant_action} ->
-          finalize_local_architect_assignment_claim(config.repo, result, session, claim, lease, lease_action, grant_action)
+        {:ok, result, new_session, grant_action} ->
+          finalize_local_architect_assignment_rebind(config.repo, server, session, claim, lease, lease_action, {result, new_session, grant_action})
 
         {:error, reason} ->
           release_failed_local_architect_assignment_lease(config.repo, lease, lease_action, reason)
@@ -2126,6 +2148,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   rescue
     _error -> {:error, -32_000, "Server error", %{"tool" => @local_architect_assignment_claim_tool, "reason" => "ledger_unavailable"}}
+  end
+
+  defp finalize_local_architect_assignment_rebind(
+         repo,
+         %__MODULE__{} = server,
+         old_session,
+         claim,
+         lease,
+         lease_action,
+         {result, new_session, grant_action}
+       ) do
+    with {:ok, result, new_session} <-
+           finalize_local_architect_assignment_claim(
+             repo,
+             result,
+             new_session,
+             claim,
+             lease,
+             lease_action,
+             grant_action
+           ),
+         {:ok, _released_server} <- release_local_architect_assignment_rebind(repo, server, old_session, claim) do
+      {:ok, result, new_session}
+    else
+      {:error, code, message, data} ->
+        {:error, code, message, data}
+
+      {:error, reason} ->
+        rollback_failed_local_architect_assignment_claim(repo, new_session, lease, lease_action, grant_action, reason)
+        local_architect_assignment_claim_error(reason)
+    end
   end
 
   defp local_architect_assignment_claim_arguments(arguments, %__MODULE__{} = server) do
@@ -2179,13 +2232,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_local_architect_assignment_rebind_allowed(_repo, nil, _claim), do: :ok
+  defp release_local_architect_assignment_rebind(_repo, %__MODULE__{} = server, nil, _claim), do: {:ok, server}
 
-  defp require_local_architect_assignment_rebind_allowed(repo, %Session{} = session, claim) do
+  defp release_local_architect_assignment_rebind(_repo, %__MODULE__{} = server, %Session{} = session, claim) do
     if same_local_architect_assignment_claim?(session, claim) do
-      :ok
+      {:ok, server}
     else
-      reject_live_bound_session_rebind(repo, session)
+      release_bound_session_for_claim_rebind(server, session, @local_architect_assignment_claim_tool)
     end
   end
 
@@ -2193,13 +2246,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     assignment.grant_role == "architect" and assignment.work_package_id == claim.architect_anchor_work_package_id
   end
 
-  defp reject_live_bound_session_rebind(repo, %Session{} = session) do
-    case Auth.require_session(session, repo) do
-      {:ok, %Session{}} -> {:error, {:session_already_bound, current_assignment_summary(repo, session)}}
-      {:error, {:service_unavailable, _reason} = reason} -> {:error, reason}
-      {:error, _reason} -> :ok
+  defp release_bound_session_for_claim_rebind(%__MODULE__{} = server, %Session{} = session, tool) do
+    current_assignment = current_assignment_summary(server.config.repo, session)
+
+    case release_current_assignment(%{"reason" => tool}, server) do
+      {:ok, result, %__MODULE__{} = released_server} ->
+        if auto_rebind_release_cleared?(result),
+          do: {:ok, released_server},
+          else: {:error, {:session_already_bound, current_assignment}}
+
+      {:tool_error, reason} ->
+        {:error, reason}
     end
   end
+
+  defp auto_rebind_release_cleared?(%{"binding_cleared" => true, "fresh_mcp_session_required" => false}), do: true
+  defp auto_rebind_release_cleared?(_result), do: false
 
   defp validate_local_architect_assignment_scope(%WorkRequest{} = work_request, %WorkPackage{} = anchor, claim) do
     expected_phase_id = ArchitectHandoff.phase_id_for_work_request(work_request)
@@ -2331,8 +2393,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     revoke_failed_local_architect_assignment_grant(repo, session, lease_action, grant_action)
   end
 
-  defp revoke_failed_local_architect_assignment_grant(repo, %Session{assignment: %{grant_id: grant_id}}, :reclaimed, :claimed)
-       when is_binary(grant_id) do
+  defp revoke_failed_local_architect_assignment_grant(repo, %Session{assignment: %{grant_id: grant_id}}, lease_action, :claimed)
+       when lease_action in [:created, :reclaimed] and is_binary(grant_id) do
     _result = AccessGrantService.revoke(repo, grant_id)
     :ok
   end

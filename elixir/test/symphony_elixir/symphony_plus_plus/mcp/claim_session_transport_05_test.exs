@@ -3,7 +3,7 @@ Code.require_file("../../../support/symphony_plus_plus/mcp_case.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport05Test do
   use SymphonyElixir.SymphonyPlusPlus.MCPCase
 
-  test "claim_local_assignment rejects rebinding a server to another package", %{repo: repo} do
+  test "claim_local_assignment releases the old package before rebinding a server", %{repo: repo} do
     first_package = create_local_claim_package!(repo, "SYMPP-LOCAL-REBIND-ONE")
     second_package = create_local_claim_package!(repo, "SYMPP-LOCAL-REBIND-TWO")
     assert {:ok, _first_minted} = AccessGrantService.mint_worker_grant(repo, first_package.id)
@@ -21,7 +21,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport05Test do
         claimed_server
       )
 
-    {rebind_response, _server} =
+    {rebind_response, rebound_server} =
       Server.handle_response_state(
         tool_call("claim-two", "claim_local_assignment", local_assignment_claim_args(second_package, %{"claimed_by" => "local-worker-2"})),
         same_server
@@ -29,7 +29,84 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport05Test do
 
     assert get_in(first_response, ["result", "structuredContent", "assignment", "work_package_id"]) == first_package.id
     assert get_in(same_response, ["result", "structuredContent", "assignment", "work_package_id"]) == first_package.id
-    assert get_in(rebind_response, ["error", "data", "reason"]) == "session_already_bound"
+    assert get_in(rebind_response, ["result", "structuredContent", "assignment", "work_package_id"]) == second_package.id
+    assert rebound_server.session.assignment.work_package_id == second_package.id
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, first_package.id)
+  end
+
+  test "claim_local_assignment keeps the old binding when the new target is invalid", %{repo: repo} do
+    first_package = create_local_claim_package!(repo, "SYMPP-LOCAL-REBIND-VALID")
+    second_package = create_local_claim_package!(repo, "SYMPP-LOCAL-REBIND-BAD-SCOPE")
+    assert {:ok, _first_minted} = AccessGrantService.mint_worker_grant(repo, first_package.id)
+    assert {:ok, _second_minted} = AccessGrantService.mint_worker_grant(repo, second_package.id)
+
+    {_first_response, claimed_server} =
+      Server.handle_response_state(
+        tool_call("claim-valid", "claim_local_assignment", local_assignment_claim_args(first_package)),
+        local_mcp_server(local_mcp_config(repo), "local-rebind-invalid-state")
+      )
+
+    {rebind_response, server} =
+      Server.handle_response_state(
+        tool_call("claim-bad-scope", "claim_local_assignment", local_assignment_claim_args(second_package, %{"repo" => "other/repo"})),
+        claimed_server
+      )
+
+    assert get_in(rebind_response, ["error", "data", "reason"]) == "repo_scope_mismatch"
+    assert server.session.assignment.work_package_id == first_package.id
+    assert {:ok, _lease} = ClaimLeaseService.current_for_work_package(repo, first_package.id)
+  end
+
+  test "claim_local_assignment keeps the old binding when the new target is leased by another worker", %{repo: repo} do
+    first_package = create_local_claim_package!(repo, "SYMPP-LOCAL-REBIND-LEASED-OLD")
+    second_package = create_local_claim_package!(repo, "SYMPP-LOCAL-REBIND-LEASED-NEW")
+    assert {:ok, _first_minted} = AccessGrantService.mint_worker_grant(repo, first_package.id)
+    assert {:ok, _second_minted} = AccessGrantService.mint_worker_grant(repo, second_package.id)
+
+    {_other_response, _other_server} =
+      Server.handle_response_state(
+        tool_call("claim-other-worker", "claim_local_assignment", local_assignment_claim_args(second_package, %{"claimed_by" => "other-worker"})),
+        local_mcp_server(local_mcp_config(repo), "local-rebind-leased-other-state")
+      )
+
+    {_first_response, claimed_server} =
+      Server.handle_response_state(
+        tool_call("claim-old-worker", "claim_local_assignment", local_assignment_claim_args(first_package)),
+        local_mcp_server(local_mcp_config(repo), "local-rebind-leased-old-state")
+      )
+
+    {rebind_response, server} =
+      Server.handle_response_state(
+        tool_call("claim-leased-target", "claim_local_assignment", local_assignment_claim_args(second_package, %{"claimed_by" => "local-worker-2"})),
+        claimed_server
+      )
+
+    assert get_in(rebind_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
+    assert server.session.assignment.work_package_id == first_package.id
+    assert {:ok, _lease} = ClaimLeaseService.current_for_work_package(repo, first_package.id)
+  end
+
+  test "claim_local_assignment keeps the old binding when the new target has no claimable grant", %{repo: repo} do
+    first_package = create_local_claim_package!(repo, "SYMPP-LOCAL-REBIND-GRANT-OLD")
+    second_package = create_local_claim_package!(repo, "SYMPP-LOCAL-REBIND-GRANT-MISSING")
+    assert {:ok, _first_minted} = AccessGrantService.mint_worker_grant(repo, first_package.id)
+
+    {_first_response, claimed_server} =
+      Server.handle_response_state(
+        tool_call("claim-grant-old", "claim_local_assignment", local_assignment_claim_args(first_package)),
+        local_mcp_server(local_mcp_config(repo), "local-rebind-grant-missing-state")
+      )
+
+    {rebind_response, server} =
+      Server.handle_response_state(
+        tool_call("claim-grant-missing", "claim_local_assignment", local_assignment_claim_args(second_package, %{"claimed_by" => "local-worker-2"})),
+        claimed_server
+      )
+
+    assert get_in(rebind_response, ["error", "data", "reason"]) == "worker_grant_required"
+    assert server.session.assignment.work_package_id == first_package.id
+    assert {:ok, _lease} = ClaimLeaseService.current_for_work_package(repo, first_package.id)
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, second_package.id)
   end
 
   test "stdio local claim binds by WorkPackage id only", %{repo: repo} do

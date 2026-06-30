@@ -452,7 +452,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
     assert old_owner_grant.revoked_at == nil
   end
 
-  test "claim_local_architect_assignment reports the current binding before rebinding", %{repo: repo} do
+  test "claim_local_architect_assignment releases the current binding before rebinding", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-ARCHITECT-CLAIM-BOUND-WORKER", base_branch: "main")
     assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
 
@@ -481,7 +481,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
 
     assert get_in(worker_response, ["result", "structuredContent", "assignment", "grant_role"]) == "worker"
 
-    {response, _server} =
+    {response, server} =
       Server.handle_state(
         %{
           "jsonrpc" => "2.0",
@@ -492,18 +492,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.ClaimSessionTransport03Test do
         worker_server
       )
 
-    assert get_in(response, ["error", "code"]) == -32_001
-    assert get_in(response, ["error", "data", "reason"]) == "session_already_bound"
-    assert get_in(response, ["error", "data", "action"]) == "use_fresh_mcp_session_or_release_current_assignment"
-    assert get_in(response, ["error", "data", "hint"]) =~ "fresh MCP session"
-
-    assert get_in(response, ["error", "data", "current_assignment"]) == %{
-             "grant_role" => "worker",
-             "work_package_id" => package.id,
-             "claimed_by" => "local-worker-1",
-             "repo" => package.repo,
-             "base_branch" => package.base_branch
-           }
+    assert get_in(response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert server.session.assignment.grant_role == "architect"
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, package.id)
   end
 
   test "claim_local_architect_assignment reclaims a stale bound local session for the same WorkRequest with a new owner label", %{repo: repo} do
